@@ -32,90 +32,84 @@
 
 		cpu-map {
 			cluster0 {
-				core0 {
-					cpu = <&cpu0>;
-				};
-				core1 {
-					cpu = <&cpu1>;
-				};
-				core2 {
-					cpu = <&cpu2>;
-				};
-				core3 {
-					cpu = <&cpu3>;
-				};
+				core0 { cpu = <&cpu0>; };
+				core1 { cpu = <&cpu1>; };
+				core2 { cpu = <&cpu2>; };
+				core3 { cpu = <&cpu3>; };
 			};
 
 			cluster1 {
-				core0 {
-					cpu = <&cpu4>;
-				};
-				core1 {
-					cpu = <&cpu5>;
-				};
-				core2 {
-					cpu = <&cpu6>;
-				};
-				core3 {
-					cpu = <&cpu7>;
-				};
+				core0 { cpu = <&cpu4>; };
+				core1 { cpu = <&cpu5>; };
+				core2 { cpu = <&cpu6>; };
+				core3 { cpu = <&cpu7>; };
 			};
 		};
 
-		cpu4: cpu@0 {
-			device_type = "cpu";
-			compatible = "samsung,mongoose-m2";
-			reg = <0x0>;
-			enable-method = "psci";
-		};
-
-		cpu5: cpu@1 {
-			device_type = "cpu";
-			compatible = "samsung,mongoose-m2";
-			reg = <0x1>;
-			enable-method = "psci";
-		};
-
-		cpu6: cpu@2 {
-			device_type = "cpu";
-			compatible = "samsung,mongoose-m2";
-			reg = <0x2>;
-			enable-method = "psci";
-		};
-
-		cpu7: cpu@3 {
-			device_type = "cpu";
-			compatible = "samsung,mongoose-m2";
-			reg = <0x3>;
-			enable-method = "psci";
-		};
-
+		/* Boot cluster (Cortex-A53, MPIDR Aff1=1) first: stock logical ids 0-3. */
 		cpu0: cpu@100 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a53";
-			reg = <0x100>;
-			enable-method = "psci";
+			reg = <0x100>;			/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:184, FDT:4274 */
+			enable-method = "psci";		/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:186 */
+			capacity-dmips-mhz = <2048>;	/* S:arch/arm64/kernel/topology.c:207 */
 		};
 
 		cpu1: cpu@101 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a53";
-			reg = <0x101>;
+			reg = <0x101>;			/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:194 */
 			enable-method = "psci";
+			capacity-dmips-mhz = <2048>;
 		};
 
 		cpu2: cpu@102 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a53";
-			reg = <0x102>;
+			reg = <0x102>;			/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:203 */
 			enable-method = "psci";
+			capacity-dmips-mhz = <2048>;
 		};
 
 		cpu3: cpu@103 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a53";
-			reg = <0x103>;
+			reg = <0x103>;			/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:212 */
 			enable-method = "psci";
+			capacity-dmips-mhz = <2048>;
+		};
+
+		/* Mongoose M2 cluster (MPIDR Aff1=0): stock logical ids 4-7. */
+		cpu4: cpu@0 {
+			device_type = "cpu";
+			compatible = "samsung,mongoose-m2";	/* A:Documentation/devicetree/bindings/arm/cpus.yaml:222 */
+			reg = <0x0>;			/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:221, FDT:4317 */
+			enable-method = "psci";		/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:223 */
+			capacity-dmips-mhz = <5035>;	/* S:arch/arm64/kernel/topology.c:205 */
+		};
+
+		cpu5: cpu@1 {
+			device_type = "cpu";
+			compatible = "samsung,mongoose-m2";
+			reg = <0x1>;			/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:231 */
+			enable-method = "psci";
+			capacity-dmips-mhz = <5035>;
+		};
+
+		cpu6: cpu@2 {
+			device_type = "cpu";
+			compatible = "samsung,mongoose-m2";
+			reg = <0x2>;			/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:240 */
+			enable-method = "psci";
+			capacity-dmips-mhz = <5035>;
+		};
+
+		cpu7: cpu@3 {
+			device_type = "cpu";
+			compatible = "samsung,mongoose-m2";
+			reg = <0x3>;			/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:249 */
+			enable-method = "psci";
+			capacity-dmips-mhz = <5035>;
 		};
 	};
 
