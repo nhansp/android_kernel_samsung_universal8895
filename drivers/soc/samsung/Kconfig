@@ -94,4 +94,13 @@ config GREATLTE_RAMCON
 config GREATLTE_LASTKMSG
 	bool "greatlte console mirror into TWRP's /proc/last_kmsg (debug only)"
 	depends on GREATLTE_HB && OF_RESERVED_MEM
+
+config GREATLTE_HS
+	bool "greatlte hand-off snapshot (hs), read-only (debug only)"
+	depends on GREATLTE_HB
+	help
+	  Once, hs.at_ms after boot, reads the PMU, CMU, APM SRAM, DPU, UFS
+	  and USB state the bootloader handed over and prints it through
+	  the heartbeat printer hook. Nothing is written. For the L0
+	  bring-up images only; never enable in a release build.
 endif

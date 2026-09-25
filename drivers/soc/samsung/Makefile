@@ -15,3 +15,4 @@ obj-$(CONFIG_EXYNOS_REGULATOR_COUPLER) += exynos-regulator-coupler.o
 obj-$(CONFIG_SAMSUNG_PM_CHECK)	+= s3c-pm-check.o
 
 obj-$(CONFIG_GREATLTE_HB) += greatlte-hb.o
+obj-$(CONFIG_GREATLTE_HS) += greatlte-hs.o
