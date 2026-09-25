@@ -75,4 +75,23 @@ config SAMSUNG_PM_CHECK_CHUNKSIZE
 config EXYNOS_REGULATOR_COUPLER
 	bool "Exynos SoC Regulator Coupler" if COMPILE_TEST
 	depends on ARCH_EXYNOS || COMPILE_TEST
+
+config GREATLTE_HB
+	bool "Galaxy Note 8 (greatlte) bring-up heartbeat (debug only)"
+	depends on ARCH_EXYNOS && PRINTK && OF
+	select TRACEPOINTS
+	help
+	  Prints a fixed-format status snapshot at KERN_ERR every
+	  hb.period_ms milliseconds for pstore-based bring-up debugging.
+	  Never enable in a release build.
+
+config GREATLTE_RAMCON
+	bool "greatlte early RAM console into the ramoops dmesg zone (debug only)"
+	depends on GREATLTE_HB
+	select SERIAL_CORE
+	select SERIAL_EARLYCON
+
+config GREATLTE_LASTKMSG
+	bool "greatlte console mirror into TWRP's /proc/last_kmsg (debug only)"
+	depends on GREATLTE_HB && OF_RESERVED_MEM
 endif
