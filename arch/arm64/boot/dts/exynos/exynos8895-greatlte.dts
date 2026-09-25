@@ -191,6 +191,45 @@
 	};
 };
 
+/*
+ * ---- L0 bring-up: not yet verified against stock; each layer that verifies
+ * ---- a block deletes its lines here. ----
+ */
+
+/* L1: CMUs. With ARCH_EXYNOS=y the 8895 CMU drivers are built (A:arch/arm64/Kconfig.platforms:130
+ * selects COMMON_CLK_SAMSUNG; CLK_OF_DECLARE at A:drivers/clk/samsung/clk-exynos8895.c:1310,1545)
+ * and would arm clk_disable_unused (F2). No clock provider at L0 = no gating = hardware stays as S-Boot left it. */
+&cmu_top { status = "disabled"; };
+&cmu_peris { status = "disabled"; };
+&cmu_peric0 { status = "disabled"; };
+&cmu_peric1 { status = "disabled"; };
+&cmu_fsys0 { status = "disabled"; };
+&cmu_fsys1 { status = "disabled"; };
+
+/* L7 (REWRITE_PLAN.md 5 X-7: the MCT stays disabled through L6; L7 verifies it
+ * against stock and enables it as the broadcast timer): MCT.
+ * exynos4_timer_resources() panics without its clocks
+ * (A:drivers/clocksource/exynos_mct.c:517-524); timer_probe skips disabled
+ * nodes (A:drivers/clocksource/timer-probe.c:25). */
+&{/soc@0/timer@10040000} { status = "disabled"; };
+
+/* L1: pinctrl (bank tables not yet verified against stock). */
+&pinctrl_alive { status = "disabled"; };
+&pinctrl_abox { status = "disabled"; };
+&pinctrl_vts { status = "disabled"; };
+&pinctrl_fsys0 { status = "disabled"; };
+&pinctrl_fsys1 { status = "disabled"; };
+&pinctrl_busc { status = "disabled"; };
+&pinctrl_peric0 { status = "disabled"; };
+&pinctrl_peric1 { status = "disabled"; };
+
+/* L1: PMU syscon + syscon-reboot/-poweroff (restart offsets not yet verified). */
+&pmu_system_controller { status = "disabled"; };
+
+/* L0 step c (8.2): PMU interrupts; decides F13 initcall_blacklist=armv8_pmu_driver_init. */
+&{/pmu-a53} { status = "disabled"; };
+&{/pmu-mongoose-m2} { status = "disabled"; };
+
 /* Board fact (the ACK dtsi leaves it to the board, A:arch/arm64/boot/dts/exynos/exynos8895.dtsi:122-126):
  * 26 MHz OSC. S:arch/arm64/boot/dts/exynos/exynos8895-greatlte_common.dtsi:53-58, FDT:11152-11157 (<0x18cba80>). */
 &oscclk {
