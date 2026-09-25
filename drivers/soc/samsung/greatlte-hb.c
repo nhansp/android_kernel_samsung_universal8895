@@ -38,6 +38,18 @@
 #include <asm/setup.h>
 #include <asm/sysreg.h>
 #include <trace/events/initcall.h>
+/* L0 spec 5.4 Edit 1 */
+#include <linux/arch_topology.h>	/* arch_scale_cpu_capacity: A:arch/arm64/include/asm/topology.h:30 */
+#include <linux/bitrev.h>
+#include <linux/io.h>			/* memremap: A:kernel/iomem.c:69 */
+#include <linux/kmsg_dump.h>		/* kmsg_dump_rewind/get_line: A:include/linux/kmsg_dump.h:71,77 */
+#include <linux/memblock.h>		/* for_each_mem_range: A:include/linux/memblock.h:248; kept after boot, A:arch/arm64/Kconfig:90 ARCH_KEEP_MEMBLOCK */
+#include <linux/of_reserved_mem.h>	/* of_reserved_mem_lookup: A:include/linux/of_reserved_mem.h:42 */
+#include <linux/sizes.h>
+#include <clocksource/arm_arch_timer.h>	/* arch_timer_get_rate: A:include/clocksource/arm_arch_timer.h:89 */
+#include <asm/cpu.h>			/* per-cpu cpu_data .reg_ctr/.reg_cntfrq/.reg_midr: A:arch/arm64/include/asm/cpu.h:40-47,73 */
+#include <asm/cpufeature.h>		/* cpus_have_cap: A:arch/arm64/include/asm/cpufeature.h:484 */
+#include <asm/smp.h>			/* cpu_logical_map: A:arch/arm64/include/asm/smp.h:38 */
 
 #undef MODULE_PARAM_PREFIX
 #define MODULE_PARAM_PREFIX "hb."
@@ -593,6 +605,318 @@ static void hb_line_printers(u64 up)
 	}
 }
 
+/* ==== L0 additions (L0 spec 5.4) ==== */
+#define L0_LOAD_BASE	0x80080000UL	/* SB+0x7d1e0 "mov x5, #0x80080000"; slot base SB+0x7cbd0 "add x2, x2, #0x80, lsl #12" */
+#define L0_SLOT_SZ	0x4000UL	/* SB+0x7cbc8 "lsl w2, w0, #0xe" */
+#define L0_SLOT_MAX	0x3fUL		/* SB+0x7cbc0 "and w0, w2, #0x3f" */
+#define L0_BC_PA	0x80001000UL	/* SB+0x7cbe4-0x7cbe8 "mov x6, #0x1000; movk x6, #0x8000, lsl #16"; " kaslr_region=0x1000@0x80001000" SB+0x7c2bc-0x7c2d4 */
+#define L0_CHIPID_PA	0x10000000UL	/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:148-151; FDT:4238-4241 */
+#define L0_CHIPID_UID	0x04		/* S:drivers/soc/samsung/exynos-cpumap.c:52; S:drivers/soc/samsung/exynos-chipid.c:82 */
+#define L0_CHIPID_REV	0x10		/* S:drivers/soc/samsung/exynos-chipid.c:83 */
+#define L0_ECT_PA	0xa0000000UL	/* S:arch/arm64/boot/dts/exynos/exynos8895-greatlte_common.dtsi:23; FDT:11122 */
+#define L0_ECT_SZ	0x19000UL	/* S:arch/arm64/boot/dts/exynos/exynos8895-greatlte_common.dtsi:24; FDT:11123 */
+#define L0_MEMRSV_PA	0xe0000000UL	/* S:arch/arm64/boot/dts/exynos/exynos8895-greatlte-rmem.dtsi:12; FDT:3 */
+#define L0_MEMRSV_SZ	0x1900000UL	/* S:arch/arm64/boot/dts/exynos/exynos8895-greatlte-rmem.dtsi:12 "/memreserve/ 0xE0000000 0x1900000;"; FDT:3 */
+
+/* Global in init/main.c, declared in no header (A:init/main.c:194). Debug-only: we count entries. */
+extern const char *envp_init[];
+
+static struct {
+	bool done;
+	u32 bc[2];		/* 0xcdefcdef, load - 0x80080000: SB+0x7cbec-0x7cc20 "mov w3, #0xcdef" ... "mov w0, #0x7ff80000; add w0, w3, w0" */
+	char ect_sig[5];	/* "PARA": S:drivers/soc/samsung/ect_parser.c:22 */
+	char ect_ver[5];	/* char version[4]: S:include/soc/samsung/ect_parser.h:56-62 */
+	u32 ect_total, ect_nhdr;
+	u32 pro, rev, uid;
+	char lot[6];
+	int m2blk;
+	int err_bc, err_ect, err_chipid;
+} hb_l0;
+
+static void hb_l0_printable(char *s, size_t n)	/* never let raw bytes into a console line */
+{
+	for (; n && *s; s++, n--)
+		if (*s < 0x20 || *s > 0x7e)
+			*s = '?';
+}
+
+/* Stock decode, S:drivers/soc/samsung/exynos-cpumap.c:19-45,56-58 (CHIPID_ReverseValue(v, 32) == bitrev32). */
+static void hb_l0_lot(u32 raw, char out[6])
+{
+	u32 v = (bitrev32(raw) >> 11) & 0x1fffff;
+	int i;
+
+	for (i = 4; i >= 1; i--) {
+		u32 m = v % 36;
+
+		v /= 36;
+		out[i] = m < 10 ? '0' + m : 'A' + m - 10;
+	}
+	out[0] = 'N';
+	out[5] = '\0';
+}
+
+/*
+ * One-shot reads, on the first banner (seq 0). The hb thread starts at
+ * early_initcall and runs at SCHED_FIFO, so seq 0 happens during the early
+ * initcalls, long before clk_disable_unused (late_initcall_sync) could gate
+ * anything. memremap/ioremap take only vmap locks, no driver lock (R-HB2).
+ */
+static void hb_l0_read_once(void)
+{
+	/* Stock drops cpu4-7 for these lots: S:drivers/soc/samsung/exynos-cpumap.c:70-77 */
+	static const char * const m2_bad[] = { "NZNP4", "NZNP5", "NZNP7", "NZNRH", "NZNVK", "NZNV2" };
+	void __iomem *io;
+	u32 *p;
+	int i;
+
+	if (hb_l0.done)
+		return;
+	hb_l0.done = true;
+
+	/* Reserved *and mapped* (4.5): MEMREMAP_WB returns the linear alias,
+	 * A:kernel/iomem.c:85-100, A:arch/arm64/mm/ioremap.c:51-57. */
+	p = memremap(L0_BC_PA, SZ_4K, MEMREMAP_WB);
+	if (p) {
+		hb_l0.bc[0] = p[0];
+		hb_l0.bc[1] = p[1];
+		memunmap(p);
+	} else {
+		hb_l0.err_bc = -ENOMEM;
+	}
+	p = memremap(L0_ECT_PA, L0_ECT_SZ, MEMREMAP_WB);
+	if (p) {
+		memcpy(hb_l0.ect_sig, p, 4);
+		memcpy(hb_l0.ect_ver, p + 1, 4);
+		hb_l0.ect_total = p[2];
+		hb_l0.ect_nhdr = p[3];
+		memunmap(p);
+		hb_l0_printable(hb_l0.ect_sig, 4);
+		hb_l0_printable(hb_l0.ect_ver, 4);
+	} else {
+		hb_l0.err_ect = -ENOMEM;
+	}
+	/* S-Boot reads this block too (SB+0x772b0-0x772c8 "mov x0, #0x10; movk x0, #0x1000, lsl #16; ldr w2, [x0]" reads 0x10000010). */
+	io = ioremap(L0_CHIPID_PA, SZ_4K);
+	if (io) {
+		hb_l0.pro = readl_relaxed(io);
+		hb_l0.uid = readl_relaxed(io + L0_CHIPID_UID);
+		hb_l0.rev = readl_relaxed(io + L0_CHIPID_REV);
+		iounmap(io);
+		hb_l0_lot(hb_l0.uid, hb_l0.lot);
+		for (i = 0; i < ARRAY_SIZE(m2_bad); i++)
+			if (!strcmp(hb_l0.lot, m2_bad[i]))
+				hb_l0.m2blk = 1;
+	} else {
+		hb_l0.err_chipid = -ENOMEM;
+	}
+}
+
+/* L0s: static facts (P1-P16, P25), one self-identifying record per line (L0 spec 1.2) */
+static void hb_line_L0s(void)
+{
+	char b[HB_LINE];
+	phys_addr_t text = __pa_symbol(_text), start, end;
+	struct device_node *rn, *np;
+	u64 sysram = 0, i;
+	unsigned int cpu, k = 0, part = 0, nenv;
+	long slot = -1;
+	int n;
+
+	hb_l0_read_once();
+
+	/* x0..x3 at entry: preserve_boot_args, A:arch/arm64/kernel/head.S:170-175 */
+	if (boot_args[3] >= L0_LOAD_BASE &&
+	    !((boot_args[3] - L0_LOAD_BASE) % L0_SLOT_SZ) &&
+	    (boot_args[3] - L0_LOAD_BASE) / L0_SLOT_SZ <= L0_SLOT_MAX)
+		slot = (boot_args[3] - L0_LOAD_BASE) / L0_SLOT_SZ;
+	n = scnprintf(b, sizeof(b), "L0s seq=%u rec=entry x0=%#llx x1=%#llx x2=%#llx x3=%#llx text=%#llx slot=%ld bc=",
+		      hb_seq, boot_args[0], boot_args[1], boot_args[2], boot_args[3], (u64)text, slot);
+	if (hb_l0.err_bc)
+		scnprintf(b + n, sizeof(b) - n, "!%d", hb_l0.err_bc);
+	else
+		scnprintf(b + n, sizeof(b) - n, "%#x/%#x", hb_l0.bc[0], hb_l0.bc[1]);
+	pr_err("%s\n", b);
+
+	n = scnprintf(b, sizeof(b), "L0s seq=%u rec=cpuid mpidr=", hb_seq);
+	for_each_possible_cpu(cpu)
+		n += scnprintf(b + n, sizeof(b) - n, "%llx/", cpu_logical_map(cpu));
+	n += scnprintf(b + n, sizeof(b) - n, " midr=");
+	for_each_possible_cpu(cpu)
+		n += scnprintf(b + n, sizeof(b) - n, "%llx/", per_cpu(cpu_data, cpu).reg_midr);
+	pr_err("%s\n", b);
+
+	n = scnprintf(b, sizeof(b), "L0s seq=%u rec=cpucap cap=", hb_seq);
+	for_each_possible_cpu(cpu)
+		n += scnprintf(b + n, sizeof(b) - n, "%lu/", arch_scale_cpu_capacity(cpu));
+	n += scnprintf(b + n, sizeof(b) - n, " ctr=");
+	for_each_possible_cpu(cpu)
+		n += scnprintf(b + n, sizeof(b) - n, "%llx/", per_cpu(cpu_data, cpu).reg_ctr);
+	pr_err("%s\n", b);
+
+	n = scnprintf(b, sizeof(b), "L0s seq=%u rec=timer cntfrq=", hb_seq);
+	for_each_possible_cpu(cpu)	/* reg_cntfrq: A:arch/arm64/kernel/cpuinfo.c:467 */
+		n += scnprintf(b + n, sizeof(b) - n, "%llu/", per_cpu(cpu_data, cpu).reg_cntfrq);
+	pr_err("%s rate=%u ctr_mm=%d present=%*pbl\n", b, arch_timer_get_rate(),
+	       cpus_have_cap(ARM64_MISMATCHED_CACHE_TYPE),	/* A:arch/arm64/kernel/cpu_errata.c:708-714 */
+	       cpumask_pr_args(cpu_present_mask));
+
+	/* MEMBLOCK_NONE iteration skips no-map regions: A:include/linux/memblock.h:248 */
+	n = scnprintf(b, sizeof(b), "L0s seq=%u rec=mem r=", hb_seq);
+	for_each_mem_range(i, &start, &end) {
+		n += scnprintf(b + n, sizeof(b) - n, "%s%llx-%llx", k ? "," : "",
+			       (u64)start, (u64)end - 1);
+		sysram += end - start;
+		k++;
+	}
+	/* Unknown non-dotted k=v tokens become init env vars; at CONFIG_INIT_ENV_ARG_LIMIT
+	 * entries the kernel panics "Too many boot env vars" (A:init/main.c:137,194,581-583,
+	 * 1172-1174). Risk R7: print the margin. */
+	for (nenv = 0; envp_init[nenv]; nenv++)
+		;
+	pr_err("%s n=%u sysram=%llu memrsv=%d initenv=%u/%d\n", b, k, sysram,
+	       memblock_is_region_reserved(L0_MEMRSV_PA, L0_MEMRSV_SZ),	/* A:include/linux/memblock.h:498 */
+	       nenv, CONFIG_INIT_ENV_ARG_LIMIT);
+
+	/* one key per node (%pOFn: name without unit address, A:lib/vsprintf.c:2217-2221);
+	 * a new line rec=rmem<part> whenever the next key could pass HB_LINE */
+	n = scnprintf(b, sizeof(b), "L0s seq=%u rec=rmem%u", hb_seq, part);
+	rn = of_find_node_by_path("/reserved-memory");
+	if (!rn)
+		n += scnprintf(b + n, sizeof(b) - n, " rmem=!ENOENT");
+	for_each_child_of_node(rn, np) {
+		struct reserved_mem *r = of_reserved_mem_lookup(np);	/* A:drivers/of/of_reserved_mem.c:745 */
+
+		if (n > HB_LINE - 50) {
+			pr_err("%s\n", b);
+			n = scnprintf(b, sizeof(b), "L0s seq=%u rec=rmem%u", hb_seq, ++part);
+		}
+		if (r)
+			n += scnprintf(b + n, sizeof(b) - n, " %pOFn=%llx+%llx%s", np,
+				       (u64)r->base, (u64)r->size,
+				       of_property_read_bool(np, "no-map") ? "/nomap" : "");
+		else
+			n += scnprintf(b + n, sizeof(b) - n, " %pOFn=!ENOENT", np);
+	}
+	of_node_put(rn);
+	pr_err("%s\n", b);
+
+	n = scnprintf(b, sizeof(b), "L0s seq=%u rec=id ect=", hb_seq);
+	if (hb_l0.err_ect)
+		n += scnprintf(b + n, sizeof(b) - n, "!%d", hb_l0.err_ect);
+	else
+		n += scnprintf(b + n, sizeof(b) - n, "%s/%s/%#x/%u", hb_l0.ect_sig, hb_l0.ect_ver,
+			       hb_l0.ect_total, hb_l0.ect_nhdr);
+	if (hb_l0.err_chipid)	/* R-HB1: every key stays, the value is the error */
+		scnprintf(b + n, sizeof(b) - n,
+			  " pro=!%d rev=!%d main=!%d sub=!%d uid=!%d lot=!%d m2blk=!%d",
+			  hb_l0.err_chipid, hb_l0.err_chipid, hb_l0.err_chipid, hb_l0.err_chipid,
+			  hb_l0.err_chipid, hb_l0.err_chipid, hb_l0.err_chipid);
+	else
+		scnprintf(b + n, sizeof(b) - n, " pro=%#x rev=%#x main=%u sub=%u uid=%#x lot=%s m2blk=%d",
+			  hb_l0.pro, hb_l0.rev,
+			  (hb_l0.rev >> 20) & 0xf, (hb_l0.rev >> 16) & 0xf,	/* S:drivers/soc/samsung/exynos-chipid.c:84-85 */
+			  hb_l0.uid, hb_l0.lot, hb_l0.m2blk);
+	pr_err("%s\n", b);
+}
+
+/*
+ * L0g / L0e: early-boot evidence from the printk ring buffer, which holds every
+ * record whatever the console level (A:kernel/printk/printk.c:4836-4873,
+ * lockless reader), so it survives S-Boot's "loglevel=4" and the 16 KiB wrap.
+ * One persistent iterator, rewound once, reads only records added since the
+ * previous banner; matches are kept for the whole boot. Only the hb thread
+ * calls this, so plain statics are enough.
+ */
+enum { HB_L0_CNT, HB_L0_TXT, HB_L0_ERR };
+static const struct {
+	const char *id;
+	const char *pat;
+	u8 kind;
+} hb_l0g[] = {
+	{ "S1",  "Booting Linux on physical CPU", HB_L0_CNT },		/* A:arch/arm64/kernel/setup.c:95 */
+	{ "S2",  "Machine model: ", HB_L0_CNT },			/* A:arch/arm64/kernel/setup.c:206 */
+	{ "S3",  "Kernel image misaligned at boot", HB_L0_CNT },	/* A:arch/arm64/kernel/setup.c:328 */
+	{ "S4",  "x1-x3 nonzero in violation", HB_L0_CNT },		/* A:arch/arm64/kernel/setup.c:374 */
+	{ "S5",  "Using PSCI v0.1 Function IDs from DT", HB_L0_CNT },	/* A:drivers/firmware/psci/psci.c:758 */
+	{ "S6",  "cp15 timer running at", HB_L0_TXT },			/* A:drivers/clocksource/arm_arch_timer.c:879 */
+	{ "S7",  "Mismatched cache type (CTR_EL0)", HB_L0_CNT },	/* A:arch/arm64/kernel/cpu_errata.c:709 */
+	{ "S8",  "CPU(s) started at EL", HB_L0_TXT },			/* A:arch/arm64/kernel/smp.c:432,437 */
+	{ "S9",  "smp: Brought up", HB_L0_TXT },			/* A:kernel/smp.c:1005 */
+	{ "S10", "ramoops: using", HB_L0_TXT },				/* A:fs/pstore/ram.c:868 */
+	{ "S11", "Exynos: CPU[", HB_L0_TXT },				/* A:drivers/soc/samsung/exynos-chipid.c:159 */
+	{ "S12", "as init process", HB_L0_CNT },			/* A:init/main.c:1520 */
+	{ "S13", "Unknown kernel command line parameters", HB_L0_CNT },	/* A:init/main.c:891 */
+	{ "S14", "Kernel page table isolation", HB_L0_TXT },		/* A:arch/arm64/kernel/cpufeature.c:2584 */
+	{ "S15", "OF: reserved mem: ", HB_L0_CNT },			/* A:drivers/of/of_reserved_mem.c:12,604-608 */
+	{ "S16", "SANITY CHECK: Unexpected variation", HB_L0_TXT },	/* A:arch/arm64/kernel/cpufeature.c:1246 */
+	{ "S17", "hw perfevents: enabled with", HB_L0_CNT },		/* A:drivers/perf/arm_pmu.c:13,938 */
+	{ "E1",  "is secure or misconfigured", HB_L0_ERR },		/* A:drivers/irqchip/irq-gic.c:310 */
+	{ "E2",  "failed to come online", HB_L0_ERR },			/* A:arch/arm64/kernel/smp.c:146 */
+	{ "E3",  "failed to boot:", HB_L0_ERR },			/* A:arch/arm64/kernel/smp.c:133 */
+	{ "E4",  "WARNING: CPU:", HB_L0_ERR },				/* A:kernel/panic.c:878,882 */
+	{ "E5",  "BUG: soft lockup", HB_L0_ERR },			/* A:kernel/watchdog.c:832 */
+	{ "E6",  "Watchdog detected hard LOCKUP", HB_L0_ERR },		/* A:kernel/watchdog.c:223 */
+	{ "E7",  "detected stalls on CPUs/tasks", HB_L0_ERR },		/* A:kernel/rcu/tree_stall.h:656 */
+	{ "E8",  "Unable to handle kernel", HB_L0_ERR },		/* A:arch/arm64/mm/fault.c:321 */
+	{ "E9",  "Internal error: ", HB_L0_ERR },			/* A:arch/arm64/kernel/traps.c:184 */
+	{ "E10", "failed to reserve memory for node", HB_L0_ERR },	/* A:drivers/of/of_reserved_mem.c:193 */
+};
+
+static void hb_line_L0g(void)
+{
+	static struct kmsg_dump_iter it;	/* A:include/linux/kmsg_dump.h:37-40 */
+	static bool started;
+	static char line[256];
+	static char first[ARRAY_SIZE(hb_l0g)][120];	/* incl. the "[time][caller] " prefix */
+	static unsigned int cnt[ARRAY_SIZE(hb_l0g)];
+	static int efirst = -1;			/* first E pattern hit, in time order */
+	char b[HB_LINE];
+	size_t len;
+	unsigned int i;
+	int n;
+
+	if (!started) {
+		kmsg_dump_rewind(&it);		/* A:kernel/printk/printk.c:4968-4972 */
+		started = true;
+	}
+	while (kmsg_dump_get_line(&it, false, line, sizeof(line) - 1, &len)) {
+		line[len] = '\0';
+		if (strstr(line, "hb: v1 "))	/* never match our own re-prints */
+			continue;
+		for (i = 0; i < ARRAY_SIZE(hb_l0g); i++) {
+			if (!strstr(line, hb_l0g[i].pat) || cnt[i]++)
+				continue;
+			/* multi-line records carry '\n'/'\t' (e.g. S4): flatten them */
+			strscpy(first[i], line, sizeof(first[i]));
+			hb_l0_printable(first[i], sizeof(first[i]));
+			strim(first[i]);
+			if (hb_l0g[i].kind == HB_L0_ERR && efirst < 0)
+				efirst = i;
+		}
+	}
+
+	n = scnprintf(b, sizeof(b), "L0g seq=%u rec=cnt", hb_seq);
+	for (i = 0; i < ARRAY_SIZE(hb_l0g); i++)
+		if (hb_l0g[i].kind == HB_L0_CNT)
+			n += scnprintf(b + n, sizeof(b) - n, " %s=%u", hb_l0g[i].id, cnt[i]);
+	pr_err("%s\n", b);
+	for (i = 0; i < ARRAY_SIZE(hb_l0g); i++)
+		if (hb_l0g[i].kind == HB_L0_TXT)
+			pr_err("L0g seq=%u rec=%s n=%u txt=%s\n", hb_seq, hb_l0g[i].id, cnt[i],
+			       cnt[i] ? first[i] : "-");
+
+	n = scnprintf(b, sizeof(b), "L0e seq=%u rec=err n=", hb_seq);
+	for (i = 0; i < ARRAY_SIZE(hb_l0g); i++)
+		if (hb_l0g[i].kind == HB_L0_ERR)
+			n += scnprintf(b + n, sizeof(b) - n, "%u/", cnt[i]);
+	if (efirst < 0)
+		pr_err("%s txt=-\n", b);
+	else
+		pr_err("%s txt=%s %s\n", b, hb_l0g[efirst].id, first[efirst]);
+}
+/* ==== end of L0 additions ==== */
+
 static int hb_fn(void *unused)
 {
 	u64 up;
@@ -603,6 +927,8 @@ static int hb_fn(void *unused)
 		if (banner_every && !(hb_seq % banner_every)) {
 			hb_banner();
 			hb_line_unbound();
+			hb_line_L0s();		/* L0 spec 5.4 Edit 3 */
+			hb_line_L0g();		/* L0 spec 5.4 Edit 3 */
 		}
 		hb_line_L0(up);
 		hb_line_layers();
