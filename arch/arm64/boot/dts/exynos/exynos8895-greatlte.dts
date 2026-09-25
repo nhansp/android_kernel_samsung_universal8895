@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Galaxy Note 8 (greatlte, SM-N950N) device tree source
+ */
+
+/dts-v1/;
+
+/*
+ * Stock: S:arch/arm64/boot/dts/exynos/exynos8895-greatlte-rmem.dtsi:12
+ * "/memreserve/ 0xE0000000 0x1900000;", shipped: FDT:3. No user in the
+ * stock kernel tree. Owner: the secure-world DRM firmware in cm.bin, which
+ * builds a region descriptor {0xe0000000, 0x1900000} for its secure SysMMU
+ * page tables and protects it through PPMPU (CM:0x22d2b4-0x22d370, strings
+ * CM:0x2306a0 "DRMFW:Invalid page table addr(0x%x)", CM:0x2306c5
+ * "DRMFW:PPMPU set fail in SysMMU. ret(%d)"; 4.5, O5 closed).
+ * Kept verbatim like stock: memblock_reserve()d, stays in the linear map
+ * (A:drivers/of/fdt.c:514-523).
+ * It must precede every node, i.e. the #include below: dtc's grammar is
+ * "headers memreserves devicetree" (A:scripts/dtc/dtc-parser.y:106-107);
+ * same order as A:arch/arm64/boot/dts/airoha/en7581-evb.dts:2-5.
+ */
+/memreserve/ 0xe0000000 0x1900000;
+
+#include "exynos8895.dtsi"
+
+/ {
+	model = "Samsung Galaxy Note 8 (SM-N950N)";	/* FDT:9 "Samsung SM-N950N board based on EXYNOS8895" */
+	compatible = "samsung,greatlte", "samsung,exynos8895";
+	chassis-type = "handset";
+
+	aliases {
+		/*
+		 * Stock alias uart0 = &serial_0 (S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:66).
+		 * samsung_tty takes the port index from the "serial" alias
+		 * (A:drivers/tty/serial/samsung_tty.c:1961), so the debug UART stays
+		 * ttySAC0, the name S-Boot passes (" androidboot.sec_atd.tty=/dev/ttySAC0",
+		 * SB+0xfacc0). serial_0 itself stays disabled until L1.
+		 */
+		serial0 = &serial_0;
+	};
+
+	/*
+	 * S-Boot replaces bootargs wholesale and writes 1-cell (4-byte)
+	 * linux,initrd-start/-end = 0x89000000 / 0x89000000 + size into this
+	 * node (SB+0xebfb0-0xebfd4 "mov w1, #9; movk w1, #0x5441, lsl #16; cmp w0, w1"
+	 * = ATAG_CMDLINE, then setprop "/chosen" "bootargs"; SB+0xec01c-0xec064
+	 * "linux,initrd-start"/"-end" as 1-cell values, helper SB+0xebe54 "mov w4, #4").
+	 * No bootargs here: it is dead (IK:530; 3.1 step 17). No stdout-path:
+	 * S-Boot always passes "console=ram", and of_console_check() ignores
+	 * stdout-path whenever console= is on the command line
+	 * (A:drivers/of/base.c:2032).
+	 */
+	chosen {
+	};
+
+	/* S:arch/arm64/boot/dts/exynos/exynos8895-greatlte_common.dtsi:27-30, FDT:11126-11129: 968 MiB, ends at the secure hole 0xbc800000 */
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x0 0x80000000 0x3c800000>;
+	};
+
+	/* S:arch/arm64/boot/dts/exynos/exynos8895-greatlte_common.dtsi:32-35, FDT:11131-11134 */
+	memory@c0000000 {
+		device_type = "memory";
+		reg = <0x0 0xc0000000 0x40000000>;
+	};
+
+	/* S:arch/arm64/boot/dts/exynos/exynos8895-greatlte_common.dtsi:37-40, FDT:11136-11139 */
+	memory@880000000 {
+		device_type = "memory";
+		reg = <0x8 0x80000000 0x80000000>;
+	};
+
+	/*
+	 * Filled by S-Boot on 6 GB units: reg = <0x9 0x0 0x80000000>
+	 * (SB+0xebff8-0xec00c "cmp w0, #6; b.eq" DRAM==6 test, SB+0xec13c-0xec184
+	 * "mov x2, #0x9000000" ... "mov w4, #0xc" setprop).
+	 * The node name must be exactly "memory@900000000" (S-Boot looks up that
+	 * literal path, SB+0x10e318 "/memory@900000000") and it must carry device_type,
+	 * which S-Boot does not add if it has to create the node (SB+0xec18c-0xec198
+	 * "mov w1, #0; mov x0, x20; mov x2, x19; bl").
+	 * Size 0 is skipped by Linux if S-Boot leaves it (A:drivers/of/fdt.c:1072).
+	 * S:arch/arm64/boot/dts/exynos/exynos8895-greatlte_common.dtsi:42-45, FDT:11141-11144.
+	 */
+	memory@900000000 {
+		device_type = "memory";
+		reg = <0x9 0x0 0x0>;
+	};
+};
+
+/* Board fact (the ACK dtsi leaves it to the board, A:arch/arm64/boot/dts/exynos/exynos8895.dtsi:122-126):
+ * 26 MHz OSC. S:arch/arm64/boot/dts/exynos/exynos8895-greatlte_common.dtsi:53-58, FDT:11152-11157 (<0x18cba80>). */
+&oscclk {
+	clock-frequency = <26000000>;
+};
