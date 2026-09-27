@@ -247,6 +247,22 @@ static const struct s3c2410_wdt_variant drv_data_exynos7 = {
 		  QUIRK_HAS_PMU_RST_STAT | QUIRK_HAS_PMU_AUTO_DISABLE,
 };
 
+/*
+ * Exynos8895: one watchdog at 0x10060000 whose PMU controls are bit 24 of
+ * AUTOMATIC_WDT_RESET_DISABLE, MASK_WDT_RESET_REQUEST and RST_STAT (stock
+ * drv_data_exynos8, S:drivers/watchdog/s3c2410_wdt.c:179-186). WTCLRINT
+ * exists: stock writes it in s3c2410wdt_stop_intclear() (:307-317).
+ */
+static const struct s3c2410_wdt_variant drv_data_exynos8895 = {
+	.disable_reg = EXYNOS5_WDT_DISABLE_REG_OFFSET,
+	.mask_reset_reg = EXYNOS5_WDT_MASK_RESET_REG_OFFSET,
+	.mask_bit = 24,
+	.rst_stat_reg = EXYNOS5_RST_STAT_REG_OFFSET,
+	.rst_stat_bit = 24,	/* A53 WDTRESET */
+	.quirks = QUIRK_HAS_WTCLRINT_REG | QUIRK_HAS_PMU_MASK_RESET |
+		  QUIRK_HAS_PMU_RST_STAT | QUIRK_HAS_PMU_AUTO_DISABLE,
+};
+
 static const struct s3c2410_wdt_variant drv_data_exynos850_cl0 = {
 	.mask_reset_reg = EXYNOS850_CLUSTER0_NONCPU_INT_EN,
 	.mask_bit = 2,
@@ -390,6 +406,8 @@ static const struct of_device_id s3c2410_wdt_match[] = {
 	  .data = &drv_data_exynos7 },
 	{ .compatible = "samsung,exynos850-wdt",
 	  .data = &drv_data_exynos850_cl0 },
+	{ .compatible = "samsung,exynos8895-wdt",
+	  .data = &drv_data_exynos8895 },
 	{ .compatible = "samsung,exynos990-wdt",
 	  .data = &drv_data_exynos990_cl0 },
 	{ .compatible = "samsung,exynosautov9-wdt",
