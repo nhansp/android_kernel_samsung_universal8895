@@ -1313,8 +1313,7 @@
 			clocks = <&oscclk>,
 				 <&cmu_top CLK_DOUT_CMU_DPU_BUS>;	/* CAL:cmucal-node.c:1006 MUX_CLKCMU_DPU_BUS_USER parents */
 			clock-names = "oscclk", "bus";
-			/* in pd_dpu0: CAL:pmucal_local_exynos8895.h:203-232 dpu0_save */
-			/* "power-domains" follows once the PD node exists */
+			power-domains = <&pd_dpu0>;	/* CAL:pmucal_local_exynos8895.h:203-232 dpu0_save */
 			status = "disabled";
 		};
 
@@ -1326,8 +1325,7 @@
 				 <&cmu_dpu0 CLK_GOUT_DPU0_CLKCMU_DPU1_BUSD>,	/* CAL:cmucal-node.c:1007 { OSCCLK_DPU1, CLKCMU_DPU1_BUSD } */
 				 <&cmu_dpu0 CLK_GOUT_DPU0_CLKCMU_DPU1_BUSP>;	/* CAL:cmucal-node.c:1008 { OSCCLK_DPU1, CLKCMU_DPU1_BUSP } */
 			clock-names = "oscclk", "busd", "busp";
-			/* in pd_dpu1: CAL:pmucal_local_exynos8895.h:247-269 dpu1_save */
-			/* "power-domains" follows once the PD node exists */
+			power-domains = <&pd_dpu1>;	/* CAL:pmucal_local_exynos8895.h:247-269 dpu1_save */
 			status = "disabled";
 		};
 
@@ -1345,8 +1343,7 @@
 					  <&cmu_cam CLK_MOUT_CAM_TPU1_USER>, <&cmu_cam CLK_MOUT_CAM_VRA_USER>;
 			assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_CAM_BUS>, <&cmu_top CLK_DOUT_CMU_CAM_TPU0>,
 						 <&cmu_top CLK_DOUT_CMU_CAM_TPU1>, <&cmu_top CLK_DOUT_CMU_CAM_VRA>;
-			/* in pd_cam: CAL:pmucal_local_exynos8895.h:76-112 cam_save */
-			/* "power-domains" follows once the PD node exists */
+			power-domains = <&pd_cam>;	/* CAL:pmucal_local_exynos8895.h:76-112 cam_save */
 			status = "disabled";
 		};
 
@@ -1360,8 +1357,7 @@
 			clock-names = "oscclk", "bus", "imgd";
 			assigned-clocks = <&cmu_dcam CLK_MOUT_DCAM_BUS_USER>, <&cmu_dcam CLK_MOUT_DCAM_IMGD_USER>;
 			assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_DCAM_BUS>, <&cmu_top CLK_DOUT_CMU_DCAM_IMGD>;
-			/* in pd_dcam: CAL:pmucal_local_exynos8895.h:172-187 dcam_save */
-			/* "power-domains" follows once the PD node exists */
+			power-domains = <&pd_dcam>;	/* CAL:pmucal_local_exynos8895.h:172-187 dcam_save */
 			status = "disabled";
 		};
 
@@ -1374,8 +1370,7 @@
 			clock-names = "oscclk", "bus";
 			assigned-clocks = <&cmu_isplp CLK_MOUT_ISPLP_BUS_USER>;
 			assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_ISPLP_BUS>;
-			/* in pd_isplp: CAL:pmucal_local_exynos8895.h:416-435 isplp_save */
-			/* "power-domains" follows once the PD node exists */
+			power-domains = <&pd_isplp>;	/* CAL:pmucal_local_exynos8895.h:416-435 isplp_save */
 			status = "disabled";
 		};
 
@@ -1388,8 +1383,7 @@
 			clock-names = "oscclk", "bus";
 			assigned-clocks = <&cmu_isphq CLK_MOUT_ISPHQ_BUS_USER>;
 			assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_ISPHQ_BUS>;
-			/* in pd_isphq: CAL:pmucal_local_exynos8895.h:385-400 isphq_save */
-			/* "power-domains" follows once the PD node exists */
+			power-domains = <&pd_isphq>;	/* CAL:pmucal_local_exynos8895.h:385-400 isphq_save */
 			status = "disabled";
 		};
 
@@ -1414,8 +1408,7 @@
 			clock-names = "oscclk", "g2d", "jpeg";
 			assigned-clocks = <&cmu_g2d CLK_MOUT_G2D_G2D_USER>, <&cmu_g2d CLK_MOUT_G2D_JPEG_USER>;
 			assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_G2D_G2D>, <&cmu_top CLK_DOUT_CMU_G2D_JPEG>;
-			/* in pd_g2d: CAL:pmucal_local_exynos8895.h:319-346 g2d_save */
-			/* "power-domains" follows once the PD node exists */
+			power-domains = <&pd_g2d>;	/* CAL:pmucal_local_exynos8895.h:319-346 g2d_save */
 			status = "disabled";
 		};
 
@@ -1428,8 +1421,7 @@
 			clock-names = "oscclk", "bus";
 			assigned-clocks = <&cmu_mfc CLK_MOUT_MFC_BUS_USER>;
 			assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_MFC_BUS>;	/* UMUX := CLKCMU_MFC_BUS, stock ra.c:593-595 */
-			/* in pd_mfc: CAL:pmucal_local_exynos8895.h:502-520 mfc_save */
-			/* "power-domains" follows once the PD node exists */
+			power-domains = <&pd_mfc>;	/* CAL:pmucal_local_exynos8895.h:502-520 mfc_save */
 			status = "disabled";
 		};
 
@@ -1440,8 +1432,7 @@
 			clocks = <&oscclk>,	/* OSCCLK_ABOX 26 MHz, CAL:cmucal-node.c:2237 */
 				 <&cmu_top CLK_DOUT_CMU_ABOX_CPUABOX>;	/* CAL:cmucal-node.c:577-579 CPUABOX_USER parents */
 			clock-names = "oscclk", "cpuabox";
-			/* in pd_abox: CAL:pmucal_local_exynos8895.h:6-59 abox_save */
-			/* "power-domains" follows once the PD node exists */
+			power-domains = <&pd_abox>;	/* CAL:pmucal_local_exynos8895.h:6-59 abox_save */
 			status = "disabled";
 		};
 
@@ -1456,8 +1447,7 @@
 			#clock-cells = <1>;
 			clocks = <&oscclk>;	/* OSCCLK_VTS 26 MHz, CAL:cmucal-node.c:2286 */
 			clock-names = "oscclk";
-			/* in pd_vts: CAL:pmucal_local_exynos8895.h:603-634 vts_save */
-			/* "power-domains" follows once the PD node exists */
+			power-domains = <&pd_vts>;	/* CAL:pmucal_local_exynos8895.h:603-634 vts_save */
 			status = "disabled";
 		};
 
@@ -1476,8 +1466,7 @@
 			clock-names = "oscclk", "bus", "imgd";
 			assigned-clocks = <&cmu_srdz CLK_MOUT_SRDZ_BUS_USER>, <&cmu_srdz CLK_MOUT_SRDZ_IMGD_USER>;
 			assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_SRDZ_BUS>, <&cmu_top CLK_DOUT_CMU_SRDZ_IMGD>;
-			/* in pd_srdz: CAL:pmucal_local_exynos8895.h:536-555 srdz_save */
-			/* "power-domains" follows once the PD node exists */
+			power-domains = <&pd_srdz>;	/* CAL:pmucal_local_exynos8895.h:536-555 srdz_save */
 			status = "disabled";
 		};
 
