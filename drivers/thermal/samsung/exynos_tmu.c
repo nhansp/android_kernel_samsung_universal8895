@@ -116,6 +116,45 @@
 #define EXYNOS7_EMUL_DATA_SHIFT			7
 #define EXYNOS7_EMUL_DATA_MASK			0x1ff
 
+/*
+ * Exynos8895 specific registers (Exynos8895 stock driver,
+ * S:drivers/thermal/samsung/exynos_tmu.c:60-150): up to eight sensors per
+ * block, each with its own trims, thresholds and interrupt registers.
+ */
+#define EXYNOS8895_TMU_REG_TRIMINFO1		0x4
+#define EXYNOS8895_TMU_REG_TRIMINFO2		0x8
+#define EXYNOS8895_TMU_REG_CONTROL1		0x24
+#define EXYNOS8895_TMU_REG_AVG_CON		0x38
+#define EXYNOS8895_TMU_REG_CURRENT_TEMP1_0	0x40
+#define EXYNOS8895_THD_TEMP_RISE7_6		0x50
+#define EXYNOS8895_THD_TEMP_FALL7_6		0x60
+#define EXYNOS8895_THD_TEMP_R_OFFSET		0x100
+#define EXYNOS8895_TMU_REG_INTEN0		0x110
+#define EXYNOS8895_TMU_REG_INTPEND0		0x118
+#define EXYNOS8895_TMU_REG_INTEN5		0x310
+#define EXYNOS8895_TMU_REG_INTPEND5		0x318
+#define EXYNOS8895_TMU_NUM_SENSORS		8
+#define EXYNOS8895_TMU_TEMP_MASK		0x1ff
+#define EXYNOS8895_TMU_TEMP_SHIFT		9
+#define EXYNOS8895_TMU_CALIB_SEL_SHIFT		23
+#define EXYNOS8895_TMU_NUM_PROBE_SHIFT		16
+#define EXYNOS8895_TMU_NUM_PROBE_MASK		0x7
+#define EXYNOS8895_TMU_T_BUF_VREF_SEL_SHIFT	18
+#define EXYNOS8895_TMU_T_BUF_VREF_SEL_MASK	0x1f
+#define EXYNOS8895_TMU_T_BUF_SLOPE_SEL_SHIFT	18
+#define EXYNOS8895_TMU_T_BUF_SLOPE_SEL_MASK	0xf
+#define EXYNOS8895_TMU_AVG_CON_SHIFT		18
+#define EXYNOS8895_TMU_AVG_CON_MASK		0x3
+#define EXYNOS8895_TMU_AVG_MODE_MASK		0x7
+#define EXYNOS8895_TMU_AVG_MODE_DEFAULT		0x0
+#define EXYNOS8895_TMU_AVG_MODE_4		0x6
+#define EXYNOS8895_TMU_DEM_SHIFT		4
+#define EXYNOS8895_TMU_INTEN_RISE6		6
+#define EXYNOS8895_TMU_INTEN_RISE7		7
+#define EXYNOS8895_TMU_BALANCE_OFFSET		20
+#define EXYNOS8895_TMU_MIN_TEMP			10
+#define EXYNOS8895_TMU_MAX_TEMP			125
+
 #define EXYNOS_FIRST_POINT_TRIM			25
 #define EXYNOS_SECOND_POINT_TRIM		85
 
@@ -133,6 +172,7 @@ enum soc_type {
 	SOC_ARCH_EXYNOS5420_TRIMINFO,
 	SOC_ARCH_EXYNOS5433,
 	SOC_ARCH_EXYNOS7,
+	SOC_ARCH_EXYNOS8895,
 };
 
 /**
@@ -169,6 +209,14 @@ enum soc_type {
  * @tmu_read: SoC specific TMU temperature read method
  * @tmu_set_emulation: SoC specific TMU emulation setting method
  * @tmu_clear_irqs: SoC specific TMU interrupts clearing method
+ * @sensors: Exynos8895: bit mask of the sensors of this instance.
+ * @balance: Exynos8895: "balance" sensing mode, else "max".
+ * @num_probe: Exynos8895: CONTROL1 NUM_PROBE as found at probe.
+ * @num_probe_read: Exynos8895: @num_probe was read.
+ * @s_cal_type: Exynos8895: calibration type per used sensor.
+ * @s_err1: Exynos8895: first-point trim per used sensor.
+ * @s_err2: Exynos8895: second-point trim per used sensor.
+ * @avg_con: Exynos8895: AVG_CON value written with CONTROL.
  */
 struct exynos_tmu_data {
 	void __iomem *base;
@@ -197,6 +245,15 @@ struct exynos_tmu_data {
 	int (*tmu_read)(struct exynos_tmu_data *data);
 	void (*tmu_set_emulation)(struct exynos_tmu_data *data, int temp);
 	void (*tmu_clear_irqs)(struct exynos_tmu_data *data);
+
+	u32 sensors;
+	bool balance;
+	u32 num_probe;
+	bool num_probe_read;
+	u8 s_cal_type[EXYNOS8895_TMU_NUM_SENSORS];
+	u16 s_err1[EXYNOS8895_TMU_NUM_SENSORS];
+	u16 s_err2[EXYNOS8895_TMU_NUM_SENSORS];
+	u32 avg_con;
 };
 
 /*
@@ -261,7 +318,9 @@ static int exynos_tmu_initialize(struct platform_device *pdev)
 	if (!IS_ERR(data->clk_sec))
 		clk_enable(data->clk_sec);
 
-	status = readb(data->base + EXYNOS_TMU_REG_STATUS);
+	/* Exynos8895 stock has no STATUS gate (S:.../exynos_tmu.c:478-601) */
+	status = data->soc == SOC_ARCH_EXYNOS8895 ? 1 :
+		 readb(data->base + EXYNOS_TMU_REG_STATUS);
 	if (!status) {
 		ret = -EBUSY;
 	} else {
@@ -582,6 +641,279 @@ static void exynos7_tmu_initialize(struct platform_device *pdev)
 	sanitize_temp_error(data, trim_info);
 }
 
+/* Exynos8895 threshold/pending/interrupt-enable registers of sensor n */
+static u32 exynos8895_rb(unsigned int n)
+{
+	/* S:.../exynos_tmu.c:567-568: sensor n > 0 at 0x100 + 0x20 * n */
+	return n ? EXYNOS8895_THD_TEMP_R_OFFSET + 0x20 * n : 0;
+}
+
+static u32 exynos8895_inten(unsigned int n)
+{
+	/* :702-705 */
+	return n < 5 ? EXYNOS8895_TMU_REG_INTEN0 + 0x10 * n :
+		       EXYNOS8895_TMU_REG_INTEN5 + 0x10 * (n - 5);
+}
+
+static u32 exynos8895_intpend(unsigned int n)
+{
+	/* :1023-1026 */
+	return n < 5 ? EXYNOS8895_TMU_REG_INTPEND0 + 0x10 * n :
+		       EXYNOS8895_TMU_REG_INTPEND5 + 0x10 * (n - 5);
+}
+
+/* stock temp_to_code_with_sensorinfo() (:210-236), with the sensor's own trims */
+static int exynos8895_temp_to_code(struct exynos_tmu_data *data,
+				   unsigned int n, int temp)
+{
+	temp = clamp(temp, EXYNOS8895_TMU_MIN_TEMP, EXYNOS8895_TMU_MAX_TEMP);
+
+	if (data->s_cal_type[n] == TYPE_TWO_POINT_TRIMMING)
+		return (temp - EXYNOS_FIRST_POINT_TRIM) *
+			(data->s_err2[n] - data->s_err1[n]) /
+			(EXYNOS_SECOND_POINT_TRIM - EXYNOS_FIRST_POINT_TRIM) +
+			data->s_err1[n];
+
+	return temp + data->s_err1[n] - EXYNOS_FIRST_POINT_TRIM;
+}
+
+/* stock code_to_temp_with_sensorinfo() (:275-302) */
+static int exynos8895_code_to_temp(struct exynos_tmu_data *data,
+				   unsigned int n, int code)
+{
+	int temp;
+
+	if (data->s_cal_type[n] == TYPE_TWO_POINT_TRIMMING)
+		temp = (code - data->s_err1[n]) *
+			(EXYNOS_SECOND_POINT_TRIM - EXYNOS_FIRST_POINT_TRIM) /
+			(data->s_err2[n] - data->s_err1[n]) +
+			EXYNOS_FIRST_POINT_TRIM;
+	else
+		temp = code - data->s_err1[n] + EXYNOS_FIRST_POINT_TRIM;
+
+	return clamp(temp, EXYNOS8895_TMU_MIN_TEMP, EXYNOS8895_TMU_MAX_TEMP);
+}
+
+/* Write one threshold field of every sensor of the instance. */
+static void exynos8895_tmu_set_thd(struct exynos_tmu_data *data, u32 reg,
+				   unsigned int shift, int temp)
+{
+	unsigned int n;
+	u32 v;
+
+	for (n = 0; n < EXYNOS8895_TMU_NUM_SENSORS; n++) {
+		if (!(data->sensors & BIT(n)))
+			continue;
+		v = readl(data->base + reg + exynos8895_rb(n));
+		v &= ~(EXYNOS8895_TMU_TEMP_MASK << shift);
+		v |= (exynos8895_temp_to_code(data, n, temp) &
+		      EXYNOS8895_TMU_TEMP_MASK) << shift;
+		writel(v, data->base + reg + exynos8895_rb(n));
+	}
+}
+
+static void exynos8895_tmu_set_inten(struct exynos_tmu_data *data,
+				     unsigned int bit, bool enable)
+{
+	unsigned int n;
+
+	for (n = 0; n < EXYNOS8895_TMU_NUM_SENSORS; n++)
+		if (data->sensors & BIT(n))
+			exynos_tmu_update_bit(data, exynos8895_inten(n), bit, enable);
+}
+
+/* level 7 = the critical trip, as stock puts its highest trip there (:564-583, 684-686) */
+static void exynos8895_tmu_set_crit_temp(struct exynos_tmu_data *data, u8 temp)
+{
+	exynos8895_tmu_set_thd(data, EXYNOS8895_THD_TEMP_RISE7_6, 16, temp);
+	exynos8895_tmu_set_inten(data, EXYNOS8895_TMU_INTEN_RISE7, true);
+}
+
+/* level 6: the rising and falling thresholds of set_trips */
+static void exynos8895_tmu_set_high_temp(struct exynos_tmu_data *data, u8 temp)
+{
+	exynos8895_tmu_set_thd(data, EXYNOS8895_THD_TEMP_RISE7_6, 0, temp);
+	exynos8895_tmu_set_inten(data, EXYNOS8895_TMU_INTEN_RISE6, true);
+}
+
+static void exynos8895_tmu_set_low_temp(struct exynos_tmu_data *data, u8 temp)
+{
+	exynos8895_tmu_set_thd(data, EXYNOS8895_THD_TEMP_FALL7_6, 0, temp);
+	exynos8895_tmu_set_inten(data, EXYNOS_TMU_INTEN_FALL0_SHIFT +
+				 EXYNOS8895_TMU_INTEN_RISE6, true);
+}
+
+static void exynos8895_tmu_disable_high(struct exynos_tmu_data *data)
+{
+	exynos8895_tmu_set_inten(data, EXYNOS8895_TMU_INTEN_RISE6, false);
+}
+
+static void exynos8895_tmu_disable_low(struct exynos_tmu_data *data)
+{
+	exynos8895_tmu_set_inten(data, EXYNOS_TMU_INTEN_FALL0_SHIFT +
+				 EXYNOS8895_TMU_INTEN_RISE6, false);
+}
+
+/*
+ * Stock exynos8895_tmu_initialize() (:478-601) without its trip loop (the
+ * thresholds are set_trips' here): calibration type from TRIMINFO[23], then
+ * per used sensor n the trims from TRIMINFO + 4n, [8:0] and [17:9], each
+ * falling back to the efuse value when 0. Also computes AVG_CON as stock's
+ * control does (:637-648).
+ */
+static void exynos8895_tmu_initialize(struct platform_device *pdev)
+{
+	struct exynos_tmu_data *data = platform_get_drvdata(pdev);
+	u32 trim, cal, avg, n;
+	char e1[64], e2[64];
+	int l1 = 0, l2 = 0;
+
+	if (!data->num_probe_read) {
+		/* stock reads it once at probe (:1777-1778) */
+		data->num_probe = (readl(data->base + EXYNOS8895_TMU_REG_CONTROL1) >>
+				   EXYNOS8895_TMU_NUM_PROBE_SHIFT) &
+				  EXYNOS8895_TMU_NUM_PROBE_MASK;
+		data->num_probe_read = true;
+	}
+
+	cal = (readl(data->base + EXYNOS_TMU_REG_TRIMINFO) >>
+	       EXYNOS8895_TMU_CALIB_SEL_SHIFT) & 0x1;
+
+	for (n = 0; n < EXYNOS8895_TMU_NUM_SENSORS; n++) {
+		if (!(data->sensors & BIT(n)))
+			continue;
+
+		trim = readl(data->base + EXYNOS_TMU_REG_TRIMINFO + 4 * n);
+		data->s_cal_type[n] = cal ? TYPE_TWO_POINT_TRIMMING :
+					    TYPE_ONE_POINT_TRIMMING;
+		data->s_err1[n] = trim & EXYNOS8895_TMU_TEMP_MASK;
+		if (!data->s_err1[n])
+			data->s_err1[n] = data->efuse_value & EXYNOS8895_TMU_TEMP_MASK;
+		data->s_err2[n] = (trim >> EXYNOS8895_TMU_TEMP_SHIFT) &
+				  EXYNOS8895_TMU_TEMP_MASK;
+		if (!data->s_err2[n])
+			data->s_err2[n] = (data->efuse_value >> EXYNOS8895_TMU_TEMP_SHIFT) &
+					  EXYNOS8895_TMU_TEMP_MASK;
+
+		/* a two-point sensor with err2 <= err1 would divide by <= 0 */
+		if (data->s_cal_type[n] == TYPE_TWO_POINT_TRIMMING &&
+		    data->s_err2[n] <= data->s_err1[n]) {
+			dev_warn(&pdev->dev, "8895 sensor %u: err2 %u <= err1 %u, one-point\n",
+				 n, data->s_err2[n], data->s_err1[n]);
+			data->s_cal_type[n] = TYPE_ONE_POINT_TRIMMING;
+		}
+
+		l1 += scnprintf(e1 + l1, sizeof(e1) - l1, "%s%u", l1 ? "," : "",
+				data->s_err1[n]);
+		l2 += scnprintf(e2 + l2, sizeof(e2) - l2, "%s%u", l2 ? "," : "",
+				data->s_err2[n]);
+	}
+
+	avg = readl(data->base + EXYNOS8895_TMU_REG_AVG_CON);
+	if ((readl(data->base + EXYNOS8895_TMU_REG_TRIMINFO2) >>
+	     EXYNOS8895_TMU_AVG_CON_SHIFT) & EXYNOS8895_TMU_AVG_CON_MASK) {
+		avg |= (avg & EXYNOS8895_TMU_AVG_MODE_MASK) | EXYNOS8895_TMU_AVG_MODE_DEFAULT;
+		avg &= ~BIT(EXYNOS8895_TMU_DEM_SHIFT);
+	} else {
+		avg |= (avg & EXYNOS8895_TMU_AVG_MODE_MASK) | EXYNOS8895_TMU_AVG_MODE_4;
+		avg |= BIT(EXYNOS8895_TMU_DEM_SHIFT);
+	}
+	data->avg_con = avg;
+
+	dev_info(&pdev->dev, "8895 sensors=0x%x mode=%s cal=%upt err1=%s err2=%s avg=0x%x\n",
+		 data->sensors, data->balance ? "balance" : "max", cal ? 2 : 1,
+		 e1, e2, avg);
+}
+
+/*
+ * Stock exynos8895_tmu_control() (:603-716): stop the core, restore NUM_PROBE,
+ * reference voltage and slope from the fuses, noise-cancel trip mode, then
+ * CORE_EN and THERM_TRIP_EN (the hardware trip at the level-7 threshold),
+ * then AVG_CON. The interrupt enables belong to set_trips and are kept.
+ */
+static void exynos8895_tmu_control(struct platform_device *pdev, bool on)
+{
+	struct exynos_tmu_data *data = platform_get_drvdata(pdev);
+	u32 con, con1;
+
+	con = readl(data->base + EXYNOS_TMU_REG_CONTROL);
+	con &= ~(BIT(EXYNOS_TMU_CORE_EN_SHIFT) | BIT(EXYNOS_TMU_THERM_TRIP_EN_SHIFT));
+	writel(con, data->base + EXYNOS_TMU_REG_CONTROL);
+
+	con1 = readl(data->base + EXYNOS8895_TMU_REG_CONTROL1);
+	con1 &= ~(EXYNOS8895_TMU_NUM_PROBE_MASK << EXYNOS8895_TMU_NUM_PROBE_SHIFT);
+	con1 |= data->num_probe << EXYNOS8895_TMU_NUM_PROBE_SHIFT;
+	writel(con1, data->base + EXYNOS8895_TMU_REG_CONTROL1);
+
+	con = get_con_reg(data, readl(data->base + EXYNOS_TMU_REG_CONTROL));
+
+	if (on) {
+		con |= ((readl(data->base + EXYNOS_TMU_REG_TRIMINFO) >>
+			 EXYNOS8895_TMU_T_BUF_VREF_SEL_SHIFT) &
+			EXYNOS8895_TMU_T_BUF_VREF_SEL_MASK) << EXYNOS_TMU_REF_VOLTAGE_SHIFT;
+		con |= ((readl(data->base + EXYNOS8895_TMU_REG_TRIMINFO1) >>
+			 EXYNOS8895_TMU_T_BUF_SLOPE_SEL_SHIFT) &
+			EXYNOS8895_TMU_T_BUF_SLOPE_SEL_MASK) << EXYNOS_TMU_BUF_SLOPE_SEL_SHIFT;
+		con |= BIT(EXYNOS_TMU_CORE_EN_SHIFT) |
+		       BIT(EXYNOS_TMU_THERM_TRIP_EN_SHIFT);
+	} else {
+		con &= ~(BIT(EXYNOS_TMU_CORE_EN_SHIFT) |
+			 BIT(EXYNOS_TMU_THERM_TRIP_EN_SHIFT));
+	}
+
+	writel(con, data->base + EXYNOS_TMU_REG_CONTROL);
+	writel(data->avg_con, data->base + EXYNOS8895_TMU_REG_AVG_CON);
+}
+
+/*
+ * Stock exynos8895_tmu_read() (:936-991): per used sensor n its 9-bit code
+ * (sensors 0-1 in CURRENT_TEMP1_0, then three per word), converted with its
+ * own trims; "max" = the highest, "balance" = the highest after subtracting
+ * 20 C from every sensor but sensor 0. Returns degrees Celsius.
+ */
+static int exynos8895_tmu_read(struct exynos_tmu_data *data)
+{
+	int result = 0, temp;
+	u32 reg, shift, code, n;
+
+	for (n = 0; n < EXYNOS8895_TMU_NUM_SENSORS; n++) {
+		if (!(data->sensors & BIT(n)))
+			continue;
+
+		if (n < 2) {
+			reg = 0;
+			shift = EXYNOS8895_TMU_TEMP_SHIFT * n;
+		} else {
+			reg = ((n - 2) / 3 + 1) * 4;
+			shift = EXYNOS8895_TMU_TEMP_SHIFT * ((n - 2) % 3);
+		}
+		code = (readl(data->base + EXYNOS8895_TMU_REG_CURRENT_TEMP1_0 + reg) >>
+			shift) & EXYNOS8895_TMU_TEMP_MASK;
+		temp = exynos8895_code_to_temp(data, n, code);
+
+		if (data->balance && n)
+			temp = temp >= EXYNOS8895_TMU_BALANCE_OFFSET ?
+			       temp - EXYNOS8895_TMU_BALANCE_OFFSET : 0;
+		result = max(result, temp);
+	}
+
+	return result;
+}
+
+/* Stock exynos8895_tmu_clear_irqs() (:1016-1032) */
+static void exynos8895_tmu_clear_irqs(struct exynos_tmu_data *data)
+{
+	unsigned int n;
+	u32 v;
+
+	for (n = 0; n < EXYNOS8895_TMU_NUM_SENSORS; n++) {
+		if (!(data->sensors & BIT(n)))
+			continue;
+		v = readl(data->base + exynos8895_intpend(n));
+		writel(v, data->base + exynos8895_intpend(n));
+	}
+}
+
 static void exynos4210_tmu_control(struct platform_device *pdev, bool on)
 {
 	struct exynos_tmu_data *data = platform_get_drvdata(pdev);
@@ -653,6 +985,8 @@ static int exynos_get_temp(struct thermal_zone_device *tz, int *temp)
 	value = data->tmu_read(data);
 	if (value < 0)
 		ret = value;
+	else if (data->soc == SOC_ARCH_EXYNOS8895)
+		*temp = value * MCELSIUS;	/* already degrees Celsius */
 	else
 		*temp = code_to_temp(data, value) * MCELSIUS;
 
@@ -720,6 +1054,10 @@ static int exynos_tmu_set_emulation(struct thermal_zone_device *tz, int temp)
 		goto out;
 
 	if (temp && temp < MCELSIUS)
+		goto out;
+
+	/* no emulation hook (Exynos8895): refuse instead of calling NULL */
+	if (!data->tmu_set_emulation)
 		goto out;
 
 	mutex_lock(&data->lock);
@@ -833,6 +1171,9 @@ static const struct of_device_id exynos_tmu_match[] = {
 	}, {
 		.compatible = "samsung,exynos7-tmu",
 		.data = (const void *)SOC_ARCH_EXYNOS7,
+	}, {
+		.compatible = "samsung,exynos8895-tmu",
+		.data = (const void *)SOC_ARCH_EXYNOS8895,
 	},
 	{ },
 };
@@ -945,6 +1286,40 @@ static int exynos_map_dt_data(struct platform_device *pdev)
 		data->min_efuse_value = 15;
 		data->max_efuse_value = 100;
 		break;
+	case SOC_ARCH_EXYNOS8895: {
+		const char *mode;
+
+		data->tmu_set_low_temp = exynos8895_tmu_set_low_temp;
+		data->tmu_set_high_temp = exynos8895_tmu_set_high_temp;
+		data->tmu_disable_low = exynos8895_tmu_disable_low;
+		data->tmu_disable_high = exynos8895_tmu_disable_high;
+		data->tmu_set_crit_temp = exynos8895_tmu_set_crit_temp;
+		data->tmu_initialize = exynos8895_tmu_initialize;
+		data->tmu_control = exynos8895_tmu_control;
+		data->tmu_read = exynos8895_tmu_read;
+		data->tmu_clear_irqs = exynos8895_tmu_clear_irqs;
+		/* S:arch/arm64/boot/dts/exynos/exynos8895-tmu-sensor-conf.dtsi:14-20 */
+		data->gain = 0;
+		data->reference_voltage = 0;
+		data->efuse_value = 55;
+		/* stock does no range check on the trims (S:.../exynos_tmu.c:515-519) */
+		data->min_efuse_value = 0;
+		data->max_efuse_value = EXYNOS8895_TMU_TEMP_MASK;
+
+		if (of_property_read_u32(pdev->dev.of_node, "samsung,tmu-sensors",
+					 &data->sensors) ||
+		    !data->sensors || data->sensors > 0xff) {
+			dev_err(&pdev->dev, "missing or bad samsung,tmu-sensors\n");
+			return -EINVAL;
+		}
+		if (of_property_read_string(pdev->dev.of_node,
+					    "samsung,tmu-sensing-mode", &mode)) {
+			dev_err(&pdev->dev, "missing samsung,tmu-sensing-mode\n");
+			return -EINVAL;
+		}
+		data->balance = !strcmp(mode, "balance");
+		break;
+	}
 	default:
 		dev_err(&pdev->dev, "Platform not supported\n");
 		return -EINVAL;
@@ -1097,9 +1472,15 @@ static int exynos_tmu_probe(struct platform_device *pdev)
 		goto err_sclk;
 	}
 
+	/*
+	 * Exynos8895: keep the level type of the DT (stock requests with
+	 * IRQF_SHARED only, S:.../exynos_tmu.c:1786-1787); two instances share
+	 * each line, with identical flags.
+	 */
 	ret = devm_request_threaded_irq(dev, data->irq, NULL,
 					exynos_tmu_threaded_irq,
-					IRQF_TRIGGER_RISING
+					(data->soc == SOC_ARCH_EXYNOS8895 ?
+					 0 : IRQF_TRIGGER_RISING)
 						| IRQF_SHARED | IRQF_ONESHOT,
 					dev_name(dev), data);
 	if (ret) {
