@@ -11,7 +11,9 @@
 
 #include <linux/io.h>
 #include <linux/err.h>
+#include <linux/mfd/syscon.h>
 #include <linux/platform_device.h>
+#include <linux/regmap.h>
 #include <linux/slab.h>
 #include <linux/pm_domain.h>
 #include <linux/delay.h>
@@ -19,9 +21,39 @@
 #include <linux/of_address.h>
 #include <linux/pm_runtime.h>
 
+/* One write of a power sequence: mask ~0 = plain write, else read-modify-write */
+struct exynos_pd_write {
+	u32 off, mask, val;
+};
+
+/*
+ * Steps of one domain's power sequence outside CONFIGURATION/STATUS. A row is
+ * selected by the physical address of the domain's CONFIGURATION register
+ * (reg entry 0) and is inert until the node carries what the row writes
+ * through: a second reg for pre_on/post_off, samsung,pmu-syscon for
+ * pmu_off_reg, samsung,sysreg for sysreg[]. samsung,sysreg is optional for a
+ * row whose words are DRCG_EN only (dynamic clock gating) and required when
+ * sysreg_required is set, i.e. when the list carries a word the block needs
+ * after a power cycle.
+ */
+struct exynos_pd_extra {
+	phys_addr_t conf;
+	const struct exynos_pd_write *pre_on;	/* reg 1, before power-on */
+	unsigned int nr_pre_on;
+	const struct exynos_pd_write *post_off;	/* reg 1, after power-off */
+	unsigned int nr_post_off;
+	u32 pmu_off_reg, pmu_off_mask;		/* PMU bits set before power-off */
+	u32 sysreg[2];				/* saved before off, restored after on */
+	unsigned int nr_sysreg;
+	bool sysreg_required;			/* probe fails without samsung,sysreg */
+	unsigned int genpd_flags;
+};
+
 struct exynos_pm_domain_config {
 	/* Value for LOCAL_PWR_CFG and STATUS fields for each domain */
 	u32 local_pwr_cfg;
+	const struct exynos_pd_extra *extra;
+	unsigned int nr_extra;
 };
 
 /*
@@ -31,7 +63,75 @@ struct exynos_pm_domain {
 	void __iomem *base;
 	struct generic_pm_domain pd;
 	u32 local_pwr_cfg;
+	const struct exynos_pd_extra *extra;
+	void __iomem *seq_base;
+	struct regmap *pmu;
+	struct regmap *sysreg;
+	u32 saved[2];
+	bool saved_valid;
 };
+
+static void exynos_pd_seq(void __iomem *base, const struct exynos_pd_write *w,
+			  unsigned int n)
+{
+	unsigned int i;
+	u32 v;
+
+	for (i = 0; i < n; i++, w++) {
+		if (w->mask == U32_MAX) {
+			writel_relaxed(w->val, base + w->off);
+		} else {
+			v = readl_relaxed(base + w->off);
+			writel_relaxed((v & ~w->mask) | w->val, base + w->off);
+		}
+	}
+}
+
+static void exynos_pd_before(struct exynos_pm_domain *pd, bool power_on)
+{
+	const struct exynos_pd_extra *x = pd->extra;
+	unsigned int i;
+
+	if (!x)
+		return;
+
+	if (power_on) {
+		if (pd->seq_base)
+			exynos_pd_seq(pd->seq_base, x->pre_on, x->nr_pre_on);
+		return;
+	}
+
+	if (pd->sysreg) {
+		for (i = 0; i < x->nr_sysreg; i++)
+			regmap_read(pd->sysreg, x->sysreg[i], &pd->saved[i]);
+		pd->saved_valid = true;
+	}
+	if (pd->pmu && x->pmu_off_mask)
+		regmap_update_bits(pd->pmu, x->pmu_off_reg, x->pmu_off_mask,
+				   x->pmu_off_mask);
+}
+
+static void exynos_pd_after(struct exynos_pm_domain *pd, bool power_on)
+{
+	const struct exynos_pd_extra *x = pd->extra;
+	unsigned int i;
+
+	if (!x)
+		return;
+
+	if (!power_on) {
+		if (pd->seq_base)
+			exynos_pd_seq(pd->seq_base, x->post_off, x->nr_post_off);
+		return;
+	}
+
+	/* restore only what a power-off saved */
+	if (pd->sysreg && pd->saved_valid) {
+		for (i = 0; i < x->nr_sysreg; i++)
+			regmap_write(pd->sysreg, x->sysreg[i], pd->saved[i]);
+		pd->saved_valid = false;
+	}
+}
 
 static int exynos_pd_power(struct generic_pm_domain *domain, bool power_on)
 {
@@ -42,6 +142,8 @@ static int exynos_pd_power(struct generic_pm_domain *domain, bool power_on)
 
 	pd = container_of(domain, struct exynos_pm_domain, pd);
 	base = pd->base;
+
+	exynos_pd_before(pd, power_on);
 
 	pwr = power_on ? pd->local_pwr_cfg : 0;
 	writel_relaxed(pwr, base);
@@ -59,6 +161,8 @@ static int exynos_pd_power(struct generic_pm_domain *domain, bool power_on)
 		cpu_relax();
 		usleep_range(80, 100);
 	}
+
+	exynos_pd_after(pd, power_on);
 
 	return 0;
 }
@@ -81,6 +185,10 @@ static const struct exynos_pm_domain_config exynos5433_cfg = {
 	.local_pwr_cfg		= 0xf,
 };
 
+static const struct exynos_pm_domain_config exynos8895_cfg = {
+	.local_pwr_cfg		= 0xf,
+};
+
 static const struct of_device_id exynos_pm_domain_of_match[] = {
 	{
 		.compatible = "samsung,exynos4210-pd",
@@ -88,6 +196,9 @@ static const struct of_device_id exynos_pm_domain_of_match[] = {
 	}, {
 		.compatible = "samsung,exynos5433-pd",
 		.data = &exynos5433_cfg,
+	}, {
+		.compatible = "samsung,exynos8895-pd",
+		.data = &exynos8895_cfg,
 	},
 	{ },
 };
@@ -100,6 +211,56 @@ static const char *exynos_get_domain_name(struct device *dev,
 	if (of_property_read_string(node, "label", &name) < 0)
 		name = kbasename(node->full_name);
 	return devm_kstrdup_const(dev, name, GFP_KERNEL);
+}
+
+static int exynos_pd_get_extra(struct device *dev, struct exynos_pm_domain *pd,
+			       const struct exynos_pm_domain_config *cfg)
+{
+	struct device_node *np = dev->of_node;
+	const struct exynos_pd_extra *x = NULL;
+	struct resource res;
+	unsigned int i;
+
+	if (!cfg->nr_extra || of_address_to_resource(np, 0, &res))
+		return 0;
+
+	for (i = 0; i < cfg->nr_extra; i++)
+		if (cfg->extra[i].conf == res.start)
+			x = &cfg->extra[i];
+	if (!x)
+		return 0;
+
+	if (x->pmu_off_mask) {
+		pd->pmu = syscon_regmap_lookup_by_phandle(np, "samsung,pmu-syscon");
+		if (IS_ERR(pd->pmu))
+			return dev_err_probe(dev, PTR_ERR(pd->pmu),
+					     "power sequence needs samsung,pmu-syscon\n");
+	}
+
+	if (x->nr_sysreg) {
+		if (x->sysreg_required)
+			pd->sysreg = syscon_regmap_lookup_by_phandle(np, "samsung,sysreg");
+		else
+			pd->sysreg = syscon_regmap_lookup_by_phandle_optional(np, "samsung,sysreg");
+		if (IS_ERR(pd->sysreg))
+			return dev_err_probe(dev, PTR_ERR(pd->sysreg),
+					     "samsung,sysreg\n");
+	}
+
+	if (x->nr_pre_on || x->nr_post_off) {
+		/*
+		 * Non-requesting map: the block's own clock driver requests
+		 * this range (devm_platform_ioremap_resource()).
+		 */
+		pd->seq_base = of_iomap(np, 1);
+		if (!pd->seq_base)
+			return dev_err_probe(dev, -ENODEV,
+					     "power sequence needs reg 1\n");
+	}
+
+	pd->extra = x;
+	pd->pd.flags |= x->genpd_flags;
+	return 0;
 }
 
 static int exynos_pd_probe(struct platform_device *pdev)
@@ -127,6 +288,10 @@ static int exynos_pd_probe(struct platform_device *pdev)
 	pd->pd.power_off = exynos_pd_power_off;
 	pd->pd.power_on = exynos_pd_power_on;
 	pd->local_pwr_cfg = pm_domain_cfg->local_pwr_cfg;
+
+	ret = exynos_pd_get_extra(dev, pd, pm_domain_cfg);
+	if (ret)
+		return ret;
 
 	/*
 	 * Some Samsung platforms with bootloaders turning on the splash-screen
