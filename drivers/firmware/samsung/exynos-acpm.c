@@ -1179,10 +1179,30 @@ static const struct acpm_match_data acpm_gs101 = {
 	.notify_chan = -1,
 };
 
+static const struct acpm_match_data acpm_exynos8895 = {
+	/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:2422 "initdata-base = <0x2850>;" */
+	.initdata_base = 0x2850,
+	.acpm_clk_dev_name = "exynos8895-acpm-clk",
+	/* S:drivers/soc/samsung/acpm/acpm_ipc.c:480-496: TX rear check only */
+	.rx_front_check = false,
+	/* S:drivers/soc/samsung/acpm/acpm_mfd.c:23, S:drivers/soc/samsung/cal-if/acpm_dvfs.c:30 */
+	.cmd_timestamp = false,
+	/* S:drivers/soc/samsung/acpm/acpm_ipc.h:94 IPC_TIMEOUT 150 ms, acpm_ipc.c:538 5 retries */
+	.poll_timeout_us = 6 * 150 * USEC_PER_MSEC,
+	/* S:drivers/soc/samsung/acpm/acpm_ipc.c:352-383 */
+	.irq_rx = true,
+	/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:2432 acpm_dvfs "acpm-ipc-channel = <5>;" */
+	.notify_chan = 5,
+};
+
 static const struct of_device_id acpm_match[] = {
 	{
 		.compatible = "google,gs101-acpm-ipc",
 		.data = &acpm_gs101,
+	},
+	{
+		.compatible = "samsung,exynos8895-acpm-ipc",
+		.data = &acpm_exynos8895,
 	},
 	{},
 };
