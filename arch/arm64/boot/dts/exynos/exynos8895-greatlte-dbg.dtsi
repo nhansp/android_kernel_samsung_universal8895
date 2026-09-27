@@ -10,3 +10,34 @@
  * value, which gl-verify V-DUP reports as an error. L0's reserved-memory stays in
  * the .dts; carveout additions and flag changes are &label edits here (plan X-8).
  */
+
+/ {
+	/*
+	 * L1 self-test (spec/L1_platform.md 4.7, 5.9; drivers/soc/samsung/greatlte-l1-selftest.c,
+	 * CONFIG_GREATLTE_L1_SELFTEST). Port-local debug binding, never upstream. The driver
+	 * only reads: clk_get()/clk_get_rate()/__clk_is_enabled() of the clocks below, the PMU
+	 * through the syscon, and of_iomap() reads of the listed CMUs.
+	 */
+	l1-selftest {
+		compatible = "greatlte,l1-selftest";
+		samsung,pmu-syscon = <&pmu_system_controller>;
+		greatlte,cmus = <&cmu_top>, <&cmu_peris>, <&cmu_fsys0>, <&cmu_fsys1>,
+				<&cmu_peric0>, <&cmu_peric1>, <&cmu_apm>, <&cmu_cpucl0>,
+				<&cmu_cpucl1>;
+		greatlte,uart = <&serial_0>;
+		clocks = <&cmu_top CLK_FOUT_SHARED0_PLL>, <&cmu_top CLK_FOUT_SHARED1_PLL>,
+			 <&cmu_top CLK_FOUT_SHARED2_PLL>, <&cmu_top CLK_FOUT_SHARED3_PLL>,
+			 <&cmu_top CLK_FOUT_SHARED4_PLL>, <&cmu_top CLK_DOUT_CMU_PERIS_BUS>,
+			 <&cmu_top CLK_DOUT_CMU_PERIC0_BUS>, <&cmu_top CLK_DOUT_CMU_FSYS0_BUS>,
+			 <&cmu_top CLK_DOUT_CMU_APM_BUS>, <&cmu_peris CLK_GOUT_PERIS_GIC_CLK>,
+			 <&cmu_apm CLK_GOUT_APM_MAILBOX_APM2AP_PCLK>,
+			 <&cmu_cpucl0 CLK_FOUT_CPUCL0_PLL>, <&cmu_cpucl0 CLK_MOUT_PLL_CPUCL0>,
+			 <&cmu_cpucl0 CLK_DOUT_CPUCL0_CPU>,
+			 <&cmu_cpucl1 CLK_FOUT_CPUCL1_PLL>, <&cmu_cpucl1 CLK_MOUT_PLL_CPUCL1>,
+			 <&cmu_cpucl1 CLK_DOUT_CPUCL1_CPU>;
+		clock-names = "shared0", "shared1", "shared2", "shared3", "shared4",
+			      "peris_bus", "peric0_bus", "fsys0_bus", "apm_bus", "gic",
+			      "apm_mbox", "cpucl0_pll", "cpucl0_byp", "cpucl0",
+			      "cpucl1_pll", "cpucl1_byp", "cpucl1";
+	};
+};
