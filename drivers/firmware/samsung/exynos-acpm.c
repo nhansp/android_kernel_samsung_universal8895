@@ -30,9 +30,11 @@
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/sched/clock.h>
 #include <linux/seq_file.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/workqueue.h>
@@ -47,6 +49,31 @@
 #define ACPM_TX_TIMEOUT_US		500000
 
 #define ACPM_GS101_INITDATA_BASE	0xa000
+
+/*
+ * Printing of the APM firmware-log entries while the ring is drained:
+ * 0 = none (default), 1 = entries with log level 0 (stock's policy with
+ * debug-log-level 0), 2 = every entry (stock's debug-log-level 1).
+ */
+#ifndef MODULE
+#undef MODULE_PARAM_PREFIX
+#define MODULE_PARAM_PREFIX "acpm."
+#endif
+static unsigned int fw_log;
+module_param(fw_log, uint, 0644);
+MODULE_PARM_DESC(fw_log, "print APM firmware log entries: 0 none, 1 level 0 only, 2 all");
+
+/*
+ * APM firmware-log entry header (Exynos8895 stock,
+ * S:drivers/soc/samsung/acpm/acpm_ipc.c:94-102, acpm_ipc.h:74-76): id [31:29],
+ * level bit 28, timestamp index [27:23], APM systick count [22:0].
+ */
+#define ACPM_LOG_ID			GENMASK(31, 29)
+#define ACPM_LOG_LEVEL			BIT(28)
+#define ACPM_LOG_TIME_INDEX		GENMASK(27, 23)
+#define ACPM_LOG_COUNT			GENMASK(22, 0)
+#define ACPM_SYSTICK_NS			(1000 / 26)	/* S:drivers/soc/samsung/acpm/acpm_ipc.h:95 */
+#define ACPM_MAX_TIMESTAMPS		32
 
 /*
  * Channel memory types of the firmware's channel table (Exynos8895 stock:
@@ -115,12 +142,29 @@ static_assert(sizeof(struct acpm_plugin_shmem) == 44);
  * @chans:	offset to array of struct acpm_chan_shmem.
  * @reserved1:	unused fields.
  * @num_chans:	number of channels.
+ * @reserved2:	unused fields.
+ * @ktime_index: offset of the word holding the current timestamp index.
+ * @log_buf_rear: offset of the firmware-log ring rear index (written by AP).
+ * @log_buf_front: offset of the firmware-log ring front index.
+ * @log_data:	offset of the firmware-log entries.
+ * @log_entry_size: size of one log entry in bytes.
+ * @log_entry_len: number of log entries in the ring.
+ *
+ * Words 7-17 are only read on SoCs with a firmware-log drain (Exynos8895
+ * stock struct acpm_framework, S:drivers/soc/samsung/acpm/fw_header/framework.h:52-62).
  */
 struct acpm_shmem {
 	u32 reserved[2];
 	u32 chans;
 	u32 reserved1[3];
 	u32 num_chans;
+	u32 reserved2[5];
+	u32 ktime_index;
+	u32 log_buf_rear;
+	u32 log_buf_front;
+	u32 log_data;
+	u32 log_entry_size;
+	u32 log_entry_len;
 };
 
 /**
@@ -283,6 +327,19 @@ struct acpm_chan {
  * @fvmap_domains: number of fvmap headers read.
  * @fvmap_lv:	number of levels per DVFS domain.
  * @fvmap_pll_pa: PLL address of member 0 per DVFS domain, 0 if none.
+ * @fwlog_ok:	the firmware-log ring layout is valid and drained.
+ * @ts_idx:	SRAM word holding the current timestamp index.
+ * @fwlog_rear:	SRAM word holding the log ring rear index.
+ * @fwlog_front: SRAM word holding the log ring front index.
+ * @fwlog_data:	first log entry.
+ * @fwlog_es:	log entry size in bytes.
+ * @fwlog_el:	number of log entries.
+ * @ts_lock:	serializes timestamp index updates (trylock, as stock).
+ * @fwlog_lock:	serializes ring drains (trylock).
+ * @ts:		sched_clock() per timestamp index.
+ * @fwlog_entries: log entries drained.
+ * @fwlog_bad:	drains stopped on a corrupt ring index.
+ * @fwlog_work:	periodic drain.
  */
 struct acpm_info {
 	struct acpm_shmem __iomem *shmem;
@@ -305,6 +362,19 @@ struct acpm_info {
 	u32 fvmap_domains;
 	u8 fvmap_lv[ACPM_FVMAP_MAX_DOMAINS];
 	u32 fvmap_pll_pa[ACPM_FVMAP_MAX_DOMAINS];
+	bool fwlog_ok;
+	void __iomem *ts_idx;
+	void __iomem *fwlog_rear;
+	void __iomem *fwlog_front;
+	void __iomem *fwlog_data;
+	u32 fwlog_es;
+	u32 fwlog_el;
+	spinlock_t ts_lock;
+	spinlock_t fwlog_lock;
+	u64 ts[ACPM_MAX_TIMESTAMPS];
+	atomic_t fwlog_entries;
+	atomic_t fwlog_bad;
+	struct delayed_work fwlog_work;
 };
 
 /**
@@ -327,6 +397,10 @@ struct acpm_info {
  * @fvmap_names:	names of the DVFS domains whose fvmap is logged at probe,
  *			indexed by domain; NULL entries are read but not logged.
  * @fvmap_domains:	number of DVFS domains in the fvmap.
+ * @fwlog_period_ms:	period of the firmware-log drain, 0 = no drain and no
+ *			timestamp index updates.
+ * @fwlog_first_ms:	delay of the first periodic drain after probe.
+ * @num_timestamps:	modulus of the timestamp index (at most 32).
  */
 struct acpm_match_data {
 	loff_t initdata_base;
@@ -339,10 +413,156 @@ struct acpm_match_data {
 	int plugin_chan;
 	const char * const *fvmap_names;
 	u32 fvmap_domains;
+	u32 fwlog_period_ms;
+	u32 fwlog_first_ms;
+	u32 num_timestamps;
 };
 
 #define client_to_acpm_chan(c) container_of(c, struct acpm_chan, cl)
 #define handle_to_acpm_info(h) container_of(h, struct acpm_info, handle)
+
+/**
+ * acpm_ts_bump() - advance the firmware's timestamp index.
+ * @acpm:	driver data.
+ *
+ * Stock timestamp_write() (S:drivers/soc/samsung/acpm/acpm_ipc.c:53-70): the
+ * firmware stamps each log entry with this index, the kernel keeps the
+ * matching sched_clock(). Skipped when another CPU is updating it, as stock.
+ */
+static void acpm_ts_bump(struct acpm_info *acpm)
+{
+	u32 i;
+
+	if (!acpm->fwlog_ok || !spin_trylock(&acpm->ts_lock))
+		return;
+
+	i = readl(acpm->ts_idx) + 1;
+	if (i >= acpm->match->num_timestamps)
+		i = 0;
+	acpm->ts[i] = sched_clock();
+	writel(i, acpm->ts_idx);
+
+	spin_unlock(&acpm->ts_lock);
+}
+
+/**
+ * acpm_fwlog_drain() - drain the APM firmware-log ring.
+ * @acpm:	driver data.
+ *
+ * Stock acpm_log_print() (S:drivers/soc/samsung/acpm/acpm_ipc.c:72-135):
+ * entries from rear to front, rear advanced and written after each entry and
+ * front re-read (:121-127), then the timestamp index (:130). Printing follows
+ * the fw_log parameter (default none). At most one ring length per call; a
+ * corrupt index stops the drain without writing.
+ */
+static void acpm_fwlog_drain(struct acpm_info *acpm)
+{
+	u32 front, rear, n, hdr, es = acpm->fwlog_es, el = acpm->fwlog_el;
+	char str[64 - 8 + 1];
+	void __iomem *e;
+	u64 t;
+
+	if (!acpm->fwlog_ok || !spin_trylock(&acpm->fwlog_lock))
+		return;
+
+	front = readl(acpm->fwlog_front);
+	rear = readl(acpm->fwlog_rear);
+	for (n = 0; rear != front && n < el; n++) {
+		if (rear >= el || front >= el) {
+			atomic_inc(&acpm->fwlog_bad);
+			break;
+		}
+		e = acpm->fwlog_data + es * rear;
+		hdr = readl(e);
+		if (fw_log >= 2 || (fw_log == 1 && !(hdr & ACPM_LOG_LEVEL))) {
+			memcpy_fromio(str, e + 4, es - 8);
+			str[es - 8] = '\0';
+			t = acpm->ts[FIELD_GET(ACPM_LOG_TIME_INDEX, hdr) %
+				     acpm->match->num_timestamps] +
+			    (u64)FIELD_GET(ACPM_LOG_COUNT, hdr) * ACPM_SYSTICK_NS;
+			dev_info(acpm->dev, "[ACPM_FW][%llu] id:%lu, %s, %x\n", t,
+				 FIELD_GET(ACPM_LOG_ID, hdr), str,
+				 readl(e + es - 4));
+		}
+		rear = (rear + 1 == el) ? 0 : rear + 1;
+		writel(rear, acpm->fwlog_rear);
+		atomic_inc(&acpm->fwlog_entries);
+		front = readl(acpm->fwlog_front);
+	}
+
+	spin_unlock(&acpm->fwlog_lock);
+
+	acpm_ts_bump(acpm);
+}
+
+static void acpm_fwlog_work(struct work_struct *work)
+{
+	struct acpm_info *acpm = container_of(to_delayed_work(work),
+					      struct acpm_info, fwlog_work);
+
+	acpm_fwlog_drain(acpm);
+	queue_delayed_work(system_freezable_wq, &acpm->fwlog_work,
+			   msecs_to_jiffies(acpm->match->fwlog_period_ms));
+}
+
+static void acpm_fwlog_cancel(void *data)
+{
+	struct acpm_info *acpm = data;
+
+	cancel_delayed_work_sync(&acpm->fwlog_work);
+}
+
+/**
+ * acpm_fwlog_init() - locate and check the firmware-log ring (fwlog SoCs).
+ * @acpm:	driver data.
+ *
+ * Stock log_buffer_init() (S:drivers/soc/samsung/acpm/acpm_ipc.c:580-636)
+ * resolves the same six framework words (:596-604) and starts the periodic
+ * drain on a freezable workqueue, first after 10 s (:746-752).
+ */
+static void acpm_fwlog_init(struct acpm_info *acpm)
+{
+	struct acpm_shmem __iomem *shmem = acpm->shmem;
+	resource_size_t sz = acpm->sram_size;
+	u32 ti, lr, lf, ld, es, el;
+
+	spin_lock_init(&acpm->ts_lock);
+	spin_lock_init(&acpm->fwlog_lock);
+	INIT_DELAYED_WORK(&acpm->fwlog_work, acpm_fwlog_work);
+
+	ti = readl(&shmem->ktime_index);
+	lr = readl(&shmem->log_buf_rear);
+	lf = readl(&shmem->log_buf_front);
+	ld = readl(&shmem->log_data);
+	es = readl(&shmem->log_entry_size);
+	el = readl(&shmem->log_entry_len);
+
+	if (ti > sz - 4 || lr > sz - 4 || lf > sz - 4 || ld >= sz ||
+	    es < 8 || es > 64 || es % 4 || !el ||
+	    (u64)es * el > sz - ld ||
+	    acpm->match->num_timestamps > ACPM_MAX_TIMESTAMPS ||
+	    !acpm->match->num_timestamps) {
+		dev_err(acpm->dev, "acpm: fwlog layout invalid\n");
+		return;
+	}
+
+	acpm->ts_idx = acpm->sram_base + ti;
+	acpm->fwlog_rear = acpm->sram_base + lr;
+	acpm->fwlog_front = acpm->sram_base + lf;
+	acpm->fwlog_data = acpm->sram_base + ld;
+	acpm->fwlog_es = es;
+	acpm->fwlog_el = el;
+
+	dev_info(acpm->dev, "acpm: fwlog ktime_index@0x%x ring front@0x%x rear@0x%x data@0x%x size=%u len=%u\n",
+		 ti, lf, lr, ld, es, el);
+
+	if (devm_add_action_or_reset(acpm->dev, acpm_fwlog_cancel, acpm))
+		return;
+
+	acpm->fwlog_ok = true;
+	queue_delayed_work(system_freezable_wq, &acpm->fwlog_work,
+			   msecs_to_jiffies(acpm->match->fwlog_first_ms));
+}
 
 /**
  * acpm_notify() - hand an unsolicited firmware message to the notifier chain.
@@ -719,6 +939,9 @@ static int __acpm_do_xfer(struct acpm_info *acpm, struct acpm_chan *achan,
 		/* Advance TX front. */
 		writel(idx, achan->tx.front);
 
+		/* stock: front, timestamp, doorbell (S:.../acpm_ipc.c:522-526) */
+		acpm_ts_bump(acpm);
+
 		ret = mbox_send_message(achan->chan, (void *)&msg);
 		if (ret < 0)
 			return ret;
@@ -730,7 +953,13 @@ static int __acpm_do_xfer(struct acpm_info *acpm, struct acpm_chan *achan,
 	if (acpm_xfer_is_ff(achan, xfer))
 		return 0;
 
-	return acpm_wait_for_message_response(achan, xfer);
+	ret = acpm_wait_for_message_response(achan, xfer);
+
+	/* stock drains the firmware log after a polled response (S:.../acpm_ipc.c:574) */
+	if (!ret && achan->poll_completion)
+		acpm_fwlog_drain(acpm);
+
+	return ret;
 }
 
 /**
@@ -875,6 +1104,9 @@ static void acpm_rx_work(struct work_struct *work)
 		writel(rear, achan->rx.rear);
 		front = readl(achan->rx.front);
 	}
+
+	/* stock dequeue_policy() ends its queue path with acpm_log_print() (:348) */
+	acpm_fwlog_drain(achan->acpm);
 }
 
 /* Mailbox RX callback (atomic, A:include/linux/mailbox_client.h:24). */
@@ -1395,6 +1627,9 @@ static int acpm_probe(struct platform_device *pdev)
 
 	acpm_debugfs_init(acpm);
 
+	if (match_data->fwlog_period_ms)
+		acpm_fwlog_init(acpm);
+
 	/* Plugins first: no DVFS request may precede the DVFS plugin attach. */
 	if (match_data->plugin_chan >= 0 &&
 	    (match_data->plugin_chan >= acpm->num_chans ||
@@ -1596,6 +1831,12 @@ static const struct acpm_match_data acpm_exynos8895 = {
 	.fvmap_names = exynos8895_fvmap_names,
 	/* ten ACPM DVFS domains, S:drivers/soc/samsung/cal-if/exynos8895/acpm_dvfs_exynos8895.h:1-12 */
 	.fvmap_domains = 10,
+	/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:2425 "logging-period = <500>;" */
+	.fwlog_period_ms = 500,
+	/* S:drivers/soc/samsung/acpm/acpm_ipc.c:750-751 "msecs_to_jiffies(10000)" */
+	.fwlog_first_ms = 10000,
+	/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:2423 "num-timestamps = <32>;" */
+	.num_timestamps = 32,
 };
 
 static const struct of_device_id acpm_match[] = {
