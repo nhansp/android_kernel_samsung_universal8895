@@ -1433,9 +1433,32 @@
 			status = "disabled";
 		};
 
+		cmu_abox: clock-controller@13e00000 {
+			compatible = "samsung,exynos8895-cmu-abox";
+			reg = <0x13e00000 0x8000>;	/* CAL:cmucal-sfr.c:8 SFR_BLOCK(ABOX, 0x13e00000, 0x8000) */
+			#clock-cells = <1>;
+			clocks = <&oscclk>,	/* OSCCLK_ABOX 26 MHz, CAL:cmucal-node.c:2237 */
+				 <&cmu_top CLK_DOUT_CMU_ABOX_CPUABOX>;	/* CAL:cmucal-node.c:577-579 CPUABOX_USER parents */
+			clock-names = "oscclk", "cpuabox";
+			/* in pd_abox: CAL:pmucal_local_exynos8895.h:6-59 abox_save */
+			/* "power-domains" follows once the PD node exists */
+			status = "disabled";
+		};
+
 		pinctrl_abox: pinctrl@13e60000 {
 			compatible = "samsung,exynos8895-pinctrl";
 			reg = <0x13e60000 0x1000>;
+		};
+
+		cmu_vts: clock-controller@14000000 {
+			compatible = "samsung,exynos8895-cmu-vts";
+			reg = <0x14000000 0x8000>;	/* CAL:cmucal-sfr.c:40 SFR_BLOCK(VTS, 0x14000000, 0x8000) */
+			#clock-cells = <1>;
+			clocks = <&oscclk>;	/* OSCCLK_VTS 26 MHz, CAL:cmucal-node.c:2286 */
+			clock-names = "oscclk";
+			/* in pd_vts: CAL:pmucal_local_exynos8895.h:603-634 vts_save */
+			/* "power-domains" follows once the PD node exists */
+			status = "disabled";
 		};
 
 		pinctrl_vts: pinctrl@14080000 {
