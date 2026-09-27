@@ -69,3 +69,10 @@
  * S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:299-302, FDT:4404-4409.
  */
 &pmu_system_controller { status = "okay"; };
+
+/*
+ * UART_DBG, the L0 hand-off (L0 leaves it disabled for L1). Stock enables it: FDT:4775-4786
+ * "samsung,exynos-uart", SPI 0x181 = 385, fifo 0x100, pins gpd0-7/gpd0-6 func 3 (FDT:1292-1297).
+ * S-Boot passes " androidboot.sec_atd.tty=/dev/ttySAC0" (SB+0xfacc0).
+ */
+&serial_0 { status = "okay"; };
