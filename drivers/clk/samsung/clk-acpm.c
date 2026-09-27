@@ -685,6 +685,42 @@ int exynos8895_acpm_clk_cold(void)
 	return mask;
 }
 EXPORT_SYMBOL_GPL(exynos8895_acpm_clk_cold);
+
+/*
+ * DEBUG, boot L2-C (L2_power.md 8.2, Q10): acpm.freq_get_probe=1 sends one
+ * FREQ_GET {id, 0, 1, 0} per CPU domain on the DVFS channel at probe and logs
+ * the answer next to the PLL read-back. Named "acpm." like exynos-acpm's
+ * parameters when built in.
+ */
+#ifndef MODULE
+#undef MODULE_PARAM_PREFIX
+#define MODULE_PARAM_PREFIX "acpm."
+#endif
+static bool freq_get_probe;
+module_param(freq_get_probe, bool, 0444);
+MODULE_PARM_DESC(freq_get_probe, "DEBUG: send FREQ_GET for cpucl0/cpucl1 at probe and log it (boot L2-C)");
+
+static void acpm_clk_hb_freq_get(struct device *dev, struct acpm_clk *aclks)
+{
+	static const unsigned int ids[] = {
+		EXYNOS8895_CLK_ACPM_DVFS_CPUCL0, EXYNOS8895_CLK_ACPM_DVFS_CPUCL1,
+	};
+	unsigned int i;
+
+	if (!freq_get_probe)
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(ids); i++) {
+		struct acpm_clk *c = &aclks[ids[i]];
+		unsigned long khz, pll = 0;
+
+		khz = c->handle->ops.dvfs_ops.get_rate(c->handle, c->mbox_chan_id,
+						       c->id) / HZ_PER_KHZ;
+		if (c->pll && acpm_clk_pll_readable(c))
+			pll = acpm_clk_pll_rate(c) / HZ_PER_KHZ;
+		dev_err(dev, "acpm: FREQ_GET cpucl%u -> %lu kHz (pll %lu)\n", i, khz, pll);
+	}
+}
 #else
 static void acpm_clk_hb_note_cold(struct acpm_clk_priv *p)
 {
@@ -692,6 +728,10 @@ static void acpm_clk_hb_note_cold(struct acpm_clk_priv *p)
 
 static void acpm_clk_hb_set(struct device *dev, struct acpm_clk *aclks,
 			    unsigned int nr, int asv)
+{
+}
+
+static void acpm_clk_hb_freq_get(struct device *dev, struct acpm_clk *aclks)
 {
 }
 #endif /* CONFIG_GREATLTE_HB */
@@ -828,8 +868,10 @@ static int acpm_clk_probe(struct platform_device *pdev)
 	if (err)
 		return dev_err_probe(dev, err, "Failed to start the cold-temperature requests\n");
 
-	if (data->asv_table_pa)
+	if (data->asv_table_pa) {
+		acpm_clk_hb_freq_get(dev, aclks);
 		acpm_clk_hb_set(dev, aclks, count, ver);
+	}
 
 	return 0;
 }
