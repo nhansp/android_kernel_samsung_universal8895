@@ -76,3 +76,9 @@
  * S-Boot passes " androidboot.sec_atd.tty=/dev/ttySAC0" (SB+0xfacc0).
  */
 &serial_0 { status = "okay"; };
+
+/*
+ * Watchdog (spec/L1_platform.md 4.5, 5.6). With tmr_atboot = 0 the probe stops a running
+ * timer and reports "watchdog inactive, reset disabled, irq disabled" (L1 P5).
+ */
+&watchdog { status = "okay"; };
