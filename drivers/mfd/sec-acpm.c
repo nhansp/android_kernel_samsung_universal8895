@@ -328,6 +328,32 @@ static const struct regmap_config s2mps17_regmap_config_pmic = {
 	.cache_type = REGCACHE_NONE,
 };
 
+/*
+ * RTC block, ACPM type 0x02 (S:drivers/mfd/s2mps17_core.c:42 "#define I2C_ADDR_RTC 0x02"):
+ * CTRL 0x00 .. OSCCTRL 0x1a (S:include/linux/mfd/samsung/rtc-s2mp.h:46-72, the
+ * map the stock kernel builds). Found by name by the RTC driver.
+ */
+#define S2MPS17_RTC_REG_LAST		0x1a
+
+static const struct regmap_range s2mps17_rtc_registers[] = {
+	regmap_reg_range(0x00, S2MPS17_RTC_REG_LAST),
+};
+
+static const struct regmap_access_table s2mps17_rtc_rw_table = {
+	.yes_ranges = s2mps17_rtc_registers,
+	.n_yes_ranges = ARRAY_SIZE(s2mps17_rtc_registers),
+};
+
+static const struct regmap_config s2mps17_regmap_config_rtc = {
+	.name = "rtc",
+	.reg_bits = ACPM_ADDR_BITS,
+	.val_bits = 8,
+	.max_register = S2MPS17_RTC_REG_LAST,
+	.rd_table = &s2mps17_rtc_rw_table,
+	.wr_table = &s2mps17_rtc_rw_table,
+	.cache_type = REGCACHE_NONE,
+};
+
 /* DEBUG block, ACPM type 0x0f (S:drivers/mfd/s2mps17_core.c:43 "#define I2C_ADDR_DEBUG 0x0F") */
 static const struct regmap_config s2mps17_regmap_config_trim = {
 	.name = "trim",
@@ -629,6 +655,7 @@ static const struct sec_pmic_acpm_platform_data s2mps17_data = {
 	.speedy_channel = 0,
 	.regmap_cfg_common = &s2mps17_regmap_config_common,
 	.regmap_cfg_pmic = &s2mps17_regmap_config_pmic,
+	.regmap_cfg_rtc = &s2mps17_regmap_config_rtc,
 	.regmap_cfg_trim = &s2mps17_regmap_config_trim,
 	/* S:drivers/mfd/s2mps17_irq.c:283 INTSRC_MASK := 0xff, :293 clear S2MPS17_IRQSRC_PMIC */
 	.common_int_mask_reg = S2MPS17_TOP_INTSRC_MASK,

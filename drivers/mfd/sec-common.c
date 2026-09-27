@@ -65,9 +65,10 @@ static const struct mfd_cell s2mps15_devs[] = {
 	MFD_CELL_OF("s2mps13-clk", NULL, NULL, 0, 0, "samsung,s2mps13-clk"),
 };
 
-/* S:drivers/mfd/s2mps17_core.c:47-50 (the RTC cell is added with the RTC driver) */
+/* S:drivers/mfd/s2mps17_core.c:47-50 */
 static const struct mfd_cell s2mps17_devs[] = {
 	MFD_CELL_NAME("s2mps17-regulator"),
+	MFD_CELL_NAME("s2mps17-rtc"),
 };
 
 static const struct mfd_cell s2mpa01_devs[] = {
