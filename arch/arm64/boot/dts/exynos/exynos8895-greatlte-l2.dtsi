@@ -10,3 +10,13 @@
  * value, which gl-verify V-DUP reports as an error. L0's reserved-memory stays in
  * the .dts; carveout additions and flag changes are &label edits here (plan X-8).
  */
+
+/*
+ * ACPM, the APM firmware interface (spec/L2_power.md 4.2, 5.1-5.2): the AP2APM mailbox, the
+ * APM SRAM with the channel table and the ACPM node. Its probe attaches the DVFS plugin and
+ * registers the ACPM DVFS clocks that cpufreq-dt uses. Stock: FDT:6674-6701 (acpm, acpm_ipc,
+ * acpm_dvfs, all enabled on greatlte).
+ */
+&ap2apm_mailbox { status = "okay"; };
+&apm_sram { status = "okay"; };
+&acpm_ipc { status = "okay"; };
