@@ -37,6 +37,7 @@
 #include <linux/seq_file.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
+#include <linux/soc/samsung/greatlte-l2.h>
 #include <linux/spinlock.h>
 #include <linux/string.h>
 #include <linux/types.h>
@@ -1910,6 +1911,106 @@ int devm_acpm_register_notifier(struct device *dev, struct acpm_handle *handle,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(devm_acpm_register_notifier);
+
+#ifdef CONFIG_GREATLTE_HB
+/*
+ * DEBUG: heartbeat getters (L2_power.md 5.2.5, 5.9). They take the ACPM node,
+ * not a handle: the heartbeat has no device to hang a device link on.
+ */
+static struct acpm_info *acpm_hb_get(struct device_node *np, struct device **devp)
+{
+	struct platform_device *pdev = of_find_device_by_node(np);
+	struct acpm_info *acpm;
+
+	if (!pdev)
+		return ERR_PTR(-ENODEV);
+	acpm = platform_get_drvdata(pdev);
+	if (!acpm) {
+		put_device(&pdev->dev);
+		return ERR_PTR(-EPROBE_DEFER);
+	}
+	*devp = &pdev->dev;
+	return acpm;
+}
+
+int acpm_get_chan_stats(struct device_node *acpm_np, unsigned int ch,
+			struct acpm_chan_stats_snap *out)
+{
+	struct acpm_chan_stats *st;
+	struct acpm_info *acpm;
+	struct device *dev;
+
+	acpm = acpm_hb_get(acpm_np, &dev);
+	if (IS_ERR(acpm))
+		return PTR_ERR(acpm);
+	if (ch >= acpm->num_chans) {
+		put_device(dev);
+		return -EINVAL;
+	}
+
+	st = &acpm->chans[ch].stats;
+	out->xfer = atomic_read(&st->xfer);
+	out->err = atomic_read(&st->err);
+	out->notify = atomic_read(&st->notify);
+	out->late = atomic_read(&st->late);
+	out->ack = atomic_read(&st->ack);
+	out->noack = atomic_read(&st->noack);
+	out->stale = atomic_read(&st->stale);
+	put_device(dev);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(acpm_get_chan_stats);
+
+int acpm_get_info(struct device_node *acpm_np, struct acpm_info_snap *out)
+{
+	struct acpm_info *acpm;
+	struct device *dev;
+	unsigned int i;
+
+	acpm = acpm_hb_get(acpm_np, &dev);
+	if (IS_ERR(acpm))
+		return PTR_ERR(acpm);
+
+	memset(out, 0, sizeof(*out));
+	out->initdata_base = acpm->match->initdata_base;
+	out->num_chans = acpm->num_chans;
+	out->nplugins = acpm->nplugins;
+	out->dvfs_plugin_id = acpm->dvfs_plugin_id;
+	out->dvfs_attached = acpm->dvfs_attached;
+	out->dvfs_stay = acpm->dvfs_stay;
+	out->dvfs_dpa = acpm->dvfs_dpa ?: "none";
+	out->dpd_plugin_id = acpm->dpd_plugin_id;
+	out->dpd_res = acpm->dpd_res ?: "none";
+	/* cpucl0/cpucl1 = fvmap domains 2/3 (stock GET_IDX(ACPM_DVFS_CPUCL0/1)) */
+	out->fvmap_lv[0] = acpm->fvmap_lv[2];
+	out->fvmap_lv[1] = acpm->fvmap_lv[3];
+	out->fwlog_ok = acpm->fwlog_ok;
+	out->fwlog_entries = atomic_read(&acpm->fwlog_entries);
+	out->fwlog_bad = atomic_read(&acpm->fwlog_bad);
+	if (acpm->fwlog_ok) {
+		/* APM SRAM: always on */
+		out->fwlog_front = readl(acpm->fwlog_front);
+		out->fwlog_rear = readl(acpm->fwlog_rear);
+		out->fwlog_len = acpm->fwlog_el;
+	}
+	for (i = 0; i < acpm->num_chans && i < GREATLTE_L2_MAX_CHANS; i++) {
+		const struct acpm_chan *c = &acpm->chans[i];
+
+		out->chan[i].id = c->id;
+		out->chan[i].field = c->field;
+		out->chan[i].poll = c->poll_completion;
+		out->chan[i].type = c->type;
+		out->chan[i].qlen = c->qlen;
+		out->chan[i].mlen = c->mlen;
+		out->chan[i].stale = atomic_read(&c->stats.stale);
+	}
+	put_device(dev);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(acpm_get_info);
+#endif /* CONFIG_GREATLTE_HB */
 
 static const struct acpm_match_data acpm_gs101 = {
 	.initdata_base = ACPM_GS101_INITDATA_BASE,
