@@ -103,4 +103,14 @@ config GREATLTE_HS
 	  and USB state the bootloader handed over and prints it through
 	  the heartbeat printer hook. Nothing is written. For the L0
 	  bring-up images only; never enable in a release build.
+
+config GREATLTE_L1_SELFTEST
+	bool "greatlte L1 platform self-test and clock gate census (debug only)"
+	depends on ARCH_EXYNOS
+	help
+	  Bring-up diagnostics of the greatlte L1 layer (clocks, PMU, power
+	  domains). This symbol first enables the read-only gate census in
+	  exynos_arm64_init_clocks() (L1cmu/L1cg0 lines, spec L1 5.2); the
+	  L1 self-test driver of spec L1 5.9 builds under the same symbol.
+	  Never enable in a release build.
 endif

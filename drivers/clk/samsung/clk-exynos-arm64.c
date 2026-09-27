@@ -63,6 +63,75 @@ static bool is_pll_con1_reg(unsigned long off)
 	return is_pll_conx_reg(off) && (off & 0xf) == 0x4 && !(off & 0x10);
 }
 
+#ifdef CONFIG_GREATLTE_L1_SELFTEST
+/* CG_VAL of an Exynos gate register: the bit every Samsung GATE() uses (21) */
+#define GREATLTE_GATE_CG_VAL	BIT(21)
+
+/*
+ * DEBUG (greatlte bring-up, never upstream; rewrite/spec/L1_platform.md 5.2
+ * "Diagnostic", pass criterion P6): before exynos_arm64_init_clocks() switches
+ * the listed gate registers to manual, read every gate register of this CMU
+ * once and report the mode S-Boot left. Read-only.
+ * - "manual": the register is in clk_regs[] and is about to be switched; one
+ *   L1cg0 line if it was not in manual mode (bit 20 = 0) and CG_VAL (bit 21)
+ *   is 0: without MANUAL the gate runs or auto-gates whatever CG_VAL says
+ *   (stock ra_get_gate(), S:drivers/soc/samsung/cal-if/ra.c:404-417), and the
+ *   switch below sets MANUAL and keeps CG_VAL, so it stops the gate until a
+ *   driver enables it (L1 O-C1). The HWACG bit (28) does not matter for this.
+ * - "kept": not in clk_regs[], left in S-Boot's mode; kept_manual counts those
+ *   S-Boot left in manual mode (bit 20), where the L1 flag (CRITICAL or
+ *   IGNORE_UNUSED) is what protects them.
+ */
+static void __init greatlte_l1_gate_census(struct device_node *np,
+					   const struct samsung_cmu_info *cmu,
+					   void __iomem *reg_base)
+{
+	unsigned int gates = 0, manual = 0, kept = 0, kept_manual = 0, cg0 = 0;
+	unsigned int i, j;
+
+	for (i = 0; i < cmu->nr_gate_clks; i++) {
+		unsigned long off = cmu->gate_clks[i].offset;
+		bool listed = false;
+		u32 val;
+
+		if (!is_gate_reg(off))
+			continue;
+
+		gates++;
+		for (j = 0; j < cmu->nr_clk_regs; j++) {
+			if (cmu->clk_regs[j] == off) {
+				listed = true;
+				break;
+			}
+		}
+
+		val = readl(reg_base + off);
+		if (listed) {
+			manual++;
+			if (!(val & GATE_MANUAL) &&
+			    !(val & GREATLTE_GATE_CG_VAL)) {
+				cg0++;
+				pr_err("L1cg0 %pOFP +0x%04lx val=%08x\n", np, off,
+				       val);
+			}
+		} else {
+			kept++;
+			if (val & GATE_MANUAL)
+				kept_manual++;
+		}
+	}
+
+	pr_err("L1cmu %pOFP gates=%u manual=%u kept=%u kept_manual=%u hwacg_cg0=%u\n",
+	       np, gates, manual, kept, kept_manual, cg0);
+}
+#else
+static inline void greatlte_l1_gate_census(struct device_node *np,
+					   const struct samsung_cmu_info *cmu,
+					   void __iomem *reg_base)
+{
+}
+#endif
+
 /**
  * exynos_arm64_init_clocks - Set clocks initial configuration
  * @np:		CMU device tree node with "reg" property (CMU addr)
@@ -81,6 +150,8 @@ static void __init exynos_arm64_init_clocks(struct device_node *np,
 	reg_base = of_iomap(np, 0);
 	if (!reg_base)
 		panic("%s: failed to map registers\n", __func__);
+
+	greatlte_l1_gate_census(np, cmu, reg_base);
 
 	for (i = 0; i < reg_offs_len; ++i) {
 		void __iomem *reg = reg_base + reg_offs[i];
