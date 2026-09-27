@@ -22,6 +22,9 @@ struct acpm_dvfs_ops {
 	unsigned long (*get_rate)(struct acpm_handle *handle,
 				  unsigned int acpm_chan_id,
 				  unsigned int clk_id);
+	int (*set_cold_temp)(struct acpm_handle *handle,
+			     unsigned int acpm_chan_id, unsigned int clk_id,
+			     bool cold);
 };
 
 struct acpm_pmic_ops {
