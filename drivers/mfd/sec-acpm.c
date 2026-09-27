@@ -25,6 +25,24 @@
 #define ACPM_ADDR_BITS       8
 #define ACPM_MAX_BULK_DATA   8
 
+/**
+ * struct sec_pmic_acpm_platform_data - per-PMIC data.
+ * @device_type:	enum sec_device_type.
+ * @acpm_chan_id:	ACPM channel of the PMIC commands.
+ * @speedy_channel:	SPEEDY channel field of the commands.
+ * @regmap_cfg_common:	TOP ("common") block regmap.
+ * @regmap_cfg_pmic:	PMIC block regmap.
+ * @regmap_cfg_rtc:	RTC block regmap, NULL if not used.
+ * @regmap_cfg_meter:	power meter block regmap, NULL if not used.
+ * @regmap_cfg_trim:	trim/debug block regmap, NULL if not used.
+ * @common_int_mask_reg: interrupt mask register of the common block.
+ * @common_int_src_all:	all interrupt source bits of the common block.
+ * @common_int_src_pmic: the PMIC interrupt source bit of the common block.
+ * @attach_common:	attach the common regmap to the device (looked up by
+ *			name, e.g. by the interrupt chip).
+ * @single_reg_funcs:	a one-register access uses the firmware's single
+ *			register READ/WRITE functions instead of BULK ones.
+ */
 struct sec_pmic_acpm_platform_data {
 	int device_type;
 
@@ -35,6 +53,13 @@ struct sec_pmic_acpm_platform_data {
 	const struct regmap_config *regmap_cfg_pmic;
 	const struct regmap_config *regmap_cfg_rtc;
 	const struct regmap_config *regmap_cfg_meter;
+	const struct regmap_config *regmap_cfg_trim;
+
+	unsigned int common_int_mask_reg;
+	unsigned int common_int_src_all;
+	unsigned int common_int_src_pmic;
+	bool attach_common;
+	bool single_reg_funcs;
 };
 
 static const struct regmap_range s2mpg10_common_registers[] = {
@@ -220,6 +245,7 @@ struct sec_pmic_acpm_shared_bus_context {
 	struct acpm_handle *acpm;
 	unsigned int acpm_chan_id;
 	u8 speedy_channel;
+	bool single_reg_funcs;
 };
 
 enum sec_pmic_acpm_accesstype {
@@ -252,6 +278,10 @@ static int sec_pmic_acpm_bus_write(void *context, const void *data,
 
 	reg = d[0];
 
+	if (ctx->shared->single_reg_funcs && val_count == 1)
+		return pmic_ops->write_reg(acpm, ctx->shared->acpm_chan_id, ctx->type,
+					   reg, ctx->shared->speedy_channel, vals[0]);
+
 	return pmic_ops->bulk_write(acpm, ctx->shared->acpm_chan_id, ctx->type, reg,
 				    ctx->shared->speedy_channel, val_count, vals);
 }
@@ -270,6 +300,10 @@ static int sec_pmic_acpm_bus_read(void *context, const void *reg_buf, size_t reg
 		return -EINVAL;
 
 	reg = r[0];
+
+	if (ctx->shared->single_reg_funcs && val_size == 1)
+		return pmic_ops->read_reg(acpm, ctx->shared->acpm_chan_id, ctx->type,
+					  reg, ctx->shared->speedy_channel, val_buf);
 
 	return pmic_ops->bulk_read(acpm, ctx->shared->acpm_chan_id, ctx->type, reg,
 				   ctx->shared->speedy_channel, val_size, val_buf);
@@ -325,9 +359,17 @@ static struct regmap *sec_pmic_acpm_regmap_init(struct device *dev,
 	return regmap;
 }
 
-static void sec_pmic_acpm_mask_common_irqs(void *regmap_common)
+struct sec_pmic_acpm_common_irqs {
+	struct regmap *regmap;
+	const struct sec_pmic_acpm_platform_data *pdata;
+};
+
+static void sec_pmic_acpm_mask_common_irqs(void *data)
 {
-	regmap_write(regmap_common, S2MPG10_COMMON_INT_MASK, S2MPG10_COMMON_INT_SRC);
+	struct sec_pmic_acpm_common_irqs *c = data;
+
+	regmap_write(c->regmap, c->pdata->common_int_mask_reg,
+		     c->pdata->common_int_src_all);
 }
 
 static int sec_pmic_acpm_probe(struct platform_device *pdev)
@@ -335,6 +377,7 @@ static int sec_pmic_acpm_probe(struct platform_device *pdev)
 	struct regmap *regmap_common, *regmap_pmic, *regmap;
 	const struct sec_pmic_acpm_platform_data *pdata;
 	struct sec_pmic_acpm_shared_bus_context *shared_ctx;
+	struct sec_pmic_acpm_common_irqs *cirq;
 	struct acpm_handle *acpm;
 	struct device *dev = &pdev->dev;
 	int ret, irq;
@@ -358,14 +401,17 @@ static int sec_pmic_acpm_probe(struct platform_device *pdev)
 	shared_ctx->acpm = acpm;
 	shared_ctx->acpm_chan_id = pdata->acpm_chan_id;
 	shared_ctx->speedy_channel = pdata->speedy_channel;
+	shared_ctx->single_reg_funcs = pdata->single_reg_funcs;
 
 	regmap_common = sec_pmic_acpm_regmap_init(dev, shared_ctx, SEC_PMIC_ACPM_ACCESSTYPE_COMMON,
-						  pdata->regmap_cfg_common, false);
+						  pdata->regmap_cfg_common,
+						  pdata->attach_common);
 	if (IS_ERR(regmap_common))
 		return PTR_ERR(regmap_common);
 
 	/* Mask all interrupts from 'common' block, until successful init */
-	ret = regmap_write(regmap_common, S2MPG10_COMMON_INT_MASK, S2MPG10_COMMON_INT_SRC);
+	ret = regmap_write(regmap_common, pdata->common_int_mask_reg,
+			   pdata->common_int_src_all);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to mask common block interrupts\n");
 
@@ -374,15 +420,26 @@ static int sec_pmic_acpm_probe(struct platform_device *pdev)
 	if (IS_ERR(regmap_pmic))
 		return PTR_ERR(regmap_pmic);
 
-	regmap = sec_pmic_acpm_regmap_init(dev, shared_ctx, SEC_PMIC_ACPM_ACCESSTYPE_RTC,
-					   pdata->regmap_cfg_rtc, true);
-	if (IS_ERR(regmap))
-		return PTR_ERR(regmap);
+	if (pdata->regmap_cfg_rtc) {
+		regmap = sec_pmic_acpm_regmap_init(dev, shared_ctx, SEC_PMIC_ACPM_ACCESSTYPE_RTC,
+						   pdata->regmap_cfg_rtc, true);
+		if (IS_ERR(regmap))
+			return PTR_ERR(regmap);
+	}
 
-	regmap = sec_pmic_acpm_regmap_init(dev, shared_ctx, SEC_PMIC_ACPM_ACCESSTYPE_METER,
-					   pdata->regmap_cfg_meter, true);
-	if (IS_ERR(regmap))
-		return PTR_ERR(regmap);
+	if (pdata->regmap_cfg_meter) {
+		regmap = sec_pmic_acpm_regmap_init(dev, shared_ctx, SEC_PMIC_ACPM_ACCESSTYPE_METER,
+						   pdata->regmap_cfg_meter, true);
+		if (IS_ERR(regmap))
+			return PTR_ERR(regmap);
+	}
+
+	if (pdata->regmap_cfg_trim) {
+		regmap = sec_pmic_acpm_regmap_init(dev, shared_ctx, SEC_PMIC_ACPM_ACCESSTYPE_TRIM,
+						   pdata->regmap_cfg_trim, true);
+		if (IS_ERR(regmap))
+			return PTR_ERR(regmap);
+	}
 
 	ret = sec_pmic_probe(dev, pdata->device_type, irq, regmap_pmic, NULL);
 	if (ret)
@@ -392,13 +449,18 @@ static int sec_pmic_acpm_probe(struct platform_device *pdev)
 		devm_device_init_wakeup(dev);
 
 	/* Unmask PMIC interrupt from 'common' block, now that everything is in place. */
-	ret = regmap_clear_bits(regmap_common, S2MPG10_COMMON_INT_MASK,
-				S2MPG10_COMMON_INT_SRC_PMIC);
+	ret = regmap_clear_bits(regmap_common, pdata->common_int_mask_reg,
+				pdata->common_int_src_pmic);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to unmask PMIC interrupt\n");
 
 	/* Mask all interrupts from 'common' block on shutdown */
-	ret = devm_add_action_or_reset(dev, sec_pmic_acpm_mask_common_irqs, regmap_common);
+	cirq = devm_kzalloc(dev, sizeof(*cirq), GFP_KERNEL);
+	if (!cirq)
+		return -ENOMEM;
+	cirq->regmap = regmap_common;
+	cirq->pdata = pdata;
+	ret = devm_add_action_or_reset(dev, sec_pmic_acpm_mask_common_irqs, cirq);
 	if (ret)
 		return ret;
 
@@ -418,6 +480,11 @@ static const struct sec_pmic_acpm_platform_data s2mpg10_data = {
 	.regmap_cfg_pmic = &s2mpg10_regmap_config_pmic,
 	.regmap_cfg_rtc = &s2mpg10_regmap_config_rtc,
 	.regmap_cfg_meter = &s2mpg10_regmap_config_meter,
+	.common_int_mask_reg = S2MPG10_COMMON_INT_MASK,
+	.common_int_src_all = S2MPG10_COMMON_INT_SRC,
+	.common_int_src_pmic = S2MPG10_COMMON_INT_SRC_PMIC,
+	.attach_common = false,
+	.single_reg_funcs = false,
 };
 
 static const struct of_device_id sec_pmic_acpm_of_match[] = {
