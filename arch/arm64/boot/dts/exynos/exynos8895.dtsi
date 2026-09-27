@@ -6,6 +6,7 @@
  */
 
 #include <dt-bindings/clock/samsung,exynos8895.h>
+#include <dt-bindings/clock/samsung,exynos8895-acpm.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 
 / {
@@ -126,6 +127,126 @@
 			mboxes = <&ap2apm_mailbox>;
 			shmem = <&apm_sram>;
 			status = "disabled";
+		};
+	};
+
+	/*
+	 * Cortex-A53 cluster, cpus 0-3 = ACPM DVFS domain cpucl1. Levels: the ECT
+	 * dvfs_cpucl1 table (sboot.bin SB+0x463cc); every ASV table (versions 1-8)
+	 * enables L3..L11 = 1690000..455000 kHz, and stock "min-freq = <455000>;"
+	 * (S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:473). Nine levels = the
+	 * nine A53 "current" entries (:189). No opp-microvolt: the APM applies
+	 * the voltage itself, and there is no cpu-supply.
+	 * clock-latency: S:drivers/cpufreq/exynos-acme.h:101 "#define TRANSITION_LATENCY 100000" (ns).
+	 */
+	cpucl1_opp_table: opp-table-cl1 {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-455000000 {
+			opp-hz = /bits/ 64 <455000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-598000000 {
+			opp-hz = /bits/ 64 <598000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-715000000 {
+			opp-hz = /bits/ 64 <715000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-832000000 {
+			opp-hz = /bits/ 64 <832000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-949000000 {
+			opp-hz = /bits/ 64 <949000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-1053000000 {
+			/* ASV boot level L6 */
+			opp-hz = /bits/ 64 <1053000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-1248000000 {
+			opp-hz = /bits/ 64 <1248000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-1456000000 {
+			opp-hz = /bits/ 64 <1456000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-1690000000 {
+			opp-hz = /bits/ 64 <1690000000>;
+			clock-latency-ns = <100000>;
+		};
+	};
+
+	/*
+	 * Mongoose cluster, cpus 4-7 = ACPM DVFS domain cpucl0. Levels: the ECT
+	 * dvfs_cpucl0 table (SB+0x462d4); ASV tables 3-8 enable L5..L17 =
+	 * 2314000..741000 kHz (tables 1-2 stop at 2158000, and stock uses table 8
+	 * for a version without a table, S:drivers/soc/samsung/cal-if/vclk.c:507-520),
+	 * stock "min-freq = <741000>;" (S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:518).
+	 * 13 levels = the Mongoose "current" entries (:226). Drop opp-2314000000
+	 * only if the fused ASV version (acpm-clk "asv_ver=") is 1 or 2.
+	 */
+	cpucl0_opp_table: opp-table-cl0 {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-741000000 {
+			opp-hz = /bits/ 64 <741000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-858000000 {
+			opp-hz = /bits/ 64 <858000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-962000000 {
+			opp-hz = /bits/ 64 <962000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-1066000000 {
+			/* ASV boot level L14 */
+			opp-hz = /bits/ 64 <1066000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-1170000000 {
+			opp-hz = /bits/ 64 <1170000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-1261000000 {
+			opp-hz = /bits/ 64 <1261000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-1469000000 {
+			opp-hz = /bits/ 64 <1469000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-1703000000 {
+			opp-hz = /bits/ 64 <1703000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-1807000000 {
+			opp-hz = /bits/ 64 <1807000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-1937000000 {
+			opp-hz = /bits/ 64 <1937000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-2002000000 {
+			opp-hz = /bits/ 64 <2002000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-2158000000 {
+			opp-hz = /bits/ 64 <2158000000>;
+			clock-latency-ns = <100000>;
+		};
+		opp-2314000000 {
+			opp-hz = /bits/ 64 <2314000000>;
+			clock-latency-ns = <100000>;
 		};
 	};
 
@@ -1814,4 +1935,58 @@
 	 */
 	mask = <0x100>;
 	value = <0x0>;
+};
+
+/*
+ * CPU DVFS: the stock cpufreq domains, domain@0 = cpus 0-3 with cal-id
+ * ACPM_DVFS_CPUCL1 and domain@1 = cpus 4-7 with ACPM_DVFS_CPUCL0
+ * (S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:467-470, 512-515);
+ * "#cooling-cells = <2>;" (:188, :225).
+ */
+&cpu0 {
+	clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CPUCL1>;
+	operating-points-v2 = <&cpucl1_opp_table>;
+	#cooling-cells = <2>;
+};
+
+&cpu1 {
+	clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CPUCL1>;
+	operating-points-v2 = <&cpucl1_opp_table>;
+	#cooling-cells = <2>;
+};
+
+&cpu2 {
+	clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CPUCL1>;
+	operating-points-v2 = <&cpucl1_opp_table>;
+	#cooling-cells = <2>;
+};
+
+&cpu3 {
+	clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CPUCL1>;
+	operating-points-v2 = <&cpucl1_opp_table>;
+	#cooling-cells = <2>;
+};
+
+&cpu4 {
+	clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CPUCL0>;
+	operating-points-v2 = <&cpucl0_opp_table>;
+	#cooling-cells = <2>;
+};
+
+&cpu5 {
+	clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CPUCL0>;
+	operating-points-v2 = <&cpucl0_opp_table>;
+	#cooling-cells = <2>;
+};
+
+&cpu6 {
+	clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CPUCL0>;
+	operating-points-v2 = <&cpucl0_opp_table>;
+	#cooling-cells = <2>;
+};
+
+&cpu7 {
+	clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CPUCL0>;
+	operating-points-v2 = <&cpucl0_opp_table>;
+	#cooling-cells = <2>;
 };
