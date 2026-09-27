@@ -1140,8 +1140,15 @@ static const struct samsung_gate_clock top_gate_clks[] __initconst = {
 	GATE(CLK_GOUT_CMU_DCAM_IMGD, "gout_cmu_dcam_imgd",
 	     "mout_cmu_dcam_imgd", CLK_CON_GAT_GATE_CLKCMU_DCAM_IMGD,
 	     21, CLK_IGNORE_UNUSED, 0),
+	/*
+	 * CRITICAL, not IGNORE_UNUSED (L5 4.9 item 4, plan X-9): CMU_DPU0
+	 * runtime-suspends right after registration and disables its "bus"
+	 * parent, which ends here; the enable count must stay above 0 under the
+	 * live splash. The register stays out of top_clk_regs[] (TOP-MM), so the
+	 * CRITICAL enable only sets CG_VAL.
+	 */
 	GATE(CLK_GOUT_CMU_DPU_BUS, "gout_cmu_dpu_bus", "mout_cmu_dpu_bus",
-	     CLK_CON_GAT_GATE_CLKCMU_DPU_BUS, 21, CLK_IGNORE_UNUSED, 0),
+	     CLK_CON_GAT_GATE_CLKCMU_DPU_BUS, 21, CLK_IS_CRITICAL, 0),
 	GATE(CLK_GOUT_CMU_DSP_BUS, "gout_cmu_dsp_bus", "mout_cmu_dsp_bus",
 	     CLK_CON_GAT_GATE_CLKCMU_DSP_BUS, 21, CLK_IGNORE_UNUSED, 0),
 	GATE(CLK_GOUT_CMU_FSYS0_BUS, "gout_cmu_fsys0_bus", "mout_fsys0_bus",
