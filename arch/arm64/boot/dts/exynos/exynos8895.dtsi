@@ -1393,6 +1393,17 @@
 			status = "disabled";
 		};
 
+		cmu_g3d: clock-controller@13800000 {
+			compatible = "samsung,exynos8895-cmu-g3d";
+			reg = <0x13800000 0x8000>;	/* CAL:cmucal-sfr.c:25 SFR_BLOCK(G3D, 0x13800000, 0x8000) */
+			#clock-cells = <1>;
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_DOUT_CMU_G3D_SWITCH>,	/* CAL:cmucal-node.c:701 { OSCCLK_G3D, CLKCMU_G3D_SWITCH } */
+				 <&cmu_top CLK_DOUT_CMU_HPM>;	/* CAL:cmucal-node.c:1864 parent CLKCMU_HPM */
+			clock-names = "oscclk", "switch", "hpm";
+			status = "disabled";
+		};
+
 		cmu_g2d: clock-controller@13a00000 {
 			compatible = "samsung,exynos8895-cmu-g2d";
 			reg = <0x13a00000 0x8000>;	/* CAL:cmucal-sfr.c:24 SFR_BLOCK(G2D, 0x13a00000, 0x8000) */
@@ -1444,6 +1455,17 @@
 			assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_SRDZ_BUS>, <&cmu_top CLK_DOUT_CMU_SRDZ_IMGD>;
 			/* in pd_srdz: CAL:pmucal_local_exynos8895.h:536-555 srdz_save */
 			/* "power-domains" follows once the PD node exists */
+			status = "disabled";
+		};
+
+		cmu_busc: clock-controller@15a00000 {
+			compatible = "samsung,exynos8895-cmu-busc";
+			reg = <0x15a00000 0x8000>;	/* CAL:cmucal-sfr.c:11 SFR_BLOCK(BUSC, 0x15a00000, 0x8000) */
+			#clock-cells = <1>;
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_DOUT_CMU_BUSC_BUS>,	/* CAL:cmucal-node.c:589 { OSCCLK_BUSC, CLKCMU_BUSC_BUS } */
+				 <&cmu_top CLK_DOUT_CMU_BUSC_BUSPHSI2C>;	/* CAL:cmucal-node.c:593 { OSCCLK_BUSC, CLKCMU_BUSC_BUSPHSI2C } */
+			clock-names = "oscclk", "bus", "busphsi2c";
 			status = "disabled";
 		};
 
