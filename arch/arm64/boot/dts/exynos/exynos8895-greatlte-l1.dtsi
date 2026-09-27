@@ -42,3 +42,11 @@
 &pinctrl_busc { status = "okay"; };
 &pinctrl_peric0 { status = "okay"; };
 &pinctrl_peric1 { status = "okay"; };
+
+/*
+ * PMU (spec/L1_platform.md 4.3, 5.7, 5.8a): exynos8895_pmu_data applies stock lpm_init and
+ * registers the INFORM2/INFORM3 restart defaults; its children are syscon-reboot (SWRESET),
+ * syscon-poweroff (PS_HOLD bit 8) and the INFORM3 reboot-mode node. Stock node:
+ * S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:299-302, FDT:4404-4409.
+ */
+&pmu_system_controller { status = "okay"; };
