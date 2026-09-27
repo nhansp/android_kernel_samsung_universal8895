@@ -5,16 +5,20 @@
  * Copyright 2024 Linaro Ltd.
  */
 
+#include <linux/atomic.h>
 #include <linux/bitops.h>
 #include <linux/bits.h>
 #include <linux/clk.h>
+#include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/mailbox_client.h>
 #include <linux/mailbox_controller.h>
 #include <linux/mailbox/exynos-message.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 
 #define EXYNOS_MBOX_MCUCTRL		0x0	/* Mailbox Control Register */
 #define EXYNOS_MBOX_INTCR0		0x24	/* Interrupt Clear Register 0 */
@@ -31,22 +35,75 @@
 
 #define EXYNOS_MBOX_CHAN_COUNT		HWEIGHT32(EXYNOS_MBOX_INTGR1_MASK)
 
+/*
+ * Exynos8895 AP2APM mailbox, AP side: stock ACPM IPC register map
+ * (S:drivers/soc/samsung/acpm/acpm_ipc.h:79-88). The AP rings the APM through
+ * INTGR0 with the channel bit shifted by 16 (S:drivers/soc/samsung/acpm/acpm_ipc.c:388
+ * "__raw_writel((1 << id) << 16, acpm_ipc->intr + INTGR0);") and receives on
+ * INTSR1/INTCR1/INTMR1 (:359, :364, :681).
+ */
+#define EXYNOS8895_MBOX_INTGR0		0x08	/* S:.../acpm_ipc.h:79 "#define INTGR0 0x0008" */
+#define EXYNOS8895_MBOX_INTCR1		0x20	/* :85 "#define INTCR1 0x0020" */
+#define EXYNOS8895_MBOX_INTMR1		0x24	/* :86 "#define INTMR1 0x0024" */
+#define EXYNOS8895_MBOX_INTSR1		0x28	/* :87 "#define INTSR1 0x0028" */
+#define EXYNOS8895_MBOX_INTGR0_SHIFT	16	/* S:.../acpm_ipc.c:388 "(1 << id) << 16" */
+
+/**
+ * struct exynos_mbox_data - per-SoC register layout.
+ * @intgr:	doorbell register.
+ * @intgr_shift: the doorbell bit is BIT(chan_id + intgr_shift).
+ * @intmr:	AP-side interrupt mask register, 1 = masked.
+ * @intsr:	AP-side interrupt status register (valid if @has_rx_irq).
+ * @intcr:	AP-side interrupt clear register (valid if @has_rx_irq).
+ * @has_rx_irq:	the APM-to-AP interrupt is served (interrupt-mode channels).
+ */
+struct exynos_mbox_data {
+	u16 intgr;
+	u8 intgr_shift;
+	u16 intmr;
+	u16 intsr;
+	u16 intcr;
+	bool has_rx_irq;
+};
+
 /**
  * struct exynos_mbox - driver's private data.
  * @regs:	mailbox registers base address.
  * @mbox:	pointer to the mailbox controller.
  * @pclk:	pointer to the mailbox peripheral clock.
+ * @data:	per-SoC register layout.
+ * @lock:	protects the read-modify-write of the AP-side mask register.
+ * @rx_pending:	channel bits raised by the RX interrupt, not yet delivered.
  */
 struct exynos_mbox {
 	void __iomem *regs;
 	struct mbox_controller *mbox;
 	struct clk *pclk;
+	const struct exynos_mbox_data *data;
+	spinlock_t lock;
+	atomic_long_t rx_pending;
+};
+
+static const struct exynos_mbox_data gs101_mbox_data = {
+	.intgr = EXYNOS_MBOX_INTGR1,
+	.intgr_shift = 0,
+	.intmr = EXYNOS_MBOX_INTMR0,
+};
+
+static const struct exynos_mbox_data exynos8895_mbox_data = {
+	.intgr = EXYNOS8895_MBOX_INTGR0,
+	.intgr_shift = EXYNOS8895_MBOX_INTGR0_SHIFT,
+	.intmr = EXYNOS8895_MBOX_INTMR1,
+	.intsr = EXYNOS8895_MBOX_INTSR1,
+	.intcr = EXYNOS8895_MBOX_INTCR1,
+	.has_rx_irq = true,
 };
 
 static int exynos_mbox_send_data(struct mbox_chan *chan, void *data)
 {
 	struct device *dev = chan->mbox->dev;
 	struct exynos_mbox *exynos_mbox = dev_get_drvdata(dev);
+	const struct exynos_mbox_data *mdata = exynos_mbox->data;
 	struct exynos_mbox_msg *msg = data;
 
 	if (msg->chan_id >= exynos_mbox->mbox->num_chans) {
@@ -59,14 +116,107 @@ static int exynos_mbox_send_data(struct mbox_chan *chan, void *data)
 		return -EINVAL;
 	}
 
-	writel(BIT(msg->chan_id), exynos_mbox->regs + EXYNOS_MBOX_INTGR1);
+	/*
+	 * A masked channel is a polling one. Stock clears its status bit once
+	 * the AP RX queue is empty (S:drivers/soc/samsung/acpm/acpm_ipc.c:287-288),
+	 * because its wait loop gates on INTSR1 (:534); the ACPM protocol driver
+	 * polls the SRAM queue instead. Clear it right before the doorbell so the
+	 * firmware sees the same status at request time as with stock.
+	 */
+	if (mdata->has_rx_irq &&
+	    readl(exynos_mbox->regs + mdata->intmr) & BIT(msg->chan_id))
+		writel(BIT(msg->chan_id), exynos_mbox->regs + mdata->intcr);
+
+	writel(BIT(msg->chan_id) << mdata->intgr_shift,
+	       exynos_mbox->regs + mdata->intgr);
 
 	return 0;
 }
 
+static void exynos_mbox_set_mask(struct mbox_chan *chan, bool masked)
+{
+	struct exynos_mbox *exynos_mbox = dev_get_drvdata(chan->mbox->dev);
+	const struct exynos_mbox_data *mdata = exynos_mbox->data;
+	unsigned int id = chan - chan->mbox->chans;
+	unsigned long flags;
+	u32 val;
+
+	spin_lock_irqsave(&exynos_mbox->lock, flags);
+	val = readl(exynos_mbox->regs + mdata->intmr);
+	if (masked)
+		val |= BIT(id);
+	else
+		val &= ~BIT(id);
+	writel(val, exynos_mbox->regs + mdata->intmr);
+	spin_unlock_irqrestore(&exynos_mbox->lock, flags);
+}
+
+/*
+ * A client with an RX callback is an interrupt-mode channel: unmask its bit.
+ * This reproduces stock's INTMR1 = OR(ap_poll << id)
+ * (S:drivers/soc/samsung/acpm/acpm_ipc.c:654,681) once the protocol driver
+ * has requested its channels, except that unrequested channels stay masked.
+ */
+static int exynos_mbox_startup(struct mbox_chan *chan)
+{
+	struct exynos_mbox *exynos_mbox = dev_get_drvdata(chan->mbox->dev);
+
+	if (exynos_mbox->data->has_rx_irq && chan->cl->rx_callback)
+		exynos_mbox_set_mask(chan, false);
+
+	return 0;
+}
+
+static void exynos_mbox_shutdown(struct mbox_chan *chan)
+{
+	struct exynos_mbox *exynos_mbox = dev_get_drvdata(chan->mbox->dev);
+
+	if (exynos_mbox->data->has_rx_irq)
+		exynos_mbox_set_mask(chan, true);
+}
+
 static const struct mbox_chan_ops exynos_mbox_chan_ops = {
 	.send_data = exynos_mbox_send_data,
+	.startup = exynos_mbox_startup,
+	.shutdown = exynos_mbox_shutdown,
 };
+
+/* Hard IRQ, as stock acpm_ipc_irq_handler() (S:drivers/soc/samsung/acpm/acpm_ipc.c:352-371). */
+static irqreturn_t exynos_mbox_rx_irq(int irq, void *dev_id)
+{
+	struct exynos_mbox *exynos_mbox = dev_id;
+	const struct exynos_mbox_data *mdata = exynos_mbox->data;
+	unsigned long pending;
+
+	pending = readl(exynos_mbox->regs + mdata->intsr) &
+		  ~readl(exynos_mbox->regs + mdata->intmr) &
+		  EXYNOS_MBOX_INTGR1_MASK;
+	if (!pending)
+		return IRQ_NONE;
+
+	/* stock clears INTCR1 per interrupt-mode id (:362-365) */
+	writel(pending, exynos_mbox->regs + mdata->intcr);
+	atomic_long_or(pending, &exynos_mbox->rx_pending);
+
+	return IRQ_WAKE_THREAD;
+}
+
+/* Thread, as stock acpm_ipc_irq_handler_thread() (:373-383). */
+static irqreturn_t exynos_mbox_rx_thread(int irq, void *dev_id)
+{
+	struct exynos_mbox *exynos_mbox = dev_id;
+	struct mbox_controller *mbox = exynos_mbox->mbox;
+	unsigned long bits;
+	unsigned int i;
+
+	bits = atomic_long_xchg(&exynos_mbox->rx_pending, 0);
+	for_each_set_bit(i, &bits, EXYNOS_MBOX_CHAN_COUNT)
+		if (mbox->chans[i].cl)
+			mbox_chan_received_data(&mbox->chans[i],
+						(void *)(uintptr_t)i);
+
+	return IRQ_HANDLED;
+}
 
 static struct mbox_chan *exynos_mbox_of_xlate(struct mbox_controller *mbox,
 					      const struct of_phandle_args *sp)
@@ -89,7 +239,8 @@ static struct mbox_chan *exynos_mbox_of_xlate(struct mbox_controller *mbox,
 }
 
 static const struct of_device_id exynos_mbox_match[] = {
-	{ .compatible = "google,gs101-mbox" },
+	{ .compatible = "google,gs101-mbox", .data = &gs101_mbox_data },
+	{ .compatible = "samsung,exynos8895-mbox", .data = &exynos8895_mbox_data },
 	{},
 };
 MODULE_DEVICE_TABLE(of, exynos_mbox_match);
@@ -100,11 +251,17 @@ static int exynos_mbox_probe(struct platform_device *pdev)
 	struct exynos_mbox *exynos_mbox;
 	struct mbox_controller *mbox;
 	struct mbox_chan *chans;
-	int i;
+	int i, irq, ret;
 
 	exynos_mbox = devm_kzalloc(dev, sizeof(*exynos_mbox), GFP_KERNEL);
 	if (!exynos_mbox)
 		return -ENOMEM;
+
+	exynos_mbox->data = of_device_get_match_data(dev);
+	if (!exynos_mbox->data)
+		return -ENODEV;
+	spin_lock_init(&exynos_mbox->lock);
+	atomic_long_set(&exynos_mbox->rx_pending, 0);
 
 	mbox = devm_kzalloc(dev, sizeof(*mbox), GFP_KERNEL);
 	if (!mbox)
@@ -137,8 +294,31 @@ static int exynos_mbox_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, exynos_mbox);
 
-	/* Mask out all interrupts. We support just polling channels for now. */
-	writel(EXYNOS_MBOX_INTMR0_MASK, exynos_mbox->regs + EXYNOS_MBOX_INTMR0);
+	/*
+	 * Mask out all interrupts. On SoCs with an RX interrupt, .startup
+	 * unmasks the interrupt-mode channels once their client binds.
+	 */
+	writel(EXYNOS_MBOX_INTMR0_MASK, exynos_mbox->regs + exynos_mbox->data->intmr);
+
+	if (exynos_mbox->data->has_rx_irq) {
+		irq = platform_get_irq(pdev, 0);
+		if (irq < 0)
+			return irq;
+
+		/* flags as stock (S:drivers/soc/samsung/acpm/acpm_ipc.c:709-712) */
+		ret = devm_request_threaded_irq(dev, irq, exynos_mbox_rx_irq,
+						exynos_mbox_rx_thread,
+						IRQF_ONESHOT, dev_name(dev),
+						exynos_mbox);
+		if (ret)
+			return dev_err_probe(dev, ret,
+					     "Failed to request RX irq.\n");
+
+		dev_info(dev, "exynos8895: doorbell 0x%02x<<%u mask 0x%02x stat 0x%02x clr 0x%02x irq %d\n",
+			 exynos_mbox->data->intgr, exynos_mbox->data->intgr_shift,
+			 exynos_mbox->data->intmr, exynos_mbox->data->intsr,
+			 exynos_mbox->data->intcr, irq);
+	}
 
 	return devm_mbox_controller_register(dev, mbox);
 }
