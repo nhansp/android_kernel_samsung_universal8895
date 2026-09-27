@@ -1479,6 +1479,38 @@ static int s2mps17_init(struct device *dev, struct regmap *pmic)
 	return 0;
 }
 
+/*
+ * S2MPS17 DEBUG-block trims of the vendor driver (S:drivers/regulator/s2mps17.c:859-876),
+ * written through the MFD's "trim" regmap (ACPM type 0x0F). No datasheet
+ * describes them; they are copied as they are.
+ */
+static void s2mps17_trim(struct device *dev, struct regmap *pmic,
+			 struct regmap *trim)
+{
+	unsigned int v = 0, t;
+
+	if (!trim) {
+		dev_warn(dev, "s2mps17: no trim regmap, trims skipped\n");
+		return;
+	}
+
+	/* "Drop LDO29 OCP Level : Typ. 1A -> 0.9A" unless done (0x71[5]) or OTP changed (0x71[4]) */
+	regmap_read(pmic, 0x71, &v);
+	if (!(v & 0x20) && !(v & 0x10)) {
+		regmap_update_bits(pmic, 0x71, 0x20, 0x20);
+		regmap_update_bits(trim, 0xc0, 0xc0, 0x00);
+		if (!regmap_read(trim, 0xbc, &t)) {
+			t = (u8)((u8)((u8)t >> 3) - 4) << 3;	/* the vendor's u8 arithmetic */
+			regmap_update_bits(trim, 0xbc, 0xf8, t);
+		}
+	}
+
+	/* "PFM PMOS only function disable" */
+	regmap_write(trim, 0x23, 0xcc);
+
+	dev_info(dev, "s2mps17: trim ocp29=0x%02x pfm\n", v);
+}
+
 /* One line per S2MPS17 regulator after registration (L2 pass line P8). */
 static void s2mps17_log_regulators(struct device *dev, struct regmap *regmap,
 				   const struct regulator_desc *regulators,
@@ -1632,6 +1664,8 @@ static int s2mps11_pmic_probe(struct platform_device *pdev)
 		ret = s2mps17_init(&pdev->dev, iodev->regmap_pmic);
 		if (ret)
 			return ret;
+		s2mps17_trim(&pdev->dev, iodev->regmap_pmic,
+			     dev_get_regmap(pdev->dev.parent, "trim"));
 		s2mps17_log_regulators(&pdev->dev, iodev->regmap_pmic,
 				       regulators, rdevs, rdev_num);
 	}
