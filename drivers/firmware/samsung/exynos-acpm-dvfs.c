@@ -21,6 +21,10 @@
 #define ACPM_DVFS_FREQ_GET		1
 #define ACPM_DVFS_COLDTEMP_REQ		3	/* Exynos8895: S:drivers/soc/samsung/cal-if/acpm_dvfs.h:22 */
 
+/* Exynos8895 devfreq requests (S:include/soc/samsung/exynos-devfreq.h:22,24) */
+#define ACPM_DVFS_DATA_INIT		5
+#define ACPM_DVFS_RELEASE		2
+
 static void acpm_dvfs_set_xfer(struct acpm_xfer *xfer, u32 *cmd, size_t cmdlen,
 			       unsigned int acpm_chan_id, bool response)
 {
@@ -79,6 +83,26 @@ int acpm_dvfs_set_cold_temp(struct acpm_handle *handle,
 	cmd[1] = cold;
 	cmd[2] = FIELD_PREP(ACPM_DVFS_REQ_TYPE, ACPM_DVFS_COLDTEMP_REQ);
 	cmd[3] = acpm_cmd_timestamp(handle);
+	acpm_dvfs_set_xfer(&xfer, cmd, sizeof(cmd), acpm_chan_id, true);
+
+	return acpm_do_xfer(handle, &xfer);
+}
+
+/*
+ * Tell the firmware whether the AP is running or going to sleep, for one
+ * devfreq domain (Exynos8895 MIF 0, INT 1). Stock exynos-devfreq sends it on
+ * its channel at suspend with "running" false and at resume with true
+ * (S:drivers/devfreq/exynos/exynos-devfreq.c:1901-1914, 1988-2000):
+ * cmd = {type, running, DATA_INIT, RELEASE}, response expected. Stock only
+ * checks the send result; so does the caller.
+ */
+int acpm_dvfs_sleep_release(struct acpm_handle *handle,
+			    unsigned int acpm_chan_id, unsigned int type,
+			    bool running)
+{
+	u32 cmd[4] = { type, running, ACPM_DVFS_DATA_INIT, ACPM_DVFS_RELEASE };
+	struct acpm_xfer xfer = {0};
+
 	acpm_dvfs_set_xfer(&xfer, cmd, sizeof(cmd), acpm_chan_id, true);
 
 	return acpm_do_xfer(handle, &xfer);

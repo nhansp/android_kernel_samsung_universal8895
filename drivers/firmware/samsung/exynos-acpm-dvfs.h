@@ -17,6 +17,9 @@ int acpm_dvfs_set_rate(struct acpm_handle *handle,
 int acpm_dvfs_set_cold_temp(struct acpm_handle *handle,
 			    unsigned int acpm_chan_id, unsigned int clk_id,
 			    bool cold);
+int acpm_dvfs_sleep_release(struct acpm_handle *handle,
+			    unsigned int acpm_chan_id, unsigned int type,
+			    bool running);
 unsigned long acpm_dvfs_get_rate(struct acpm_handle *handle,
 				 unsigned int acpm_chan_id,
 				 unsigned int clk_id);
