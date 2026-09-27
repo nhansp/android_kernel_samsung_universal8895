@@ -28,6 +28,8 @@
 #define EXYNOS_CLKOUT_MUX_SHIFT		8
 #define EXYNOS4_CLKOUT_MUX_MASK		0xf
 #define EXYNOS5_CLKOUT_MUX_MASK		0x1f
+/* CLKOUT0_SEL_WIDTH 6: S:drivers/soc/samsung/cal-if/exynos8895/clkout_exynos8895.c:5 */
+#define EXYNOS8895_CLKOUT_MUX_MASK	0x3f
 
 struct exynos_clkout {
 	struct clk_gate gate;
@@ -49,6 +51,10 @@ static const struct exynos_clkout_variant exynos_clkout_exynos4 = {
 
 static const struct exynos_clkout_variant exynos_clkout_exynos5 = {
 	.mux_mask	= EXYNOS5_CLKOUT_MUX_MASK,
+};
+
+static const struct exynos_clkout_variant exynos_clkout_exynos8895 = {
+	.mux_mask	= EXYNOS8895_CLKOUT_MUX_MASK,
 };
 
 static const struct of_device_id exynos_clkout_ids[] = {
@@ -76,6 +82,9 @@ static const struct of_device_id exynos_clkout_ids[] = {
 	}, {
 		.compatible = "samsung,exynos5433-pmu",
 		.data = &exynos_clkout_exynos5,
+	}, {
+		.compatible = "samsung,exynos8895-pmu",
+		.data = &exynos_clkout_exynos8895,
 	}, { }
 };
 
