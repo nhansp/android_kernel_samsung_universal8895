@@ -1443,6 +1443,42 @@ static const struct regulator_desc s2mps17_regulators[] = {
 	regulator_desc_s2mps17_buck(12, &s2mps17_buck_ops, B12OUT1, 1, 1),
 };
 
+/*
+ * S2MPS17 board setup after registration, in the vendor driver's order
+ * (S:drivers/regulator/s2mps17.c:818-857). The board values come from the
+ * greatlte PMIC node (g3d_en = <1>, smpl_warn_en = <1>, smpl_warn_vth =
+ * <0x80>, smpl_warn_hys = <0x00>; S:arch/arm64/boot/dts/exynos/
+ * exynos8895-greatlte_common.dtsi:223-232), which have no binding here.
+ */
+static int s2mps17_init(struct device *dev, struct regmap *pmic)
+{
+	int ret;
+
+	/* g3d_en: BUCK6 follows the G3D power-down pin, LDO9 syncs with it (:818-832) */
+	ret = regmap_update_bits(pmic, S2MPS17_PMIC_REG_B6CTRL, 0xc0, 0x80);
+	if (ret)
+		return dev_err_probe(dev, ret, "s2mps17: buck6 gpio control error\n");
+	ret = regmap_update_bits(pmic, S2MPS17_PMIC_REG_L9CTRL1, 0xc0, 0x40);
+	if (ret)
+		return dev_err_probe(dev, ret, "s2mps17: regulator sync enable error\n");
+
+	/* smpl_warn: threshold then hysteresis (:834-852) */
+	ret = regmap_update_bits(pmic, S2MPS17_PMIC_REG_CTRL2, 0xe0, 0x80);
+	if (ret)
+		return dev_err_probe(dev, ret, "s2mps17: smpl_warn vth error\n");
+	ret = regmap_update_bits(pmic, S2MPS17_PMIC_REG_CTRL2, 0x18, 0x00);
+	if (ret)
+		return dev_err_probe(dev, ret, "s2mps17: smpl_warn hys error\n");
+
+	/* the vendor driver ignores the result of the next two writes (:854-857) */
+	regmap_update_bits(pmic, S2MPS17_PMIC_REG_RTCBUF, 0x04, 0x04);
+	regmap_write(pmic, S2MPS17_PMIC_REG_SELMIF1, 0xd6);	/* "SELMIF : LDO4,5,8,11,12" */
+
+	dev_info(dev, "s2mps17: init g3d_en smpl_warn rtcbuf selmif1=0xd6\n");
+
+	return 0;
+}
+
 /* One line per S2MPS17 regulator after registration (L2 pass line P8). */
 static void s2mps17_log_regulators(struct device *dev, struct regmap *regmap,
 				   const struct regulator_desc *regulators,
@@ -1592,9 +1628,13 @@ static int s2mps11_pmic_probe(struct platform_device *pdev)
 		}
 	}
 
-	if (s2mps11->dev_type == S2MPS17X)
+	if (s2mps11->dev_type == S2MPS17X) {
+		ret = s2mps17_init(&pdev->dev, iodev->regmap_pmic);
+		if (ret)
+			return ret;
 		s2mps17_log_regulators(&pdev->dev, iodev->regmap_pmic,
 				       regulators, rdevs, rdev_num);
+	}
 
 	return 0;
 }
