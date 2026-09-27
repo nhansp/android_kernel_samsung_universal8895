@@ -226,9 +226,6 @@
 /* L1: PMU syscon + syscon-reboot/-poweroff (restart offsets not yet verified). */
 &pmu_system_controller { status = "disabled"; };
 
-/* L0 step c (8.2): PMU interrupts; decides F13 initcall_blacklist=armv8_pmu_driver_init. */
-&{/pmu-a53} { status = "disabled"; };
-&{/pmu-mongoose-m2} { status = "disabled"; };
 
 /* Board fact (the ACK dtsi leaves it to the board, A:arch/arm64/boot/dts/exynos/exynos8895.dtsi:122-126):
  * 26 MHz OSC. S:arch/arm64/boot/dts/exynos/exynos8895-greatlte_common.dtsi:53-58, FDT:11152-11157 (<0x18cba80>). */
