@@ -20,3 +20,354 @@
 &ap2apm_mailbox { status = "okay"; };
 &apm_sram { status = "okay"; };
 &acpm_ipc { status = "okay"; };
+
+/*
+ * S2MPS17 PMIC pins (factory values, raw register encodings): the interrupt line gpa3-6 on
+ * ALIVE, and on PERIC0 pm_wrsti gpb1-0 (power-down state 3), the G3D DVS pin gpb1-2
+ * (function 2) and the SMPL warning gpb1-3 (EINT).
+ */
+&pinctrl_alive {
+	pmic_irq: pmic-irq-pins {
+		samsung,pins = "gpa3-6";		/* FDT:221-227 */
+		samsung,pin-pud = <3>;			/* FDT:223 <0x03> */
+		samsung,pin-drv = <3>;			/* FDT:224 <0x03> */
+	};
+};
+
+&pinctrl_peric0 {
+	pm_wrsti: pm-wrsti-pins {
+		samsung,pins = "gpb1-0";		/* FDT:1582-1587 */
+		samsung,pin-con-pdn = <3>;		/* FDT:1584 */
+	};
+
+	g3d_dvs: g3d-dvs-pins {
+		samsung,pins = "gpb1-2";		/* FDT:1589-1594 */
+		samsung,pin-function = <2>;		/* FDT:1591 */
+	};
+
+	smpl_warn: smpl-warn-pins {
+		samsung,pins = "gpb1-3";		/* FDT:1283-1290 */
+		samsung,pin-function = <0xf>;		/* FDT:1285 (EINT) */
+		samsung,pin-pud = <0>;			/* FDT:1286 */
+		samsung,pin-drv = <0>;			/* FDT:1287 */
+	};
+};
+
+/*
+ * The S2MPS17 main PMIC under ACPM (spec/L2_power.md 4.3), stock "speedy@15B50000/
+ * s2mps17mfd@00" (FDT:6917-7286 inside speedy@15B50000 at FDT:6905;
+ * S:arch/arm64/boot/dts/exynos/exynos8895-greatlte_common.dtsi:209-232).
+ * ACPM channel 2, g3d_en, smpl_warn and the trims are driver data (no binding properties).
+ * The 41 regulators are the factory DT's, property for property (FDT:6948-7285; node names,
+ * values and order as there, only phandles dropped); every node keeps the stock label
+ * ldoN_reg/buckN_reg, four also the label a consumer layer uses. BUCK1-6 and BUCK12 belong to
+ * the APM firmware (DVFS, CP): no Linux consumer may change their voltage.
+ */
+&acpm_ipc {
+	pmic {
+		compatible = "samsung,s2mps17-pmic";
+		/*
+		 * S:...greatlte_common.dtsi:218-219 "interrupts = <6 0 0>; interrupt-parent = <&gpa3>;"
+		 * (FDT:6924-6925); level low as stock requests it (S:drivers/mfd/s2mps17_irq.c:300-301
+		 * "IRQF_TRIGGER_LOW | IRQF_ONESHOT").
+		 */
+		interrupts-extended = <&gpa3 6 IRQ_TYPE_LEVEL_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&pmic_irq &pm_wrsti &g3d_dvs &smpl_warn>;	/* FDT:6926-6927 */
+		wakeup-source;		/* S:...greatlte_common.dtsi:215 's2mps17,wakeup = "enabled"' */
+
+		regulators {
+			buck1_reg: BUCK1 {	/* FDT:6950-6957 */
+				regulator-name = "vdd_mif";
+				regulator-min-microvolt = <450000>;
+				regulator-max-microvolt = <950000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <2>;
+			};
+			buck2_reg: BUCK2 {	/* FDT:6959-6966 */
+				regulator-name = "vdd_cpucl0";
+				regulator-min-microvolt = <450000>;
+				regulator-max-microvolt = <1200000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <1>;
+			};
+			buck3_reg: BUCK3 {	/* FDT:6968-6975 */
+				regulator-name = "vdd_cpucl1";
+				regulator-min-microvolt = <450000>;
+				regulator-max-microvolt = <1200000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <1>;
+			};
+			buck4_reg: BUCK4 {	/* FDT:6977-6984 */
+				regulator-name = "vdd_int";
+				regulator-min-microvolt = <450000>;
+				regulator-max-microvolt = <950000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <2>;
+			};
+			buck5_reg: BUCK5 {	/* FDT:6986-6993 */
+				regulator-name = "vdd_cam";
+				regulator-min-microvolt = <450000>;
+				regulator-max-microvolt = <950000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <2>;
+			};
+			buck6_reg: BUCK6 {	/* FDT:6995-7002 */
+				regulator-name = "vdd_g3d";
+				regulator-min-microvolt = <450000>;
+				regulator-max-microvolt = <850000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <2>;
+			};
+			buck7_reg: BUCK7 {	/* FDT:7004-7011 */
+				regulator-name = "vdd_mem";
+				regulator-min-microvolt = <900000>;
+				regulator-max-microvolt = <1300000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <3>;
+			};
+			buck8_reg: BUCK8 {	/* FDT:7013-7020 */
+				regulator-name = "vdd_lldo1";
+				regulator-min-microvolt = <750000>;
+				regulator-max-microvolt = <1150000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <3>;
+			};
+			buck9_reg: BUCK9 {	/* FDT:7022-7029 */
+				regulator-name = "vdd_lldo2";
+				regulator-min-microvolt = <900000>;
+				regulator-max-microvolt = <1300000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <2>;
+			};
+			buck10_reg: BUCK10 {	/* FDT:7031-7038 */
+				regulator-name = "vdd_lldo3";
+				regulator-min-microvolt = <1100000>;
+				regulator-max-microvolt = <1500000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <3>;
+			};
+			buck11_reg: BUCK11 {	/* FDT:7040-7047 */
+				regulator-name = "vdd_mldo";
+				regulator-min-microvolt = <1750000>;
+				regulator-max-microvolt = <2150000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <3>;
+			};
+			buck12_reg: BUCK12 {	/* FDT:7049-7056 */
+				regulator-name = "vdd_cp";
+				regulator-min-microvolt = <450000>;
+				regulator-max-microvolt = <950000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <3>;
+			};
+			ldo1_reg: LDO1 {	/* FDT:7058-7065 */
+				regulator-name = "vdd_ldo1";
+				regulator-min-microvolt = <700000>;
+				regulator-max-microvolt = <950000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <3>;
+			};
+			ldo2_reg: vqmmc_sd: LDO2 {	/* FDT:7067-7073, label vqmmc_sd = L4 vqmmc-supply (L4 4.4) */
+				regulator-name = "vqmmc";
+				regulator-min-microvolt = <1700000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <1>;
+			};
+			ldo3_reg: LDO3 {	/* FDT:7075-7082 */
+				regulator-name = "vdd_ldo3";
+				regulator-min-microvolt = <1620000>;
+				regulator-max-microvolt = <1980000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <3>;
+			};
+			ldo4_reg: LDO4 {	/* FDT:7084-7091 */
+				regulator-name = "vdd_ldo4";
+				regulator-min-microvolt = <700000>;
+				regulator-max-microvolt = <950000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <1>;
+			};
+			ldo5_reg: LDO5 {	/* FDT:7093-7100 */
+				regulator-name = "vdd_ldo5";
+				regulator-min-microvolt = <1620000>;
+				regulator-max-microvolt = <1980000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <1>;
+			};
+			ldo6_reg: s2mps17_ldo6: LDO6 {	/* FDT:7102-7107, label s2mps17_ldo6 = L3 USB PHY (L3 4.2) */
+				regulator-name = "vdd_ldo6";
+				regulator-min-microvolt = <3100000>;
+				regulator-max-microvolt = <3100000>;
+				regulator-ramp-delay = <12000>;
+			};
+			ldo7_reg: LDO7 {	/* FDT:7109-7116 */
+				regulator-name = "vdd_ldo7";
+				regulator-min-microvolt = <450000>;
+				regulator-max-microvolt = <1200000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <1>;
+			};
+			ldo8_reg: LDO8 {	/* FDT:7118-7125 */
+				regulator-name = "vdd_ldo8";
+				regulator-min-microvolt = <450000>;
+				regulator-max-microvolt = <950000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <1>;
+			};
+			ldo9_reg: LDO9 {	/* FDT:7127-7134 */
+				regulator-name = "vdd_ldo9";
+				regulator-min-microvolt = <450000>;
+				regulator-max-microvolt = <950000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <1>;
+			};
+			ldo10_reg: s2mps17_ldo10: LDO10 {	/* FDT:7136-7141, label s2mps17_ldo10 = L3 USB PHY */
+				regulator-name = "vdd_ldo10";
+				regulator-min-microvolt = <700000>;
+				regulator-max-microvolt = <950000>;
+				regulator-ramp-delay = <12000>;
+			};
+			ldo11_reg: LDO11 {	/* FDT:7143-7150 */
+				regulator-name = "vdd_ldo11";
+				regulator-min-microvolt = <450000>;
+				regulator-max-microvolt = <950000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <1>;
+			};
+			ldo12_reg: LDO12 {	/* FDT:7152-7159 */
+				regulator-name = "vdd_ldo12";
+				regulator-min-microvolt = <450000>;
+				regulator-max-microvolt = <950000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <1>;
+			};
+			ldo13_reg: LDO13 {	/* FDT:7161-7168 */
+				regulator-name = "vdd_ldo13";
+				regulator-min-microvolt = <900000>;
+				regulator-max-microvolt = <1300000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <1>;
+			};
+			ldo20_reg: LDO20 {	/* FDT:7170-7176 */
+				regulator-name = "VLDO_20";
+				regulator-min-microvolt = <700000>;
+				regulator-max-microvolt = <1300000>;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <0>;
+			};
+			ldo29_reg: LDO29 {	/* FDT:7178-7182 */
+				regulator-name = "vdd_ldo29";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+			ldo30_reg: LDO30 {	/* FDT:7184-7191 */
+				regulator-name = "vdd_ldo30";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <3375000>;
+				regulator-always-on;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <2>;
+			};
+			ldo31_reg: LDO31 {	/* FDT:7193-7200 */
+				regulator-name = "VDD_2P6_MUX";
+				regulator-min-microvolt = <2600000>;
+				regulator-max-microvolt = <2600000>;
+				regulator-ramp-delay = <12000>;
+				regulator-always-on;
+				regulator-initial-mode = <3>;
+			};
+			ldo32_reg: LDO32 {	/* FDT:7202-7211 */
+				regulator-name = "VDD_1.8V_CODEC";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+				regulator-always-on;
+				regulator-boot-on;
+				regulator-initial-mode = <3>;
+			};
+			ldo33_reg: LDO33 {	/* FDT:7213-7220 */
+				regulator-name = "VDD_1.2V_CODEC";
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <1200000>;
+				regulator-enable-ramp-delay = <5000>;
+			};
+			ldo34_reg: LDO34 {	/* FDT:7222-7227 */
+				regulator-name = "tsp_io";
+				regulator-min-microvolt = <1850000>;
+				regulator-max-microvolt = <1850000>;
+				regulator-boot-on;
+			};
+			ldo35_reg: LDO35 {	/* FDT:7229-7234 */
+				regulator-name = "tsp_avdd";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-boot-on;
+			};
+			ldo36_reg: LDO36 {	/* FDT:7236-7240 */
+				regulator-name = "VDD_1.8V_ESE";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+			ldo37_reg: s2mps17_ldo37: LDO37 {	/* FDT:7242-7246, label s2mps17_ldo37 = L3 USB PHY */
+				regulator-name = "VDD_DP_1P8";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+			ldo38_reg: LDO38 {	/* FDT:7248-7252 */
+				regulator-name = "vdd_mcu_1p8";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+			ldo39_reg: LDO39 {	/* FDT:7254-7258 */
+				regulator-name = "VDD_NFC_1P8";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+			ldo40_reg: LDO40 {	/* FDT:7260-7264 */
+				regulator-name = "VDD_IRIS_1P2";
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <1200000>;
+			};
+			ldo41_reg: LDO41 {	/* FDT:7266-7270 */
+				regulator-name = "VDD_IRIS_2P8";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+			ldo42_reg: LDO42 {	/* FDT:7272-7276 */
+				regulator-name = "VDD_IRIS_1P8";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+			ldo43_reg: LDO43 {	/* FDT:7278-7284 */
+				regulator-name = "VLDO_43";
+				regulator-min-microvolt = <700000>;
+				regulator-max-microvolt = <1300000>;
+				regulator-ramp-delay = <12000>;
+				regulator-initial-mode = <0>;
+			};
+		};
+	};
+};
