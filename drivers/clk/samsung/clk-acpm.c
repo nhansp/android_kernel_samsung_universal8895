@@ -6,31 +6,75 @@
  */
 
 #include <linux/array_size.h>
+#include <linux/bitfield.h>
+#include <linux/bits.h>
 #include <linux/clk-provider.h>
 #include <linux/container_of.h>
+#include <linux/cpumask.h>
 #include <linux/device/devres.h>
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/firmware/samsung/exynos-acpm-protocol.h>
+#include <linux/io.h>
+#include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/sizes.h>
 #include <linux/types.h>
+#include <linux/units.h>
 
+#include <dt-bindings/clock/samsung,exynos8895-acpm.h>
+
+struct acpm_clk_driver_data;
+
+/**
+ * struct acpm_clk - one ACPM DVFS clock.
+ * @id:		ACPM DVFS domain index.
+ * @hw:		clock hardware.
+ * @mbox_chan_id: ACPM channel of the DVFS requests.
+ * @handle:	ACPM handle.
+ * @pll:	PLL_CON0 register the rate is read back from, or NULL.
+ * @rate:	rate of the last successful request (clocks without read-back).
+ * @data:	variant data.
+ */
 struct acpm_clk {
 	u32 id;
 	struct clk_hw hw;
 	unsigned int mbox_chan_id;
 	struct acpm_handle *handle;
+	void __iomem *pll;
+	unsigned long rate;
+	const struct acpm_clk_driver_data *data;
 };
 
 struct acpm_clk_variant {
 	const char *name;
 };
 
+/**
+ * struct acpm_clk_driver_data - per-SoC data.
+ * @clks:	clock names, index = ACPM DVFS domain index.
+ * @nr_clks:	number of clocks.
+ * @mbox_chan_id: ACPM channel of the DVFS requests.
+ * @no_freq_get: the firmware's FREQ_GET is not used; a clock without PLL
+ *		read-back reports the last rate it was set to.
+ * @pll_con0:	per clock id, physical address of the PLL_CON0 register its
+ *		rate is decoded from (0 = none).
+ * @nr_pll_con0: entries in @pll_con0.
+ * @pll_cpus:	per clock id with a PLL read-back, the CPUs of the cluster
+ *		whose CMU holds the PLL (its registers are read only while
+ *		one of them is online); 0 = no such condition.
+ * @asv_table_pa: physical address of the ASV table (0 = none).
+ */
 struct acpm_clk_driver_data {
 	const struct acpm_clk_variant *clks;
 	unsigned int nr_clks;
 	unsigned int mbox_chan_id;
+	bool no_freq_get;
+	const u32 *pll_con0;
+	unsigned int nr_pll_con0;
+	const unsigned long *pll_cpus;
+	phys_addr_t asv_table_pa;
 };
 
 #define to_acpm_clk(clk) container_of(clk, struct acpm_clk, hw)
@@ -63,10 +107,99 @@ static const struct acpm_clk_driver_data acpm_clk_gs101 = {
 	.mbox_chan_id = 0,
 };
 
+/*
+ * Exynos8895: the ten stock ACPM DVFS domains, in firmware index order
+ * (S:drivers/soc/samsung/cal-if/exynos8895/acpm_dvfs_exynos8895.h:1-12).
+ */
+static const struct acpm_clk_variant exynos8895_acpm_clks[] = {
+	ACPM_CLK("mif"),
+	ACPM_CLK("int"),
+	ACPM_CLK("cpucl0"),
+	ACPM_CLK("cpucl1"),
+	ACPM_CLK("g3d"),
+	ACPM_CLK("intcam"),
+	ACPM_CLK("cam"),
+	ACPM_CLK("disp"),
+	ACPM_CLK("g3dm"),
+	ACPM_CLK("cp"),
+};
+
+static const u32 exynos8895_pll_con0[] = {
+	/* CMU_CPUCL0 0x16800000 + PLL_CON0_PLL_CPUCL0 0x0120 (S:.../cmucal-sfr.c:15, :799) */
+	[EXYNOS8895_CLK_ACPM_DVFS_CPUCL0] = 0x16800120,
+	/* CMU_CPUCL1 0x16900000 + PLL_CON0_PLL_CPUCL1 0x0120 (:16, :838) */
+	[EXYNOS8895_CLK_ACPM_DVFS_CPUCL1] = 0x16900120,
+};
+
+static const unsigned long exynos8895_pll_cpus[] = {
+	[EXYNOS8895_CLK_ACPM_DVFS_CPUCL0] = GENMASK(7, 4),	/* Mongoose cpus 4-7 */
+	[EXYNOS8895_CLK_ACPM_DVFS_CPUCL1] = GENMASK(3, 0),	/* A53 cpus 0-3 */
+};
+
+static const struct acpm_clk_driver_data acpm_clk_exynos8895 = {
+	.clks = exynos8895_acpm_clks,
+	.nr_clks = ARRAY_SIZE(exynos8895_acpm_clks),
+	/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:590 "acpm-ipc-channel = <0>;" */
+	.mbox_chan_id = 0,
+	/* stock defines FREQ_GET but never sends it: exynos_acpm_get_rate() (S:drivers/soc/samsung/cal-if/acpm_dvfs.c:43-67) has no caller */
+	.no_freq_get = true,
+	.pll_con0 = exynos8895_pll_con0,
+	.nr_pll_con0 = ARRAY_SIZE(exynos8895_pll_con0),
+	.pll_cpus = exynos8895_pll_cpus,
+	/* S:drivers/soc/samsung/cal-if/exynos8895/asv_exynos8895.h:6 "#define ASV_TABLE_BASE (0x10009000)" */
+	.asv_table_pa = 0x10009000,
+};
+
+/* PLL_CON0 fields (S:drivers/soc/samsung/cal-if/exynos8895/cmucal-sfr.c:4320-4324) */
+#define ACPM_PLL_ENABLE		BIT(31)		/* S:drivers/soc/samsung/cal-if/ra.h:39-40 */
+#define ACPM_PLL_MUX_SEL	BIT(4)		/* ra.h:33-34 */
+#define ACPM_PLL_M		GENMASK(25, 16)
+#define ACPM_PLL_P		GENMASK(13, 8)
+#define ACPM_PLL_S		GENMASK(2, 0)
+#define ACPM_PLL_FIN_HZ		(26 * HZ_PER_MHZ)	/* ra.h:42 FIN_HZ_26M */
+
+/*
+ * The CAL decode of an integer PLL (S:drivers/soc/samsung/cal-if/ra.c:306-347):
+ * a disabled PLL gives 26 MHz, or 0 with its mux bypass set; otherwise
+ * Fout = 26 MHz * M / (P << S).
+ */
+static unsigned long acpm_clk_pll_decode(u32 v)
+{
+	u32 p = FIELD_GET(ACPM_PLL_P, v), m = FIELD_GET(ACPM_PLL_M, v);
+	u32 s = FIELD_GET(ACPM_PLL_S, v);
+
+	if (!(v & ACPM_PLL_ENABLE))
+		return (v & ACPM_PLL_MUX_SEL) ? 0 : ACPM_PLL_FIN_HZ;
+
+	return p ? div_u64((u64)ACPM_PLL_FIN_HZ * m, p << s) : 0;
+}
+
+/* The PLL may be read: no CPU condition, or a CPU of its cluster is online. */
+static bool acpm_clk_pll_readable(const struct acpm_clk *clk)
+{
+	const struct acpm_clk_driver_data *d = clk->data;
+	unsigned long cpus;
+
+	if (!d->pll_cpus || clk->id >= d->nr_pll_con0 || !d->pll_cpus[clk->id])
+		return true;
+
+	cpus = d->pll_cpus[clk->id];
+	return cpumask_intersects(cpu_online_mask, to_cpumask(&cpus));
+}
+
 static unsigned long acpm_clk_recalc_rate(struct clk_hw *hw,
 					  unsigned long parent_rate)
 {
 	struct acpm_clk *clk = to_acpm_clk(hw);
+
+	if (clk->pll) {
+		if (!acpm_clk_pll_readable(clk))
+			return clk->rate;
+		return acpm_clk_pll_decode(readl(clk->pll));
+	}
+
+	if (clk->data->no_freq_get)
+		return clk->rate;
 
 	return clk->handle->ops.dvfs_ops.get_rate(clk->handle,
 					clk->mbox_chan_id, clk->id);
@@ -88,9 +221,14 @@ static int acpm_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 			     unsigned long parent_rate)
 {
 	struct acpm_clk *clk = to_acpm_clk(hw);
+	int ret;
 
-	return clk->handle->ops.dvfs_ops.set_rate(clk->handle,
+	ret = clk->handle->ops.dvfs_ops.set_rate(clk->handle,
 					clk->mbox_chan_id, clk->id, rate);
+	if (!ret)
+		clk->rate = rate;
+
+	return ret;
 }
 
 static const struct clk_ops acpm_clk_ops = {
@@ -106,28 +244,99 @@ static int acpm_clk_register(struct device *dev, struct acpm_clk *aclk,
 
 	init.name = name;
 	init.ops = &acpm_clk_ops;
+	/*
+	 * A rate read back from the PLL is re-read on every clk_get_rate()
+	 * (A:drivers/clk/clk.c:2014-2020), so a change the firmware made on its
+	 * own is visible.
+	 */
+	if (aclk->pll)
+		init.flags = CLK_GET_RATE_NOCACHE;
 	aclk->hw.init = &init;
 
 	return devm_clk_hw_register(dev, &aclk->hw);
 }
 
+/*
+ * Exynos8895 ASV table version, bits [6:0] of word 3 of the ASV table (after
+ * 24 four-bit fields, S:drivers/soc/samsung/cal-if/exynos8895/asv_exynos8895.h:9-37).
+ * It selects the Mongoose cluster maximum: tables 1-2 stop at 2158000 kHz,
+ * 3-8 at 2314000 kHz, and stock uses table 8 for a version with no table
+ * (S:drivers/soc/samsung/cal-if/vclk.c:507-520).
+ */
+static int acpm_clk_asv_ver(struct device *dev,
+			    const struct acpm_clk_driver_data *data)
+{
+	void __iomem *t;
+	int ver;
+
+	if (!data->asv_table_pa)
+		return -ENODEV;
+
+	t = ioremap(data->asv_table_pa, SZ_4K);	/* stock maps the same 4 KiB, :167 */
+	if (!t)
+		return -ENOMEM;
+	ver = readl(t + 0xc) & 0x7f;
+	iounmap(t);
+
+	return ver;
+}
+
+/*
+ * Map the PLL_CON0 register of a clock with read-back. Stock moves its PLL
+ * pointer by the difference between the low 16 bits of the address in the
+ * DVFS plugin's fvmap and of its own (S:drivers/soc/samsung/cal-if/fvmap.c:242-248);
+ * so does this. devm_ioremap(), not a region request: the CMU driver owns
+ * the region.
+ */
+static int acpm_clk_map_pll(struct device *dev, struct acpm_clk *aclk,
+			    u32 *pa_out)
+{
+	const struct acpm_clk_driver_data *d = aclk->data;
+	u32 pa, fw_pa;
+
+	*pa_out = 0;
+	if (aclk->id >= d->nr_pll_con0 || !d->pll_con0[aclk->id])
+		return 0;
+
+	pa = d->pll_con0[aclk->id];
+	if (!acpm_get_fvmap_pll_pa(aclk->handle, aclk->id, &fw_pa) &&
+	    (fw_pa & 0xffff) != (pa & 0xffff)) {
+		u32 moved = pa - (pa & 0xffff) + (fw_pa & 0xffff);
+
+		dev_warn(dev, "acpm-clk: %s PLL moved by fvmap: 0x%08x -> 0x%08x\n",
+			 d->clks[aclk->id].name, pa, moved);
+		pa = moved;
+	}
+
+	aclk->pll = devm_ioremap(dev, pa, 4);
+	if (!aclk->pll)
+		return -ENOMEM;
+
+	*pa_out = pa;
+	return 0;
+}
+
 static int acpm_clk_probe(struct platform_device *pdev)
 {
+	const struct acpm_clk_driver_data *data;
 	struct acpm_handle *acpm_handle;
 	struct clk_hw_onecell_data *clk_data;
 	struct clk_hw **hws;
 	struct device *dev = &pdev->dev;
 	struct acpm_clk *aclks;
 	unsigned int mbox_chan_id;
-	int i, err, count;
+	u32 pa, pll_pa[2] = {};
+	int i, err, count, ver;
 
 	acpm_handle = devm_acpm_get_by_node(dev, dev->parent->of_node);
 	if (IS_ERR(acpm_handle))
 		return dev_err_probe(dev, PTR_ERR(acpm_handle),
 				     "Failed to get acpm handle\n");
 
-	count = acpm_clk_gs101.nr_clks;
-	mbox_chan_id = acpm_clk_gs101.mbox_chan_id;
+	data = (const struct acpm_clk_driver_data *)
+		platform_get_device_id(pdev)->driver_data;
+	count = data->nr_clks;
+	mbox_chan_id = data->mbox_chan_id;
 
 	clk_data = devm_kzalloc(dev, struct_size(clk_data, hws, count),
 				GFP_KERNEL);
@@ -151,14 +360,41 @@ static int acpm_clk_probe(struct platform_device *pdev)
 		aclk->id = i;
 		aclk->handle = acpm_handle;
 		aclk->mbox_chan_id = mbox_chan_id;
+		aclk->data = data;
+
+		err = acpm_clk_map_pll(dev, aclk, &pa);
+		if (err)
+			return dev_err_probe(dev, err, "Failed to map the %s PLL\n",
+					     data->clks[i].name);
+		if (i == EXYNOS8895_CLK_ACPM_DVFS_CPUCL0)
+			pll_pa[0] = pa;
+		else if (i == EXYNOS8895_CLK_ACPM_DVFS_CPUCL1)
+			pll_pa[1] = pa;
+
+		/* the rate a read-back clock is at before its first request */
+		if (aclk->pll && acpm_clk_pll_readable(aclk))
+			aclk->rate = acpm_clk_pll_decode(readl(aclk->pll));
 
 		hws[i] = &aclk->hw;
 
-		err = acpm_clk_register(dev, aclk,
-					acpm_clk_gs101.clks[i].name);
+		err = acpm_clk_register(dev, aclk, data->clks[i].name);
 		if (err)
 			return dev_err_probe(dev, err,
 					     "Failed to register clock\n");
+	}
+
+	/* Exynos8895: ASV version and CPU PLLs (L2 pass line P9) */
+	if (data->asv_table_pa) {
+		struct acpm_clk *c0 = &aclks[EXYNOS8895_CLK_ACPM_DVFS_CPUCL0];
+		struct acpm_clk *c1 = &aclks[EXYNOS8895_CLK_ACPM_DVFS_CPUCL1];
+
+		ver = acpm_clk_asv_ver(dev, data);
+		dev_info(dev, "acpm-clk: asv_ver=%d (cl0 max %u) cpucl0 pll 0x%08x @0x%08x -> %lu kHz, cpucl1 pll 0x%08x @0x%08x -> %lu kHz\n",
+			 ver, (ver == 1 || ver == 2) ? 2158000 : 2314000,
+			 c0->pll ? readl(c0->pll) : 0, pll_pa[0],
+			 c0->rate / HZ_PER_KHZ,
+			 c1->pll ? readl(c1->pll) : 0, pll_pa[1],
+			 c1->rate / HZ_PER_KHZ);
 	}
 
 	return devm_of_clk_add_hw_provider(dev, of_clk_hw_onecell_get,
@@ -166,7 +402,8 @@ static int acpm_clk_probe(struct platform_device *pdev)
 }
 
 static const struct platform_device_id acpm_clk_id[] = {
-	{ "gs101-acpm-clk" },
+	{ "gs101-acpm-clk", (kernel_ulong_t)&acpm_clk_gs101 },
+	{ "exynos8895-acpm-clk", (kernel_ulong_t)&acpm_clk_exynos8895 },
 	{}
 };
 MODULE_DEVICE_TABLE(platform, acpm_clk_id);
