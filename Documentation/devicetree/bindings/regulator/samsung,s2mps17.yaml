@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/regulator/samsung,s2mps17.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung S2MPS17 Power Management IC regulators
+
+maintainers:
+  - Krzysztof Kozlowski <krzk@kernel.org>
+
+description: |
+  This is a part of device tree bindings for S2M and S5M family of Power
+  Management IC (PMIC).
+
+  The S2MPS17 provides buck and LDO regulators. It is the main PMIC of
+  Exynos8895 boards and is reached through the ACPM firmware.
+
+  The regulator-initial-mode values are the PMIC operating modes: 1 = on
+  while PWREN is high (standby), 2 = on while PWREN_MIF is high, 3 (and 0)
+  = on. A regulator with an initial mode is switched on in that mode when
+  it is registered.
+
+  See also Documentation/devicetree/bindings/mfd/samsung,s2mps11.yaml for
+  additional information.
+
+patternProperties:
+  # 29 LDOs
+  "^LDO([1-9]|1[0-3]|20|29|3[0-9]|4[0-3])$":
+    type: object
+    $ref: regulator.yaml#
+    unevaluatedProperties: false
+    description:
+      Properties for single LDO regulator.
+
+    properties:
+      regulator-initial-mode:
+        enum: [0, 1, 2, 3]
+
+    required:
+      - regulator-name
+
+  # 12 bucks
+  "^BUCK([1-9]|1[0-2])$":
+    type: object
+    $ref: regulator.yaml#
+    unevaluatedProperties: false
+    description:
+      Properties for single BUCK regulator.
+
+    properties:
+      regulator-initial-mode:
+        enum: [0, 1, 2, 3]
+
+    required:
+      - regulator-name
+
+additionalProperties: false
