@@ -1036,4 +1036,15 @@
 #define CLK_GOUT_ABOX_DMIC				33
 #define CLK_GOUT_ABOX_CODEC_MCLK			34
 
+/* CMU_VTS */
+#define CLK_VTS_OSC					1
+#define CLK_MOUT_VTS_CMUREF				2
+#define CLK_DOUT_VTS_BUS				3
+#define CLK_DOUT_VTS_DMICIF				4
+#define CLK_DOUT_VTS_DMIC				5
+#define CLK_DOUT_VTS_DMIC_DIV2				6
+#define CLK_GOUT_VTS_DMICIF				7
+#define CLK_GOUT_VTS_DMIC_DIV2				8
+#define CLK_GOUT_VTS_DMIC				9
+
 #endif /* _DT_BINDINGS_CLOCK_EXYNOS8895_H */
