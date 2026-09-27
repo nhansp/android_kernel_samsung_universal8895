@@ -275,6 +275,17 @@ static const u8 exynos8895_cpu_cold_ids[] = {
 	EXYNOS8895_CLK_ACPM_DVFS_DISP,
 };
 
+/*
+ * Exynos8895 stock gpu_cold_temp_list (S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:2438,
+ * FDT:6700 "gpu_cold_temp_list = <0xb040004>;"), evaluated from the GPU zone
+ * (S:drivers/thermal/gpu_cooling.c:631-651); stock starts it in the cold state
+ * (:629 "gpu_tstate = GPU_COLD"), so the first reading at 15 C or above
+ * sends "not cold".
+ */
+static const u8 exynos8895_gpu_cold_ids[] = {
+	EXYNOS8895_CLK_ACPM_DVFS_G3D,
+};
+
 static const struct acpm_clk_cold_desc exynos8895_cold[] = {
 	{
 		.label = "big",
@@ -282,6 +293,13 @@ static const struct acpm_clk_cold_desc exynos8895_cold[] = {
 		.ids = exynos8895_cpu_cold_ids,
 		.nr_ids = ARRAY_SIZE(exynos8895_cpu_cold_ids),
 		.initial_cold = false,
+	},
+	{
+		.label = "gpu",
+		.zone = "gpu-thermal",
+		.ids = exynos8895_gpu_cold_ids,
+		.nr_ids = ARRAY_SIZE(exynos8895_gpu_cold_ids),
+		.initial_cold = true,
 	},
 };
 
