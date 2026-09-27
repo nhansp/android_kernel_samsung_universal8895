@@ -37,6 +37,7 @@ properties:
       - samsung,exynos8895-cmu-dpu1
       - samsung,exynos8895-cmu-fsys0
       - samsung,exynos8895-cmu-fsys1
+      - samsung,exynos8895-cmu-mfc
       - samsung,exynos8895-cmu-peric0
       - samsung,exynos8895-cmu-peric1
       - samsung,exynos8895-cmu-peris
@@ -214,6 +215,24 @@ allOf:
             - const: pcie
             - const: ufs
             - const: mmc
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: samsung,exynos8895-cmu-mfc
+
+    then:
+      properties:
+        clocks:
+          items:
+            - description: External reference clock (26 MHz)
+            - description: CMU_MFC BUS clock (from CMU_TOP)
+
+        clock-names:
+          items:
+            - const: oscclk
+            - const: bus
 
   - if:
       properties:
