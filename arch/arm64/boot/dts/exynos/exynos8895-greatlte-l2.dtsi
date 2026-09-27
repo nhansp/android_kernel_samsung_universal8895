@@ -371,3 +371,15 @@
 		};
 	};
 };
+
+/*
+ * TMU (spec/L2_power.md 4.6, 5.6): the four sensor instances of the SoC dtsi, which also holds
+ * their thermal zones (big/little/gpu/isp) and the big CPU cooling map; the little zone has only
+ * its 115 C critical trip (spec 4.6, Q9: stock APOLLO's trips are all "active", FDT:9495-9612, and
+ * are dropped). Stock enables all four on greatlte: FDT:9339-9434 (MNGS, APOLLO, GPU, ISP; no
+ * status property).
+ */
+&tmu_big { status = "okay"; };
+&tmu_little { status = "okay"; };
+&tmu_gpu { status = "okay"; };
+&tmu_isp { status = "okay"; };
