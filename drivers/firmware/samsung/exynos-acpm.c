@@ -21,6 +21,7 @@
 #include <linux/ktime.h>
 #include <linux/mailbox/exynos-message.h>
 #include <linux/mailbox_client.h>
+#include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/math.h>
@@ -30,6 +31,8 @@
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/reboot.h>
+#include <linux/regmap.h>
 #include <linux/sched/clock.h>
 #include <linux/seq_file.h>
 #include <linux/sizes.h>
@@ -62,6 +65,22 @@
 static unsigned int fw_log;
 module_param(fw_log, uint, 0644);
 MODULE_PARM_DESC(fw_log, "print APM firmware log entries: 0 none, 1 level 0 only, 2 all");
+
+/*
+ * APM stop before a restart or power-off (Exynos8895 stock exynos_acpm_reboot(),
+ * S:drivers/soc/samsung/acpm/acpm.c:264-269): the STOP command on the plugin
+ * channel (S:include/soc/samsung/acpm_ipc_ctrl.h:23 "ACPM_IPC_PROTOCOL_STOP
+ * (22)", sent as 1 << 22 at S:drivers/soc/samsung/acpm/acpm.c:252), then the
+ * APM core's LOCAL_PWR_CFG bit cleared (S:drivers/soc/samsung/acpm/acpm.h:20
+ * "APM_LOCAL_PWR_CFG_RESET (~(0x1 << 0))"). stop_on_reboot=0 skips both, for
+ * the reset A/B test (L1 O-R2).
+ */
+#define ACPM_PROTOCOL_STOP		BIT(22)
+#define ACPM_APM_LOCAL_PWR_CFG		BIT(0)
+
+static bool stop_on_reboot = true;
+module_param(stop_on_reboot, bool, 0644);
+MODULE_PARM_DESC(stop_on_reboot, "stop the APM firmware and power its core down before a restart or power-off (default Y)");
 
 /*
  * APM firmware-log entry header (Exynos8895 stock,
@@ -375,6 +394,8 @@ struct acpm_info {
 	atomic_t fwlog_entries;
 	atomic_t fwlog_bad;
 	struct delayed_work fwlog_work;
+	struct regmap *pmu;
+	bool stopped;
 };
 
 /**
@@ -401,6 +422,11 @@ struct acpm_info {
  *			timestamp index updates.
  * @fwlog_first_ms:	delay of the first periodic drain after probe.
  * @num_timestamps:	modulus of the timestamp index (at most 32).
+ * @pmu_compatible:	compatible of the PMU syscon; non-NULL registers the APM
+ *			stop before a restart or power-off (STOP on plugin_chan,
+ *			then the APM core powered down).
+ * @pmu_apm_cfg:	offset of the APM core configuration register in that
+ *			syscon.
  */
 struct acpm_match_data {
 	loff_t initdata_base;
@@ -416,6 +442,8 @@ struct acpm_match_data {
 	u32 fwlog_period_ms;
 	u32 fwlog_first_ms;
 	u32 num_timestamps;
+	const char *pmu_compatible;
+	u32 pmu_apm_cfg;
 };
 
 #define client_to_acpm_chan(c) container_of(c, struct acpm_chan, cl)
@@ -979,6 +1007,10 @@ int acpm_do_xfer(struct acpm_handle *handle, const struct acpm_xfer *xfer)
 		return -EINVAL;
 
 	achan = &acpm->chans[xfer->acpm_chan_id];
+
+	/* After the APM stop no command can be answered. */
+	if (READ_ONCE(acpm->stopped))
+		return -ESHUTDOWN;
 
 	ret = __acpm_do_xfer(acpm, achan, xfer);
 	atomic_inc(&achan->stats.xfer);
@@ -1555,6 +1587,87 @@ static void acpm_debugfs_init(struct acpm_info *acpm)
 }
 
 /**
+ * acpm_stop_cb() - stop the APM before a restart or power-off.
+ * @data:	sys-off data; cb_data is the driver data.
+ *
+ * Stock exynos_acpm_reboot() (S:drivers/soc/samsung/acpm/acpm.c:264-269):
+ * STOP on the plugin channel with a response, which carries the STOP bit
+ * back (:243-262, :286-292), then the APM core's LOCAL_PWR_CFG bit cleared
+ * whatever the STOP result (:234-241). Stock switched the IPC to busy waiting
+ * first; the polled wait here always busy-waits (acpm_dequeue_by_polling()).
+ * Later transfers fail with -ESHUTDOWN instead of timing out.
+ *
+ * Return: NOTIFY_DONE.
+ */
+static int acpm_stop_cb(struct sys_off_data *data)
+{
+	struct acpm_info *acpm = data->cb_data;
+	u32 cmd[4] = { ACPM_PROTOCOL_STOP, 0, 0, 0 };
+	struct acpm_xfer xfer = {
+		.txd = cmd,
+		.txlen = sizeof(cmd),
+		.rxd = cmd,
+		.rxlen = sizeof(cmd),
+		.acpm_chan_id = acpm->match->plugin_chan,
+	};
+	int ret, pwr = -ENODEV;
+
+	if (!stop_on_reboot) {
+		dev_err(acpm->dev, "acpm: APM stop skipped (stop_on_reboot=0)\n");
+		return NOTIFY_DONE;
+	}
+
+	ret = acpm_do_xfer(&acpm->handle, &xfer);
+	if (!ret && !(cmd[0] & ACPM_PROTOCOL_STOP))
+		ret = -EBADMSG;
+	WRITE_ONCE(acpm->stopped, true);
+
+	if (!IS_ERR(acpm->pmu))
+		pwr = regmap_update_bits(acpm->pmu, acpm->match->pmu_apm_cfg,
+					 ACPM_APM_LOCAL_PWR_CFG, 0);
+
+	/* KERN_ERR for both outcomes, as stock (S:drivers/soc/samsung/acpm/acpm.c:258-261) */
+	dev_err(acpm->dev, "acpm: APM stop %s (%d), core power-down %d\n",
+		ret ? "failed" : "done", ret, pwr);
+
+	return NOTIFY_DONE;
+}
+
+/**
+ * acpm_stop_init() - register the APM stop for restart and power-off.
+ * @acpm:	driver data.
+ *
+ * Both *_PREPARE handlers run in process context after device_shutdown()
+ * (A:kernel/reboot.c:103-108, 290-293, 305-311, 708-711), so every ACPM
+ * consumer is shut down, and before the reset or PS_HOLD low.
+ * SYS_OFF_PRIO_DEFAULT: a charger's higher-priority prepare handler still
+ * reads the charger before the APM stops (L6F 5.3.7).
+ */
+static void acpm_stop_init(struct acpm_info *acpm)
+{
+	const struct acpm_match_data *match = acpm->match;
+	struct device *dev = acpm->dev;
+	int ret;
+
+	if (!match->pmu_compatible || match->plugin_chan < 0 ||
+	    match->plugin_chan >= acpm->num_chans)
+		return;
+
+	acpm->pmu = syscon_regmap_lookup_by_compatible(match->pmu_compatible);
+	if (IS_ERR(acpm->pmu))
+		dev_err(dev, "acpm: no PMU syscon (%ld): APM core left on at restart\n",
+			PTR_ERR(acpm->pmu));
+
+	ret = devm_register_sys_off_handler(dev, SYS_OFF_MODE_RESTART_PREPARE,
+					    SYS_OFF_PRIO_DEFAULT, acpm_stop_cb, acpm);
+	if (!ret)
+		ret = devm_register_sys_off_handler(dev, SYS_OFF_MODE_POWER_OFF_PREPARE,
+						    SYS_OFF_PRIO_DEFAULT, acpm_stop_cb, acpm);
+	if (ret)
+		dev_err(dev, "acpm: APM stop hook not registered (%d)\n", ret);
+}
+
+/**
  * acpm_setup_ops() - setup the operations structures.
  * @acpm:	pointer to the driver data.
  */
@@ -1628,6 +1741,8 @@ static int acpm_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, acpm);
 
 	acpm_debugfs_init(acpm);
+
+	acpm_stop_init(acpm);
 
 	if (match_data->fwlog_period_ms)
 		acpm_fwlog_init(acpm);
@@ -1839,6 +1954,14 @@ static const struct acpm_match_data acpm_exynos8895 = {
 	.fwlog_first_ms = 10000,
 	/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:2423 "num-timestamps = <32>;" */
 	.num_timestamps = 32,
+	/*
+	 * APM core configuration: stock acpm node "reg = <0x0 0x16488000 0x1000>"
+	 * (S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:2411) +
+	 * EXYNOS_PMU_CORTEX_APM_CONFIGURATION 0x0100 (S:drivers/soc/samsung/acpm/acpm.h:12)
+	 * = 0x16488100, i.e. 0x8100 in the PMU syscon at 0x16480000.
+	 */
+	.pmu_compatible = "samsung,exynos8895-pmu",
+	.pmu_apm_cfg = 0x8100,
 };
 
 static const struct of_device_id acpm_match[] = {
