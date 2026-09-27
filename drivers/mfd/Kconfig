@@ -1413,12 +1413,13 @@ config MFD_SEC_CORE
 	select REGMAP_IRQ
 
 config MFD_SEC_ACPM
-	tristate "Samsung Electronics S2MPG1x PMICs"
+	tristate "Samsung Electronics S2MPG1x and S2MPS17 PMICs"
 	depends on EXYNOS_ACPM_PROTOCOL
 	depends on OF
 	select MFD_SEC_CORE
 	help
-	  Support for the Samsung Electronics PMICs with ACPM interface.
+	  Support for the Samsung Electronics PMICs with ACPM interface
+	  (S2MPG10 on gs101, S2MPS17 on Exynos8895).
 	  This is a Power Management IC for mobile applications with buck
 	  converters, various LDOs, power meters, RTC, clock outputs, and
 	  additional GPIOs interfaces.
