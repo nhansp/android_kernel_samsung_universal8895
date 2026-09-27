@@ -185,8 +185,44 @@ static const struct exynos_pm_domain_config exynos5433_cfg = {
 	.local_pwr_cfg		= 0xf,
 };
 
+/*
+ * Exynos8895 rows (FULL_IMAGE_PLAN.md 1.2 X-39). CAL: =
+ * S:drivers/soc/samsung/cal-if/exynos8895/; ":N" = line of
+ * CAL:pmucal_local_exynos8895.h.
+ */
+
+/*
+ * pd_g3d (L6A REQ-L1-6A-1): stock g3d_on/g3d_off write the CMU_G3D PLL and
+ * mux words around CONFIGURATION (CAL:pmucal_local_exynos8895.h:357-374),
+ * through reg 1 of the node (CMU_G3D, 0x13800000). Offsets are the PMUCAL
+ * ones verbatim.
+ */
+static const struct exynos_pd_write exynos8895_g3d_pre_on[] = {
+	{ 0x0148, U32_MAX, 0x30000003 },	/* :358 PLL_CON2_PLL_G3D */
+	{ 0x0140, BIT(4), BIT(4) },		/* :359 PLL_CON0_PLL_G3D */
+	{ 0x0100, BIT(4), BIT(4) },		/* :360 PLL_CON0_MUX_CLKCMU_EMBEDDED_G3D_USER */
+};
+
+static const struct exynos_pd_write exynos8895_g3d_post_off[] = {
+	{ 0x0100, BIT(4), 0 },			/* :371 PLL_CON0_MUX_CLKCMU_EMBEDDED_G3D_USER */
+	{ 0x0140, BIT(4), 0 },			/* :372 PLL_CON0_PLL_G3D */
+	{ 0x0148, U32_MAX, 0x10000001 },	/* :373 PLL_CON2_PLL_G3D */
+};
+
+static const struct exynos_pd_extra exynos8895_pd_extra[] = {
+	{	/* pd_g3d: CAL:pmucal_local_exynos8895.h:361 EMBEDDED_G3D_CONFIGURATION */
+		.conf		= 0x164840e0,
+		.pre_on		= exynos8895_g3d_pre_on,
+		.nr_pre_on	= ARRAY_SIZE(exynos8895_g3d_pre_on),
+		.post_off	= exynos8895_g3d_post_off,
+		.nr_post_off	= ARRAY_SIZE(exynos8895_g3d_post_off),
+	},
+};
+
 static const struct exynos_pm_domain_config exynos8895_cfg = {
 	.local_pwr_cfg		= 0xf,
+	.extra			= exynos8895_pd_extra,
+	.nr_extra		= ARRAY_SIZE(exynos8895_pd_extra),
 };
 
 static const struct of_device_id exynos_pm_domain_of_match[] = {
