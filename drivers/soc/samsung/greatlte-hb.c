@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* greatlte bring-up heartbeat. DEBUG ONLY - see T_tooling spec 5.7. */
+/* greatlte bring-up heartbeat. DEBUG ONLY - see T_tooling spec 5.7 and FULL_IMAGE_PLAN.md 2.2 T14. */
 #define pr_fmt(fmt) "hb: v1 " fmt
 
 #include <linux/atomic.h>
+#include <linux/bitmap.h>
 #include <linux/blkdev.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/cpufreq.h>
 #include <linux/cpuhotplug.h>
+#include <linux/ctype.h>
 #include <linux/device/bus.h>
 #include <linux/hrtimer.h>
 #include <linux/i2c.h>
@@ -28,8 +30,10 @@
 #include <linux/sched.h>
 #include <linux/sched/stat.h>
 #include <linux/sched/task.h>
+#include <linux/slab.h>
 #include <linux/soc/samsung/greatlte-hb.h>
 #include <linux/spi/spi.h>
+#include <linux/spinlock.h>
 #include <linux/string.h>
 #include <linux/thermal.h>
 #include <linux/utsname.h>
@@ -53,28 +57,75 @@
 
 #undef MODULE_PARAM_PREFIX
 #define MODULE_PARAM_PREFIX "hb."
-static unsigned int period_ms = 2000;       module_param(period_ms, uint, 0644);
-static unsigned int slow_after = 120;       module_param(slow_after, uint, 0644);
-static unsigned int slow_period_ms = 10000; module_param(slow_period_ms, uint, 0644);
+/* T14: the all-in cadence of FULL_IMAGE_PLAN.md 3.4 is the default; the L0 runs used 2000/120/10000 (T 5.7.2) */
+static unsigned int period_ms = 5000;       module_param(period_ms, uint, 0644);
+static unsigned int slow_after = 60;        module_param(slow_after, uint, 0644);
+static unsigned int slow_period_ms = 30000; module_param(slow_period_ms, uint, 0644);
 static unsigned int banner_every = 15;      module_param(banner_every, uint, 0644);
+/* The banner group is also printed once banner_ms has passed since the last one (0 = count rule only), so
+ * a whole group (~6 KB) stays in the 16 KB console zone at every cadence: at the all-in rate of plan 3.4
+ * (~1.4 KB per 30 s period) the count rule alone repeats it only every ~150 s (review WP-T F1). */
+static unsigned int banner_ms = 60000;      module_param(banner_ms, uint, 0644);
 static unsigned int panic_after;            module_param(panic_after, uint, 0644);
 static unsigned int tick_ms = 10;           module_param(tick_ms, uint, 0444);	/* 0 = no per-CPU ticks */
 
 #define HB_LINE		200
 #define HB_CHUNK	140			/* payload per physical line; prefix fits in the rest */
-#define HB_LAYERS	7			/* L0..L6 */
-#define HB_MAX_PRINTERS	16
+#define HB_LAYERS	GREATLTE_HB_LAYERS	/* L0..L7 (T14, L7 O7-26) */
+#define HB_MAX_PRINTERS	32			/* T14: an all-in image registers about 20 (plan 3.4) */
+#define HB_MAX_ROWS	256			/* T14: rows of all layers, the static L0 rows included */
+#define HB_TAG		8			/* greatlte_hb_item.tag: 1..8 chars */
 
-enum hb_kind { HB_IRQ, HB_DEV, HB_CLK, HB_REG, HB_FREQ, HB_BLK, HB_PSY, HB_TZ };
+/* Row kinds of include/linux/soc/samsung/greatlte-hb.h under the short names of T 5.7.3. */
+#define HB_IRQ	GREATLTE_HB_IRQ
+#define HB_DEV	GREATLTE_HB_DEV
+#define HB_CLK	GREATLTE_HB_CLK
+#define HB_REG	GREATLTE_HB_REG
+#define HB_FREQ	GREATLTE_HB_FREQ
+#define HB_BLK	GREATLTE_HB_BLK
+#define HB_PSY	GREATLTE_HB_PSY
+#define HB_TZ	GREATLTE_HB_TZ
+#define HB_FN	GREATLTE_HB_FN
+
+/* hb.skip_layers=<list>, e.g. "1-2,4": the rows and printers of those layers are not printed (plan 3.4;
+ * they stay compiled and registered). bitmap_parselist(): A:lib/bitmap-str.c. */
+static unsigned long hb_skip;
+
+static int hb_skip_set(const char *val, const struct kernel_param *kp)
+{
+	unsigned long m = 0;
+	int r = bitmap_parselist(val, &m, HB_LAYERS);
+
+	if (r)
+		return r;
+	WRITE_ONCE(hb_skip, m);
+	return 0;
+}
+
+static int hb_skip_get(char *buf, const struct kernel_param *kp)
+{
+	unsigned long m = READ_ONCE(hb_skip);
+
+	return scnprintf(buf, PAGE_SIZE, "%*pbl\n", HB_LAYERS, &m);
+}
+
+static const struct kernel_param_ops hb_skip_ops = { .set = hb_skip_set, .get = hb_skip_get };
+module_param_cb(skip_layers, &hb_skip_ops, NULL, 0644);
+
+static bool hb_skipped(unsigned int layer)
+{
+	return layer < HB_LAYERS && (READ_ONCE(hb_skip) & BIT(layer));
+}
 
 struct hb_item {
 	u8 layer;
 	const char *tag;
-	enum hb_kind kind;
+	enum greatlte_hb_kind kind;
 	const char *path;	/* DT node path (IRQ, DEV, CLK); the rail's regulator-name (REG);
 				 * power_supply name (PSY); thermal zone type (TZ) */
 	const char *name;	/* clock-names entry (CLK) */
 	int idx;		/* irq index (IRQ), clock index if !name (CLK), cpu (FREQ), property (PSY) */
+	int (*fn)(char *buf, size_t size);	/* FN: value text, runs in 'hb' (T14) */
 	/* resolved by hb-probe; read by hb only after 'ok' is set (release/acquire) */
 	bool ok;
 	int err;		/* last resolution error; 0 = not tried yet (printed as !-115) */
@@ -100,8 +151,24 @@ static struct hb_item hb_items[] = {
 		 * stock S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:603,620 mct@10040000 "interrupt-map = <0 &gic 0 455 0>",
 		 * shipped DTB (dtb0_plat22bf_rev6-255.dts:4581,4596) first map entry 0x1c7 = 455 */
 	{ .layer = 0, .tag = "blk",  .kind = HB_BLK },
-	/* L1..L6 rows: appended by each layer spec, see 5.7.4 */
+	/* L1..L7 rows: registered from each layer's own DEBUG file with greatlte_hb_add_items()
+	 * (FULL_IMAGE_PLAN.md 2.2 T14, plan X-55); this table keeps T's L0 rows only. */
 };
+
+/* Rows added by greatlte_hb_add_items(): one batch per call, appended under hb_batch_lock and published
+ * with a release store; 'hb' and 'hb-probe' walk the list with acquire loads, in registration order. */
+struct hb_batch {
+	struct hb_batch *next;
+	unsigned int n;
+	struct hb_item it[];
+};
+static struct hb_batch *hb_batches;
+static struct hb_batch **hb_batch_tail = &hb_batches;
+static DEFINE_SPINLOCK(hb_batch_lock);
+static unsigned int hb_nrows = ARRAY_SIZE(hb_items);	/* banner items= */
+
+#define hb_for_each_batch(b) \
+	for ((b) = smp_load_acquire(&hb_batches); (b); (b) = smp_load_acquire(&(b)->next))
 
 static struct greatlte_hb_printer *hb_printers[HB_MAX_PRINTERS];
 static atomic_t hb_nprinters = ATOMIC_INIT(0);
@@ -174,6 +241,143 @@ int greatlte_hb_register(struct greatlte_hb_printer *p)
 	}
 	smp_store_release(&hb_printers[i], p);
 	pr_err("reg %s layer=%u slow=%d every=%u\n", p->name, p->layer, p->slow, p->every_ms);
+	return 0;
+}
+
+/* GREATLTE_HB_FN value grammar (review WP-T F4): the value prints as one " tag=value" token, so ' ' becomes
+ * '_', '=' becomes ':' and a control character '?' (gl-hb splits the L<n>f line at spaces and at the
+ * first '=' of each word). */
+static void hb_fn_value(char *v)
+{
+	for (; *v; v++) {
+		if (*v == ' ')
+			*v = '_';
+		else if (*v == '=')
+			*v = ':';
+		else if (iscntrl(*v))
+			*v = '?';
+	}
+}
+
+/* ---- row registration (T14): the table of a layer's own DEBUG file, copied once ---- */
+static bool hb_tag_ok(const char *t)
+{
+	size_t i, n = t ? strnlen(t, HB_TAG + 1) : 0;
+
+	if (!n || n > HB_TAG)
+		return false;
+	for (i = 0; i < n; i++)
+		if (!isalnum(t[i]) && t[i] != '_')
+			return false;
+	return true;
+}
+
+/* Called under hb_batch_lock: is (layer, tag) already a row (static L0 rows or an earlier batch)? */
+static bool hb_tag_taken(u8 layer, const char *tag)
+{
+	struct hb_batch *bt;
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(hb_items); i++)
+		if (hb_items[i].layer == layer && !strcmp(hb_items[i].tag, tag))
+			return true;
+	hb_for_each_batch(bt)
+		for (i = 0; i < bt->n; i++)
+			if (bt->it[i].layer == layer && !strcmp(bt->it[i].tag, tag))
+				return true;
+	return false;
+}
+
+static int hb_item_check(const struct greatlte_hb_item *d)
+{
+	if (d->layer >= HB_LAYERS || !hb_tag_ok(d->tag) || d->kind > GREATLTE_HB_FN)
+		return -EINVAL;
+	switch (d->kind) {
+	case GREATLTE_HB_FN:
+		return d->fn ? 0 : -EINVAL;
+	case GREATLTE_HB_FREQ:
+	case GREATLTE_HB_BLK:
+		return 0;
+	default:			/* IRQ, DEV, CLK: node path; REG, PSY, TZ: name */
+		return d->path ? 0 : -EINVAL;
+	}
+}
+
+/*
+ * Rows print in the "L<layer>f" line of every period after the call, in registration order after the
+ * static L0 rows (5.7.4 schema; R-HB1: every row on every period). Call once per table, from a built-in
+ * initcall (it allocates). Prints "hb: v1 ireg n=<n> rows=<tag>/<layer>,..." once; the banner line
+ * "rows=" repeats the per-layer counts so gl-hb knows the expected rows after the 16 KB wrap.
+ */
+int greatlte_hb_add_items(const struct greatlte_hb_item *items, unsigned int n)
+{
+	char b[HB_CHUNK];
+	struct hb_batch *bt;
+	unsigned int i, j;
+	int k, r = 0;
+
+	if (!items || !n)
+		return -EINVAL;
+	for (i = 0; i < n && !r; i++)
+		r = hb_item_check(&items[i]);
+	if (!r)
+		for (i = 1; i < n && !r; i++)	/* (layer, tag) unique within the batch */
+			for (j = 0; j < i && !r; j++)
+				if (items[j].layer == items[i].layer && !strcmp(items[j].tag, items[i].tag))
+					r = -EEXIST;
+	if (r) {
+		i--;
+		pr_err("ireg !%d at=%u tag=%.8s layer=%u\n", r, i, items[i].tag ?: "-", items[i].layer);
+		return r;
+	}
+	bt = kzalloc(struct_size(bt, it, n), GFP_KERNEL);
+	if (!bt) {
+		pr_err("ireg !%d n=%u\n", -ENOMEM, n);
+		return -ENOMEM;
+	}
+	bt->n = n;
+	for (i = 0; i < n; i++) {
+		struct hb_item *it = &bt->it[i];
+
+		it->layer = items[i].layer;
+		it->tag = items[i].tag;
+		it->kind = items[i].kind;
+		it->path = items[i].path;
+		it->name = items[i].name;
+		it->idx = items[i].idx;
+		it->fn = items[i].fn;
+	}
+	spin_lock(&hb_batch_lock);
+	if (hb_nrows + n > HB_MAX_ROWS) {
+		spin_unlock(&hb_batch_lock);
+		kfree(bt);
+		pr_err("ireg !%d n=%u\n", -ENOSPC, n);
+		return -ENOSPC;
+	}
+	for (i = 0; i < n; i++) {		/* (layer, tag) unique against every earlier row */
+		if (hb_tag_taken(items[i].layer, items[i].tag)) {
+			spin_unlock(&hb_batch_lock);
+			kfree(bt);
+			pr_err("ireg !%d at=%u tag=%.8s layer=%u\n", -EEXIST, i, items[i].tag, items[i].layer);
+			return -EEXIST;
+		}
+	}
+	smp_store_release(hb_batch_tail, bt);
+	hb_batch_tail = &bt->next;
+	WRITE_ONCE(hb_nrows, hb_nrows + n);
+	spin_unlock(&hb_batch_lock);
+
+	k = scnprintf(b, sizeof(b), "ireg n=%u rows=", n);
+	for (i = 0; i < n; i++) {
+		if (k + HB_TAG + 4 >= (int)sizeof(b)) {		/* ",<tag>/<l>" no longer fits: next line */
+			pr_err("%s\n", b);
+			k = scnprintf(b, sizeof(b), "ireg+ rows=");
+		} else if (i) {
+			k += scnprintf(b + k, sizeof(b) - k, ",");
+		}
+		k += scnprintf(b + k, sizeof(b) - k, "%s/%u", items[i].tag, items[i].layer);
+	}
+	pr_err("%s\n", b);
 	return 0;
 }
 
@@ -255,9 +459,9 @@ static int hb_unbound_name(struct device *dev, void *data)
 	return 0;
 }
 
-static bool hb_is_slow(enum hb_kind k) { return k == HB_REG || k == HB_PSY || k == HB_TZ; }
+static bool hb_is_slow(enum greatlte_hb_kind k) { return k == HB_REG || k == HB_PSY || k == HB_TZ; }
 /* kinds that walk a class: class_for_each/find_device WARN before class_register (A:drivers/base/class.c:414-417) */
-static bool hb_needs_class(enum hb_kind k) { return k == HB_BLK || hb_is_slow(k); }
+static bool hb_needs_class(enum greatlte_hb_kind k) { return k == HB_BLK || hb_is_slow(k); }
 
 static int hb_fmt_fast(char *b, size_t sz, struct hb_item *it)
 {
@@ -271,7 +475,7 @@ static int hb_fmt_fast(char *b, size_t sz, struct hb_item *it)
 
 		return scnprintf(b, sz, " %s=%s", it->tag, *s ? s : "!-115");
 	}
-	if (it->kind != HB_FREQ && it->kind != HB_BLK && !smp_load_acquire(&it->ok)) {
+	if (it->kind != HB_FREQ && it->kind != HB_BLK && it->kind != HB_FN && !smp_load_acquire(&it->ok)) {
 		e = READ_ONCE(it->err);
 		return scnprintf(b, sz, " %s=!%d", it->tag, e ? e : -EINPROGRESS);
 	}
@@ -290,6 +494,16 @@ static int hb_fmt_fast(char *b, size_t sz, struct hb_item *it)
 	case HB_BLK:
 		class_for_each_device(&block_class, NULL, cnt, hb_blk_one);
 		return scnprintf(b, sz, " %s=%d/%d", it->tag, cnt[0], cnt[1]);
+	case HB_FN: {		/* T14: the layer's own lock-free value (5.7.6 rule 4 applies) */
+		char v[GREATLTE_HB_VALUE];
+
+		e = it->fn(v, sizeof(v));
+		if (e <= 0)
+			return scnprintf(b, sz, " %s=!%d", it->tag, e < 0 ? e : -ENODATA);
+		v[sizeof(v) - 1] = '\0';
+		hb_fn_value(v);
+		return scnprintf(b, sz, " %s=%s", it->tag, v);
+	}
 	default:
 		break;
 	}
@@ -328,7 +542,7 @@ static void hb_resolve(struct hb_item *it)
 	struct clk *c;
 	int v;
 
-	if (it->kind == HB_FREQ || it->kind == HB_BLK || it->kind == HB_TZ)
+	if (it->kind == HB_FREQ || it->kind == HB_BLK || it->kind == HB_TZ || it->kind == HB_FN)
 		return;				/* nothing to resolve */
 	if (it->ok) {
 		/* a device that was deleted (e.g. an MFD cell re-created by a deferred parent probe) is looked up
@@ -379,53 +593,61 @@ static void hb_resolve(struct hb_item *it)
 	smp_store_release(&it->ok, true);
 }
 
+static void hb_probe_item(struct hb_item *it, bool ready)
+{
+	if (hb_skipped(it->layer))
+		return;					/* hb.skip_layers: not printed, not refreshed */
+	if (hb_needs_class(it->kind) && !ready)
+		return;					/* hb prints !-11 until the classes exist */
+	hb_resolve(it);
+	if (!hb_is_slow(it->kind))
+		return;
+	if (it->kind == HB_TZ) {
+#if IS_ENABLED(CONFIG_THERMAL)
+		/* looked up on every pass: the core hands out no reference (A:drivers/thermal/thermal_core.c:1755-1779) */
+		struct thermal_zone_device *tz = thermal_zone_get_zone_by_name(it->path);
+		int t = 0, r = IS_ERR(tz) ? PTR_ERR(tz) : thermal_zone_get_temp(tz, &t);
+
+		if (r)
+			hb_set_slow(it, "!%d", r);
+		else
+			hb_set_slow(it, "%d", t);	/* milli-degC */
+#else
+		hb_set_slow(it, "!%d", -ENOSYS);
+#endif
+	} else if (!it->ok) {
+		hb_set_slow(it, "!%d", it->err ? it->err : -EINPROGRESS);
+	} else if (it->kind == HB_REG) {
+		int en = regulator_is_enabled(it->reg);
+		int uv = regulator_get_voltage(it->reg);
+		unsigned int w = !it->scur;
+
+		scnprintf(it->slow[w], sizeof(it->slow[w]), "%d:%d", en, uv);
+		smp_store_release(&it->scur, w);
+	} else {
+#if IS_ENABLED(CONFIG_POWER_SUPPLY)
+		union power_supply_propval pv = {};
+		int r = power_supply_get_property(it->psy, it->idx, &pv);
+
+		if (r)
+			hb_set_slow(it, "!%d", r);
+		else
+			hb_set_slow(it, "%d", pv.intval);
+#endif
+	}
+}
+
 static void hb_probe_items(void)
 {
 	bool ready = smp_load_acquire(&hb_classes_ready);
+	struct hb_batch *bt;
 	unsigned int i;
 
-	for (i = 0; i < ARRAY_SIZE(hb_items); i++) {
-		struct hb_item *it = &hb_items[i];
-
-		if (hb_needs_class(it->kind) && !ready)
-			continue;			/* hb prints !-11 until the classes exist */
-		hb_resolve(it);
-		if (!hb_is_slow(it->kind))
-			continue;
-		if (it->kind == HB_TZ) {
-#if IS_ENABLED(CONFIG_THERMAL)
-			/* looked up on every pass: the core hands out no reference (A:drivers/thermal/thermal_core.c:1755-1779) */
-			struct thermal_zone_device *tz = thermal_zone_get_zone_by_name(it->path);
-			int t = 0, r = IS_ERR(tz) ? PTR_ERR(tz) : thermal_zone_get_temp(tz, &t);
-
-			if (r)
-				hb_set_slow(it, "!%d", r);
-			else
-				hb_set_slow(it, "%d", t);	/* milli-degC */
-#else
-			hb_set_slow(it, "!%d", -ENOSYS);
-#endif
-		} else if (!it->ok) {
-			hb_set_slow(it, "!%d", it->err ? it->err : -EINPROGRESS);
-		} else if (it->kind == HB_REG) {
-			int en = regulator_is_enabled(it->reg);
-			int uv = regulator_get_voltage(it->reg);
-			unsigned int w = !it->scur;
-
-			scnprintf(it->slow[w], sizeof(it->slow[w]), "%d:%d", en, uv);
-			smp_store_release(&it->scur, w);
-		} else {
-#if IS_ENABLED(CONFIG_POWER_SUPPLY)
-			union power_supply_propval pv = {};
-			int r = power_supply_get_property(it->psy, it->idx, &pv);
-
-			if (r)
-				hb_set_slow(it, "!%d", r);
-			else
-				hb_set_slow(it, "%d", pv.intval);
-#endif
-		}
-	}
+	for (i = 0; i < ARRAY_SIZE(hb_items); i++)
+		hb_probe_item(&hb_items[i], ready);
+	hb_for_each_batch(bt)
+		for (i = 0; i < bt->n; i++)
+			hb_probe_item(&bt->it[i], ready);
 }
 
 static void hb_probe_printers(void)
@@ -437,7 +659,7 @@ static void hb_probe_printers(void)
 		u64 now = hb_up_ms();
 		unsigned int w;
 
-		if (!p || !p->slow)
+		if (!p || !p->slow || hb_skipped(p->layer))
 			continue;
 		/* produce if never produced, or if hb will print it at its next period */
 		if (p->done_ms[p->cur] && READ_ONCE(p->printed) && p->every_ms &&
@@ -483,8 +705,11 @@ static void hb_banner(void)
 	struct resource r;
 	u32 rec = 0, con = 0;
 	size_t len = saved_command_line_len, off;
-	char ps[48] = "!ENOENT", prn[HB_CHUNK] = "";
-	unsigned int i, n = hb_nprn(), k = 0;
+	char ps[48] = "!ENOENT", prn[HB_CHUNK] = "", rows[HB_CHUNK] = "";
+	unsigned int cnt[HB_LAYERS] = {}, i, n = hb_nprn(), k = 0, l;
+	unsigned long skip = READ_ONCE(hb_skip);
+	struct hb_batch *bt;
+	bool first = true;
 
 	of_property_read_string(of_root, "model", &model);
 	np = of_find_compatible_node(NULL, NULL, "ramoops");
@@ -499,20 +724,46 @@ static void hb_banner(void)
 		}
 		of_node_put(np);
 	}
-	for (i = 0; i < n; i++) {
-		struct greatlte_hb_printer *p = smp_load_acquire(&hb_printers[i]);
-
-		if (p)
-			k += scnprintf(prn + k, sizeof(prn) - k, "%s%s/%u", k ? "," : "",
-				       p->name, p->layer);
-	}
 	pr_err("banner rel=%s ver=%s nonce=%08x el=%llu load=%pa kaslr=%#lx\n",
 	       init_utsname()->release, init_utsname()->version, hb_nonce,
 	       read_sysreg(CurrentEL) >> 2, &(phys_addr_t){ __pa_symbol(_text) },
 	       kaslr_offset());
 	pr_err("banner initrd=%pa+%#lx model=\"%s\" pstore=%s cpus=%u\n",
 	       &hb_initrd_start, hb_initrd_size, model, ps, num_possible_cpus());
-	pr_err("banner prn=%s items=%zu\n", k ? prn : "-", ARRAY_SIZE(hb_items));
+	/* "prn=<name>/<layer>,..." as before; T14: a list longer than one line continues in
+	 * "banner prn+=<...>" lines (up to 32 printers), each entry whole */
+	for (i = 0; i < n; i++) {
+		struct greatlte_hb_printer *p = smp_load_acquire(&hb_printers[i]);
+
+		if (!p)
+			continue;
+		if (k + 12 + strlen(p->name) >= sizeof(prn) - 16) {	/* keep room for " items=<n>" */
+			if (first)
+				pr_err("banner prn=%s items=%u\n", prn, READ_ONCE(hb_nrows));
+			else
+				pr_err("banner prn+=%s\n", prn);
+			first = false;
+			k = 0;
+		}
+		k += scnprintf(prn + k, sizeof(prn) - k, "%s%s/%u", k ? "," : "", p->name, p->layer);
+	}
+	if (first)
+		pr_err("banner prn=%s items=%u\n", k ? prn : "-", READ_ONCE(hb_nrows));
+	else if (k)
+		pr_err("banner prn+=%s\n", prn);
+	/* T14: rows per layer (the static L0 rows and every greatlte_hb_add_items() batch), the
+	 * hb.skip_layers mask and the cadence, so gl-hb checks R-HB1 and the up steps after the wrap */
+	for (i = 0; i < ARRAY_SIZE(hb_items); i++)
+		cnt[hb_items[i].layer]++;
+	hb_for_each_batch(bt)
+		for (i = 0; i < bt->n; i++)
+			cnt[bt->it[i].layer]++;
+	for (l = 0, k = 0; l < HB_LAYERS; l++)
+		if (cnt[l])
+			k += scnprintf(rows + k, sizeof(rows) - k, "%s%u:%u", k ? "," : "", l, cnt[l]);
+	pr_err("banner rows=%s skip=%s%*pbl cad=%u/%u/%u/%u hbl=%u bms=%u\n", k ? rows : "-",
+	       skip ? "" : "-", HB_LAYERS, &skip, period_ms, slow_after, slow_period_ms,
+	       banner_every, HB_LAYERS, banner_ms);
 	for (off = 0; off < len; off += 150)
 		pr_err("cmd %zu/%zu %.150s\n", off / 150, (len + 149) / 150, saved_command_line + off);
 	pr_err("cmdlen=%zu max=%d trunc=%d\n", len, COMMAND_LINE_SIZE - 1,
@@ -554,27 +805,47 @@ static void hb_line_unbound(void)		/* names of the devices counted in unb= */
 	pr_err("%s +%u\n", b, u.more);
 }
 
+/* One "L<l>f" line under construction; a row that does not fit whole continues on a new line (" +"). */
+struct hb_lline {
+	char b[HB_LINE];
+	int n;
+	unsigned int l;
+};
+
+static void hb_lline_add(struct hb_lline *ll, struct hb_item *it)
+{
+	char v[HB_TAG + GREATLTE_HB_VALUE + 4];
+	int m;
+
+	if (it->layer != ll->l)
+		return;
+	m = hb_fmt_fast(v, sizeof(v), it);		/* " <tag>=<value>" */
+	if (!ll->n)
+		ll->n = scnprintf(ll->b, sizeof(ll->b), "L%uf seq=%u", ll->l, hb_seq);
+	else if (ll->n + m + 2 >= (int)sizeof(ll->b)) {	/* continuation line (" +" suffix) */
+		pr_err("%s +\n", ll->b);
+		ll->n = scnprintf(ll->b, sizeof(ll->b), "L%uf seq=%u", ll->l, hb_seq);
+	}
+	ll->n += scnprintf(ll->b + ll->n, sizeof(ll->b) - ll->n, "%s", v);
+}
+
 static void hb_line_layers(void)
 {
-	char b[HB_LINE];
-	unsigned int l, i;
-	int n;
+	struct hb_lline ll;
+	struct hb_batch *bt;
+	unsigned int i;
 
-	for (l = 0; l < HB_LAYERS; l++) {
-		n = 0;
-		for (i = 0; i < ARRAY_SIZE(hb_items); i++) {
-			if (hb_items[i].layer != l)
-				continue;
-			if (!n)
-				n = scnprintf(b, sizeof(b), "L%uf seq=%u", l, hb_seq);
-			if (n > HB_LINE - 40) {			/* continuation line */
-				pr_err("%s +\n", b);
-				n = scnprintf(b, sizeof(b), "L%uf seq=%u", l, hb_seq);
-			}
-			n += hb_fmt_fast(b + n, sizeof(b) - n, &hb_items[i]);
-		}
-		if (n)
-			pr_err("%s\n", b);
+	for (ll.l = 0; ll.l < HB_LAYERS; ll.l++) {
+		if (hb_skipped(ll.l))
+			continue;			/* hb.skip_layers (T14) */
+		ll.n = 0;
+		for (i = 0; i < ARRAY_SIZE(hb_items); i++)
+			hb_lline_add(&ll, &hb_items[i]);
+		hb_for_each_batch(bt)
+			for (i = 0; i < bt->n; i++)
+				hb_lline_add(&ll, &bt->it[i]);
+		if (ll.n)
+			pr_err("%s\n", ll.b);
 	}
 }
 
@@ -585,7 +856,7 @@ static void hb_line_printers(u64 up)
 	for (i = 0; i < n; i++) {
 		struct greatlte_hb_printer *p = smp_load_acquire(&hb_printers[i]);
 
-		if (!p)
+		if (!p || hb_skipped(p->layer))
 			continue;
 		if (p->printed && p->every_ms && up < p->last_ms + p->every_ms)
 			continue;
@@ -919,12 +1190,14 @@ static void hb_line_L0g(void)
 
 static int hb_fn(void *unused)
 {
-	u64 up;
+	u64 up, last_banner = 0;
 
 	sched_set_fifo_low(current);
 	for (;;) {
 		up = hb_up_ms();
-		if (banner_every && !(hb_seq % banner_every)) {
+		if ((banner_every && !(hb_seq % banner_every)) ||
+		    (banner_ms && (!hb_seq || up - last_banner >= banner_ms))) {
+			last_banner = up;
 			hb_banner();
 			hb_line_unbound();
 			hb_line_L0s();		/* L0 spec 5.4 Edit 3 */
