@@ -1565,11 +1565,21 @@ static const struct samsung_pin_ctrl exynos8895_pin_ctrl[] __initconst = {
 		/* pin-controller instance 1 ABOX data */
 		.pin_banks	= exynos8895_pin_banks1,
 		.nr_banks	= ARRAY_SIZE(exynos8895_pin_banks1),
+		/*
+		 * in pd_abox; stock has no .suspend here:
+		 * S:drivers/pinctrl/samsung/pinctrl-exynos.c:1861-1863
+		 */
+		.no_pm_save	= true,
 	}, {
 		/* pin-controller instance 2 VTS data */
 		.pin_banks	= exynos8895_pin_banks2,
 		.nr_banks	= ARRAY_SIZE(exynos8895_pin_banks2),
 		.eint_gpio_init = exynos_eint_gpio_init,
+		/*
+		 * in pd_vts; stock comments .suspend/.resume out:
+		 * S:drivers/pinctrl/samsung/pinctrl-exynos.c:1865-1870
+		 */
+		.no_pm_save	= true,
 	}, {
 		/* pin-controller instance 3 FSYS0 data */
 		.pin_banks	= exynos8895_pin_banks3,
