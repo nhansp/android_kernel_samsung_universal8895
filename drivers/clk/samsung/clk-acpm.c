@@ -56,6 +56,30 @@ struct acpm_clk_variant {
 };
 
 /**
+ * struct acpm_clk_pll_rate - one PLL setting of a table-matched read-back.
+ * @p:		P divider.
+ * @m:		M divider.
+ * @s:		S divider.
+ * @khz:	the DVFS level rate this setting stands for.
+ */
+struct acpm_clk_pll_rate {
+	u8 p;
+	u16 m;
+	u8 s;
+	u32 khz;
+};
+
+/**
+ * struct acpm_clk_pll_table - PLL settings of a table-matched read-back.
+ * @rates:	the settings.
+ * @nr:		number of settings.
+ */
+struct acpm_clk_pll_table {
+	const struct acpm_clk_pll_rate *rates;
+	unsigned int nr;
+};
+
+/**
  * struct acpm_clk_cold_desc - one list of domains told about cold temperature.
  * @label:	name used in the log line.
  * @zone:	thermal zone whose temperature decides.
@@ -80,11 +104,15 @@ struct acpm_clk_cold_desc {
  *		read-back reports the last rate it was set to.
  * @pll_con0:	per clock id, physical address of the PLL_CON0 register its
  *		rate is decoded from (0 = none).
- * @nr_pll_con0: entries in @pll_con0.
+ * @nr_pll_con0: entries in @pll_con0, and in @pll_cpus and @pll_tables when
+ *		those are set.
  * @pll_cpus:	per clock id with a PLL read-back, the CPUs of the cluster
  *		whose CMU holds the PLL (its registers are read only while
  *		one of them is online); 0 = no such condition.
  * @asv_table_pa: physical address of the ASV table (0 = none).
+ * @pll_tables:	per clock id with a PLL read-back, a table of PLL settings
+ *		whose rate is returned instead of the decoded rate (NULL =
+ *		decode); no match reads 0.
  * @cold:	lists of domains told about cold temperature (COLDTEMP_REQ).
  * @nr_cold:	number of lists.
  * @cold_mc:	below this temperature (millicelsius) a list is cold.
@@ -99,6 +127,7 @@ struct acpm_clk_driver_data {
 	unsigned int nr_pll_con0;
 	const unsigned long *pll_cpus;
 	phys_addr_t asv_table_pa;
+	const struct acpm_clk_pll_table * const *pll_tables;
 	const struct acpm_clk_cold_desc *cold;
 	unsigned int nr_cold;
 	int cold_mc;
@@ -188,14 +217,45 @@ static const struct acpm_clk_variant exynos8895_acpm_clks[] = {
 	ACPM_CLK("cp"),
 };
 
-static const u32 exynos8895_pll_con0[] = {
+/* per-id tables below have one entry per clock */
+#define EXYNOS8895_ACPM_NR_CLKS		ARRAY_SIZE(exynos8895_acpm_clks)
+
+static const u32 exynos8895_pll_con0[EXYNOS8895_ACPM_NR_CLKS] = {
 	/* CMU_CPUCL0 0x16800000 + PLL_CON0_PLL_CPUCL0 0x0120 (S:.../cmucal-sfr.c:15, :799) */
 	[EXYNOS8895_CLK_ACPM_DVFS_CPUCL0] = 0x16800120,
 	/* CMU_CPUCL1 0x16900000 + PLL_CON0_PLL_CPUCL1 0x0120 (:16, :838) */
 	[EXYNOS8895_CLK_ACPM_DVFS_CPUCL1] = 0x16900120,
+	/*
+	 * CMU_G3D 0x13800000 + PLL_CON0_PLL_G3D 0x0120 (:25, :1367), the only SFR
+	 * of the ECT dvfs_g3d domain (SB+0x4647c). CMU_G3D is outside pd_g3d, so
+	 * it is readable with the GPU off.
+	 */
+	[EXYNOS8895_CLK_ACPM_DVFS_G3D] = 0x13800120,
 };
 
-static const unsigned long exynos8895_pll_cpus[] = {
+/*
+ * G3D rate by table match, as stock's DVFS read-back (vclk_recalc_rate() ->
+ * ra_get_pll_idx(), S:drivers/soc/samsung/cal-if/vclk.c:223-239,
+ * S:drivers/soc/samsung/cal-if/ra.c:349-376, 922-960): the ECT PLL_G3D settings
+ * (SB+0x45f44) and the dvfs_g3d level each one stands for (SB+0x4647c). The
+ * decode formula is off for four of them (838500, 764400, 682500, 384800 kHz).
+ */
+static const struct acpm_clk_pll_rate exynos8895_g3d_rates[] = {
+	{ 4, 129, 0, 839000 }, { 5, 147, 0, 764000 }, { 4, 105, 0, 683000 },
+	{ 4, 176, 1, 572000 }, { 4, 168, 1, 546000 }, { 4, 140, 1, 455000 },
+	{ 5, 148, 1, 385000 }, { 4, 104, 1, 338000 }, { 4, 160, 2, 260000 },
+};
+
+static const struct acpm_clk_pll_table exynos8895_g3d_table = {
+	.rates = exynos8895_g3d_rates,
+	.nr = ARRAY_SIZE(exynos8895_g3d_rates),
+};
+
+static const struct acpm_clk_pll_table * const exynos8895_pll_tables[EXYNOS8895_ACPM_NR_CLKS] = {
+	[EXYNOS8895_CLK_ACPM_DVFS_G3D] = &exynos8895_g3d_table,
+};
+
+static const unsigned long exynos8895_pll_cpus[EXYNOS8895_ACPM_NR_CLKS] = {
 	[EXYNOS8895_CLK_ACPM_DVFS_CPUCL0] = GENMASK(7, 4),	/* Mongoose cpus 4-7 */
 	[EXYNOS8895_CLK_ACPM_DVFS_CPUCL1] = GENMASK(3, 0),	/* A53 cpus 0-3 */
 };
@@ -237,6 +297,7 @@ static const struct acpm_clk_driver_data acpm_clk_exynos8895 = {
 	.pll_cpus = exynos8895_pll_cpus,
 	/* S:drivers/soc/samsung/cal-if/exynos8895/asv_exynos8895.h:6 "#define ASV_TABLE_BASE (0x10009000)" */
 	.asv_table_pa = 0x10009000,
+	.pll_tables = exynos8895_pll_tables,
 	.cold = exynos8895_cold,
 	.nr_cold = ARRAY_SIZE(exynos8895_cold),
 	/* S:include/soc/samsung/tmu.h:17 "#define EXYNOS_COLD_TEMP 15" */
@@ -269,6 +330,37 @@ static unsigned long acpm_clk_pll_decode(u32 v)
 	return p ? div_u64((u64)ACPM_PLL_FIN_HZ * m, p << s) : 0;
 }
 
+/*
+ * Table match: the level whose P/M/S equal the live ones, 0 without a match.
+ * Like stock's ra_get_pll_idx() it does not look at the ENABLE bit.
+ */
+static unsigned long acpm_clk_pll_match(const struct acpm_clk_pll_table *tbl,
+					u32 v)
+{
+	u32 p = FIELD_GET(ACPM_PLL_P, v), m = FIELD_GET(ACPM_PLL_M, v);
+	u32 s = FIELD_GET(ACPM_PLL_S, v);
+	unsigned int i;
+
+	for (i = 0; i < tbl->nr; i++)
+		if (tbl->rates[i].p == p && tbl->rates[i].m == m &&
+		    tbl->rates[i].s == s)
+			return (unsigned long)tbl->rates[i].khz * HZ_PER_KHZ;
+
+	return 0;
+}
+
+/* The rate of a clock with a PLL read-back, from its PLL_CON0 word. */
+static unsigned long acpm_clk_pll_rate(const struct acpm_clk *clk)
+{
+	const struct acpm_clk_driver_data *d = clk->data;
+	u32 v = readl(clk->pll);
+
+	if (d->pll_tables && clk->id < d->nr_pll_con0 && d->pll_tables[clk->id])
+		return acpm_clk_pll_match(d->pll_tables[clk->id], v);
+
+	return acpm_clk_pll_decode(v);
+}
+
 /* The PLL may be read: no CPU condition, or a CPU of its cluster is online. */
 static bool acpm_clk_pll_readable(const struct acpm_clk *clk)
 {
@@ -290,7 +382,7 @@ static unsigned long acpm_clk_recalc_rate(struct clk_hw *hw,
 	if (clk->pll) {
 		if (!acpm_clk_pll_readable(clk))
 			return clk->rate;
-		return acpm_clk_pll_decode(readl(clk->pll));
+		return acpm_clk_pll_rate(clk);
 	}
 
 	if (clk->data->no_freq_get)
@@ -599,7 +691,7 @@ static int acpm_clk_probe(struct platform_device *pdev)
 
 		/* the rate a read-back clock is at before its first request */
 		if (aclk->pll && acpm_clk_pll_readable(aclk))
-			aclk->rate = acpm_clk_pll_decode(readl(aclk->pll));
+			aclk->rate = acpm_clk_pll_rate(aclk);
 
 		hws[i] = &aclk->hw;
 
