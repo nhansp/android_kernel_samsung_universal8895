@@ -19,5 +19,6 @@ struct acpm_handle;
 
 int acpm_do_xfer(struct acpm_handle *handle,
 		 const struct acpm_xfer *xfer);
+u32 acpm_cmd_timestamp(struct acpm_handle *handle);
 
 #endif /* __EXYNOS_ACPM_H__ */

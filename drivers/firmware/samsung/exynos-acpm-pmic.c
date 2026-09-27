@@ -74,7 +74,6 @@ static void acpm_pmic_init_read_cmd(u32 cmd[4], u8 type, u8 reg, u8 chan)
 		 FIELD_PREP(ACPM_PMIC_REG, reg) |
 		 FIELD_PREP(ACPM_PMIC_CHANNEL, chan);
 	cmd[1] = FIELD_PREP(ACPM_PMIC_FUNC, ACPM_PMIC_READ);
-	cmd[3] = ktime_to_ms(ktime_get());
 }
 
 int acpm_pmic_read_reg(struct acpm_handle *handle,
@@ -86,6 +85,7 @@ int acpm_pmic_read_reg(struct acpm_handle *handle,
 	int ret;
 
 	acpm_pmic_init_read_cmd(cmd, type, reg, chan);
+	cmd[3] = acpm_cmd_timestamp(handle);
 	acpm_pmic_set_xfer(&xfer, cmd, sizeof(cmd), acpm_chan_id);
 
 	ret = acpm_do_xfer(handle, &xfer);
@@ -147,7 +147,6 @@ static void acpm_pmic_init_write_cmd(u32 cmd[4], u8 type, u8 reg, u8 chan,
 		 FIELD_PREP(ACPM_PMIC_CHANNEL, chan);
 	cmd[1] = FIELD_PREP(ACPM_PMIC_FUNC, ACPM_PMIC_WRITE) |
 		 FIELD_PREP(ACPM_PMIC_VALUE, value);
-	cmd[3] = ktime_to_ms(ktime_get());
 }
 
 int acpm_pmic_write_reg(struct acpm_handle *handle,
@@ -159,6 +158,7 @@ int acpm_pmic_write_reg(struct acpm_handle *handle,
 	int ret;
 
 	acpm_pmic_init_write_cmd(cmd, type, reg, chan, value);
+	cmd[3] = acpm_cmd_timestamp(handle);
 	acpm_pmic_set_xfer(&xfer, cmd, sizeof(cmd), acpm_chan_id);
 
 	ret = acpm_do_xfer(handle, &xfer);
@@ -217,7 +217,6 @@ static void acpm_pmic_init_update_cmd(u32 cmd[4], u8 type, u8 reg, u8 chan,
 	cmd[1] = FIELD_PREP(ACPM_PMIC_FUNC, ACPM_PMIC_UPDATE) |
 		 FIELD_PREP(ACPM_PMIC_VALUE, value) |
 		 FIELD_PREP(ACPM_PMIC_MASK, mask);
-	cmd[3] = ktime_to_ms(ktime_get());
 }
 
 int acpm_pmic_update_reg(struct acpm_handle *handle,
@@ -229,6 +228,7 @@ int acpm_pmic_update_reg(struct acpm_handle *handle,
 	int ret;
 
 	acpm_pmic_init_update_cmd(cmd, type, reg, chan, value, mask);
+	cmd[3] = acpm_cmd_timestamp(handle);
 	acpm_pmic_set_xfer(&xfer, cmd, sizeof(cmd), acpm_chan_id);
 
 	ret = acpm_do_xfer(handle, &xfer);

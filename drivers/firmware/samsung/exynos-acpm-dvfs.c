@@ -39,7 +39,6 @@ static void acpm_dvfs_init_set_rate_cmd(u32 cmd[4], unsigned int clk_id,
 	cmd[0] = FIELD_PREP(ACPM_DVFS_ID, clk_id);
 	cmd[1] = rate / HZ_PER_KHZ;
 	cmd[2] = FIELD_PREP(ACPM_DVFS_REQ_TYPE, ACPM_DVFS_FREQ_REQ);
-	cmd[3] = ktime_to_ms(ktime_get());
 }
 
 int acpm_dvfs_set_rate(struct acpm_handle *handle,
@@ -50,6 +49,7 @@ int acpm_dvfs_set_rate(struct acpm_handle *handle,
 	u32 cmd[4];
 
 	acpm_dvfs_init_set_rate_cmd(cmd, clk_id, rate);
+	cmd[3] = acpm_cmd_timestamp(handle);
 	acpm_dvfs_set_xfer(&xfer, cmd, sizeof(cmd), acpm_chan_id, false);
 
 	return acpm_do_xfer(handle, &xfer);
@@ -59,7 +59,6 @@ static void acpm_dvfs_init_get_rate_cmd(u32 cmd[4], unsigned int clk_id)
 {
 	cmd[0] = FIELD_PREP(ACPM_DVFS_ID, clk_id);
 	cmd[2] = FIELD_PREP(ACPM_DVFS_REQ_TYPE, ACPM_DVFS_FREQ_GET);
-	cmd[3] = ktime_to_ms(ktime_get());
 }
 
 unsigned long acpm_dvfs_get_rate(struct acpm_handle *handle,
@@ -70,6 +69,7 @@ unsigned long acpm_dvfs_get_rate(struct acpm_handle *handle,
 	int ret;
 
 	acpm_dvfs_init_get_rate_cmd(cmd, clk_id);
+	cmd[3] = acpm_cmd_timestamp(handle);
 	acpm_dvfs_set_xfer(&xfer, cmd, sizeof(cmd), acpm_chan_id, true);
 
 	ret = acpm_do_xfer(handle, &xfer);

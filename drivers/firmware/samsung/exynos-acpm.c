@@ -164,6 +164,7 @@ struct acpm_chan {
  * @dev:	pointer to the exynos-acpm device.
  * @handle:	instance of acpm_handle to send to clients.
  * @num_chans:	number of channels available for this controller.
+ * @match:	per-SoC data and transport policy.
  */
 struct acpm_info {
 	struct acpm_shmem __iomem *shmem;
@@ -172,16 +173,25 @@ struct acpm_info {
 	struct device *dev;
 	struct acpm_handle handle;
 	u32 num_chans;
+	const struct acpm_match_data *match;
 };
 
 /**
  * struct acpm_match_data - of_device_id data.
  * @initdata_base:	offset in SRAM where the channels configuration resides.
  * @acpm_clk_dev_name:	base name for the ACPM clocks device that we're registering.
+ * @rx_front_check:	before a TX, also wait for the RX front to differ from the
+ *			next TX front (gs101 policy).
+ * @cmd_timestamp:	the PMIC/DVFS commands carry a millisecond timestamp in
+ *			cmd[3] (gs101); otherwise cmd[3] is 0.
+ * @poll_timeout_us:	how long a polled response is waited for.
  */
 struct acpm_match_data {
 	loff_t initdata_base;
 	const char *acpm_clk_dev_name;
+	bool rx_front_check;
+	bool cmd_timestamp;
+	u32 poll_timeout_us;
 };
 
 #define client_to_acpm_chan(c) container_of(c, struct acpm_chan, cl)
@@ -309,7 +319,7 @@ static int acpm_dequeue_by_polling(struct acpm_chan *achan,
 
 	seqnum = FIELD_GET(ACPM_PROTOCOL_SEQNUM, xfer->txd[0]);
 
-	timeout = ktime_add_us(ktime_get(), ACPM_POLL_TIMEOUT_US);
+	timeout = ktime_add_us(ktime_get(), achan->acpm->match->poll_timeout_us);
 	do {
 		ret = acpm_get_rx(achan, xfer);
 		if (ret)
@@ -344,11 +354,14 @@ static int acpm_wait_for_queue_slots(struct acpm_chan *achan, u32 next_tx_front)
 	 * Wait for RX front to keep up with TX front. Make sure there's at
 	 * least one element between them.
 	 */
-	ret = readl_poll_timeout(achan->rx.front, val, next_tx_front != val, 0,
-				 ACPM_TX_TIMEOUT_US);
-	if (ret) {
-		dev_err(achan->acpm->dev, "RX front can not keep up with TX front.\n");
-		return ret;
+	if (achan->acpm->match->rx_front_check) {
+		ret = readl_poll_timeout(achan->rx.front, val,
+					 next_tx_front != val, 0,
+					 ACPM_TX_TIMEOUT_US);
+		if (ret) {
+			dev_err(achan->acpm->dev, "RX front can not keep up with TX front.\n");
+			return ret;
+		}
 	}
 
 	ret = readl_poll_timeout(achan->tx.rear, val, next_tx_front != val, 0,
@@ -403,6 +416,20 @@ static int acpm_wait_for_message_response(struct acpm_chan *achan,
 {
 	/* Just polling mode supported for now. */
 	return acpm_dequeue_by_polling(achan, xfer);
+}
+
+/**
+ * acpm_cmd_timestamp() - value of the cmd[3] word of a PMIC/DVFS command.
+ * @handle:	pointer to the acpm handle.
+ *
+ * Return: the current time in ms if the SoC's firmware takes a timestamp,
+ * 0 otherwise.
+ */
+u32 acpm_cmd_timestamp(struct acpm_handle *handle)
+{
+	struct acpm_info *acpm = handle_to_acpm_info(handle);
+
+	return acpm->match->cmd_timestamp ? ktime_to_ms(ktime_get()) : 0;
 }
 
 /**
@@ -646,6 +673,7 @@ static int acpm_probe(struct platform_device *pdev)
 
 	acpm->shmem = acpm->sram_base + match_data->initdata_base;
 	acpm->dev = dev;
+	acpm->match = match_data;
 
 	ret = acpm_channels_init(acpm);
 	if (ret)
@@ -769,6 +797,9 @@ EXPORT_SYMBOL_GPL(devm_acpm_get_by_node);
 static const struct acpm_match_data acpm_gs101 = {
 	.initdata_base = ACPM_GS101_INITDATA_BASE,
 	.acpm_clk_dev_name = "gs101-acpm-clk",
+	.rx_front_check = true,
+	.cmd_timestamp = true,
+	.poll_timeout_us = ACPM_POLL_TIMEOUT_US,
 };
 
 static const struct of_device_id acpm_match[] = {
