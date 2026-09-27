@@ -27,3 +27,18 @@
 &cmu_peric1 { status = "okay"; };
 &cmu_fsys0 { status = "okay"; };
 &cmu_fsys1 { status = "okay"; };
+
+/*
+ * Pin controllers (spec/L1_platform.md 4.6, 7.2: the 35 ACK banks equal stock's; ALIVE,
+ * FSYS0, FSYS1, BUSC, PERIC0, PERIC1 = stock FDT:88-100,690-693,862-865,1139-1142,
+ * 1212-1215,2000-2003). ABOX and VTS stay off through L0's block (not restated here, plan
+ * 2.3 D1 / V-DUP): their registers sit in pd_abox/pd_vts and no FDT consumer references
+ * their banks (gph0..gph3 carry no phandle, FDT:497,504,511,619); the audio layer enables
+ * them with their domains and the no_pm_save quirk (L6E 5.11).
+ */
+&pinctrl_alive { status = "okay"; };
+&pinctrl_fsys0 { status = "okay"; };
+&pinctrl_fsys1 { status = "okay"; };
+&pinctrl_busc { status = "okay"; };
+&pinctrl_peric0 { status = "okay"; };
+&pinctrl_peric1 { status = "okay"; };
