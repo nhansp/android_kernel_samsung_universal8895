@@ -209,6 +209,13 @@ static const struct exynos_pd_write exynos8895_g3d_post_off[] = {
 	{ 0x0148, U32_MAX, 0x10000001 },	/* :373 PLL_CON2_PLL_G3D */
 };
 
+/*
+ * Multimedia domains (L6B X-L1-2, 5.2.3): BUS_COMPONENT_DRCG_EN at SYSREG
+ * + 0x200 is a PMUCAL_SAVE_RESTORE word of the domain's save list, i.e. read
+ * before power-off and written back after power-on, only if it was saved
+ * (S:drivers/soc/samsung/cal-if/pmucal_local.c:42,81;
+ * S:drivers/soc/samsung/cal-if/pmucal_rae.c:135,166-167).
+ */
 static const struct exynos_pd_extra exynos8895_pd_extra[] = {
 	{	/* pd_g3d: CAL:pmucal_local_exynos8895.h:361 EMBEDDED_G3D_CONFIGURATION */
 		.conf		= 0x164840e0,
@@ -216,6 +223,27 @@ static const struct exynos_pd_extra exynos8895_pd_extra[] = {
 		.nr_pre_on	= ARRAY_SIZE(exynos8895_g3d_pre_on),
 		.post_off	= exynos8895_g3d_post_off,
 		.nr_post_off	= ARRAY_SIZE(exynos8895_g3d_post_off),
+	},
+	{	/* pd_cam: :72 CAM_CONFIGURATION; :111 DRCG_EN, SYSREG_CAM 0x12c20000 */
+		.conf = 0x16484020, .sysreg = { 0x0200 }, .nr_sysreg = 1,
+	},
+	{	/* pd_g2d: :315 G2D_CONFIGURATION; :345 DRCG_EN, SYSREG_G2D 0x13a20000 */
+		.conf = 0x164840c0, .sysreg = { 0x0200 }, .nr_sysreg = 1,
+	},
+	{	/* pd_isphq: :381 ISPHQ_CONFIGURATION; :399 DRCG_EN, SYSREG_ISPHQ 0x13120000 */
+		.conf = 0x16484100, .sysreg = { 0x0200 }, .nr_sysreg = 1,
+	},
+	{	/* pd_isplp: :412 ISPLP_CONFIGURATION; :434 DRCG_EN, SYSREG_ISPLP 0x13020000 */
+		.conf = 0x16484120, .sysreg = { 0x0200 }, .nr_sysreg = 1,
+	},
+	{	/* pd_mfc: :498 MFC_CONFIGURATION; :519 DRCG_EN, SYSREG_MFC 0x13c20000 */
+		.conf = 0x16484160, .sysreg = { 0x0200 }, .nr_sysreg = 1,
+	},
+	{	/* pd_dcam: :168 DCAM_CONFIGURATION; :186 DRCG_EN, SYSREG_DCAM 0x12e20000 */
+		.conf = 0x16485220, .sysreg = { 0x0200 }, .nr_sysreg = 1,
+	},
+	{	/* pd_srdz: :532 SRDZ_CONFIGURATION; :554 DRCG_EN, SYSREG_SRDZ 0x14220000 */
+		.conf = 0x16485420, .sysreg = { 0x0200 }, .nr_sysreg = 1,
 	},
 };
 
