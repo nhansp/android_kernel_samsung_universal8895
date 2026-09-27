@@ -216,6 +216,15 @@ static const struct exynos_pd_write exynos8895_g3d_post_off[] = {
  * (S:drivers/soc/samsung/cal-if/pmucal_local.c:42,81;
  * S:drivers/soc/samsung/cal-if/pmucal_rae.c:135,166-167).
  */
+/*
+ * Audio domains (L6E 5.4): pd_abox sets ABOX_CA7_OPTION bit 16 in the PMU
+ * before power-off (:62) and saves/restores BUS_COMPONENT_DRCG_EN and
+ * SNPS_EMA (:57-58); pd_vts saves/restores DRCG_EN (:633); its CMUREF mux
+ * step (:637-638) belongs to the CMU_VTS driver. Stock vetoes their
+ * power-down while ABOX/VTS run (S:drivers/soc/samsung/exynos-pd.c:211-227);
+ * here genpd keeps them on through system suspend while a device in them is
+ * on the awake path (GENPD_FLAG_ACTIVE_WAKEUP).
+ */
 static const struct exynos_pd_extra exynos8895_pd_extra[] = {
 	{	/* pd_g3d: CAL:pmucal_local_exynos8895.h:361 EMBEDDED_G3D_CONFIGURATION */
 		.conf		= 0x164840e0,
@@ -244,6 +253,21 @@ static const struct exynos_pd_extra exynos8895_pd_extra[] = {
 	},
 	{	/* pd_srdz: :532 SRDZ_CONFIGURATION; :554 DRCG_EN, SYSREG_SRDZ 0x14220000 */
 		.conf = 0x16485420, .sysreg = { 0x0200 }, .nr_sysreg = 1,
+	},
+	{	/* pd_abox: :2 ABOX_CONFIGURATION; SYSREG_ABOX 0x13e20000 */
+		.conf		= 0x16484000,
+		.pmu_off_reg	= 0x2528,	/* :62 ABOX_CA7_OPTION */
+		.pmu_off_mask	= BIT(16),	/* :62 (0x1 << 16) */
+		.sysreg		= { 0x0200, 0x0300 },	/* :57 DRCG_EN, :58 SNPS_EMA */
+		.nr_sysreg	= 2,
+		.sysreg_required = true,	/* SNPS_EMA: SRAM margin, not clock gating */
+		.genpd_flags	= GENPD_FLAG_ACTIVE_WAKEUP,
+	},
+	{	/* pd_vts: :599 VTS_CONFIGURATION; :633 DRCG_EN, SYSREG_VTS 0x14020000 */
+		.conf		= 0x164841a0,
+		.sysreg		= { 0x0200 },
+		.nr_sysreg	= 1,
+		.genpd_flags	= GENPD_FLAG_ACTIVE_WAKEUP,
 	},
 };
 
