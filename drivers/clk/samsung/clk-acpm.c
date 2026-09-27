@@ -21,6 +21,7 @@
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/sizes.h>
+#include <linux/soc/samsung/greatlte-l2.h>
 #include <linux/suspend.h>
 #include <linux/thermal.h>
 #include <linux/types.h>
@@ -610,6 +611,91 @@ static void acpm_clk_cold_stop(void *data)
 	cancel_delayed_work_sync(&p->work);
 }
 
+#ifdef CONFIG_GREATLTE_HB
+/*
+ * DEBUG: getters for the "L2"/"L2id" heartbeat printers (L2_power.md 5.9):
+ * the PLL read-back of an Exynos8895 clock, the ASV version and the
+ * cold-temperature state. Stored at probe; no ACPM command is sent.
+ */
+static struct acpm_clk *acpm_clk_hb_clks;
+static unsigned int acpm_clk_hb_nr;
+static int acpm_clk_hb_asv = -ENODEV;
+static struct acpm_clk_priv *acpm_clk_hb_priv;
+static struct acpm_clk_priv *acpm_clk_hb_cold_p;	/* noted by acpm_clk_cold_init() */
+
+static void acpm_clk_hb_note_cold(struct acpm_clk_priv *p)
+{
+	acpm_clk_hb_cold_p = p;
+}
+
+static void acpm_clk_hb_clear(void *unused)
+{
+	WRITE_ONCE(acpm_clk_hb_clks, NULL);
+	WRITE_ONCE(acpm_clk_hb_priv, NULL);
+	WRITE_ONCE(acpm_clk_hb_asv, -ENODEV);
+}
+
+/* Last step of an 8895 probe, so that an unbind clears these first. */
+static void acpm_clk_hb_set(struct device *dev, struct acpm_clk *aclks,
+			    unsigned int nr, int asv)
+{
+	if (devm_add_action_or_reset(dev, acpm_clk_hb_clear, NULL))
+		return;
+	acpm_clk_hb_nr = nr;
+	WRITE_ONCE(acpm_clk_hb_asv, asv);
+	smp_store_release(&acpm_clk_hb_priv, acpm_clk_hb_cold_p);
+	smp_store_release(&acpm_clk_hb_clks, aclks);
+}
+
+/* kHz of the PLL behind clock @id; -EAGAIN while its cluster is offline. */
+long exynos8895_acpm_clk_pll_khz(unsigned int id)
+{
+	struct acpm_clk *clks = smp_load_acquire(&acpm_clk_hb_clks);
+
+	if (!clks)
+		return -ENODEV;
+	if (id >= acpm_clk_hb_nr || !clks[id].pll)
+		return -EINVAL;
+	if (!acpm_clk_pll_readable(&clks[id]))
+		return -EAGAIN;
+
+	return acpm_clk_pll_rate(&clks[id]) / HZ_PER_KHZ;
+}
+EXPORT_SYMBOL_GPL(exynos8895_acpm_clk_pll_khz);
+
+int exynos8895_acpm_clk_asv_ver(void)
+{
+	return READ_ONCE(acpm_clk_hb_asv);
+}
+EXPORT_SYMBOL_GPL(exynos8895_acpm_clk_asv_ver);
+
+/* Bit i set = cold list i (0 CPU, 1 GPU) is in the cold state. */
+int exynos8895_acpm_clk_cold(void)
+{
+	struct acpm_clk_priv *p = smp_load_acquire(&acpm_clk_hb_priv);
+	unsigned int i;
+	int mask = 0;
+
+	if (!p)
+		return -ENODEV;
+	for (i = 0; i < p->data->nr_cold; i++)
+		if (READ_ONCE(p->cold[i].cold))
+			mask |= BIT(i);
+
+	return mask;
+}
+EXPORT_SYMBOL_GPL(exynos8895_acpm_clk_cold);
+#else
+static void acpm_clk_hb_note_cold(struct acpm_clk_priv *p)
+{
+}
+
+static void acpm_clk_hb_set(struct device *dev, struct acpm_clk *aclks,
+			    unsigned int nr, int asv)
+{
+}
+#endif /* CONFIG_GREATLTE_HB */
+
 static int acpm_clk_cold_init(struct device *dev, struct acpm_handle *handle,
 			      const struct acpm_clk_driver_data *data)
 {
@@ -648,6 +734,7 @@ static int acpm_clk_cold_init(struct device *dev, struct acpm_handle *handle,
 
 	queue_delayed_work(system_freezable_wq, &p->work,
 			   msecs_to_jiffies(data->cold_poll_ms));
+	acpm_clk_hb_note_cold(p);
 
 	return 0;
 }
@@ -740,6 +827,9 @@ static int acpm_clk_probe(struct platform_device *pdev)
 	err = acpm_clk_cold_init(dev, acpm_handle, data);
 	if (err)
 		return dev_err_probe(dev, err, "Failed to start the cold-temperature requests\n");
+
+	if (data->asv_table_pa)
+		acpm_clk_hb_set(dev, aclks, count, ver);
 
 	return 0;
 }

@@ -89,4 +89,28 @@ static inline int sec_pmic_acpm_get_id(u8 *id, u8 *rev)
 }
 #endif
 
+#if IS_ENABLED(CONFIG_GREATLTE_HB) && IS_REACHABLE(CONFIG_EXYNOS_ACPM_CLK)
+/* kHz of the PLL behind ACPM clock @id (L2 P9); -EAGAIN while its cluster is offline. */
+long exynos8895_acpm_clk_pll_khz(unsigned int id);
+/* ASV table version read at probe (L2 P9). */
+int exynos8895_acpm_clk_asv_ver(void);
+/* Cold-temperature state (L2 5.4a): bit i = cold list i (0 CPU, 1 GPU). */
+int exynos8895_acpm_clk_cold(void);
+#else
+static inline long exynos8895_acpm_clk_pll_khz(unsigned int id)
+{
+	return -ENODEV;
+}
+
+static inline int exynos8895_acpm_clk_asv_ver(void)
+{
+	return -ENODEV;
+}
+
+static inline int exynos8895_acpm_clk_cold(void)
+{
+	return -ENODEV;
+}
+#endif
+
 #endif /* __LINUX_SOC_SAMSUNG_GREATLTE_L2_H */
