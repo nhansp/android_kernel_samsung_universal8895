@@ -34,6 +34,7 @@ properties:
       - samsung,exynos8895-cmu-cpucl0
       - samsung,exynos8895-cmu-cpucl1
       - samsung,exynos8895-cmu-dpu0
+      - samsung,exynos8895-cmu-dpu1
       - samsung,exynos8895-cmu-fsys0
       - samsung,exynos8895-cmu-fsys1
       - samsung,exynos8895-cmu-peric0
@@ -143,6 +144,26 @@ allOf:
           items:
             - const: oscclk
             - const: bus
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: samsung,exynos8895-cmu-dpu1
+
+    then:
+      properties:
+        clocks:
+          items:
+            - description: External reference clock (26 MHz)
+            - description: CMU_DPU1 BUSD clock (from CMU_DPU0)
+            - description: CMU_DPU1 BUSP clock (from CMU_DPU0)
+
+        clock-names:
+          items:
+            - const: oscclk
+            - const: busd
+            - const: busp
 
   - if:
       properties:
