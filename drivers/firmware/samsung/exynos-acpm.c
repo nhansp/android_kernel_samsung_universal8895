@@ -67,6 +67,27 @@ static unsigned int fw_log;
 module_param(fw_log, uint, 0644);
 MODULE_PARM_DESC(fw_log, "print APM firmware log entries: 0 none, 1 level 0 only, 2 all");
 
+#ifdef CONFIG_GREATLTE_HB
+/*
+ * DEBUG, boot L2-D (L2_power.md 8.2, Q17): fwlog_drain=0 reads the ring
+ * indices but never writes log_buf_rear, so the ring fills; ktime_index still
+ * advances.
+ */
+static bool fwlog_drain = true;
+module_param(fwlog_drain, bool, 0644);
+MODULE_PARM_DESC(fwlog_drain, "DEBUG: 0 = never advance the firmware-log rear index (boot L2-D)");
+
+static bool acpm_fwlog_drain_on(void)
+{
+	return READ_ONCE(fwlog_drain);
+}
+#else
+static bool acpm_fwlog_drain_on(void)
+{
+	return true;
+}
+#endif
+
 /*
  * APM stop before a restart or power-off (Exynos8895 stock exynos_acpm_reboot(),
  * S:drivers/soc/samsung/acpm/acpm.c:264-269): the STOP command on the plugin
@@ -496,6 +517,8 @@ static void acpm_fwlog_drain(struct acpm_info *acpm)
 
 	front = readl(acpm->fwlog_front);
 	rear = readl(acpm->fwlog_rear);
+	if (!acpm_fwlog_drain_on())
+		front = rear;
 	for (n = 0; rear != front && n < el; n++) {
 		if (rear >= el || front >= el) {
 			atomic_inc(&acpm->fwlog_bad);
