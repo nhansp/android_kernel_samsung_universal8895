@@ -192,8 +192,10 @@
 };
 
 /*
- * ---- L0 bring-up: not yet verified against stock; each layer that verifies
- * ---- a block deletes its lines here. ----
+ * ---- L0 bring-up: not yet verified against stock. A layer that verifies a
+ * ---- block lifts its lines with a &label edit in its own board part (the
+ * ---- #include lines at the end of this file, FULL_IMAGE_PLAN.md 2.3 D1);
+ * ---- the lines here are never edited or deleted by a layer. ----
  */
 
 /* L1: CMUs. With ARCH_EXYNOS=y the 8895 CMU drivers are built (A:arch/arm64/Kconfig.platforms:130
@@ -232,3 +234,27 @@
 &oscclk {
 	clock-frequency = <26000000>;
 };
+
+/*
+ * Board parts per layer, in the merge order of FULL_IMAGE_PLAN.md 2.2 (plan 2.3 rule D1):
+ * each work package edits only its own file. They come last, so a layer can
+ * override the L0 lines above with a &label edit of its own. A part never restates
+ * a value that the L0 block (or the SoC dtsi) already sets: gl-verify V-DUP compares
+ * the parts with each other, so a restated "disabled" would clash with the later
+ * layer that enables the node.
+ */
+#include "exynos8895-greatlte-l1.dtsi"
+#include "exynos8895-greatlte-l2.dtsi"
+#include "exynos8895-greatlte-l3.dtsi"
+#include "exynos8895-greatlte-l4.dtsi"
+#include "exynos8895-greatlte-l5.dtsi"
+#include "exynos8895-greatlte-l6com.dtsi"
+#include "exynos8895-greatlte-l6t.dtsi"
+#include "exynos8895-greatlte-l6a.dtsi"
+#include "exynos8895-greatlte-l6f.dtsi"
+#include "exynos8895-greatlte-l6d.dtsi"
+#include "exynos8895-greatlte-l6e.dtsi"
+#include "exynos8895-greatlte-l6c.dtsi"
+#include "exynos8895-greatlte-l6b.dtsi"
+#include "exynos8895-greatlte-l7.dtsi"
+#include "exynos8895-greatlte-dbg.dtsi"

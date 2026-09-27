@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Galaxy Note 8 (greatlte, SM-N950N) board DT, part "l2":
+ * L2 power: ACPM, PMIC rails, DVFS/OPP, TMU board parts (L2 4.2-4.6).
+ *
+ * Included at the end of exynos8895-greatlte.dts, after L0's nodes, in the merge
+ * order of FULL_IMAGE_PLAN.md 2.2. Owner: WP-L2; no other work package edits this
+ * file (plan 2.3 rule D1). A node that two parts both configure (&usi9, &usi10)
+ * is written identically in both files: dtc lets the later file win on a differing
+ * value, which gl-verify V-DUP reports as an error. L0's reserved-memory stays in
+ * the .dts; carveout additions and flag changes are &label edits here (plan X-8).
+ */
