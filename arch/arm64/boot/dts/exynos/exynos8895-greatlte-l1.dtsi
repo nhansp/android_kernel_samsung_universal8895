@@ -10,3 +10,20 @@
  * value, which gl-verify V-DUP reports as an error. L0's reserved-memory stays in
  * the .dts; carveout additions and flag changes are &label edits here (plan X-8).
  */
+
+/*
+ * L1 takes over the nodes L0's bring-up block disables (exynos8895-greatlte.dts,
+ * "L0 bring-up" block; gl-verify L-V6 lets layer 1 enable them).
+ */
+
+/*
+ * The six ACK CMUs (A:arch/arm64/boot/dts/exynos/exynos8895.dtsi:173,216,504,1249,1275,1331),
+ * verified against CMUCAL in spec/L1_platform.md 7.1 and carrying L1's gate policy (5.1-5.2):
+ * non-IP gates stay in the mode S-Boot left, IP gates go manual.
+ */
+&cmu_top { status = "okay"; };
+&cmu_peris { status = "okay"; };
+&cmu_peric0 { status = "okay"; };
+&cmu_peric1 { status = "okay"; };
+&cmu_fsys0 { status = "okay"; };
+&cmu_fsys1 { status = "okay"; };
