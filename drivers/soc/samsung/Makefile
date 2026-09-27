@@ -16,3 +16,4 @@ obj-$(CONFIG_SAMSUNG_PM_CHECK)	+= s3c-pm-check.o
 
 obj-$(CONFIG_GREATLTE_HB) += greatlte-hb.o
 obj-$(CONFIG_GREATLTE_HS) += greatlte-hs.o
+obj-$(CONFIG_GREATLTE_L1_SELFTEST) += greatlte-l1-selftest.o
