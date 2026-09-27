@@ -9,7 +9,9 @@
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/mod_devicetable.h>
+#include <linux/io.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/platform_device.h>
 
 #include <dt-bindings/clock/samsung,exynos8895.h>
@@ -21,7 +23,7 @@
 #define CLKS_NR_TOP	(CLK_GOUT_CMU_VPU_BUS + 1)
 #define CLKS_NR_FSYS0	(CLK_GOUT_FSYS0_XIU_P_FSYS0_ACLK + 1)
 #define CLKS_NR_FSYS1	(CLK_GOUT_FSYS1_XIU_P_FSYS1_ACLK + 1)
-#define CLKS_NR_PERIC0	(CLK_GOUT_PERIC0_USI03_I_SCLK_USI + 1)
+#define CLKS_NR_PERIC0	(CLK_GOUT_PERIC0_USI00_QCH + 1)
 #define CLKS_NR_PERIC1	(CLK_GOUT_PERIC1_XIU_P_PERIC1_ACLK + 1)
 #define CLKS_NR_PERIS	(CLK_GOUT_PERIS_XIU_P_PERIS_ACLK + 1)
 #define CLKS_NR_APM	(CLK_GOUT_APM_WDT_APM_PCLK + 1)
@@ -2086,6 +2088,8 @@ static const struct samsung_cmu_info fsys1_cmu_info __initconst = {
 #define CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI02_IPCLKPORT_I_SCLK_USI			0x2054
 #define CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI03_IPCLKPORT_I_PCLK				0x2058
 #define CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI03_IPCLKPORT_I_SCLK_USI			0x205c
+/* CAL:cmucal-sfr.c:1784; ENABLE bit 0, CLOCK_REQ bit 1 (CAL:cmucal-sfr.c:7163-7164) */
+#define QCH_CON_USI00_QCH							0x3020
 
 static const unsigned long peric0_clk_regs[] __initconst = {
 	PLL_CON0_MUX_CLKCMU_PERIC0_BUS_USER,
@@ -2110,6 +2114,8 @@ static const unsigned long peric0_clk_regs[] __initconst = {
 	CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI02_IPCLKPORT_I_SCLK_USI,
 	CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI03_IPCLKPORT_I_PCLK,
 	CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI03_IPCLKPORT_I_SCLK_USI,
+	/* outside the gate range: save/restore only, as stock's PMUCAL list */
+	QCH_CON_USI00_QCH,
 };
 
 /* List of parent clocks for Muxes in CMU_PERIC0 */
@@ -2219,6 +2225,15 @@ static const struct samsung_gate_clock peric0_gate_clks[] __initconst = {
 	     "mout_peric0_usi03_user",
 	     CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI03_IPCLKPORT_I_SCLK_USI,
 	     21, 0, 0),
+	/*
+	 * USI00 Q-channel request (L6F REQ-L1-10): stock's "fp-spi-pclk" is a
+	 * VCLK_QCH_DIS gate whose enable sets CLOCK_REQ while ENABLE reads 0
+	 * (S:drivers/clk/samsung/clk-exynos8895.c:372,
+	 * S:drivers/soc/samsung/cal-if/ra.c:469-486). Parent = the USI00 pclk
+	 * gate, so the bus clock is on first.
+	 */
+	GATE(CLK_GOUT_PERIC0_USI00_QCH, "gout_peric0_usi00_qch",
+	     "gout_peric0_usi00_i_pclk", QCH_CON_USI00_QCH, 1, 0, 0),
 };
 
 static const struct samsung_cmu_info peric0_cmu_info __initconst = {
@@ -6408,6 +6423,27 @@ static const struct samsung_cmu_info g3d_cmu_info __initconst = {
 
 /* ---- CMU probe glue ------------------------------------------------------ */
 
+/*
+ * USI00 Q-channel of CMU_PERIC0 (L6F REQ-L1-10): stock registers "fp-spi-pclk"
+ * with VCLK_QCH_DIS, and cal_vclk_qch_init() -> cal_qch_init(id, 0) ->
+ * ra_set_qch(id, 0, 0, 0) clears ENABLE and CLOCK_REQ once at clock
+ * registration (S:drivers/clk/samsung/composite.c:1578-1589,
+ * S:drivers/soc/samsung/cal-if/cal-if.c:144-151,
+ * S:drivers/soc/samsung/cal-if/ra.c:426-467). Do the same, after the CMU's bus
+ * clock is on. From then on CLK_GOUT_PERIC0_USI00_QCH drives CLOCK_REQ.
+ */
+static void __init exynos8895_peric0_qch_init(struct device_node *np)
+{
+	void __iomem *base = of_iomap(np, 0);
+
+	if (!base)
+		return;
+
+	writel(readl(base + QCH_CON_USI00_QCH) & ~(BIT(1) | BIT(0)),
+	       base + QCH_CON_USI00_QCH);
+	iounmap(base);
+}
+
 static int __init exynos8895_cmu_probe(struct platform_device *pdev)
 {
 	const struct samsung_cmu_info *info;
@@ -6415,6 +6451,9 @@ static int __init exynos8895_cmu_probe(struct platform_device *pdev)
 
 	info = of_device_get_match_data(dev);
 	exynos_arm64_register_cmu(dev, dev->of_node, info);
+
+	if (info == &peric0_cmu_info)
+		exynos8895_peric0_qch_init(dev->of_node);
 
 	return 0;
 }
