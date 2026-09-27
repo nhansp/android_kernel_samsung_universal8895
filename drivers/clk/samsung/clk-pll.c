@@ -627,6 +627,131 @@ static const struct clk_ops samsung_pll0831x_clk_min_ops = {
 };
 
 /*
+ * PLL1061X Clock Type (Exynos8895 PLL_AUD, the ABOX audio PLL)
+ *
+ * Fields (S:drivers/soc/samsung/cal-if/exynos8895/cmucal-sfr.c:2130-2136):
+ * CON0 P [13:8], M [25:16] (10 bits), S [2:0], ENABLE 31, STABLE 29;
+ * K in CON3 = CON0 + 0xc, [15:0] signed. Same recalc as pll_0831x, but a
+ * 10-bit M, K at +0xc, a 1500 * P lock time for fractional rates and stock's
+ * programming order (S:drivers/soc/samsung/cal-if/ra.c:82-161, 260-300).
+ */
+#define PLL1061X_LOCK_FACTOR	1500	/* flock_time: cmucal-node.c:82, ra.c:139-141 */
+#define PLL1061X_LOCK_FACTOR_INT 150	/* lock_time for K == 0: cmucal-node.c:82 */
+#define PLL1061X_MDIV_MASK	0x3FF	/* cmucal-sfr.c:2131 DIV_M 16/10 */
+#define PLL1061X_PDIV_MASK	0x3F
+#define PLL1061X_SDIV_MASK	0x7
+#define PLL1061X_MDIV_SHIFT	16
+#define PLL1061X_PDIV_SHIFT	8
+#define PLL1061X_SDIV_SHIFT	0
+#define PLL1061X_K_OFFSET	0xC	/* PLL_CON3 0x12c - PLL_CON0 0x120: cmucal-sfr.c:47-48 */
+#define PLL1061X_KDIV_MASK	0xFFFF	/* cmucal-sfr.c:2135 DIV_K 0/16 */
+#define PLL1061X_MUX_BUSY	BIT(7)	/* PLL_MUX_BUSY: S:drivers/soc/samsung/cal-if/ra.h:35-36 */
+#define PLL1061X_LOCK_STAT_SHIFT 29
+#define PLL1061X_ENABLE_SHIFT	31
+
+static unsigned long samsung_pll1061x_recalc_rate(struct clk_hw *hw,
+						  unsigned long parent_rate)
+{
+	struct samsung_clk_pll *pll = to_clk_pll(hw);
+	u32 con0 = readl_relaxed(pll->con_reg);
+	s16 kdiv = (s16)(readl_relaxed(pll->con_reg + PLL1061X_K_OFFSET) &
+			 PLL1061X_KDIV_MASK);
+	u32 mdiv = (con0 >> PLL1061X_MDIV_SHIFT) & PLL1061X_MDIV_MASK;
+	u32 pdiv = (con0 >> PLL1061X_PDIV_SHIFT) & PLL1061X_PDIV_MASK;
+	u32 sdiv = (con0 >> PLL1061X_SDIV_SHIFT) & PLL1061X_SDIV_MASK;
+	u64 fvco = parent_rate;
+
+	/* fout = fin * ((M << 16) + K) / (P << S) >> 16: stock ra.c:336-340 */
+	fvco *= (mdiv << 16) + kdiv;
+	do_div(fvco, (pdiv << sdiv));
+	fvco >>= 16;
+
+	return (unsigned long)fvco;
+}
+
+/*
+ * Stock ra_set_pll(): PLL off, lock time, K, then one CON0 write of PMS with
+ * ENABLE, then wait STABLE (ra.c:113-161, 260-300). PLL_MUX_SEL (bit 4) belongs
+ * to the bypass mux above this PLL; its user parks that mux on oscclk around a
+ * rate change, which is stock's "mux off" step.
+ */
+static int samsung_pll1061x_set_rate(struct clk_hw *hw, unsigned long drate,
+				     unsigned long prate)
+{
+	struct samsung_clk_pll *pll = to_clk_pll(hw);
+	const struct samsung_pll_rate_table *rate;
+	u32 con0, con3;
+	bool on;
+
+	rate = samsung_get_pll_settings(pll, drate);
+	if (!rate) {
+		pr_err("%s: Invalid rate : %lu for pll clk %s\n", __func__,
+		       drate, clk_hw_get_name(hw));
+		return -EINVAL;
+	}
+
+	con0 = readl_relaxed(pll->con_reg);
+	on = con0 & BIT(PLL1061X_ENABLE_SHIFT);
+	if (on)		/* ra_enable_pll(clk, 0): ra.c:97-102 */
+		writel_relaxed(con0 & ~BIT(PLL1061X_ENABLE_SHIFT), pll->con_reg);
+
+	writel_relaxed(rate->pdiv * (rate->kdiv ? PLL1061X_LOCK_FACTOR :
+				     PLL1061X_LOCK_FACTOR_INT), pll->lock_reg);
+
+	/*
+	 * Stock ORs a signed short K after integer promotion (ra.c:118, :147-148),
+	 * so a negative K also sets CON3[31:16]; rate->kdiv holds the same
+	 * sign-extended value, so OR-ing it unmasked reproduces the stock word.
+	 */
+	con3 = readl_relaxed(pll->con_reg + PLL1061X_K_OFFSET) &
+	       ~PLL1061X_KDIV_MASK;
+	writel_relaxed(con3 | rate->kdiv, pll->con_reg + PLL1061X_K_OFFSET);
+
+	con0 &= ~((PLL1061X_MDIV_MASK << PLL1061X_MDIV_SHIFT) |
+		  (PLL1061X_PDIV_MASK << PLL1061X_PDIV_SHIFT) |
+		  (PLL1061X_SDIV_MASK << PLL1061X_SDIV_SHIFT) |
+		  BIT(PLL1061X_ENABLE_SHIFT));
+	con0 |= (rate->mdiv << PLL1061X_MDIV_SHIFT) |
+		(rate->pdiv << PLL1061X_PDIV_SHIFT) |
+		(rate->sdiv << PLL1061X_SDIV_SHIFT);
+	if (on)
+		con0 |= BIT(PLL1061X_ENABLE_SHIFT);
+	writel_relaxed(con0, pll->con_reg);
+
+	return on ? samsung_pll_lock_wait(pll, BIT(pll->lock_offs)) : 0;
+}
+
+/*
+ * Stock ra_enable_pll(clk, 0) clears PLL_MUX_SEL, waits PLL_MUX_BUSY == 0 for
+ * up to 100 x 1 us and only then clears ENABLE (ra.c:82-102). In CCF the
+ * PLL_MUX_SEL write is the reparent of the bypass mux to oscclk, after which
+ * the core disables the old parent (this PLL), so the busy wait sits here,
+ * between the two stock steps. Runs under the enable lock: atomic poll.
+ */
+static void samsung_pll1061x_disable(struct clk_hw *hw)
+{
+	struct samsung_clk_pll *pll = to_clk_pll(hw);
+	u32 val;
+
+	if (readl_relaxed_poll_timeout_atomic(pll->con_reg, val,
+					      !(val & PLL1061X_MUX_BUSY), 1, 100))
+		pr_err("%s: pll mux change time out\n", clk_hw_get_name(hw));
+	samsung_pll3xxx_disable(hw);
+}
+
+static const struct clk_ops samsung_pll1061x_clk_ops = {
+	.recalc_rate = samsung_pll1061x_recalc_rate,
+	.determine_rate = samsung_pll_determine_rate,
+	.set_rate = samsung_pll1061x_set_rate,
+	.enable = samsung_pll3xxx_enable,
+	.disable = samsung_pll1061x_disable,
+};
+
+static const struct clk_ops samsung_pll1061x_clk_min_ops = {
+	.recalc_rate = samsung_pll1061x_recalc_rate,
+};
+
+/*
  * PLL45xx Clock Type
  */
 #define PLL4502_LOCK_FACTOR	400
@@ -1551,6 +1676,14 @@ static void __init _samsung_clk_register_pll(struct samsung_clk_provider *ctx,
 			init.ops = &samsung_pll0831x_clk_min_ops;
 		else
 			init.ops = &samsung_pll0831x_clk_ops;
+		break;
+	case pll_1061x:
+		pll->enable_offs = PLL1061X_ENABLE_SHIFT;
+		pll->lock_offs = PLL1061X_LOCK_STAT_SHIFT;
+		if (!pll->rate_table)
+			init.ops = &samsung_pll1061x_clk_min_ops;
+		else
+			init.ops = &samsung_pll1061x_clk_ops;
 		break;
 	case pll_6552:
 	case pll_6552_s3c2416:
