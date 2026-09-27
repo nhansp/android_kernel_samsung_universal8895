@@ -21,6 +21,7 @@
 #include <linux/pm.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
+#include <linux/soc/samsung/greatlte-l2.h>
 #include "sec-core.h"
 
 #define ACPM_ADDR_BITS       8
@@ -494,6 +495,23 @@ static void sec_pmic_acpm_mask_common_irqs(void *data)
 		     c->pdata->common_int_src_all);
 }
 
+#ifdef CONFIG_GREATLTE_HB
+/* DEBUG: the S2MPS17 id read at probe, for the "L2id" heartbeat printer (L2 5.9) */
+static u8 sec_pmic_acpm_hb_id, sec_pmic_acpm_hb_rev;
+static bool sec_pmic_acpm_hb_ok;
+
+int sec_pmic_acpm_get_id(u8 *id, u8 *rev)
+{
+	/* pairs with the smp_store_release() in sec_pmic_acpm_s2mps17_rev() */
+	if (!smp_load_acquire(&sec_pmic_acpm_hb_ok))
+		return -ENODEV;
+	*id = sec_pmic_acpm_hb_id;
+	*rev = sec_pmic_acpm_hb_rev;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(sec_pmic_acpm_get_id);
+#endif
+
 /*
  * S2MPS17 identification, as stock: the TOP PMICID register is the revision;
  * a 0x00 part whose PMIC register 0x87 reads 0x9C is revision 0x01
@@ -514,6 +532,11 @@ static int sec_pmic_acpm_s2mps17_rev(struct device *dev, struct regmap *pmic,
 	}
 
 	dev_info(dev, "s2mps17: PMICID 0x%02x rev 0x%02x\n", id, rev);
+#ifdef CONFIG_GREATLTE_HB
+	sec_pmic_acpm_hb_id = id;
+	sec_pmic_acpm_hb_rev = rev;
+	smp_store_release(&sec_pmic_acpm_hb_ok, true);
+#endif
 
 	return 0;
 }

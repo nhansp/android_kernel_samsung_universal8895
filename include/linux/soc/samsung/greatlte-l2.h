@@ -79,4 +79,14 @@ static inline int acpm_get_info(struct device_node *acpm_np,
 }
 #endif
 
+#if IS_ENABLED(CONFIG_GREATLTE_HB) && IS_REACHABLE(CONFIG_MFD_SEC_ACPM)
+/* S2MPS17 TOP PMICID and the revision derived from it at probe (L2 P7). */
+int sec_pmic_acpm_get_id(u8 *id, u8 *rev);
+#else
+static inline int sec_pmic_acpm_get_id(u8 *id, u8 *rev)
+{
+	return -ENODEV;
+}
+#endif
+
 #endif /* __LINUX_SOC_SAMSUNG_GREATLTE_L2_H */
