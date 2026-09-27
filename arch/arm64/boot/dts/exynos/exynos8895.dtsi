@@ -193,6 +193,21 @@
 				     <GIC_SPI 466 IRQ_TYPE_LEVEL_HIGH>;
 		};
 
+		watchdog: watchdog@10060000 {
+			compatible = "samsung,exynos8895-wdt";
+			reg = <0x10060000 0x100>;	/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:3169; FDT:7681 */
+			interrupts = <GIC_SPI 454 IRQ_TYPE_LEVEL_HIGH>;	/* S:...:3170 <0 454 0>; FDT:7682 0x1c6 */
+			/*
+			 * stock "gate_watchdog" = UMUX_CLKCMU_PERIS_BUS (the PERIS bus user mux),
+			 * "rate_watchdog" = OSCCLK 26 MHz: S:...:3171-3172
+			 */
+			clocks = <&cmu_peris CLK_MOUT_PERIS_BUS_USER>, <&oscclk>;
+			clock-names = "watchdog", "watchdog_src";
+			samsung,syscon-phandle = <&pmu_system_controller>;	/* S:...:3174 */
+			timeout-sec = <30>;	/* S:...:3173; FDT:7685 0x1e */
+			status = "disabled";
+		};
+
 		gic: interrupt-controller@10201000 {
 			compatible = "arm,gic-400";
 			reg = <0x10201000 0x1000>,
