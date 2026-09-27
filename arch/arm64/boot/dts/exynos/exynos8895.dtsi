@@ -8,6 +8,7 @@
 #include <dt-bindings/clock/samsung,exynos8895.h>
 #include <dt-bindings/clock/samsung,exynos8895-acpm.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/thermal/thermal.h>
 
 / {
 	compatible = "samsung,exynos8895";
@@ -342,6 +343,61 @@
 			clock-names = "watchdog", "watchdog_src";
 			samsung,syscon-phandle = <&pmu_system_controller>;	/* S:...:3174 */
 			timeout-sec = <30>;	/* S:...:3173; FDT:7685 0x1e */
+			status = "disabled";
+		};
+
+		/*
+		 * Four TMU instances on two register blocks, as stock
+		 * (S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:4537-4591, FDT:9339-9434):
+		 * the node names differ because dtc merges same-named siblings; the
+		 * shared unit address is a W=1 warning only. APB clock: PERIS
+		 * BUSIF_TMU at PERIS+0x2020 (CAL:cmucal-sfr.c:1903).
+		 */
+		tmu_big: tmu-big@10080000 {
+			compatible = "samsung,exynos8895-tmu";
+			reg = <0x10080000 0x400>;		/* S:...exynos8895.dtsi:4539 */
+			interrupts = <GIC_SPI 451 IRQ_TYPE_LEVEL_HIGH>;	/* :4540 "<0 451 0>"; FDT:9342 <0x1c3> */
+			clocks = <&cmu_peris CLK_GOUT_PERIS_BUSIF_TMU_PCLK>;
+			clock-names = "tmu_apbif";
+			samsung,tmu-sensors = <0x3d>;		/* :4543 "sensors = <61>;" */
+			samsung,tmu-sensing-mode = "balance";	/* :4544 */
+			#thermal-sensor-cells = <0>;
+			status = "disabled";
+		};
+
+		tmu_little: tmu-little@10080000 {
+			compatible = "samsung,exynos8895-tmu";
+			reg = <0x10080000 0x400>;		/* :4553 */
+			interrupts = <GIC_SPI 451 IRQ_TYPE_LEVEL_HIGH>;	/* :4554 */
+			clocks = <&cmu_peris CLK_GOUT_PERIS_BUSIF_TMU_PCLK>;
+			clock-names = "tmu_apbif";
+			samsung,tmu-sensors = <0x02>;		/* :4557 "sensors = <2>;" */
+			samsung,tmu-sensing-mode = "max";	/* :4558 */
+			#thermal-sensor-cells = <0>;
+			status = "disabled";
+		};
+
+		tmu_gpu: tmu-gpu@10084000 {
+			compatible = "samsung,exynos8895-tmu";
+			reg = <0x10084000 0x400>;		/* :4564 */
+			interrupts = <GIC_SPI 452 IRQ_TYPE_LEVEL_HIGH>;	/* :4565 "<0 452 0>" */
+			clocks = <&cmu_peris CLK_GOUT_PERIS_BUSIF_TMU_PCLK>;
+			clock-names = "tmu_apbif";
+			samsung,tmu-sensors = <0x01>;		/* :4568 "sensors = <1>;" */
+			samsung,tmu-sensing-mode = "max";	/* :4569 */
+			#thermal-sensor-cells = <0>;
+			status = "disabled";
+		};
+
+		tmu_isp: tmu-isp@10084000 {
+			compatible = "samsung,exynos8895-tmu";
+			reg = <0x10084000 0x400>;		/* :4584 */
+			interrupts = <GIC_SPI 452 IRQ_TYPE_LEVEL_HIGH>;	/* :4585 */
+			clocks = <&cmu_peris CLK_GOUT_PERIS_BUSIF_TMU_PCLK>;
+			clock-names = "tmu_apbif";
+			samsung,tmu-sensors = <0x06>;		/* :4588 "sensors = <6>;" */
+			samsung,tmu-sensing-mode = "max";	/* :4589 */
+			#thermal-sensor-cells = <0>;
 			status = "disabled";
 		};
 
@@ -1903,6 +1959,94 @@
 				 <&cmu_top CLK_DOUT_CMU_CPUCL1_SWITCH>,	/* CAL:cmucal-node.c:1002 MUX_CLKCMU_CPUCL1_SWITCH_USER parents */
 				 <&cmu_top CLK_DOUT_CMU_HPM>;	/* CAL:cmucal-node.c:1580 parent CLKCMU_HPM */
 			clock-names = "oscclk", "switch", "hpm";
+		};
+	};
+
+	/*
+	 * Trips from the factory DT (FDT:9436-9748). Stock "hot" 115 C, its level-7
+	 * threshold with the hardware trip armed, is the critical trip here (the
+	 * driver needs one and programs it at level 7); stock "passive" trips stay
+	 * passive; stock "active" trips drive Samsung-only cooling devices
+	 * (hotplug, exynos cooling) and are not carried (spec/L2_power.md Q9).
+	 */
+	thermal-zones {
+		big-thermal {
+			polling-delay-passive = <50>;	/* FDT:9440 <0x32> */
+			polling-delay = <1000>;		/* FDT:9441 <0x3e8> */
+			thermal-sensors = <&tmu_big>;
+
+			trips {
+				big_passive: big-passive {
+					temperature = <83000>;	/* FDT:9468 mngs-alert1 <0x14438> */
+					hysteresis = <5000>;	/* FDT:9469 <0x1388> */
+					type = "passive";
+				};
+
+				big-crit {
+					temperature = <115000>;	/* FDT:9476 mngs-hot <0x1c138> */
+					hysteresis = <5000>;	/* FDT:9477 */
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&big_passive>;
+					cooling-device = <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu5 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu6 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		little-thermal {
+			polling-delay-passive = <0>;	/* FDT:9498 */
+			polling-delay = <0>;		/* FDT:9499 */
+			thermal-sensors = <&tmu_little>;
+
+			trips {
+				little-crit {
+					temperature = <115000>;	/* FDT:9561 apo-hot */
+					hysteresis = <5000>;
+					type = "critical";
+				};
+			};
+		};
+
+		gpu-thermal {
+			polling-delay-passive = <100>;	/* FDT:9615 <0x64> */
+			polling-delay = <0>;		/* FDT:9616 */
+			thermal-sensors = <&tmu_gpu>;
+
+			trips {
+				gpu_passive: gpu-passive {
+					temperature = <88000>;	/* FDT:9643 gpu-alert1 <0x157c0> */
+					hysteresis = <5000>;	/* FDT:9644 */
+					type = "passive";
+				};
+
+				gpu-crit {
+					temperature = <115000>;	/* FDT:9651 gpu-hot */
+					hysteresis = <5000>;
+					type = "critical";
+				};
+			};
+			/* the cooling map to the GPU devfreq device is the GPU layer's */
+		};
+
+		isp-thermal {
+			polling-delay-passive = <0>;	/* FDT:9673 */
+			polling-delay = <0>;		/* FDT:9674 */
+			thermal-sensors = <&tmu_isp>;
+
+			trips {
+				isp-crit {
+					temperature = <115000>;	/* FDT:9712 isp-hot */
+					hysteresis = <5000>;
+					type = "critical";
+				};
+			};
 		};
 	};
 
