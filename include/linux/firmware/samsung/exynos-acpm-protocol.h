@@ -8,10 +8,12 @@
 #ifndef __EXYNOS_ACPM_PROTOCOL_H
 #define __EXYNOS_ACPM_PROTOCOL_H
 
+#include <linux/errno.h>
 #include <linux/types.h>
 
 struct acpm_handle;
 struct device_node;
+struct notifier_block;
 
 struct acpm_dvfs_ops {
 	int (*set_rate)(struct acpm_handle *handle,
@@ -53,12 +55,21 @@ struct device;
 #if IS_ENABLED(CONFIG_EXYNOS_ACPM_PROTOCOL)
 struct acpm_handle *devm_acpm_get_by_node(struct device *dev,
 					  struct device_node *np);
+int devm_acpm_register_notifier(struct device *dev, struct acpm_handle *handle,
+				struct notifier_block *nb);
 #else
 
 static inline struct acpm_handle *devm_acpm_get_by_node(struct device *dev,
 							struct device_node *np)
 {
 	return NULL;
+}
+
+static inline int devm_acpm_register_notifier(struct device *dev,
+					      struct acpm_handle *handle,
+					      struct notifier_block *nb)
+{
+	return -ENODEV;
 }
 #endif
 
