@@ -30,6 +30,7 @@ description: |
 properties:
   compatible:
     enum:
+      - samsung,exynos8895-cmu-abox
       - samsung,exynos8895-cmu-apm
       - samsung,exynos8895-cmu-busc
       - samsung,exynos8895-cmu-cam
@@ -76,6 +77,24 @@ required:
   - "#clock-cells"
 
 allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: samsung,exynos8895-cmu-abox
+
+    then:
+      properties:
+        clocks:
+          items:
+            - description: External reference clock (26 MHz)
+            - description: CMU_ABOX CPUABOX clock (from CMU_TOP)
+
+        clock-names:
+          items:
+            - const: oscclk
+            - const: cpuabox
+
   - if:
       properties:
         compatible:
