@@ -1523,6 +1523,30 @@
 			compatible = "samsung,exynos8895-pmu",
 				     "samsung,exynos7-pmu", "syscon";
 			reg = <0x16480000 0x10000>;
+
+			/*
+			 * S-Boot boot target in INFORM3 (0x080c) for the stock
+			 * commands (S:drivers/staging/samsung/sec_reboot.c:47-60,
+			 * 170-226; offset S:include/linux/sec_ext.h:28). No
+			 * mode-normal: INFORM2 and the NULL/unknown-command default
+			 * 0x12345670 come from the PMU driver's priority-128 reboot
+			 * notifier, which runs before this node's (priority 0), so
+			 * this node only overrides INFORM3 for a matching command;
+			 * a power-off (cmd NULL -> "normal") writes nothing, as
+			 * stock sec_power_off() writes no INFORM3.
+			 */
+			reboot-mode {
+				compatible = "syscon-reboot-mode";
+				offset = <0x080c>;
+				mode-download = <0x12345671>;	/* SEC_RESET_REASON_DOWNLOAD :51,178-179 */
+				mode-upload = <0x12345672>;	/* SEC_RESET_REASON_UPLOAD :52,182-183 */
+				mode-recovery = <0x12345674>;	/* SEC_RESET_REASON_RECOVERY :54,176-177 */
+				mode-fota = <0x12345675>;	/* SEC_RESET_REASON_FOTA :55,172-173 */
+				mode-fota_bl = <0x12345676>;	/* SEC_RESET_REASON_FOTA_BL :56,174-175 */
+				mode-secure = <0x12345677>;	/* SEC_RESET_REASON_SECURE :57,184-185 */
+				mode-fwup = <0x12345679>;	/* SEC_RESET_REASON_FWUP :58,186-187 */
+				mode-bootloader = <0x1234567d>;	/* SEC_RESET_REASON_BOOTLOADER :60,180-181 */
+			};
 		};
 
 		/*
@@ -1728,3 +1752,16 @@
 
 #include "exynos8895-pinctrl.dtsi"
 #include "arm/samsung/exynos-syscon-restart.dtsi"
+
+&poweroff {
+	/*
+	 * Stock power-off clears only PS_HOLD_CONTROL bit 8
+	 * (S:drivers/staging/samsung/sec_reboot.c:147
+	 * "exynos_pmu_update(EXYNOS_PMU_PS_HOLD_CONTROL, 0x1<<8, 0x0);",
+	 * S:drivers/soc/samsung/exynos-reboot.c:77,188 0x330C "& 0xFFFFFEFF").
+	 * The common node's "mask" alone writes the whole word 0x5200
+	 * (A:drivers/power/reset/syscon-poweroff.c:71-74).
+	 */
+	mask = <0x100>;
+	value = <0x0>;
+};
