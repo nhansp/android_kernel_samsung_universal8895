@@ -1330,6 +1330,15 @@
 			clock-names = "oscclk";
 		};
 
+		cmu_apm: clock-controller@16400000 {
+			compatible = "samsung,exynos8895-cmu-apm";
+			reg = <0x16400000 0x8000>;	/* CAL:cmucal-sfr.c:9 SFR_BLOCK(APM, 0x16400000, 0x8000) */
+			#clock-cells = <1>;
+			clocks = <&oscclk>,	/* CAL:cmucal-node.c:581 parents { OSCCLK_APM, CLKCMU_APM_BUS } */
+				 <&cmu_top CLK_DOUT_CMU_APM_BUS>;
+			clock-names = "oscclk", "bus";
+		};
+
 		pmu_system_controller: system-controller@16480000 {
 			compatible = "samsung,exynos8895-pmu",
 				     "samsung,exynos7-pmu", "syscon";
@@ -1346,6 +1355,27 @@
 				interrupt-parent = <&gic>;
 				interrupts = <GIC_SPI 16 IRQ_TYPE_LEVEL_HIGH>;
 			};
+		};
+
+		cmu_cpucl0: clock-controller@16800000 {
+			compatible = "samsung,exynos8895-cmu-cpucl0";
+			reg = <0x16800000 0x8000>;	/* CAL:cmucal-sfr.c:15 SFR_BLOCK(CPUCL0, 0x16800000, 0x8000) */
+			#clock-cells = <1>;
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_DOUT_CMU_CPUCL0_SWITCH>,	/* CAL:cmucal-node.c:621 { OSCCLK_CPUCL0, CLKCMU_CPUCL0_SWITCH } */
+				 <&cmu_top CLK_DOUT_CMU_HPM>,	/* CAL:cmucal-node.c:1567 parent CLKCMU_HPM */
+				 <&cmu_top CLK_GOUT_CMU_DROOPDETECTOR>;	/* CAL:cmucal-node.c:1570-1571 parent CLKCMU_DROOPDETECTOR */
+			clock-names = "oscclk", "switch", "hpm", "droop";
+		};
+
+		cmu_cpucl1: clock-controller@16900000 {
+			compatible = "samsung,exynos8895-cmu-cpucl1";
+			reg = <0x16900000 0x8000>;	/* CAL:cmucal-sfr.c:16 SFR_BLOCK(CPUCL1, 0x16900000, 0x8000) */
+			#clock-cells = <1>;
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_DOUT_CMU_CPUCL1_SWITCH>,	/* CAL:cmucal-node.c:1002 MUX_CLKCMU_CPUCL1_SWITCH_USER parents */
+				 <&cmu_top CLK_DOUT_CMU_HPM>;	/* CAL:cmucal-node.c:1580 parent CLKCMU_HPM */
+			clock-names = "oscclk", "switch", "hpm";
 		};
 	};
 
