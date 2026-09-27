@@ -113,6 +113,22 @@
 		};
 	};
 
+	firmware {
+		/*
+		 * The APM's ACPM firmware interface (the stock acpm_ipc, acpm and
+		 * acpm_dvfs nodes, S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:2407-2438,
+		 * FDT:6674-6701; their channel numbers are driver match data here).
+		 * The PMIC child is the board's.
+		 */
+		acpm_ipc: power-management {
+			compatible = "samsung,exynos8895-acpm-ipc";
+			#clock-cells = <1>;	/* DVFS clocks, dt-bindings/clock/samsung,exynos8895-acpm.h */
+			mboxes = <&ap2apm_mailbox>;
+			shmem = <&apm_sram>;
+			status = "disabled";
+		};
+	};
+
 	oscclk: osc-clock {
 		compatible = "fixed-clock";
 		#clock-cells = <0>;
@@ -1519,6 +1535,22 @@
 			clock-names = "oscclk", "bus";
 		};
 
+		ap2apm_mailbox: mailbox@16440000 {
+			compatible = "samsung,exynos8895-mbox";
+			/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:2420 "<0x0 0x16440000 0x1000>," (AP2APM MAILBOX); FDT:6687 */
+			reg = <0x16440000 0x1000>;
+			/*
+			 * CMU_APM MAILBOX_APM2AP pclk, APM+0x2038 bit 21
+			 * (CAL:cmucal-sfr.c:147); the driver holds it enabled.
+			 */
+			clocks = <&cmu_apm CLK_GOUT_APM_MAILBOX_APM2AP_PCLK>;
+			clock-names = "pclk";
+			/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:2419 "interrupts = <0 39 0>;"; FDT:6686 */
+			interrupts = <GIC_SPI 39 IRQ_TYPE_LEVEL_HIGH>;
+			#mbox-cells = <0>;
+			status = "disabled";
+		};
+
 		pmu_system_controller: system-controller@16480000 {
 			compatible = "samsung,exynos8895-pmu",
 				     "samsung,exynos7-pmu", "syscon";
@@ -1711,6 +1743,24 @@
 				interrupt-parent = <&gic>;
 				interrupts = <GIC_SPI 16 IRQ_TYPE_LEVEL_HIGH>;
 			};
+		};
+
+		apm_sram: sram@16500000 {
+			compatible = "mmio-sram";
+			/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:2421 "<0x0 0x16500000 0xB400>;" (APM SRAM); FDT:6687 */
+			reg = <0x16500000 0xb400>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges = <0x0 0x16500000 0xb400>;
+			/*
+			 * Device mapping only: the ACPM driver maps it with devm_ioremap()
+			 * (A:drivers/firmware/samsung/exynos-acpm.c:624) as stock
+			 * (S:drivers/soc/samsung/acpm/acpm_ipc.c:725); without this the
+			 * SRAM driver would add a write-combined mapping
+			 * (A:drivers/misc/sram.c:391-399).
+			 */
+			no-memory-wc;
+			status = "disabled";
 		};
 
 		cmu_cpucl0: clock-controller@16800000 {
