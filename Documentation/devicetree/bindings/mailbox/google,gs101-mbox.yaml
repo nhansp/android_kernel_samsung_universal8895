@@ -11,7 +11,8 @@ maintainers:
   - Tudor Ambarus <tudor.ambarus@linaro.org>
 
 description:
-  The Samsung Exynos mailbox controller, used on Google GS101 SoC, has 16 flag
+  The Samsung Exynos mailbox controller, used on Google GS101 and Samsung
+  Exynos8895 SoCs, has 16 flag
   bits for hardware interrupt generation and a shared register for passing
   mailbox messages. When the controller is used by the ACPM interface
   the shared register is ignored and the mailbox controller acts as a doorbell.
@@ -20,7 +21,9 @@ description:
 
 properties:
   compatible:
-    const: google,gs101-mbox
+    enum:
+      - google,gs101-mbox
+      - samsung,exynos8895-mbox
 
   reg:
     maxItems: 1
