@@ -17,6 +17,7 @@ properties:
     enum:
       - google,gs101-ufs
       - samsung,exynos7-ufs
+      - samsung,exynos8895-ufs
       - samsung,exynosautov9-ufs
       - samsung,exynosautov9-ufs-vh
       - tesla,fsd-ufs
@@ -96,7 +97,37 @@ allOf:
         clock-names:
           minItems: 6
 
-    else:
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: samsung,exynos8895-ufs
+
+    then:
+      properties:
+        clocks:
+          minItems: 3
+          maxItems: 3
+
+        clock-names:
+          minItems: 3
+          maxItems: 3
+
+      required:
+        - samsung,sysreg
+        - dma-coherent
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - samsung,exynos7-ufs
+              - samsung,exynosautov9-ufs
+              - samsung,exynosautov9-ufs-vh
+              - tesla,fsd-ufs
+
+    then:
       properties:
         clocks:
           maxItems: 2
