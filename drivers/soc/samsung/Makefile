@@ -19,3 +19,4 @@ obj-$(CONFIG_GREATLTE_HS) += greatlte-hs.o
 obj-$(CONFIG_GREATLTE_L1_SELFTEST) += greatlte-l1-selftest.o
 obj-$(CONFIG_GREATLTE_HB) += greatlte-hb-l2.o
 obj-$(CONFIG_GREATLTE_USB_DIAG) += greatlte-hb-l3.o
+obj-$(CONFIG_GREATLTE_HB) += greatlte-hb-l4.o
