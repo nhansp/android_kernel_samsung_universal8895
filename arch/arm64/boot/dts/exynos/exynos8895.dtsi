@@ -1596,11 +1596,17 @@
 		};
 
 		mmc: mmc@11500000 {
-			compatible = "samsung,exynos8895-dw-mshc-smu",
-				     "samsung,exynos7-dw-mshc-smu";
+			/* no -smu: stock never programs the SD slot's SMU (cfg_smu only for
+			 * mshc alias 0, S:drivers/mmc/host/dw_mmc-exynos.c:256-269; this is
+			 * mshc2, S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:143) */
+			compatible = "samsung,exynos8895-dw-mshc",
+				     "samsung,exynos7-dw-mshc";
 			reg = <0x11500000 0x2000>;
 			assigned-clocks = <&cmu_top CLK_MOUT_CMU_FSYS1_MMC_CARD>;
-			assigned-clock-parents = <&cmu_top CLK_FOUT_SHARED4_PLL>;
+			/* stock MMC_CARD LUT: mux 1 = PLL_SHARED2 (800 MHz), div 0
+			 * (CAL:cmucal-vclk.c:2580-2581, cmucal-vclklut.c:137-138,
+			 * cmucal-node.c:20-21,275-278) */
+			assigned-clock-parents = <&cmu_top CLK_FOUT_SHARED2_PLL>;
 			clocks = <&cmu_fsys1 CLK_GOUT_FSYS1_MMC_CARD_I_ACLK>,
 				 <&cmu_fsys1 CLK_GOUT_FSYS1_MMC_CARD_SDCLKIN>;
 			clock-names = "biu", "ciu";
