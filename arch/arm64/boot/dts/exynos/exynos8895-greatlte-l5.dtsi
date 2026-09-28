@@ -58,3 +58,46 @@
 		};
 	};
 };
+
+/*
+ * S-Boot's "lcd_buffer" (spec/L5_display.md 4.1): it keeps 0xcc000000-0xcd400000
+ * out of its DRAM test and scans its logo out of it; the framebuffer address it
+ * passes on the command line is the same constant. no-map, and identity-mapped
+ * for the DECON's IOMMU domain before translation is ever enabled
+ * (A:drivers/iommu/of_iommu.c:206-270: IOMMU_RESV_DIRECT when iova == phys and
+ * the length equals the region). soc@0 has one address and one size cell.
+ */
+&{/reserved-memory} {
+	splash_mem: framebuffer@cc000000 {
+		reg = <0x0 0xcc000000 0x1400000>;	/* SB:0xc9017a04 mov x1,#0xcc000000; SB:0xc9017a08 mov x2,#0xcd400000 */
+		no-map;
+		iommu-addresses = <&decon 0xcc000000 0x1400000>;
+	};
+};
+
+/*
+ * Simple-framebuffer over the live splash (spec/L5_display.md 4.2, stage 5a).
+ * Disabled: the DRM driver owns the display in this image. It is the "keep
+ * splash" kill switch of FULL_IMAGE_PLAN.md 3.3 (set it okay and disable the
+ * DECON, the DSIM and the display System MMUs). reg, not memory-region, so
+ * simplefb sizes the aperture as the 1440x2960x4 picture.
+ */
+&{/chosen} {
+	#address-cells = <2>;
+	#size-cells = <1>;
+	ranges;
+
+	framebuffer0: framebuffer@cc000000 {
+		compatible = "simple-framebuffer";
+		reg = <0x0 0xcc000000 (1440 * 2960 * 4)>;	/* SB:0xc9009fb4 mov w2,#-0x34000000 -> " s3cfb.bootloaderfb=0x%x" SB:0xc9088938 */
+		width = <1440>;					/* FDT:10082 resolution = <0x5a0 0xb90> */
+		height = <2960>;
+		stride = <(1440 * 4)>;
+		format = "a8r8g8b8";				/* vendor fb BGRA_8888 (S:drivers/video/fbdev/exynos/dpu/decon_core.c:4079) */
+		power-domains = <&pd_dpu0>, <&pd_dpu1>;
+		vddi3p0-supply = <&s2dos03_ldo3>;
+		vddi1p8-supply = <&s2dos03_ldo1>;
+		vddi1p6-supply = <&s2dos03_buck1>;
+		status = "disabled";
+	};
+};
