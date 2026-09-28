@@ -17,14 +17,18 @@
 #include <linux/export.h>
 #include <linux/irq.h>
 #include <linux/media-bus-format.h>
+#include <linux/mfd/syscon.h>
 #include <linux/of.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
+#include <linux/regmap.h>
 #include <linux/units.h>
 
 #include <video/mipi_display.h>
 
 #include <drm/bridge/samsung-dsim.h>
+#include <drm/display/drm_dsc.h>
 #include <drm/drm_panel.h>
 #include <drm/drm_print.h>
 
@@ -678,6 +682,321 @@ static const struct samsung_dsim_driver_data imx8mm_dsi_driver_data = {
 	.min_freq = 1050,
 };
 
+static struct clk_bulk_data exynos8895_clk_bulk_data[] = {
+	{ .id = "bus" },
+};
+
+/*
+ * Exynos 8895 DSIM (S:drivers/video/fbdev/exynos/dpu/regs-dsim.h). The generic
+ * indices point at the 8895 registers of the same function; the 8895-only
+ * registers are the DSIM8895_* offsets below.
+ */
+static const unsigned int exynos8895_reg_ofs[] = {
+	[DSIM_SWRST_REG] = 0x04,	/* regs-dsim.h:17 */
+	[DSIM_LINK_STATUS_REG] = 0x14,	/* :32 LINK_STATUS3, PLL_STABLE bit 0 */
+	[DSIM_DPHY_STATUS_REG] = 0x1c,	/* :42 */
+	[DSIM_CLKCTRL_REG] = 0x20,	/* :50 */
+	[DSIM_TIMEOUT_REG] = 0x28,	/* :70 */
+	[DSIM_ESCMODE_REG] = 0x2c,	/* :77 */
+	[DSIM_MDRESOL_REG] = 0x3c,	/* :103 RESOL */
+	[DSIM_MVPORCH_REG] = 0x40,	/* :112 */
+	[DSIM_MHPORCH_REG] = 0x44,	/* :123 */
+	[DSIM_MSYNC_REG] = 0x48,	/* :130 */
+	[DSIM_CONFIG_REG] = 0x4c,	/* :137 */
+	[DSIM_INTSRC_REG] = 0x50,	/* :158 */
+	[DSIM_INTMSK_REG] = 0x54,	/* :177 */
+	[DSIM_PKTHDR_REG] = 0x58,	/* :196 */
+	[DSIM_PAYLOAD_REG] = 0x5c,	/* :204 */
+	[DSIM_RXFIFO_REG] = 0x60,	/* :207 */
+	[DSIM_SFRCTRL_REG] = 0x64,	/* :210 */
+	[DSIM_FIFOCTRL_REG] = 0x68,	/* :215 */
+	[DSIM_PLLCTRL_REG] = 0xa0,	/* :316 */
+	[DSIM_PHYCTRL_REG] = 0xb0,	/* :334 PHYCTRL_B1 */
+	[DSIM_PHYTIMING_REG] = 0xd0,	/* :367 */
+	[DSIM_PHYTIMING1_REG] = 0xd4,	/* :373 */
+	[DSIM_PHYTIMING2_REG] = 0xd8,	/* :383 */
+};
+
+static const unsigned int exynos8895_reg_values[] = {
+	[RESET_TYPE] = DSIM_SWRST,	/* regs-dsim.h:20 DSIM_SWRST_RESET (1 << 0) */
+	[PLL_TIMER] = 0x13880,		/* dsim_reg.c:19 DSIM_PLL_STABLE_TIME */
+	[STOP_STATE_CNT] = 0xa,		/* dsim_reg.c:15 DSIM_STOP_STATE_CNT */
+};
+
+/*
+ * Fixed link parameters of an Exynos 8895 DSIM: the PMS comes from the panel
+ * timing of the vendor DT (made by a vendor tool, dsim_reg.c:1435-1451), the
+ * D-PHY timings from the vendor lookup table, and the analog characteristic
+ * words from the vendor driver.
+ */
+struct samsung_dsim_fixed_link {
+	unsigned int fin_mhz;		/* PLL reference, MHz */
+	unsigned int p, m, s;		/* PLL PMS */
+	unsigned int word_clk_div;	/* word clock = HS clock / div */
+	const u32 (*dphy_timing)[10];	/* bps, clk_prepare, clk_zero, clk_post,
+					 * clk_trail, hs_prepare, hs_zero, hs_trail,
+					 * lpx, hs_exit; row = (row0 bps - hs) / 10 */
+	unsigned int dphy_timing_rows;
+	const u32 *b_dphyctl;		/* index = escape clock MHz - 7 */
+	unsigned int b_dphyctl_n;
+	const u32 *phy_charic;		/* MPLL_CTRL1/2, B_DPHY_CTRL2/3/4, M_DPHY_CTRL1..4 */
+};
+
+/* S:drivers/video/fbdev/exynos/dpu/dsim_reg.c:48-254 */
+static const u32 exynos8895_dphy_timing[][10] = {
+	{ 2500, 25, 43, 14, 20, 24, 19, 24, 18, 16 },
+	{ 2490, 25, 43, 14, 20, 24, 19, 24, 18, 16 },
+	{ 2480, 24, 43, 14, 20, 24, 19, 24, 18, 16 },
+	{ 2470, 24, 43, 13, 20, 24, 18, 24, 18, 15 },
+	{ 2460, 24, 42, 13, 20, 24, 18, 24, 18, 15 },
+	{ 2450, 24, 42, 13, 20, 24, 18, 24, 18, 15 },
+	{ 2440, 24, 42, 13, 20, 23, 18, 24, 18, 15 },
+	{ 2430, 24, 42, 13, 20, 23, 18, 24, 18, 15 },
+	{ 2420, 24, 41, 13, 20, 23, 18, 24, 18, 15 },
+	{ 2410, 24, 41, 13, 20, 23, 18, 24, 18, 15 },
+	{ 2400, 24, 41, 13, 20, 23, 18, 24, 17, 15 },
+	{ 2390, 23, 41, 13, 19, 23, 18, 23, 17, 15 },
+	{ 2380, 23, 41, 13, 19, 23, 18, 23, 17, 15 },
+	{ 2370, 23, 41, 13, 19, 23, 18, 23, 17, 15 },
+	{ 2360, 23, 41, 13, 19, 23, 18, 23, 17, 15 },
+	{ 2350, 23, 40, 13, 19, 23, 18, 23, 17, 15 },
+	{ 2340, 23, 40, 13, 19, 22, 18, 23, 17, 15 },
+	{ 2330, 23, 40, 13, 19, 22, 17, 23, 17, 15 },
+	{ 2320, 23, 40, 13, 19, 22, 17, 23, 17, 14 },
+	{ 2310, 23, 39, 13, 19, 22, 17, 23, 17, 14 },
+	{ 2300, 23, 39, 13, 19, 22, 17, 23, 17, 14 },
+	{ 2290, 22, 39, 13, 19, 22, 17, 23, 17, 14 },
+	{ 2280, 22, 39, 13, 18, 22, 17, 22, 17, 14 },
+	{ 2270, 22, 39, 13, 18, 22, 17, 22, 17, 14 },
+	{ 2260, 22, 39, 13, 18, 22, 17, 22, 16, 14 },
+	{ 2250, 22, 39, 13, 18, 22, 17, 22, 16, 14 },
+	{ 2240, 22, 38, 12, 18, 21, 17, 22, 16, 14 },
+	{ 2230, 22, 38, 12, 18, 21, 17, 22, 16, 14 },
+	{ 2220, 22, 38, 12, 18, 21, 16, 22, 16, 14 },
+	{ 2210, 22, 38, 12, 18, 21, 16, 22, 16, 14 },
+	{ 2200, 22, 38, 12, 18, 21, 16, 22, 16, 14 },
+	{ 2190, 21, 38, 12, 18, 21, 16, 22, 16, 14 },
+	{ 2180, 21, 37, 12, 18, 21, 16, 22, 16, 13 },
+	{ 2170, 21, 37, 12, 18, 21, 16, 22, 16, 13 },
+	{ 2160, 21, 37, 12, 17, 21, 16, 21, 16, 13 },
+	{ 2150, 21, 37, 12, 17, 21, 16, 21, 16, 13 },
+	{ 2140, 21, 36, 12, 17, 20, 16, 21, 16, 13 },
+	{ 2130, 21, 36, 12, 17, 20, 16, 21, 15, 13 },
+	{ 2120, 21, 36, 12, 17, 20, 16, 21, 15, 13 },
+	{ 2110, 21, 36, 12, 17, 20, 15, 21, 15, 13 },
+	{ 2100, 21, 36, 12, 17, 20, 15, 21, 15, 13 },
+	{ 2090, 20, 36, 12, 17, 20, 15, 21, 15, 13 },
+	{ 2080, 20, 36, 12, 17, 20, 15, 21, 15, 13 },
+	{ 2070, 20, 35, 12, 17, 20, 15, 21, 15, 13 },
+	{ 2060, 20, 35, 12, 17, 20, 15, 21, 15, 13 },
+	{ 2050, 20, 35, 12, 16, 20, 15, 20, 15, 13 },
+	{ 2040, 20, 35, 12, 16, 20, 15, 20, 15, 13 },
+	{ 2030, 20, 34, 12, 16, 19, 15, 20, 15, 12 },
+	{ 2020, 20, 34, 12, 16, 19, 15, 20, 15, 12 },
+	{ 2010, 20, 34, 11, 16, 19, 15, 20, 15, 12 },
+	{ 2000, 20, 34, 11, 16, 19, 14, 20, 14, 12 },
+	{ 1990, 19, 34, 11, 16, 19, 14, 20, 14, 12 },
+	{ 1980, 19, 34, 11, 16, 19, 14, 20, 14, 12 },
+	{ 1970, 19, 33, 11, 16, 19, 14, 20, 14, 12 },
+	{ 1960, 19, 33, 11, 16, 19, 14, 20, 14, 12 },
+	{ 1950, 19, 33, 11, 16, 19, 14, 20, 14, 12 },
+	{ 1940, 19, 33, 11, 15, 19, 14, 19, 14, 12 },
+	{ 1930, 19, 33, 11, 15, 18, 14, 19, 14, 12 },
+	{ 1920, 19, 32, 11, 15, 18, 14, 19, 14, 12 },
+	{ 1910, 19, 32, 11, 15, 18, 14, 19, 14, 12 },
+	{ 1900, 18, 32, 11, 15, 18, 14, 19, 14, 12 },
+	{ 1890, 18, 32, 11, 15, 18, 14, 19, 14, 11 },
+	{ 1880, 18, 32, 11, 15, 18, 13, 19, 14, 11 },
+	{ 1870, 18, 32, 11, 15, 18, 13, 19, 14, 11 },
+	{ 1860, 18, 31, 11, 15, 18, 13, 19, 13, 11 },
+	{ 1850, 18, 31, 11, 15, 18, 13, 19, 13, 11 },
+	{ 1840, 18, 31, 11, 15, 18, 13, 19, 13, 11 },
+	{ 1830, 18, 31, 11, 14, 17, 13, 18, 13, 11 },
+	{ 1820, 18, 30, 11, 14, 17, 13, 18, 13, 11 },
+	{ 1810, 18, 30, 11, 14, 17, 13, 18, 13, 11 },
+	{ 1800, 17, 30, 11, 14, 17, 13, 18, 13, 11 },
+	{ 1790, 17, 30, 11, 14, 17, 13, 18, 13, 11 },
+	{ 1780, 17, 30, 10, 14, 17, 13, 18, 13, 11 },
+	{ 1770, 17, 30, 10, 14, 17, 12, 18, 13, 11 },
+	{ 1760, 17, 30, 10, 14, 17, 12, 18, 13, 11 },
+	{ 1750, 17, 29, 10, 14, 17, 12, 18, 13, 11 },
+	{ 1740, 17, 29, 10, 14, 17, 12, 18, 13, 10 },
+	{ 1730, 17, 29, 10, 14, 16, 12, 18, 12, 10 },
+	{ 1720, 17, 29, 10, 14, 16, 12, 18, 12, 10 },
+	{ 1710, 17, 29, 10, 13, 16, 12, 17, 12, 10 },
+	{ 1700, 16, 29, 10, 13, 16, 12, 17, 12, 10 },
+	{ 1690, 16, 28, 10, 13, 16, 12, 17, 12, 10 },
+	{ 1680, 16, 28, 10, 13, 16, 12, 17, 12, 10 },
+	{ 1670, 16, 28, 10, 13, 16, 12, 17, 12, 10 },
+	{ 1660, 16, 28, 10, 13, 16, 11, 17, 12, 10 },
+	{ 1650, 16, 28, 10, 13, 16, 11, 17, 12, 10 },
+	{ 1640, 16, 27, 10, 13, 16, 11, 17, 12, 10 },
+	{ 1630, 16, 27, 10, 13, 16, 11, 17, 12, 10 },
+	{ 1620, 16, 27, 10, 13, 15, 11, 17, 12, 10 },
+	{ 1610, 16, 27, 10, 13, 15, 11, 17, 12, 10 },
+	{ 1600, 15, 27, 10, 12, 15, 11, 16, 11, 9 },
+	{ 1590, 15, 27, 10, 12, 15, 11, 16, 11, 9 },
+	{ 1580, 15, 26, 10, 12, 15, 11, 16, 11, 9 },
+	{ 1570, 15, 26, 10, 12, 15, 11, 16, 11, 9 },
+	{ 1560, 15, 26, 10, 12, 15, 11, 16, 11, 9 },
+	{ 1550, 15, 26, 9, 12, 15, 10, 16, 11, 9 },
+	{ 1540, 15, 25, 9, 12, 15, 10, 16, 11, 9 },
+	{ 1530, 15, 25, 9, 12, 15, 10, 16, 11, 9 },
+	{ 1520, 15, 25, 9, 12, 14, 10, 16, 11, 9 },
+	{ 1510, 14, 25, 9, 12, 14, 10, 16, 11, 9 },
+	{ 1500, 14, 25, 9, 12, 14, 10, 16, 11, 9 },
+	{ 1490, 14, 25, 9, 11, 14, 10, 15, 11, 9 },
+	{ 1480, 14, 25, 9, 11, 14, 10, 15, 11, 9 },
+	{ 1470, 14, 24, 9, 11, 14, 10, 15, 11, 9 },
+	{ 1460, 14, 24, 9, 11, 14, 10, 15, 10, 9 },
+	{ 1450, 14, 24, 9, 11, 14, 10, 15, 10, 8 },
+	{ 1440, 14, 24, 9, 11, 14, 10, 15, 10, 8 },
+	{ 1430, 14, 23, 9, 11, 14, 10, 15, 10, 8 },
+	{ 1420, 14, 23, 9, 11, 13, 10, 15, 10, 8 },
+	{ 1410, 13, 23, 9, 11, 13, 9, 15, 10, 8 },
+	{ 1400, 13, 23, 9, 11, 13, 9, 15, 10, 8 },
+	{ 1390, 13, 23, 9, 11, 13, 9, 15, 10, 8 },
+	{ 1380, 13, 23, 9, 10, 13, 9, 14, 10, 8 },
+	{ 1370, 13, 23, 9, 10, 13, 9, 14, 10, 8 },
+	{ 1360, 13, 22, 9, 10, 13, 9, 14, 10, 8 },
+	{ 1350, 13, 22, 9, 10, 13, 9, 14, 10, 8 },
+	{ 1340, 13, 22, 9, 10, 13, 9, 14, 10, 8 },
+	{ 1330, 13, 22, 9, 10, 13, 9, 14, 9, 8 },
+	{ 1320, 13, 22, 8, 10, 12, 9, 14, 9, 8 },
+	{ 1310, 12, 22, 8, 10, 12, 9, 14, 9, 8 },
+	{ 1300, 12, 21, 8, 10, 12, 8, 14, 9, 7 },
+	{ 1290, 12, 21, 8, 10, 12, 8, 14, 9, 7 },
+	{ 1280, 12, 21, 8, 10, 12, 8, 14, 9, 7 },
+	{ 1270, 12, 21, 8, 10, 12, 8, 14, 9, 7 },
+	{ 1260, 12, 20, 8, 9, 12, 8, 13, 9, 7 },
+	{ 1250, 12, 20, 8, 9, 12, 8, 13, 9, 7 },
+	{ 1240, 12, 20, 8, 9, 12, 8, 13, 9, 7 },
+	{ 1230, 12, 20, 8, 9, 12, 8, 13, 9, 7 },
+	{ 1220, 12, 20, 8, 9, 12, 8, 13, 9, 7 },
+	{ 1210, 11, 20, 8, 9, 11, 8, 13, 9, 7 },
+	{ 1200, 11, 20, 8, 9, 11, 8, 13, 8, 7 },
+	{ 1190, 11, 19, 8, 9, 11, 7, 13, 8, 7 },
+	{ 1180, 11, 19, 8, 9, 11, 7, 13, 8, 7 },
+	{ 1170, 11, 19, 8, 9, 11, 7, 13, 8, 7 },
+	{ 1160, 11, 19, 8, 9, 11, 7, 13, 8, 6 },
+	{ 1150, 11, 18, 8, 8, 11, 7, 12, 8, 6 },
+	{ 1140, 11, 18, 8, 8, 11, 7, 12, 8, 6 },
+	{ 1130, 11, 18, 8, 8, 11, 7, 12, 8, 6 },
+	{ 1120, 10, 18, 8, 8, 11, 7, 12, 8, 6 },
+	{ 1110, 10, 18, 8, 8, 10, 7, 12, 8, 6 },
+	{ 1100, 10, 18, 8, 8, 10, 7, 12, 8, 6 },
+	{ 1090, 10, 17, 7, 8, 10, 7, 12, 8, 6 },
+	{ 1080, 10, 17, 7, 8, 10, 6, 12, 8, 6 },
+	{ 1070, 10, 17, 7, 8, 10, 6, 12, 8, 6 },
+	{ 1060, 10, 17, 7, 8, 10, 6, 12, 7, 6 },
+	{ 1050, 10, 17, 7, 8, 10, 6, 12, 7, 6 },
+	{ 1040, 10, 16, 7, 7, 10, 6, 11, 7, 6 },
+	{ 1030, 10, 16, 7, 7, 10, 6, 11, 7, 6 },
+	{ 1020, 9, 16, 7, 7, 10, 6, 11, 7, 6 },
+	{ 1010, 9, 16, 7, 7, 9, 6, 11, 7, 5 },
+	{ 1000, 9, 16, 7, 7, 9, 6, 11, 7, 5 },
+	{ 990, 9, 16, 7, 7, 9, 6, 11, 7, 5 },
+	{ 980, 9, 15, 7, 7, 9, 6, 11, 7, 5 },
+	{ 970, 9, 15, 7, 7, 9, 5, 11, 7, 5 },
+	{ 960, 9, 15, 7, 7, 9, 5, 11, 7, 5 },
+	{ 950, 9, 15, 7, 7, 9, 5, 11, 7, 5 },
+	{ 940, 9, 14, 7, 7, 9, 5, 11, 7, 5 },
+	{ 930, 9, 14, 7, 7, 9, 5, 11, 6, 5 },
+	{ 920, 8, 14, 7, 6, 9, 5, 10, 6, 5 },
+	{ 910, 8, 14, 7, 6, 8, 5, 10, 6, 5 },
+	{ 900, 8, 14, 7, 6, 8, 5, 10, 6, 5 },
+	{ 890, 8, 14, 7, 6, 8, 5, 10, 6, 5 },
+	{ 880, 8, 14, 7, 6, 8, 5, 10, 6, 5 },
+	{ 870, 8, 13, 6, 6, 8, 5, 10, 6, 4 },
+	{ 860, 8, 13, 6, 6, 8, 4, 10, 6, 4 },
+	{ 850, 8, 13, 6, 6, 8, 4, 10, 6, 4 },
+	{ 840, 8, 13, 6, 6, 8, 4, 10, 6, 4 },
+	{ 830, 8, 13, 6, 6, 8, 4, 10, 6, 4 },
+	{ 820, 7, 13, 6, 6, 8, 4, 10, 6, 4 },
+	{ 810, 7, 12, 6, 5, 8, 4, 9, 6, 4 },
+	{ 800, 7, 12, 6, 5, 7, 4, 9, 5, 4 },
+	{ 790, 7, 12, 6, 5, 7, 4, 9, 5, 4 },
+	{ 780, 7, 12, 6, 5, 7, 4, 9, 5, 4 },
+	{ 770, 7, 12, 6, 5, 7, 4, 9, 5, 4 },
+	{ 760, 7, 11, 6, 5, 7, 4, 9, 5, 4 },
+	{ 750, 7, 11, 6, 5, 7, 3, 9, 5, 4 },
+	{ 740, 7, 11, 6, 5, 7, 3, 9, 5, 4 },
+	{ 730, 6, 11, 6, 5, 7, 3, 9, 5, 4 },
+	{ 720, 6, 11, 6, 5, 7, 3, 9, 5, 3 },
+	{ 710, 6, 11, 6, 5, 7, 3, 9, 5, 3 },
+	{ 700, 6, 10, 6, 4, 6, 3, 8, 5, 3 },
+	{ 690, 6, 10, 6, 4, 6, 3, 8, 5, 3 },
+	{ 680, 6, 10, 6, 4, 6, 3, 8, 5, 3 },
+	{ 670, 6, 10, 6, 4, 6, 3, 8, 5, 3 },
+	{ 660, 6, 9, 6, 4, 6, 3, 8, 4, 3 },
+	{ 650, 6, 9, 6, 4, 6, 3, 8, 4, 3 },
+	{ 640, 6, 9, 5, 4, 6, 2, 8, 4, 3 },
+	{ 630, 5, 9, 5, 4, 6, 2, 8, 4, 3 },
+	{ 620, 5, 9, 5, 4, 6, 2, 8, 4, 3 },
+	{ 610, 5, 9, 5, 4, 6, 2, 8, 4, 3 },
+	{ 600, 5, 9, 5, 4, 5, 2, 8, 4, 3 },
+	{ 590, 5, 8, 5, 3, 5, 2, 7, 4, 3 },
+	{ 580, 5, 8, 5, 3, 5, 2, 7, 4, 2 },
+	{ 570, 5, 8, 5, 3, 5, 2, 7, 4, 2 },
+	{ 560, 5, 8, 5, 3, 5, 2, 7, 4, 2 },
+	{ 550, 5, 7, 5, 3, 5, 2, 7, 4, 2 },
+	{ 540, 5, 7, 5, 3, 5, 2, 7, 4, 2 },
+	{ 530, 4, 7, 5, 3, 5, 1, 7, 3, 2 },
+	{ 520, 4, 7, 5, 3, 5, 1, 7, 3, 2 },
+	{ 510, 4, 7, 5, 3, 5, 1, 7, 3, 2 },
+	{ 500, 4, 7, 5, 3, 5, 1, 7, 3, 2 },
+	{ 490, 4, 6, 5, 3, 4, 1, 7, 3, 2 },
+	{ 480, 4, 6, 5, 3, 4, 1, 7, 3, 2 },
+};
+
+/* S:drivers/video/fbdev/exynos/dpu/dsim_reg.c:256-260, escape clock 7..20 MHz */
+static const u32 exynos8895_b_dphyctl[] = {
+	0x0af, 0x0c8, 0x0e1, 0x0fa,
+	0x113, 0x12c, 0x145, 0x15e, 0x177,
+	0x190, 0x1a9, 0x1c2, 0x1db, 0x1f4,
+};
+
+/* S:drivers/video/fbdev/exynos/dpu/dsim_reg.c:39 (DSIM0), order dsim.h:153-163 */
+static const u32 exynos8895_phy_charic[9] = {
+	0x0, 0x3800000, 0x800, 0x10001249, 0x500000, 0x1980, 0x0, 0x0, 0x0,
+};
+
+static const struct samsung_dsim_fixed_link exynos8895_fixed_link = {
+	.fin_mhz = 26,			/* dsim_reg.c:1459 "u32 fin = 26;" */
+	.p = 5, .m = 691, .s = 2,	/* FDT:10088 timing,pms = <0x05 0x2b3 0x02> */
+	.word_clk_div = 16,		/* dsim_reg.c:1486-1491 hs_clk / 16 */
+	.dphy_timing = exynos8895_dphy_timing,
+	.dphy_timing_rows = ARRAY_SIZE(exynos8895_dphy_timing),
+	.b_dphyctl = exynos8895_b_dphyctl,
+	.b_dphyctl_n = ARRAY_SIZE(exynos8895_b_dphyctl),
+	.phy_charic = exynos8895_phy_charic,
+};
+
+static const struct samsung_dsim_driver_data exynos8895_dsi_driver_data = {
+	.reg_ofs = exynos8895_reg_ofs,
+	.plltmr_reg = 0xac,		/* regs-dsim.h:331 DSIM_PLLTMR */
+	.has_8895_link = 1,
+	.te_on_long_packet = 1,
+	.fixed_link = &exynos8895_fixed_link,
+	.clk_data = exynos8895_clk_bulk_data,
+	.num_clks = ARRAY_SIZE(exynos8895_clk_bulk_data),
+	.wait_for_hdr_fifo = 0,
+	.wait_for_reset = 0,
+	.num_bits_resol = 13,		/* regs-dsim.h:104-106 0x1fff */
+	.video_mode_bit = 18,		/* :146 */
+	.pll_stable_bit = 0,		/* :33 */
+	.esc_clken_bit = 16,		/* :55 */
+	.byte_clken_bit = 17,		/* :54 WORDCLK_EN */
+	.tx_req_hsclk_bit = 20,		/* :53 */
+	.lane_esc_clk_bit = 12,		/* :56-57 LANE_ESCCLK_EN [12:8], clock lane bit 12 */
+	.lane_esc_data_offset = 8,
+	.pll_p_offset = 13,		/* dsim_reg.c:350-355 */
+	.pll_m_offset = 3,
+	.pll_s_offset = 0,
+	.main_vsa_offset = 16,		/* regs-dsim.h:131 */
+	.reg_values = exynos8895_reg_values,
+};
+
 static const struct samsung_dsim_driver_data *
 samsung_dsim_types[DSIM_TYPE_COUNT] = {
 	[DSIM_TYPE_EXYNOS3250] = &exynos3_dsi_driver_data,
@@ -686,6 +1005,7 @@ samsung_dsim_types[DSIM_TYPE_COUNT] = {
 	[DSIM_TYPE_EXYNOS5422] = &exynos5422_dsi_driver_data,
 	[DSIM_TYPE_EXYNOS5433] = &exynos5433_dsi_driver_data,
 	[DSIM_TYPE_EXYNOS7870] = &exynos7870_dsi_driver_data,
+	[DSIM_TYPE_EXYNOS8895] = &exynos8895_dsi_driver_data,
 	[DSIM_TYPE_IMX8MM] = &imx8mm_dsi_driver_data,
 	[DSIM_TYPE_IMX8MP] = &imx8mm_dsi_driver_data,
 };
@@ -1563,10 +1883,15 @@ static int samsung_dsim_transfer(struct samsung_dsim *dsi,
 	return xfer->result;
 }
 
+static irqreturn_t samsung_dsim_irq_exynos8895(struct samsung_dsim *dsi);
+
 static irqreturn_t samsung_dsim_irq(int irq, void *dev_id)
 {
 	struct samsung_dsim *dsi = dev_id;
 	u32 status;
+
+	if (dsi->driver_data->has_8895_link)
+		return samsung_dsim_irq_exynos8895(dsi);
 
 	status = samsung_dsim_read(dsi, DSIM_INTSRC_REG);
 	if (!status) {
@@ -1615,12 +1940,474 @@ static void samsung_dsim_disable_irq(struct samsung_dsim *dsi)
 	disable_irq(dsi->irq);
 }
 
+/*
+ * ---- Exynos 8895 link (has_8895_link) --------------------------------------
+ * The vendor sequence of the Exynos 8895 kernel: dsim_reg_ready() +
+ * dsim_reg_init() + dsim_reg_start() for the cold init
+ * (S:drivers/video/fbdev/exynos/dpu/dsim_drv.c:1041-1100,
+ * S:drivers/video/fbdev/exynos/dpu/dsim_reg.c:1308-1402,1452-1551,1822-1826),
+ * dsim_reg_stop() for the stop (dsim_reg.c:1829-1844), dsim_write_data() for
+ * the transfer (dsim_drv.c:115-279) and dsim_irq_handler() (dsim_drv.c:941-992).
+ */
+#define DSIM8895_DPHY_RST		BIT(16)	/* SWRST, active low (regs-dsim.h:18) */
+#define DSIM8895_LINK_STATUS2		0x10	/* regs-dsim.h:29-30 */
+#define DSIM8895_CLK_LANE_STATUS(x)	(((x) >> 4) & 0x3)
+#define DSIM8895_DESKEW_CTRL		0x24	/* regs-dsim.h:61-62 */
+#define DSIM8895_DESKEW_HW_EN		BIT(15)
+#define DSIM8895_NUM_OF_TRANSFER	0x30	/* regs-dsim.h:89-91, [19:0] */
+#define DSIM8895_UNDERRUN_CTRL		0x34	/* regs-dsim.h:94-96, [15:0] */
+#define DSIM8895_THRESHOLD		0x38	/* regs-dsim.h:98-100, [15:0] */
+#define DSIM8895_CPRS_CTRL		0x74	/* regs-dsim.h:233-236 */
+#define DSIM8895_MULTI_SLICE_PACKET	BIT(3)
+#define DSIM8895_SLICE01		0x78	/* regs-dsim.h:240-246 */
+#define DSIM8895_SLICE23		0x7c	/* regs-dsim.h:249-255 */
+#define DSIM8895_CMD_CONFIG		0x80	/* regs-dsim.h:258-260 */
+#define DSIM8895_PKT_GO_EN		BIT(16)
+#define DSIM8895_CMD_TE_CTRL0		0x84	/* regs-dsim.h:266-268 */
+#define DSIM8895_CMD_TE_CTRL1		0x88	/* regs-dsim.h:273-277 */
+#define DSIM8895_PLL_CTRL1		0xa4	/* regs-dsim.h:323 */
+#define DSIM8895_PHYCTRL_B2		0xb4	/* regs-dsim.h:339, then B3 0xb8, B4 0xbc, M1..M4 0xc0..0xcc */
+/* CLK_CTRL (regs-dsim.h:50-59) */
+#define DSIM8895_NONCONT_CLOCK_LANE	BIT(25)
+#define DSIM8895_TX_REQUEST_HSCLK	BIT(20)
+#define DSIM8895_WORDCLK_EN		BIT(17)
+#define DSIM8895_ESCCLK_EN		BIT(16)
+#define DSIM8895_LANE_ESCCLK_EN_MASK	(0x1f << 8)
+/* CONFIG (regs-dsim.h:137-155) */
+#define DSIM8895_CPRS_EN		BIT(19)
+#define DSIM8895_VIDEO_MODE		BIT(18)
+#define DSIM8895_VC_ID_MASK		(0x3 << 15)
+#define DSIM8895_PIXEL_FORMAT_MASK	(0x3 << 13)	/* 0 = RGB24 (dsim.h:38) */
+#define DSIM8895_PER_FRAME_READ_EN	BIT(8)
+#define DSIM8895_EOTP_EN		BIT(7)
+#define DSIM8895_NUM_OF_DATA_LANE_MASK	(0x3 << 5)
+#define DSIM8895_LANES_EN_MASK		0x1f
+/* SFR_CTRL (regs-dsim.h:210-212) */
+#define DSIM8895_SHADOW_REG_READ_EN	BIT(1)
+#define DSIM8895_SHADOW_EN		BIT(0)
+/* FIFOCTRL EMPTY_PH_SFR (regs-dsim.h:220) */
+#define DSIM8895_EMPTY_PH_SFR		BIT(10)
+/* PKTHDR BTA type (regs-dsim.h:197) */
+#define DSIM8895_PKTHDR_BTA		BIT(24)
+/* INTSRC/INTMSK bits (regs-dsim.h:158-193) */
+#define DSIM8895_INT_SW_RST_RELEASE	BIT(30)
+#define DSIM8895_INT_SFR_PL_FIFO_EMPTY	BIT(29)
+#define DSIM8895_INT_SFR_PH_FIFO_EMPTY	BIT(28)
+#define DSIM8895_INT_FRAME_DONE		BIT(24)
+#define DSIM8895_INT_INVALID_SFR_VALUE	BIT(23)
+#define DSIM8895_INT_UNDER_RUN		BIT(19)
+#define DSIM8895_INT_RX_DATA_DONE	BIT(18)
+#define DSIM8895_INT_ERR_RX_ECC		BIT(15)
+#define DSIM8895_INT_VT_STATUS		BIT(13)
+#define DSIM8895_INT_PLL_STABLE		BIT(31)
+/* dsim_reg_set_int() (dsim_reg.c:1584-1601) */
+#define DSIM8895_INTMSK_RUN	(DSIM8895_INT_SW_RST_RELEASE | DSIM8895_INT_SFR_PL_FIFO_EMPTY | \
+				 DSIM8895_INT_SFR_PH_FIFO_EMPTY | DSIM8895_INT_FRAME_DONE | \
+				 DSIM8895_INT_INVALID_SFR_VALUE | DSIM8895_INT_UNDER_RUN | \
+				 DSIM8895_INT_RX_DATA_DONE | DSIM8895_INT_ERR_RX_ECC | \
+				 DSIM8895_INT_VT_STATUS)
+/* dsim_reg.c:15-27 */
+#define DSIM8895_BTA_TIMEOUT		0xff
+#define DSIM8895_LP_RX_TIMEOUT		0xffff
+#define DSIM8895_STABLE_VFP_VALUE	2
+#define DSIM8895_TE_PROTECT_ON_TIME	158	/* 15.8 ms */
+#define DSIM8895_TE_TIMEOUT_TIME	180	/* 18 ms */
+#define DSIM8895_WR_TIMEOUT_MS		33	/* dsim.h:50 MIPI_WR_TIMEOUT */
+#define DSIM8895_RD_TIMEOUT_MS		100	/* dsim.h:51 MIPI_RD_TIMEOUT */
+/* SYSREG_DPU0 +0x1000 DISP_LPMUX_CFG (regs-decon.h:21, FDT:7465 base 0x12821000) */
+#define DSIM8895_SYSREG_LPMUX_CFG	0x1000
+#define DSIM8895_LPMUX_VAL		0x1201	/* decon_reg.c:667-670 */
+/* SYSREG +0x200 BUS_COMPONENT_DRCG_EN (pmucal_local_exynos8895.h:267) */
+#define DSIM8895_SYSREG_DRCG_EN		0x200
+
+static void dsim8895_write(struct samsung_dsim *dsi, u32 ofs, u32 val)
+{
+	writel(val, dsi->reg_base + ofs);
+}
+
+static u32 dsim8895_read(struct samsung_dsim *dsi, u32 ofs)
+{
+	return readl(dsi->reg_base + ofs);
+}
+
+/* dsim_write_mask() of the vendor driver */
+static void dsim8895_mask(struct samsung_dsim *dsi, u32 ofs, u32 val, u32 mask)
+{
+	u32 v = readl(dsi->reg_base + ofs);
+
+	writel((v & ~mask) | (val & mask), dsi->reg_base + ofs);
+}
+
+static unsigned int dsim8895_hs_mhz(const struct samsung_dsim_fixed_link *l)
+{
+	/* dsim_reg.c:1480 pll_freq = (m * fin) / (p * (1 << s)) */
+	return (l->m * l->fin_mhz) / (l->p * (1 << l->s));
+}
+
+/* dsim_reg_sw_reset(): set bit 0, poll it clear, 10 us x 1000 (dsim_reg.c:265-279) */
+static void dsim8895_sw_reset(struct samsung_dsim *dsi)
+{
+	u32 cnt = 1000, state;
+
+	dsim8895_mask(dsi, 0x04, DSIM_SWRST, DSIM_SWRST);
+	do {
+		state = dsim8895_read(dsi, 0x04) & DSIM_SWRST;
+		cnt--;
+		udelay(10);
+	} while (state && cnt);
+	if (!cnt)
+		dev_err(dsi->dev, "sw reset timeout\n");
+}
+
+/* dsim_reg_set_clocks(en = 1) (dsim_reg.c:1452-1542) */
+static int dsim8895_set_clocks(struct samsung_dsim *dsi)
+{
+	const struct samsung_dsim_fixed_link *l = dsi->driver_data->fixed_link;
+	unsigned int hs = dsim8895_hs_mhz(l);
+	unsigned int word = hs / l->word_clk_div;
+	unsigned int esc_req = dsi->esc_clk_rate / HZ_PER_MHZ;
+	unsigned int esc_div, esc, row, i;
+	const u32 *t;
+	int cnt;
+
+	if (!esc_req)
+		return -EINVAL;
+	/* escape clock divider with the vendor rounding (:1497-1503) */
+	esc_div = word / esc_req;
+	if (!esc_div)
+		esc_div = 1;
+	if ((word / esc_div) > esc_req)
+		esc_div += 1;
+	esc = word / esc_div;
+	/* ESCCLK_EN + prescaler (:482-489) */
+	dsim8895_mask(dsi, 0x20, DSIM8895_ESCCLK_EN | esc_div,
+		      DSIM8895_ESCCLK_EN | 0xff);
+
+	/* D-PHY timing row = (row0 bps - hs) / 10 (:1267-1306) */
+	row = (l->dphy_timing[0][0] - hs) / 10;
+	if (row >= l->dphy_timing_rows || esc < 7 || esc - 7 >= l->b_dphyctl_n) {
+		dev_err(dsi->dev, "no D-PHY timing for hs %u MHz esc %u MHz\n", hs, esc);
+		return -EINVAL;
+	}
+	t = l->dphy_timing[row];
+	/* dsim_reg_set_dphy_timing_values() (:404-425) */
+	dsim8895_write(dsi, 0xd0, (t[8] << 8) | t[9]);
+	dsim8895_write(dsi, 0xd4, (t[1] << 24) | (t[2] << 16) | (t[3] << 8) | t[4]);
+	dsim8895_write(dsi, 0xd8, (t[5] << 16) | (t[6] << 8) | t[7]);
+	dsim8895_write(dsi, 0xb0, l->b_dphyctl[esc - 7]);
+
+	/* characteristic words (:1527-1535): PLL_CTRL1/2, then B2..B4, M1..M4 */
+	dsim8895_write(dsi, DSIM8895_PLL_CTRL1, l->phy_charic[0]);
+	dsim8895_write(dsi, DSIM8895_PLL_CTRL1 + 4, l->phy_charic[1]);
+	for (i = 2; i < 9; i++)
+		dsim8895_write(dsi, DSIM8895_PHYCTRL_B2 + (i - 2) * 4, l->phy_charic[i]);
+
+	/* PMS (:350-355), lock time (:357-360) */
+	dsim8895_mask(dsi, 0xa0, ((l->p & 0x3f) << 13) | ((l->m & 0x3ff) << 3) | (l->s & 0x7),
+		      0x7ffff);
+	dsim8895_write(dsi, dsi->driver_data->plltmr_reg,
+		       dsi->driver_data->reg_values[PLL_TIMER]);
+
+	/* dsim_reg_enable_pll(1) (:455-480): the counter drops twice per pass */
+	dsim8895_write(dsi, 0x50, DSIM8895_INT_PLL_STABLE);
+	dsim8895_mask(dsi, 0xa0, DSIM_PLL_EN, DSIM_PLL_EN);
+	cnt = 1000;
+	while (cnt--) {
+		cnt--;
+		if (dsim8895_read(dsi, 0x14) & BIT(0))
+			goto stable;
+		if (cnt == 0)
+			break;
+		udelay(10);
+	}
+	dev_err(dsi->dev, "PLL lock timeout, LINK_STATUS3=0x%08x PLLCTRL=0x%08x\n",
+		dsim8895_read(dsi, 0x14), dsim8895_read(dsi, 0xa0));
+	return -EBUSY;
+
+stable:
+	dsi->hs_clock = hs * HZ_PER_MHZ;
+	dev_info(dsi->dev, "PLL stable, hs %u MHz (PMS %u/%u/%u, esc %u MHz)\n",
+		 hs, l->p, l->m, l->s, esc);
+	return 0;
+}
+
+/* dsim_reg_set_config() for MIPI command mode (dsim_reg.c:1308-1402) */
+static int dsim8895_set_config(struct samsung_dsim *dsi)
+{
+	const struct samsung_dsim_fixed_link *l = dsi->driver_data->fixed_link;
+	const struct drm_display_mode *m = &dsi->mode;
+	unsigned int xres = m->hdisplay, yres = m->vdisplay;
+	unsigned int hs = dsim8895_hs_mhz(l);
+	bool dsc = dsi->dsc;
+	unsigned int threshold, slices = 0, slice_w = 0;
+	u32 val;
+
+	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO) {
+		dev_err(dsi->dev, "video mode is not supported on this DSIM variant\n");
+		return -EINVAL;
+	}
+	if (dsc) {
+		slices = dsi->dsc->slice_count;
+		if (slices != 2 && slices != 4) {
+			dev_err(dsi->dev, "unsupported DSC slice count %u\n", slices);
+			return -EINVAL;
+		}
+		slice_w = xres / slices;
+	}
+
+	/* non-continuous clock lane in command mode (:1317-1318, :877-882) */
+	dsim8895_mask(dsi, 0x20, DSIM8895_NONCONT_CLOCK_LANE, DSIM8895_NONCONT_CLOCK_LANE);
+	/* dsim_set_hw_deskew(id, 0): HW_EN = 0 only (:1320, :1209-1211, :1090-1095) */
+	dsim8895_mask(dsi, DSIM8895_DESKEW_CTRL, 0, DSIM8895_DESKEW_HW_EN);
+	/* BTA/LPDR timeouts (:530-542), stop state count (:523-528) */
+	dsim8895_write(dsi, 0x28, (DSIM8895_BTA_TIMEOUT << 16) | DSIM8895_LP_RX_TIMEOUT);
+	dsim8895_mask(dsi, 0x2c, DSIM_STOP_STATE_CNT(dsi->driver_data->reg_values[STOP_STATE_CNT]),
+		      DSIM_STOP_STATE_CNT_MASK);
+	/* command mode underrun LP reference (:1326-1327, :1097-1103) */
+	dsim8895_mask(dsi, DSIM8895_UNDERRUN_CTRL, dsi->cmd_underrun_lp_ref, 0xffff);
+	/* threshold (:1329-1335, :1105-1111) */
+	threshold = dsc ? xres / 3 : xres;
+	dsim8895_mask(dsi, DSIM8895_THRESHOLD, threshold, 0xffff);
+	/* resolution; horizontal is xres / 3 with DSC (:658-677) */
+	dsim8895_mask(dsi, 0x3c, (yres & 0x1fff) << 16, 0x1fff << 16);
+	dsim8895_mask(dsi, 0x3c, (dsc ? xres / 3 : xres) & 0x1fff, 0x1fff);
+	/* no porches in command mode (:679-691); transfers per frame (:1341-1348) */
+	val = dsc ? xres * yres / threshold / 3 : xres * yres / threshold;
+	dsim8895_mask(dsi, DSIM8895_NUM_OF_TRANSFER, val, 0xfffff);
+	/* lanes, EOTP on, per-frame read off, RGB24, VC 0, command mode (:1350-1358) */
+	dsim8895_mask(dsi, 0x4c, (dsi->lanes - 1) << 5, DSIM8895_NUM_OF_DATA_LANE_MASK);
+	dsim8895_mask(dsi, 0x4c, DSIM8895_EOTP_EN, DSIM8895_EOTP_EN);
+	dsim8895_mask(dsi, 0x4c, 0, DSIM8895_PER_FRAME_READ_EN);
+	dsim8895_mask(dsi, 0x4c, 0, DSIM8895_PIXEL_FORMAT_MASK);
+	dsim8895_mask(dsi, 0x4c, 0, DSIM8895_VC_ID_MASK);
+	dsim8895_mask(dsi, 0x4c, 0, DSIM8895_VIDEO_MODE);
+	/* DSC (:1360, :1372-1381) */
+	dsim8895_mask(dsi, 0x4c, dsc ? DSIM8895_CPRS_EN : 0, DSIM8895_CPRS_EN);
+	if (dsc) {
+		dsim8895_mask(dsi, DSIM8895_CPRS_CTRL, slices, 0x7);
+		/* command mode: one packet header for all slices (:751-767) */
+		dsim8895_mask(dsi, DSIM8895_CPRS_CTRL, DSIM8895_MULTI_SLICE_PACKET,
+			      DSIM8895_MULTI_SLICE_PACKET);
+		/* slice 0..3 widths; 2 slices on 2 encoders use both words (:769-813) */
+		val = ((slice_w & 0x1fff) << 16) | (slice_w & 0x1fff);
+		dsim8895_write(dsi, DSIM8895_SLICE01, val);
+		dsim8895_write(dsi, DSIM8895_SLICE23, val);
+	}
+	/* packet go off (:1387, :891-896) */
+	dsim8895_mask(dsi, DSIM8895_CMD_CONFIG, 0, DSIM8895_PKT_GO_EN);
+	/* TE based command timing (:863-875) */
+	dsim8895_mask(dsi, DSIM8895_CMD_TE_CTRL0, xres * DSIM8895_STABLE_VFP_VALUE * 3 / 100,
+		      0xffff);
+	dsim8895_write(dsi, DSIM8895_CMD_TE_CTRL1,
+		       (((hs * DSIM8895_TE_PROTECT_ON_TIME) / 16) << 16) |
+		       ((hs * DSIM8895_TE_TIMEOUT_TIME) / 16));
+	/* shadow read + shadow enable (:1397-1398) */
+	dsim8895_mask(dsi, 0x64, DSIM8895_SHADOW_REG_READ_EN | DSIM8895_SHADOW_EN,
+		      DSIM8895_SHADOW_REG_READ_EN | DSIM8895_SHADOW_EN);
+
+	return 0;
+}
+
+/* dsim_reg_start(): HS clock request, unmask (dsim_reg.c:1822-1826,1568-1601) */
+static void dsim8895_start(struct samsung_dsim *dsi)
+{
+	dsim8895_mask(dsi, 0x20, DSIM8895_TX_REQUEST_HSCLK, DSIM8895_TX_REQUEST_HSCLK);
+	/* non-continuous clock: the vendor driver does not wait for TX_READY_HS_CLK */
+	dsim8895_mask(dsi, 0x54, 0, DSIM8895_INTMSK_RUN);
+}
+
+static int samsung_dsim_init_exynos8895(struct samsung_dsim *dsi)
+{
+	int ret;
+
+	if (dsi->state & DSIM_STATE_INITIALIZED)
+		return 0;
+
+	/* DSIM0 -> D-PHY mux (dsim_drv.c:1051, decon_reg.c:667-670) */
+	if (dsi->disp_sysreg)
+		regmap_write(dsi->disp_sysreg, DSIM8895_SYSREG_LPMUX_CFG, DSIM8895_LPMUX_VAL);
+
+	samsung_dsim_enable_irq(dsi);
+
+	/* D-PHY reset assert (dsim_drv.c:1068, dsim_reg.c:287-291) */
+	dsim8895_mask(dsi, 0x04, 0, DSIM8895_DPHY_RST);
+	dsim8895_sw_reset(dsi);
+	ret = dsim8895_set_clocks(dsi);
+	if (ret)
+		goto err;
+	/* lanes: clock + data (dsim_reg.c:343-348,1553-1559), then 300 us (dsim_drv.c:1080) */
+	dsim8895_mask(dsi, 0x4c, (BIT(dsi->lanes + 1) - 1), DSIM8895_LANES_EN_MASK);
+	udelay(400);
+	udelay(300);
+	/* lane escape clocks: data lanes + clock lane bit 4 (dsim_reg.c:491-521) */
+	dsim8895_mask(dsi, 0x20, ((BIT(dsi->lanes) - 1) | BIT(4)) << 8,
+		      DSIM8895_LANE_ESCCLK_EN_MASK);
+	dsim8895_mask(dsi, 0x20, DSIM8895_WORDCLK_EN, DSIM8895_WORDCLK_EN);
+	/* D-PHY reset release (dsim_drv.c:1086) */
+	dsim8895_mask(dsi, 0x04, DSIM8895_DPHY_RST, DSIM8895_DPHY_RST);
+	ret = dsim8895_set_config(dsi);
+	if (ret)
+		goto err;
+	dsim8895_start(dsi);
+	dsi->state |= DSIM_STATE_INITIALIZED;
+	return 0;
+
+err:
+	samsung_dsim_disable_irq(dsi);
+	return ret;
+}
+
+/* dsim_reg_stop() (dsim_reg.c:1829-1844) */
+static void samsung_dsim_stop_exynos8895(struct samsung_dsim *dsi)
+{
+	u32 cnt = 1000;
+
+	dsim8895_write(dsi, 0x50, 0xffffffff);
+	dsim8895_mask(dsi, 0x54, DSIM8895_INTMSK_RUN, DSIM8895_INTMSK_RUN);
+	/* HS clock off, wait for the clock lane to be in LP (:924-929, :986-1003) */
+	dsim8895_mask(dsi, 0x20, 0, DSIM8895_TX_REQUEST_HSCLK);
+	while (DSIM8895_CLK_LANE_STATUS(dsim8895_read(dsi, DSIM8895_LINK_STATUS2)) && --cnt)
+		udelay(10);
+	if (!cnt)
+		dev_err(dsi->dev, "clock lane did not return to LP\n");
+	dsim8895_mask(dsi, 0x4c, 0, DSIM8895_LANES_EN_MASK);
+	udelay(400);
+	dsim8895_mask(dsi, 0x20, 0, DSIM8895_LANE_ESCCLK_EN_MASK);
+	dsim8895_mask(dsi, 0x20, 0, DSIM8895_WORDCLK_EN);
+	/* dsim_reg_set_clocks(en = 0) (:1543-1548) */
+	dsim8895_write(dsi, DSIM8895_PLL_CTRL1, 0);
+	dsim8895_write(dsi, DSIM8895_PLL_CTRL1 + 4, 0);
+	dsim8895_mask(dsi, 0x20, 0xff, DSIM8895_ESCCLK_EN | 0xff);
+	dsim8895_mask(dsi, 0xa0, 0, DSIM_PLL_EN);
+	dsim8895_sw_reset(dsi);
+}
+
+/*
+ * One packet in flight, as the vendor driver ("Single Packet Transmission",
+ * dsim_drv.c:168-187): clear PH_FIFO_EMPTY, payload words, header, wait for
+ * PH_FIFO_EMPTY; a read then waits for RX_DATA_DONE.
+ */
+static ssize_t samsung_dsim_transfer_exynos8895(struct samsung_dsim *dsi,
+						const struct mipi_dsi_msg *msg)
+{
+	struct mipi_dsi_msg m = *msg;
+	struct samsung_dsim_transfer xfer = { };
+	const u8 *payload;
+	u32 hdr, reg;
+	int ret, i;
+	size_t len;
+
+	/*
+	 * "When send TE_ON(35h) command with 1 para type, DSI goes to BTA. To
+	 * prevent unintended BTA in that case, tx TE_ON(35h) command with 1 para
+	 * will be sent with long packet type." (dsim_drv.c:405-413)
+	 */
+	if (dsi->driver_data->te_on_long_packet &&
+	    m.type == MIPI_DSI_DCS_SHORT_WRITE_PARAM && m.tx_len == 2 &&
+	    ((const u8 *)m.tx_buf)[0] == MIPI_DCS_SET_TEAR_ON)
+		m.type = MIPI_DSI_DCS_LONG_WRITE;
+
+	ret = mipi_dsi_create_packet(&xfer.packet, &m);
+	if (ret < 0)
+		return ret;
+
+	mutex_lock(&dsi->cmd_lock);
+
+	reinit_completion(&dsi->ph_empty);
+	if (m.rx_len)
+		reinit_completion(&dsi->rx_done);
+	dsim8895_write(dsi, 0x50, DSIM8895_INT_SFR_PH_FIFO_EMPTY |
+		       (m.rx_len ? DSIM8895_INT_RX_DATA_DONE : 0));
+
+	payload = xfer.packet.payload;
+	len = xfer.packet.payload_length;
+	while (len >= 4) {
+		dsim8895_write(dsi, 0x5c, get_unaligned_le32(payload));
+		payload += 4;
+		len -= 4;
+	}
+	if (len) {
+		reg = 0;
+		for (i = 0; i < len; i++)
+			reg |= payload[i] << (8 * i);
+		dsim8895_write(dsi, 0x5c, reg);
+	}
+
+	hdr = get_unaligned_le32(xfer.packet.header) & 0xffffff;
+	if (m.rx_len)
+		hdr |= DSIM8895_PKTHDR_BTA;	/* dsim_drv.c:250 bta_type = true */
+	dsim8895_mask(dsi, 0x58, hdr, 0x1ffffff);
+
+	if (!wait_for_completion_timeout(&dsi->ph_empty,
+					 msecs_to_jiffies(DSIM8895_WR_TIMEOUT_MS))) {
+		/* a timeout with an empty header FIFO is success (dsim_drv.c:131-136) */
+		if (!(dsim8895_read(dsi, 0x68) & DSIM8895_EMPTY_PH_SFR)) {
+			dev_err(dsi->dev, "cmd write timeout, INTSRC=0x%08x FIFOCTRL=0x%08x\n",
+				dsim8895_read(dsi, 0x50), dsim8895_read(dsi, 0x68));
+			ret = -ETIMEDOUT;
+			goto out;
+		}
+		dsim8895_write(dsi, 0x50, DSIM8895_INT_SFR_PH_FIFO_EMPTY);
+	}
+
+	ret = xfer.packet.payload_length;
+	if (!m.rx_len)
+		goto out;
+
+	if (!wait_for_completion_timeout(&dsi->rx_done,
+					 msecs_to_jiffies(DSIM8895_RD_TIMEOUT_MS))) {
+		dev_err(dsi->dev, "read timeout, INTSRC=0x%08x\n", dsim8895_read(dsi, 0x50));
+		ret = -ETIMEDOUT;
+		goto out;
+	}
+	xfer.rx_payload = m.rx_buf;
+	xfer.rx_len = m.rx_len;
+	xfer.result = -EIO;
+	samsung_dsim_read_from_fifo(dsi, &xfer);
+	ret = xfer.result ? xfer.result : xfer.rx_done;
+
+out:
+	mutex_unlock(&dsi->cmd_lock);
+	return ret;
+}
+
+/* dsim_irq_handler() (dsim_drv.c:941-992); INTMSK is never rewritten here */
+static irqreturn_t samsung_dsim_irq_exynos8895(struct samsung_dsim *dsi)
+{
+	u32 status = dsim8895_read(dsi, 0x50);
+
+	if (!status)
+		return IRQ_HANDLED;
+	/* write back exactly what was read (dsim_drv.c:987, dsim_reg.c:427-430) */
+	dsim8895_write(dsi, 0x50, status);
+
+	if (status & DSIM8895_INT_SW_RST_RELEASE)
+		complete(&dsi->completed);
+	if (status & DSIM8895_INT_SFR_PH_FIFO_EMPTY)
+		complete(&dsi->ph_empty);
+	if (status & DSIM8895_INT_RX_DATA_DONE)
+		complete(&dsi->rx_done);
+	if (status & DSIM8895_INT_ERR_RX_ECC) {
+		WRITE_ONCE(dsi->ecc_cnt, dsi->ecc_cnt + 1);
+		dev_err_ratelimited(dsi->dev, "RX ECC multibit error\n");
+	}
+	if (status & DSIM8895_INT_UNDER_RUN) {
+		WRITE_ONCE(dsi->underrun_cnt, dsi->underrun_cnt + 1);
+		dev_info_ratelimited(dsi->dev, "underrun (%u)\n", dsi->underrun_cnt);
+	}
+
+	return IRQ_HANDLED;
+}
+
 static int samsung_dsim_init(struct samsung_dsim *dsi)
 {
 	const struct samsung_dsim_driver_data *driver_data = dsi->driver_data;
 
 	if (dsi->state & DSIM_STATE_INITIALIZED)
 		return 0;
+
+	if (driver_data->has_8895_link)
+		return samsung_dsim_init_exynos8895(dsi);
 
 	samsung_dsim_reset(dsi);
 	samsung_dsim_enable_irq(dsi);
@@ -1672,8 +2459,11 @@ static void samsung_dsim_atomic_enable(struct drm_bridge *bridge,
 {
 	struct samsung_dsim *dsi = bridge_to_dsi(bridge);
 
-	samsung_dsim_set_display_mode(dsi);
-	samsung_dsim_set_display_enable(dsi, true);
+	/* Exynos 8895: resolution is set by the link init, there is no stand-by bit */
+	if (!dsi->driver_data->has_8895_link) {
+		samsung_dsim_set_display_mode(dsi);
+		samsung_dsim_set_display_enable(dsi, true);
+	}
 
 	dsi->state |= DSIM_STATE_VIDOUT_AVAILABLE;
 }
@@ -1686,7 +2476,8 @@ static void samsung_dsim_atomic_disable(struct drm_bridge *bridge,
 	if (!(dsi->state & DSIM_STATE_ENABLED))
 		return;
 
-	samsung_dsim_set_display_enable(dsi, false);
+	if (!dsi->driver_data->has_8895_link)
+		samsung_dsim_set_display_enable(dsi, false);
 	dsi->state &= ~DSIM_STATE_VIDOUT_AVAILABLE;
 }
 
@@ -1975,6 +2766,7 @@ of_find_panel_or_bridge:
 	dsi->lanes = device->lanes;
 	dsi->format = device->format;
 	dsi->mode_flags = device->mode_flags;
+	dsi->dsc = device->dsc;
 
 	return 0;
 
@@ -2017,6 +2809,9 @@ static ssize_t samsung_dsim_host_transfer(struct mipi_dsi_host *host,
 	ret = samsung_dsim_init(dsi);
 	if (ret)
 		return ret;
+
+	if (dsi->driver_data->has_8895_link)
+		return samsung_dsim_transfer_exynos8895(dsi, msg);
 
 	ret = mipi_dsi_create_packet(&xfer.packet, msg);
 	if (ret < 0)
@@ -2120,6 +2915,28 @@ static const struct drm_bridge_timings samsung_dsim_bridge_timings_de_low = {
 	.input_bus_flags = DRM_BUS_FLAG_DE_LOW,
 };
 
+static int samsung_dsim_parse_dt_exynos8895(struct samsung_dsim *dsi)
+{
+	struct device_node *np = dsi->dev->of_node;
+
+	dsi->disp_sysreg = syscon_regmap_lookup_by_phandle(np, "samsung,disp-sysreg");
+	if (IS_ERR(dsi->disp_sysreg))
+		return dev_err_probe(dsi->dev, PTR_ERR(dsi->disp_sysreg),
+				     "no samsung,disp-sysreg\n");
+
+	dsi->dpu1_sysreg = syscon_regmap_lookup_by_phandle_optional(np, "samsung,dpu1-sysreg");
+	if (IS_ERR(dsi->dpu1_sysreg))
+		return PTR_ERR(dsi->dpu1_sysreg);
+
+	of_property_read_u32(np, "samsung,cmd-underrun-lp-ref", &dsi->cmd_underrun_lp_ref);
+
+	mutex_init(&dsi->cmd_lock);
+	init_completion(&dsi->ph_empty);
+	init_completion(&dsi->rx_done);
+
+	return 0;
+}
+
 int samsung_dsim_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -2182,6 +2999,12 @@ int samsung_dsim_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	if (dsi->driver_data->has_8895_link) {
+		ret = samsung_dsim_parse_dt_exynos8895(dsi);
+		if (ret)
+			return ret;
+	}
+
 	platform_set_drvdata(pdev, dsi);
 
 	pm_runtime_enable(dev);
@@ -2232,7 +3055,10 @@ static int samsung_dsim_suspend(struct device *dev)
 	if (dsi->state & DSIM_STATE_INITIALIZED) {
 		dsi->state &= ~DSIM_STATE_INITIALIZED;
 
-		samsung_dsim_disable_clock(dsi);
+		if (driver_data->has_8895_link)
+			samsung_dsim_stop_exynos8895(dsi);
+		else
+			samsung_dsim_disable_clock(dsi);
 
 		samsung_dsim_disable_irq(dsi);
 	}
@@ -2271,6 +3097,14 @@ static int samsung_dsim_resume(struct device *dev)
 		dev_err(dsi->dev, "cannot enable phy %d\n", ret);
 		goto err_clk;
 	}
+
+	/*
+	 * Exynos 8895: the DSIM is the only display device in pd_dpu1, so it
+	 * restores SYSREG_DPU1 BUS_COMPONENT_DRCG_EN, which the vendor PMUCAL
+	 * restores after every pd_dpu1 power-on (0xffffffff at boot).
+	 */
+	if (driver_data->has_8895_link && dsi->dpu1_sysreg)
+		regmap_write(dsi->dpu1_sysreg, DSIM8895_SYSREG_DRCG_EN, 0xffffffff);
 
 	return 0;
 

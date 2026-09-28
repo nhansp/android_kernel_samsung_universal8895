@@ -8,6 +8,7 @@
 #define __SAMSUNG_DSIM__
 
 #include <linux/gpio/consumer.h>
+#include <linux/mutex.h>
 #include <linux/regulator/consumer.h>
 
 #include <drm/drm_atomic_helper.h>
@@ -15,8 +16,11 @@
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_of.h>
 
+struct drm_dsc_config;
 struct platform_device;
+struct regmap;
 struct samsung_dsim;
+struct samsung_dsim_fixed_link;
 
 #define DSIM_STATE_ENABLED		BIT(0)
 #define DSIM_STATE_INITIALIZED		BIT(1)
@@ -30,6 +34,7 @@ enum samsung_dsim_type {
 	DSIM_TYPE_EXYNOS5422,
 	DSIM_TYPE_EXYNOS5433,
 	DSIM_TYPE_EXYNOS7870,
+	DSIM_TYPE_EXYNOS8895,
 	DSIM_TYPE_IMX8MM,
 	DSIM_TYPE_IMX8MP,
 	DSIM_TYPE_COUNT,
@@ -59,6 +64,14 @@ struct samsung_dsim_driver_data {
 	unsigned int has_clklane_stop:1;
 	unsigned int has_broken_fifoctrl_emptyhdr:1;
 	unsigned int has_sfrctrl:1;
+	/*
+	 * Exynos 8895: own link init/stop, single-packet transfer engine and
+	 * IRQ handler (the register layout differs from the generic one), and
+	 * TE_ON (DCS 0x35) with one parameter sent as a long packet.
+	 */
+	unsigned int has_8895_link:1;
+	unsigned int te_on_long_packet:1;
+	const struct samsung_dsim_fixed_link *fixed_link;
 	struct clk_bulk_data *clk_data;
 	unsigned int num_clks;
 	unsigned int min_freq;
@@ -124,6 +137,17 @@ struct samsung_dsim {
 	int state;
 	struct drm_property *brightness;
 	struct completion completed;
+
+	/* has_8895_link only */
+	struct regmap *disp_sysreg;
+	struct regmap *dpu1_sysreg;
+	const struct drm_dsc_config *dsc;
+	u32 cmd_underrun_lp_ref;
+	struct mutex cmd_lock;		/* one packet in flight */
+	struct completion ph_empty;	/* INTSRC SFR_PH_FIFO_EMPTY */
+	struct completion rx_done;	/* INTSRC RX_DATA_DONE */
+	u32 underrun_cnt;
+	u32 ecc_cnt;
 
 	spinlock_t transfer_lock; /* protects transfer_list */
 	struct list_head transfer_list;
