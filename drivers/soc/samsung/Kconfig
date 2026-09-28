@@ -125,4 +125,15 @@ config GREATLTE_USB_DIAG
 	  heartbeat rows and printers ("usb", "usbid") read the dwc3, PHY,
 	  CMU_FSYS0 and PMU state. On by default with the heartbeat; never
 	  enable in a release build.
+
+config GREATLTE_HB_L5
+	bool "greatlte heartbeat: display (L5) printers dpu and dpuc (debug only)"
+	depends on GREATLTE_HB
+	default GREATLTE_HB
+	help
+	  Registers the L5 heartbeat printers "dpu" (the DPU registers S-Boot
+	  left and their later state) and "dpuc" (the display drivers'
+	  counters) once from a built-in initcall (T_tooling 5.7.6 contract
+	  item 1). Driver counters are only collected from display drivers
+	  that are built in. Never enable in a release build.
 endif
