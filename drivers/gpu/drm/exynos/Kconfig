@@ -46,6 +46,16 @@ config DRM_EXYNOS_VIDI
 	help
 	  Choose this option if you want to use Exynos VIDI for DRM.
 
+config DRM_EXYNOS8895_DECON
+	bool "DECON0 with DPP/DMA on Exynos8895"
+	depends on ARCH_EXYNOS || COMPILE_TEST
+	select MFD_SYSCON
+	select APERTURE_HELPERS
+	help
+	  Choose this option if you want to use the Exynos8895 DECON0 and its
+	  DPP/IDMA channels for DRM, as one CRTC with DSC for a MIPI DSI
+	  command-mode panel.
+
 comment "Encoders and Bridges"
 
 config DRM_EXYNOS_DPI
@@ -58,7 +68,8 @@ config DRM_EXYNOS_DPI
 
 config DRM_EXYNOS_DSI
 	bool "MIPI-DSI host"
-	depends on DRM_EXYNOS_FIMD || DRM_EXYNOS5433_DECON || DRM_EXYNOS7_DECON
+	depends on DRM_EXYNOS_FIMD || DRM_EXYNOS5433_DECON || DRM_EXYNOS7_DECON || \
+		   DRM_EXYNOS8895_DECON
 	select DRM_MIPI_DSI
 	select DRM_PANEL
 	select DRM_SAMSUNG_DSIM
