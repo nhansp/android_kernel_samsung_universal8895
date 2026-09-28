@@ -10,3 +10,29 @@
  * value, which gl-verify V-DUP reports as an error. L0's reserved-memory stays in
  * the .dts; carveout additions and flag changes are &label edits here (plan X-8).
  */
+
+#include <dt-bindings/gpio/gpio.h>
+
+/ {
+	/*
+	 * UFS VCC: a GPIO fixed regulator. Stock "ufs_fixed_vcc: fixedregulator@0"
+	 * S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:1102-1108 (FDT:4765-4773);
+	 * VCCQ/VCCQ2 are not described in stock either (always-on PMIC rails).
+	 */
+	ufs_vcc: regulator-ufs-vcc {
+		compatible = "regulator-fixed";
+		regulator-name = "ufs-vcc";		/* :1104 */
+		gpio = <&gpg0 0 GPIO_ACTIVE_HIGH>;	/* :1105 "<&gpg0 0 0>"; enable-active-high decides */
+		enable-active-high;			/* :1107 */
+		regulator-boot-on;			/* :1106: the boot device stays powered */
+	};
+};
+
+&ufs_phy {
+	status = "okay";
+};
+
+&ufs {
+	vcc-supply = <&ufs_vcc>;			/* S:exynos8895.dtsi:864 */
+	status = "okay";				/* stock node has no status */
+};
