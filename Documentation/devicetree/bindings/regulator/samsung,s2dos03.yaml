@@ -1,0 +1,77 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/regulator/samsung,s2dos03.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung S2DOS03 display power regulator
+
+maintainers:
+  - Krzysztof Kozlowski <krzk@kernel.org>
+
+description: |
+  The S2DOS03 is an I2C power management IC with four LDOs (ldo1..ldo4) and
+  one buck converter (buck1), used on Exynos 8895 phones to supply the
+  display panel. LDOs cover 0.6 V to 3.775 V in 25 mV steps, the buck
+  0.5 V to 2.09375 V in 6.25 mV steps.
+
+properties:
+  compatible:
+    const: samsung,s2dos03
+
+  reg:
+    maxItems: 1
+
+  regulators:
+    type: object
+    description: List of regulators and their properties.
+
+    patternProperties:
+      "^(ldo[1-4]|buck1)$":
+        type: object
+        $ref: regulator.yaml#
+        unevaluatedProperties: false
+
+    additionalProperties: false
+
+required:
+  - compatible
+  - reg
+  - regulators
+
+additionalProperties: false
+
+examples:
+  - |
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        pmic@60 {
+            compatible = "samsung,s2dos03";
+            reg = <0x60>;
+
+            regulators {
+                buck1 {
+                    regulator-name = "vdd_ddi_1p6";
+                    regulator-min-microvolt = <1500000>;
+                    regulator-max-microvolt = <1600000>;
+                    regulator-boot-on;
+                };
+
+                ldo1 {
+                    regulator-name = "vdd_ddi_1p8";
+                    regulator-min-microvolt = <1800000>;
+                    regulator-max-microvolt = <1800000>;
+                    regulator-boot-on;
+                };
+
+                ldo3 {
+                    regulator-name = "vdd_ddi_3p0";
+                    regulator-min-microvolt = <3000000>;
+                    regulator-max-microvolt = <3000000>;
+                    regulator-boot-on;
+                };
+            };
+        };
+    };
