@@ -1640,6 +1640,52 @@
 			clocks = <&cmu_dpu0 CLK_GOUT_DPU0_SYSREG_DPU0_PCLK>;	/* CAL:cmucal-sfr.c:978 (0x2108) */
 		};
 
+		/*
+		 * Display System MMUs (FDT:7334-7380). Each serves several DPP
+		 * channels of DECON0; the DECON is their only master (one master
+		 * per System MMU). The second vendor interrupt is the secure one.
+		 * Vendor-only properties dropped: qos (ACK writes QoS 15 itself),
+		 * port-name, sysmmu,secure-*, sysmmu,tlb_property (no ACK consumer).
+		 * power-domains: the vendor nodes have none (its bus-wide runtime
+		 * PM powers them with the master); ACK needs it so no register is
+		 * read with pd_dpu0 off. aclk/pclk: CMU_DPU0 gates.
+		 */
+		sysmmu_dpu0: iommu@12900000 {
+			compatible = "samsung,exynos-sysmmu";
+			reg = <0x12900000 0x3000>;	/* FDT:7336 */
+			interrupts = <GIC_SPI 152 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:7337 0x98 */
+			clocks = <&cmu_dpu0 CLK_GOUT_DPU0_SYSMMU_DPUD0_ACLK>,	/* CAL:cmucal-sfr.c:983 */
+				 <&cmu_dpu0 CLK_GOUT_DPU0_SYSMMU_DPUD0_PCLK_NONSECURE>;	/* :982 */
+			clock-names = "aclk", "pclk";
+			power-domains = <&pd_dpu0>;
+			#iommu-cells = <0>;
+			status = "disabled";
+		};
+
+		sysmmu_dpu1: iommu@12910000 {
+			compatible = "samsung,exynos-sysmmu";
+			reg = <0x12910000 0x3000>;	/* FDT:7352 */
+			interrupts = <GIC_SPI 155 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:7353 0x9b */
+			clocks = <&cmu_dpu0 CLK_GOUT_DPU0_SYSMMU_DPUD1_ACLK>,	/* CAL:cmucal-sfr.c:1024 */
+				 <&cmu_dpu0 CLK_GOUT_DPU0_SYSMMU_DPUD1_PCLK_NONSECURE>;	/* :985 */
+			clock-names = "aclk", "pclk";
+			power-domains = <&pd_dpu0>;
+			#iommu-cells = <0>;
+			status = "disabled";
+		};
+
+		sysmmu_dpu2: iommu@12920000 {
+			compatible = "samsung,exynos-sysmmu";
+			reg = <0x12920000 0x3000>;	/* FDT:7368 */
+			interrupts = <GIC_SPI 158 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:7369 0x9e */
+			clocks = <&cmu_dpu0 CLK_GOUT_DPU0_SYSMMU_DPUD2_ACLK>,	/* CAL:cmucal-sfr.c:1015 */
+				 <&cmu_dpu0 CLK_GOUT_DPU0_SYSMMU_DPUD2_PCLK_NONSECURE>;	/* :1017 */
+			clock-names = "aclk", "pclk";
+			power-domains = <&pd_dpu0>;
+			#iommu-cells = <0>;
+			status = "disabled";
+		};
+
 		cmu_dpu1: clock-controller@12a00000 {
 			compatible = "samsung,exynos8895-cmu-dpu1";
 			reg = <0x12a00000 0x8000>;	/* CAL:cmucal-sfr.c:20 SFR_BLOCK(DPU1, 0x12a00000, 0x8000) */
