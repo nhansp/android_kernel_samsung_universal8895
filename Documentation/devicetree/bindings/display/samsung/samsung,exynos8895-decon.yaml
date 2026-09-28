@@ -1,0 +1,166 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/samsung/samsung,exynos8895-decon.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8895 SoC Display and Enhancement Controller (DECON0)
+
+maintainers:
+  - Krzysztof Kozlowski <krzk@kernel.org>
+
+description: |
+  DECON0 ("decon_f") of the Exynos8895 blends up to six windows and drives a
+  MIPI DSI interface, optionally through two DSC encoders. Unlike earlier
+  DECONs it has no window DMA of its own: each window is fed by one of six
+  DPP/IDMA channels (G0, G1, VG0, VG1, VGF0, VGF1), whose register blocks
+  (DPP and DPU_DMA) are part of this node. The channels share the display
+  System MMUs, so this device is their only IOMMU master.
+
+properties:
+  compatible:
+    const: samsung,exynos8895-decon
+
+  reg:
+    items:
+      - description: DECON0 registers, including the DSC encoders
+      - description: DPP registers of the six channels
+      - description: DPU_DMA common and channel registers
+
+  reg-names:
+    items:
+      - const: decon
+      - const: dpp
+      - const: dma
+
+  interrupts:
+    minItems: 5
+    maxItems: 15
+
+  interrupt-names:
+    minItems: 5
+    items:
+      - const: frame_start
+      - const: frame_done
+      - const: extra
+      - const: g0_dma
+      - const: g0_dpp
+      - const: g1_dma
+      - const: g1_dpp
+      - const: vg0_dma
+      - const: vg0_dpp
+      - const: vg1_dma
+      - const: vg1_dpp
+      - const: vgf0_dma
+      - const: vgf0_dpp
+      - const: vgf1_dma
+      - const: vgf1_dpp
+
+  clocks:
+    maxItems: 4
+
+  clock-names:
+    items:
+      - const: aclk
+      - const: dpp_g0
+      - const: dma_sfr
+      - const: dma_ch1
+
+  iommus:
+    minItems: 1
+    maxItems: 3
+
+  memory-region:
+    maxItems: 1
+    description:
+      The boot loader's framebuffer, identity-mapped for the IOMMU (it
+      carries iommu-addresses for this device) so a scan-out left running
+      by the boot loader stays valid when translation is enabled.
+
+  power-domains:
+    maxItems: 1
+
+  pinctrl-0: true
+  pinctrl-1: true
+
+  pinctrl-names:
+    items:
+      - const: default
+      - const: sleep
+
+  samsung,disp-sysreg:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Phandle to the DPU0 system register block (TE source, DSIM mux, bus
+      clock gating control).
+
+  ports:
+    $ref: /schemas/graph.yaml#/properties/ports
+    description:
+      Contains a port connected to the DSI host.
+
+    properties:
+      port@0:
+        $ref: /schemas/graph.yaml#/properties/port
+
+    required:
+      - port@0
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - interrupt-names
+  - clocks
+  - clock-names
+  - power-domains
+  - samsung,disp-sysreg
+  - ports
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/samsung,exynos8895.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    display-controller@12860000 {
+        compatible = "samsung,exynos8895-decon";
+        reg = <0x12860000 0x10000>,
+              <0x12851000 0x6000>,
+              <0x128b0000 0x7000>;
+        reg-names = "decon", "dpp", "dma";
+        interrupts = <GIC_SPI 143 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 144 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 149 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 183 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 179 IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "frame_start", "frame_done", "extra",
+                          "g0_dma", "g0_dpp";
+        clocks = <&cmu_dpu0 CLK_GOUT_DPU0_DECON0_ACLK>,
+                 <&cmu_dpu0 CLK_GOUT_DPU0_DPP_DPP_G0_ACLK>,
+                 <&cmu_dpu0 CLK_GOUT_DPU0_DPU_DMA_ACLK_SFR>,
+                 <&cmu_dpu0 CLK_GOUT_DPU0_DPU_DMA_ACLK_CH1>;
+        clock-names = "aclk", "dpp_g0", "dma_sfr", "dma_ch1";
+        power-domains = <&pd_dpu0>;
+        iommus = <&sysmmu_dpu0>, <&sysmmu_dpu1>, <&sysmmu_dpu2>;
+        memory-region = <&splash_mem>;
+        samsung,disp-sysreg = <&syscon_dpu0>;
+        pinctrl-names = "default", "sleep";
+        pinctrl-0 = <&decon_f_te_on>;
+        pinctrl-1 = <&decon_f_te_off>;
+
+        ports {
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            port@0 {
+                reg = <0>;
+
+                decon_to_dsi: endpoint {
+                    remote-endpoint = <&dsi_from_decon>;
+                };
+            };
+        };
+    };
