@@ -24,6 +24,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
+#include <linux/soc/samsung/greatlte-l5.h>
 
 #include <drm/display/drm_dsc.h>
 #include <drm/drm_atomic.h>
@@ -45,6 +46,9 @@
 #include "regs-dpp8895.h"
 
 #define D8895_NR_CH		6	/* G0 G1 VG0 VG1 VGF0 VGF1 */
+
+/* DEBUG: heartbeat counters of greatlte-hb-l5.c, only when built in */
+#define GL5_ON			IS_BUILTIN(CONFIG_DRM_EXYNOS)
 #define D8895_NR_WIN		6	/* FDT:7538 max_win = <0x06> */
 #define D8895_CH_G0		0	/* S:.../dpu/decon.h:310 IDMA_G0 = 0 */
 #define D8895_WIN_G0		5	/* FDT:7539 default_win = <0x05> */
@@ -1154,6 +1158,7 @@ static void d8895_atomic_enable(struct exynos_drm_crtc *crtc)
 
 	ctx->needs_init = true;
 	ctx->handover = false;
+	greatlte_l5_set(GL5_ON, ho, false);
 	if (!ctx->irqs_on) {
 		enable_irq(ctx->irq_fs);
 		enable_irq(ctx->irq_fd);
@@ -1362,6 +1367,7 @@ static void d8895_te_handler(struct exynos_drm_crtc *crtc)
 	unsigned long flags;
 
 	atomic_inc(&ctx->te_cnt);
+	greatlte_l5_inc(GL5_ON, tec);
 	spin_lock_irqsave(&ctx->vsync_lock, flags);
 	if (ctx->vsync_cb)
 		ctx->vsync_cb(ctx->vsync_data, ts);
@@ -1596,12 +1602,14 @@ static irqreturn_t d8895_irq(int irq, void *dev_id)
 	if (pend & D8895_DPU_FRAME_START_INT_PEND) {
 		d_write(ctx, D8895_INTERRUPT_PENDING, D8895_DPU_FRAME_START_INT_PEND);
 		atomic_inc(&ctx->fs_cnt);
+		greatlte_l5_inc(GL5_ON, fs);
 		/* the first frame after the flush latched its shadow registers */
 		atomic_cmpxchg(&ctx->oneshot_state, 1, 2);
 	}
 	if (pend & D8895_DPU_FRAME_DONE_INT_PEND) {
 		d_write(ctx, D8895_INTERRUPT_PENDING, D8895_DPU_FRAME_DONE_INT_PEND);
 		atomic_inc(&ctx->fd_cnt);
+		greatlte_l5_inc(GL5_ON, fd);
 		/*
 		 * One-shot: mask the HW trigger once the updated frame is out, as
 		 * the vendor does after each update (S:.../dpu/decon_core.c:
@@ -1632,6 +1640,7 @@ static irqreturn_t d8895_irq(int irq, void *dev_id)
 			d_write(ctx, D8895_EXTRA_INTERRUPT_PENDING,
 				D8895_DPU_RESOURCE_CONFLICT_INT_PEND);
 			atomic_inc(&ctx->rc_cnt);
+			greatlte_l5_inc(GL5_ON, rc);
 			dev_err_ratelimited(ctx->dev, "resource conflict: %08x %08x %08x\n",
 					    d_read(ctx, D8895_RESOURCE_OCCUPANCY_INFO_0),
 					    d_read(ctx, D8895_RESOURCE_OCCUPANCY_INFO_1),
@@ -1640,11 +1649,13 @@ static irqreturn_t d8895_irq(int irq, void *dev_id)
 		if (ext & D8895_DPU_TIME_OUT_INT_PEND) {
 			d_write(ctx, D8895_EXTRA_INTERRUPT_PENDING, D8895_DPU_TIME_OUT_INT_PEND);
 			atomic_inc(&ctx->to_cnt);
+			greatlte_l5_inc(GL5_ON, to);
 			dev_err_ratelimited(ctx->dev, "timeout irq\n");
 		}
 		if (ext & D8895_DPU_ERROR_INT_PEND) {
 			d_write(ctx, D8895_EXTRA_INTERRUPT_PENDING, D8895_DPU_ERROR_INT_PEND);
 			atomic_inc(&ctx->er_cnt);
+			greatlte_l5_inc(GL5_ON, er);
 		}
 	}
 
@@ -1679,6 +1690,7 @@ static irqreturn_t d8895_dma_irq(int irq, void *dev_id)
 	if (st & (D8895_IDMA_READ_SLAVE_ERROR | D8895_IDMA_STATUS_DEADLOCK_IRQ |
 		  D8895_IDMA_CONFIG_ERROR | D8895_IDMA_AFBC_TIMEOUT_IRQ)) {
 		atomic_inc(&ctx->ude_cnt);
+		greatlte_l5_inc(GL5_ON, ude);
 		dev_err_ratelimited(ctx->dev, "%s dma irq 0x%08x cfg_err 0x%03x\n",
 				    d8895_ch[ch].name, st, D8895_IDMA_CFG_ERR_GET(cfg));
 	}
@@ -1703,6 +1715,7 @@ static irqreturn_t d8895_dpp_irq(int irq, void *dev_id)
 	io_mask(dpp + D8895_DPP_IRQ, ~0, st);
 	if (st & D8895_DPP_CONFIG_ERROR) {
 		atomic_inc(&ctx->dpe_cnt);
+		greatlte_l5_inc(GL5_ON, dpe);
 		dev_err_ratelimited(ctx->dev, "%s dpp config error 0x%02x\n",
 				    d8895_ch[ch].name, D8895_DPP_CFG_ERR_GET(cfg));
 	}
@@ -2032,6 +2045,11 @@ static int d8895_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_put;
 
+	greatlte_l5_set(GL5_ON, decon_regs, ctx->regs);
+	greatlte_l5_set(GL5_ON, decon_dma, ctx->dma);
+	greatlte_l5_set(GL5_ON, ho, ctx->handover);
+	greatlte_l5_set(GL5_ON, decon_dev, dev);
+
 	return 0;
 
 err_put:
@@ -2046,6 +2064,9 @@ static void d8895_remove(struct platform_device *pdev)
 {
 	struct decon8895_ctx *ctx = platform_get_drvdata(pdev);
 
+	greatlte_l5_set(GL5_ON, decon_dev, NULL);
+	greatlte_l5_set(GL5_ON, decon_regs, NULL);
+	greatlte_l5_set(GL5_ON, decon_dma, NULL);
 	component_del(&pdev->dev, &d8895_component_ops);
 	if (ctx->rpm_held)
 		pm_runtime_put_sync(&pdev->dev);

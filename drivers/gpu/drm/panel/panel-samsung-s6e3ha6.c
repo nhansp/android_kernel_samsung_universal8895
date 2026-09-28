@@ -21,6 +21,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/regulator/consumer.h>
+#include <linux/soc/samsung/greatlte-l5.h>
 #include <linux/string.h>
 
 #include <drm/display/drm_dsc.h>
@@ -30,6 +31,9 @@
 #include <drm/drm_probe_helper.h>
 
 #define S6E3HA6_INIT_TRIES	3	/* the vendor retries up to 30 times (panel_drv.c:880-889) */
+
+/* DEBUG: greatlte heartbeat dpuc (greatlte-hb-l5.c), only when built in */
+#define GL5_ON			IS_BUILTIN(CONFIG_DRM_PANEL_SAMSUNG_S6E3HA6)
 
 /* regulators in the vendor enable order (S:.../panel/panel_drv.h:65-68,84-86) */
 enum { S6E3HA6_VDDI3P0, S6E3HA6_VDDI1P8, S6E3HA6_VDDI1P6, S6E3HA6_NR_SUPPLIES };
@@ -150,6 +154,7 @@ static int s6e3ha6_power_on(struct s6e3ha6 *ctx)
 	gpiod_set_value_cansleep(ctx->reset_gpio, 0);		/* deasserted: line high */
 	usleep_range(5000, 6000);
 	ctx->powered = true;
+	greatlte_l5_set(GL5_ON, pw, true);
 
 	return 0;
 }
@@ -165,6 +170,7 @@ static void s6e3ha6_power_off(struct s6e3ha6 *ctx)
 	for (i = S6E3HA6_NR_SUPPLIES - 1; i >= 0; i--)
 		regulator_disable(ctx->supplies[i]);
 	ctx->powered = false;
+	greatlte_l5_set(GL5_ON, pw, false);
 }
 
 static int s6e3ha6_prepare(struct drm_panel *panel)
@@ -247,6 +253,7 @@ static int s6e3ha6_disable(struct drm_panel *panel)
 	mipi_dsi_msleep(&dctx, 105);				/* wait_sleep_in :1913 */
 
 	ctx->booted = false;
+	greatlte_l5_set(GL5_ON, bt, false);
 
 	return dctx.accum_err;
 }
@@ -257,6 +264,7 @@ static int s6e3ha6_unprepare(struct drm_panel *panel)
 
 	/* the first unprepare after boot drops the boot references of probe */
 	ctx->booted = false;
+	greatlte_l5_set(GL5_ON, bt, false);
 	s6e3ha6_power_off(ctx);
 
 	return 0;
@@ -404,6 +412,12 @@ static int s6e3ha6_probe(struct mipi_dsi_device *dsi)
 	ctx->variant = s6e3ha6_variant(ctx->lcdtype);
 	dev_info(dev, "booted=%d lcdtype=0x%06x variant=%s\n", ctx->booted, ctx->lcdtype,
 		 ctx->variant);
+	greatlte_l5_set(GL5_ON, bt, ctx->booted);
+	greatlte_l5_set(GL5_ON, pw, ctx->powered);
+	greatlte_l5_set(GL5_ON, det, ctx->det_gpio);
+	greatlte_l5_set(GL5_ON, lt, ctx->lcdtype);
+	greatlte_l5_set(GL5_ON, var, ctx->variant);
+	greatlte_l5_set(GL5_ON, panel, true);
 
 	ctx->dsi = dsi;
 	mipi_dsi_set_drvdata(dsi, ctx);
@@ -446,6 +460,8 @@ static void s6e3ha6_remove(struct mipi_dsi_device *dsi)
 {
 	struct s6e3ha6 *ctx = mipi_dsi_get_drvdata(dsi);
 
+	greatlte_l5_set(GL5_ON, panel, false);
+	greatlte_l5_set(GL5_ON, det, NULL);
 	mipi_dsi_detach(dsi);
 	drm_panel_remove(&ctx->panel);
 	s6e3ha6_power_off(ctx);

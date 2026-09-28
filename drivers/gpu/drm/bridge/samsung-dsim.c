@@ -22,6 +22,7 @@
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/soc/samsung/greatlte-l5.h>
 #include <linux/regmap.h>
 #include <linux/units.h>
 
@@ -31,6 +32,9 @@
 #include <drm/display/drm_dsc.h>
 #include <drm/drm_panel.h>
 #include <drm/drm_print.h>
+
+/* DEBUG: greatlte heartbeat counters (greatlte-hb-l5.c), only when built in */
+#define GL5_ON	IS_BUILTIN(CONFIG_DRM_SAMSUNG_DSIM)
 
 /* returns true iff both arguments logically differs */
 #define NEQV(a, b) (!(a) ^ !(b))
@@ -2406,10 +2410,12 @@ static irqreturn_t samsung_dsim_irq_exynos8895(struct samsung_dsim *dsi)
 		complete(&dsi->rx_done);
 	if (status & DSIM8895_INT_ERR_RX_ECC) {
 		WRITE_ONCE(dsi->ecc_cnt, dsi->ecc_cnt + 1);
+		greatlte_l5_inc(GL5_ON, ecc);
 		dev_err_ratelimited(dsi->dev, "RX ECC multibit error\n");
 	}
 	if (status & DSIM8895_INT_UNDER_RUN) {
 		WRITE_ONCE(dsi->underrun_cnt, dsi->underrun_cnt + 1);
+		greatlte_l5_inc(GL5_ON, ur);
 		dev_info_ratelimited(dsi->dev, "underrun (%u)\n", dsi->underrun_cnt);
 	}
 
@@ -3051,6 +3057,13 @@ int samsung_dsim_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, dsi);
 
+	if (dsi->driver_data->has_8895_link) {
+		/* DEBUG: greatlte heartbeat dpuc (greatlte-hb-l5.c) */
+		greatlte_l5_set(GL5_ON, dsim_regs, dsi->reg_base);
+		greatlte_l5_set(GL5_ON, dsim_state, &dsi->state);
+		greatlte_l5_set(GL5_ON, dsim_dev, dev);
+	}
+
 	if (dsi->driver_data->handover_hold)
 		samsung_dsim_handover_exynos8895(dsi);
 
@@ -3084,6 +3097,11 @@ void samsung_dsim_remove(struct platform_device *pdev)
 {
 	struct samsung_dsim *dsi = platform_get_drvdata(pdev);
 
+	if (dsi->driver_data->has_8895_link) {
+		greatlte_l5_set(GL5_ON, dsim_dev, NULL);
+		greatlte_l5_set(GL5_ON, dsim_state, NULL);
+		greatlte_l5_set(GL5_ON, dsim_regs, NULL);
+	}
 	pm_runtime_disable(&pdev->dev);
 
 	if (dsi->plat_data->host_ops && dsi->plat_data->host_ops->unregister_host)
