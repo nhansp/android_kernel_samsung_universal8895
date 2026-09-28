@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Exynos 8895 DECON0: interface for in-kernel clients of the CRTC, such as
- * the S3CFB front-end of the stock composer (L6A REQ-L5-3/4/7).
+ * the S3CFB front-end of the stock composer (L6A REQ-L5-3/4/5/7/8).
  */
 #ifndef _EXYNOS8895_DRM_DECON_H_
 #define _EXYNOS8895_DRM_DECON_H_
@@ -45,6 +45,9 @@ int exynos8895_decon_get(struct device_node *np, struct exynos8895_decon_handle 
 int exynos8895_decon_plane_set_win(struct drm_plane_state *st, int win, bool afbc);
 int exynos8895_decon_set_color_win(struct device *dev, unsigned int win,
 				   const struct exynos8895_color_win *cw);
+void exynos8895_decon_set_vsync_cb(struct device *dev,
+				   void (*cb)(void *data, ktime_t ts), void *data);
+void exynos8895_decon_set_oneshot(struct device *dev, bool oneshot);
 #endif
 
 #endif /* _EXYNOS8895_DRM_DECON_H_ */

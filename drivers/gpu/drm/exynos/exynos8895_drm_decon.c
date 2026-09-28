@@ -374,6 +374,18 @@ struct decon8895_ctx {
 	u32 ch_used;		/* channels of the frame last started */
 	spinlock_t vblank_lock;
 
+	/* HW_SW_TRIG_CONTROL is changed from process and IRQ context */
+	spinlock_t trig_lock;
+
+	/* one-shot trigger (L6A REQ-L5-8): 1 = armed by a flush, 2 = its frame started */
+	bool oneshot;
+	atomic_t oneshot_state;
+
+	/* vsync callback of an in-kernel client (L6A REQ-L5-5) */
+	spinlock_t vsync_lock;
+	void (*vsync_cb)(void *data, ktime_t ts);
+	void *vsync_data;
+
 	/* colour windows of an in-kernel client (L6A REQ-L5-4) */
 	spinlock_t cw_lock;
 	u8 cw_on;
@@ -426,9 +438,13 @@ static inline void __iomem *d_dpp(struct decon8895_ctx *ctx, unsigned int ch)
 /* decon_reg_set_trigger(), HW trigger (S:.../dpu/decon_reg.c:1006-1024) */
 static void d8895_trigger(struct decon8895_ctx *ctx, bool enable)
 {
+	unsigned long flags;
+
+	spin_lock_irqsave(&ctx->trig_lock, flags);
 	d_mask(ctx, D8895_HW_SW_TRIG_CONTROL,
 	       enable ? D8895_HW_TRIG_EN : D8895_HW_TRIG_MASK_DECON,
 	       D8895_HW_TRIG_EN | D8895_HW_TRIG_MASK_DECON);
+	spin_unlock_irqrestore(&ctx->trig_lock, flags);
 }
 
 /* decon_reg_clear_int_all() for DECON0 (decon_reg.c:2222-2250) */
@@ -1159,6 +1175,7 @@ static void d8895_atomic_disable(struct exynos_drm_crtc *crtc)
 		disable_irq(ctx->irq_extra);
 		ctx->irqs_on = false;
 	}
+	atomic_set(&ctx->oneshot_state, 0);
 	if (!ctx->rpm_held)
 		return;
 	d8895_stop(ctx);
@@ -1309,7 +1326,8 @@ static void d8895_atomic_flush(struct exynos_drm_crtc *crtc)
 
 	/* decon_reg_all_win_shadow_update_req() (decon_reg.c:825-838) */
 	d_mask(ctx, D8895_SHADOW_REG_UPDATE_REQ, ~0, D8895_SHADOW_REG_UPDATE_REQ_FOR_DECON0);
-	d8895_start(ctx);
+	if (!d8895_start(ctx) && READ_ONCE(ctx->oneshot))
+		atomic_set(&ctx->oneshot_state, 1);
 
 out_event:
 	spin_lock_irqsave(&ctx->vblank_lock, flags);
@@ -1332,12 +1350,22 @@ static void d8895_disable_vblank(struct exynos_drm_crtc *crtc)
 	WRITE_ONCE(ctx->vblank_on, false);
 }
 
-/* HW-trigger mode: the TE only timestamps (S:.../dpu/decon_dsi.c:504-535) */
+/*
+ * HW-trigger mode: the TE only timestamps (S:.../dpu/decon_dsi.c:503-535,
+ * ktime_get() first) and hands the time to the client's vsync callback
+ * (L6A REQ-L5-5).
+ */
 static void d8895_te_handler(struct exynos_drm_crtc *crtc)
 {
 	struct decon8895_ctx *ctx = crtc->ctx;
+	ktime_t ts = ktime_get();
+	unsigned long flags;
 
 	atomic_inc(&ctx->te_cnt);
+	spin_lock_irqsave(&ctx->vsync_lock, flags);
+	if (ctx->vsync_cb)
+		ctx->vsync_cb(ctx->vsync_data, ts);
+	spin_unlock_irqrestore(&ctx->vsync_lock, flags);
 }
 
 static enum drm_mode_status d8895_mode_valid(struct exynos_drm_crtc *crtc,
@@ -1568,10 +1596,21 @@ static irqreturn_t d8895_irq(int irq, void *dev_id)
 	if (pend & D8895_DPU_FRAME_START_INT_PEND) {
 		d_write(ctx, D8895_INTERRUPT_PENDING, D8895_DPU_FRAME_START_INT_PEND);
 		atomic_inc(&ctx->fs_cnt);
+		/* the first frame after the flush latched its shadow registers */
+		atomic_cmpxchg(&ctx->oneshot_state, 1, 2);
 	}
 	if (pend & D8895_DPU_FRAME_DONE_INT_PEND) {
 		d_write(ctx, D8895_INTERRUPT_PENDING, D8895_DPU_FRAME_DONE_INT_PEND);
 		atomic_inc(&ctx->fd_cnt);
+		/*
+		 * One-shot: mask the HW trigger once the updated frame is out, as
+		 * the vendor does after each update (S:.../dpu/decon_core.c:
+		 * 2316-2326); the next commit re-enables it.
+		 */
+		if (atomic_read(&ctx->oneshot_state) == 2 &&
+		    !(d_read(ctx, D8895_SHADOW_REG_UPDATE_REQ) & D8895_SHADOW_REG_UPDATE_REQ_GLOBAL) &&
+		    atomic_cmpxchg(&ctx->oneshot_state, 2, 0) == 2)
+			d8895_trigger(ctx, false);
 		if (READ_ONCE(ctx->vblank_on)) {
 			spin_lock(&ctx->vblank_lock);
 			drm_crtc_handle_vblank(&ctx->crtc->base);
@@ -1848,6 +1887,39 @@ int exynos8895_decon_set_color_win(struct device *dev, unsigned int win,
 	return 0;
 }
 
+/*
+ * Called from the TE interrupt handler (hard interrupt context: keep it
+ * short, no sleeping) with the TE time, which is where the vendor
+ * timestamps vsync (L6A REQ-L5-5); @cb NULL removes it.
+ */
+void exynos8895_decon_set_vsync_cb(struct device *dev,
+				   void (*cb)(void *data, ktime_t ts), void *data)
+{
+	struct decon8895_ctx *ctx = d8895_ctx_of(dev);
+	unsigned long flags;
+
+	if (!ctx)
+		return;
+	spin_lock_irqsave(&ctx->vsync_lock, flags);
+	ctx->vsync_cb = cb;
+	ctx->vsync_data = data;
+	spin_unlock_irqrestore(&ctx->vsync_lock, flags);
+}
+
+/*
+ * One-shot trigger (L6A REQ-L5-8, O-6A-13): with @oneshot, each commit sends
+ * its frame and the HW trigger is masked again after it (the panel refreshes
+ * from its frame memory), as the vendor driver ran; without it, the DECON
+ * sends a frame on every TE.
+ */
+void exynos8895_decon_set_oneshot(struct device *dev, bool oneshot)
+{
+	struct decon8895_ctx *ctx = d8895_ctx_of(dev);
+
+	if (ctx)
+		WRITE_ONCE(ctx->oneshot, oneshot);
+}
+
 /* ---- probe / PM ---------------------------------------------------------- */
 
 static int d8895_probe(struct platform_device *pdev)
@@ -1864,6 +1936,8 @@ static int d8895_probe(struct platform_device *pdev)
 	ctx->dev = dev;
 	spin_lock_init(&ctx->vblank_lock);
 	spin_lock_init(&ctx->cw_lock);
+	spin_lock_init(&ctx->trig_lock);
+	spin_lock_init(&ctx->vsync_lock);
 	platform_set_drvdata(pdev, ctx);
 
 	/* 1. resources */
