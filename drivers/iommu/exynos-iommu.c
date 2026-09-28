@@ -527,16 +527,23 @@ static void __sysmmu_get_version(struct sysmmu_drvdata *data)
 	else
 		data->version = MMU_RAW_VER(ver);
 
-	dev_dbg(data->sysmmu, "hardware version: %d.%d\n",
-		MMU_MAJ_VER(data->version), MMU_MIN_VER(data->version));
+	dev_info(data->sysmmu, "hardware version: %d.%d\n",
+		 MMU_MAJ_VER(data->version), MMU_MIN_VER(data->version));
 
 	if (MMU_MAJ_VER(data->version) < 5) {
 		data->variant = &sysmmu_v1_variant;
 	} else if (MMU_MAJ_VER(data->version) < 7) {
 		data->variant = &sysmmu_v5_variant;
 	} else {
-		if (__sysmmu_has_capa1(data))
+		u32 capa0 = readl(data->sfrbase + REG_V7_CAPA0);
+		u32 capa1 = 0;
+
+		if (__sysmmu_has_capa1(data)) {
+			capa1 = readl(data->sfrbase + REG_V7_CAPA1);
 			__sysmmu_get_vcr(data);
+		}
+		dev_info(data->sysmmu, "capa0=%08x capa1=%08x has_vcr=%d\n",
+			 capa0, capa1, data->has_vcr);
 		if (data->has_vcr)
 			data->variant = &sysmmu_v7_vm_variant;
 		else
