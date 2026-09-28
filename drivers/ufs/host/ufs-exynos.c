@@ -22,6 +22,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/sys_soc.h>
+#include <linux/soc/samsung/greatlte-l4.h>
 
 #include <ufs/ufshcd.h>
 #include "ufshcd-pltfrm.h"
@@ -2491,6 +2492,7 @@ static int exynos_ufs_probe(struct platform_device *pdev)
 	err = ufshcd_pltfrm_init(pdev, vops);
 	if (err)
 		dev_err(dev, "ufshcd_pltfrm_init() failed %d\n", err);
+	greatlte_l4_ufs_probe_done(dev, err);	/* DEBUG: L4 heartbeat ufs= */
 
 	return err;
 }
