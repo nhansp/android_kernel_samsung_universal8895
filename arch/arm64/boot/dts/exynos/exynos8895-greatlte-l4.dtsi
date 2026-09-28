@@ -14,6 +14,12 @@
 #include <dt-bindings/gpio/gpio.h>
 
 / {
+	aliases {
+		/* host index 0 = mmcblk0, which the stock recovery fstab expects
+		 * ("/dev/block/mmcblk0p1", RRD:etc/recovery.fstab:36) */
+		mmc0 = &mmc;
+	};
+
 	/*
 	 * UFS VCC: a GPIO fixed regulator. Stock "ufs_fixed_vcc: fixedregulator@0"
 	 * S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:1102-1108 (FDT:4765-4773);
@@ -26,6 +32,22 @@
 		enable-active-high;			/* :1107 */
 		regulator-boot-on;			/* :1106: the boot device stays powered */
 	};
+
+	/*
+	 * SD VMMC: stock "sd_fixed_vcc: fixedregulator@3",
+	 * S:arch/arm64/boot/dts/exynos/exynos8895-greatlte_common.dtsi:921-928
+	 * (FDT:11218-11226). No pinctrl: stock's dwmmc2_tflash_en group (gpb1-1)
+	 * sits under the ALIVE controller in both stock sources and was never
+	 * applied, so the GPIO request alone makes gpb1-1 an output.
+	 */
+	vmmc_sd: regulator-vmmc-sd {
+		compatible = "regulator-fixed";
+		regulator-name = "vmmc";		/* :923 */
+		regulator-min-microvolt = <2800000>;	/* :925 */
+		regulator-max-microvolt = <2800000>;	/* :926 */
+		gpio = <&gpb1 1 GPIO_ACTIVE_HIGH>;	/* :924 "<&gpb1 1 1>"; enable-active-high decides */
+		enable-active-high;			/* :927 */
+	};
 };
 
 &ufs_phy {
@@ -35,4 +57,31 @@
 &ufs {
 	vcc-supply = <&ufs_vcc>;			/* S:exynos8895.dtsi:864 */
 	status = "okay";				/* stock node has no status */
+};
+
+&pinctrl_alive {
+	/* S:arch/arm64/boot/dts/exynos/exynos8895-greatlte_common.dtsi:824-829 (FDT:229-236) */
+	sd2_cd: sd2-cd-pins {
+		samsung,pins = "gpa1-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;	/* 0xf */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;	/* 0 */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;	/* stock <4> in a 2-bit field: the pin gets 0 */
+	};
+};
+
+&mmc {
+	pinctrl-names = "default";
+	pinctrl-0 = <&sd2_clk &sd2_cmd &sd2_bus1 &sd2_bus4 &sd2_cd>;	/* FDT:7725 minus tflash_en */
+	bus-width = <4>;				/* FDT:7735 */
+	cap-sd-highspeed;				/* stock supports-highspeed, FDT:7699 */
+	cd-gpios = <&gpa1 5 GPIO_ACTIVE_LOW>;		/* FDT:7730; present when low */
+	card-detect-delay = <200>;			/* FDT:7712 <0xc8> */
+	clock-frequency = <800000000>;			/* FDT:7716 <0x2faf0800> */
+	disable-wp;					/* FDT:7736 */
+	samsung,dw-mshc-ciu-div = <3>;			/* divider of stock <3 0 2 0> */
+	samsung,dw-mshc-sdr-timing = <0 2>;		/* <sample drive> of stock <3 0 2 0>, FDT:7717 */
+	samsung,dw-mshc-ddr-timing = <1 2>;		/* of stock <3 0 2 1>, FDT:7718 */
+	vmmc-supply = <&vmmc_sd>;
+	vqmmc-supply = <&vqmmc_sd>;			/* S2MPS17 LDO2 "vqmmc", L2 board part */
+	status = "okay";
 };
