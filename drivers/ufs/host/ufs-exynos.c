@@ -1750,6 +1750,13 @@ static int exynos_ufs_resume(struct ufs_hba *hba, enum ufs_pm_op pm_op)
 {
 	struct exynos_ufs *ufs = ufshcd_get_variant(hba);
 
+	if (ufs->drv_data->resume) {
+		int ret = ufs->drv_data->resume(ufs);
+
+		if (ret)
+			return ret;
+	}
+
 	if (!ufshcd_is_link_active(hba))
 		phy_power_on(ufs->phy);
 
