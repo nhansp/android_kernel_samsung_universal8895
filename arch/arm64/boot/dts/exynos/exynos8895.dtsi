@@ -1641,6 +1641,92 @@
 		};
 
 		/*
+		 * DECON0 ("decon_f", FDT:7527-7558) with the DPP registers of its six
+		 * channels (G0 G1 VG0 VG1 VGF0 VGF1 at 0x1000 each, FDT:7385..7440
+		 * reg[0]) and DPU_DMA (common 0x0-0xff, channel n at n * 0x1000,
+		 * FDT reg[1]/reg[2]): the vendor's seven "dpp" devices are part of
+		 * this one device, the only master of the display System MMUs.
+		 * Interrupts: frame start/done and extra by the vendor's index
+		 * (S:drivers/video/fbdev/exynos/dpu/decon_dsi.c:151-214), then G0's
+		 * DMA and DPP interrupts (FDT:7386, S:.../dpu/dpp_drv.c:1033-1065).
+		 * Clocks: the CMU_DPU0 gates of DECON0 (0x207c), DPP G0 (0x2080),
+		 * DPU_DMA SFR (0x209c) and DMA channel 1 = G0/VG0 (0x2090,
+		 * S:.../dpu/helper.c:593-597).
+		 */
+		decon: display-controller@12860000 {
+			compatible = "samsung,exynos8895-decon";
+			reg = <0x12860000 0x10000>,	/* FDT:7530; DSC0/1 at +0x4000/+0x5000 */
+			      <0x12851000 0x6000>,
+			      <0x128b0000 0x7000>;
+			reg-names = "decon", "dpp", "dma";
+			interrupts = <GIC_SPI 143 IRQ_TYPE_LEVEL_HIGH>,	/* FDT:7531 0x8f */
+				     <GIC_SPI 144 IRQ_TYPE_LEVEL_HIGH>,	/* 0x90 */
+				     <GIC_SPI 149 IRQ_TYPE_LEVEL_HIGH>,	/* 0x95 */
+				     <GIC_SPI 183 IRQ_TYPE_LEVEL_HIGH>,	/* FDT:7386 0xb7 */
+				     <GIC_SPI 179 IRQ_TYPE_LEVEL_HIGH>;	/* 0xb3 */
+			interrupt-names = "frame_start", "frame_done", "extra",
+					  "g0_dma", "g0_dpp";
+			clocks = <&cmu_dpu0 CLK_GOUT_DPU0_DECON0_ACLK>,	/* CAL:cmucal-sfr.c:971 */
+				 <&cmu_dpu0 CLK_GOUT_DPU0_DPP_DPP_G0_ACLK>,	/* :1001 */
+				 <&cmu_dpu0 CLK_GOUT_DPU0_DPU_DMA_ACLK_SFR>,	/* :1010 */
+				 <&cmu_dpu0 CLK_GOUT_DPU0_DPU_DMA_ACLK_CH1>;	/* :1006 */
+			clock-names = "aclk", "dpp_g0", "dma_sfr", "dma_ch1";
+			power-domains = <&pd_dpu0>;	/* FDT:7537 */
+			iommus = <&sysmmu_dpu0>, <&sysmmu_dpu1>, <&sysmmu_dpu2>;
+			samsung,disp-sysreg = <&syscon_dpu0>;
+			status = "disabled";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+
+					decon_to_dsi: endpoint {
+						remote-endpoint = <&dsi_from_decon>;
+					};
+				};
+			};
+		};
+
+		/*
+		 * DSIM0 (FDT:7483-7492): APB gate in CMU_DPU0, D-PHY = DSIM0 of the
+		 * PMU's MIPI PHY, pd_dpu1. PLL input 26 MHz (the vendor's fixed
+		 * fin, S:.../dpu/dsim_reg.c:1459). The panel-side link values and
+		 * port@1 come from the board.
+		 */
+		dsi: dsi@12870000 {
+			compatible = "samsung,exynos8895-mipi-dsi";
+			reg = <0x12870000 0x100>;	/* FDT:7485 */
+			interrupts = <GIC_SPI 150 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:7486 0x96 */
+			clocks = <&cmu_dpu0 CLK_GOUT_DPU0_AD_APB_MIPI_DSIM0_PCLKS>;	/* CAL:cmucal-sfr.c:994 */
+			clock-names = "bus";
+			phys = <&mipi_phy 1>;	/* EXYNOS_MIPI_PHY_ID_DSIM0 */
+			phy-names = "dsim";
+			power-domains = <&pd_dpu1>;	/* FDT:7489 */
+			samsung,pll-clock-frequency = <26000000>;
+			samsung,disp-sysreg = <&syscon_dpu0>;
+			samsung,dpu1-sysreg = <&syscon_dpu1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+
+					dsi_from_decon: endpoint {
+						remote-endpoint = <&decon_to_dsi>;
+					};
+				};
+			};
+		};
+
+		/*
 		 * Display System MMUs (FDT:7334-7380). Each serves several DPP
 		 * channels of DECON0; the DECON is their only master (one master
 		 * per System MMU). The second vendor interrupt is the secure one.
