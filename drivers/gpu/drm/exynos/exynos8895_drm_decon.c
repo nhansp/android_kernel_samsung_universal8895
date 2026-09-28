@@ -18,6 +18,7 @@
 #include <linux/mfd/syscon.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/pm_runtime.h>
@@ -30,6 +31,8 @@
 #include <drm/drm_atomic_state_helper.h>
 #include <drm/drm_blend.h>
 #include <drm/drm_color_mgmt.h>
+#include <drm/drm_connector.h>
+#include <drm/drm_encoder.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_vblank.h>
@@ -37,6 +40,7 @@
 #include "exynos_drm_crtc.h"
 #include "exynos_drm_drv.h"
 #include "exynos_drm_fb.h"
+#include "exynos8895_drm_decon.h"
 #include "regs-decon8895.h"
 #include "regs-dpp8895.h"
 
@@ -369,6 +373,11 @@ struct decon8895_ctx {
 	u32 ch_on;		/* channels initialised since the last enable */
 	u32 ch_used;		/* channels of the frame last started */
 	spinlock_t vblank_lock;
+
+	/* colour windows of an in-kernel client (L6A REQ-L5-4) */
+	spinlock_t cw_lock;
+	u8 cw_on;
+	struct exynos8895_color_win cw[D8895_NR_WIN];
 
 	/* counters (heartbeat / debugfs) */
 	atomic_t fd_cnt, fs_cnt, to_cnt, rc_cnt, er_cnt, ude_cnt, dpe_cnt, te_cnt;
@@ -1225,7 +1234,9 @@ static void d8895_atomic_flush(struct exynos_drm_crtc *crtc)
 	struct drm_crtc_state *cs = crtc->base.state;
 	struct drm_plane *plane;
 	unsigned long flags, aclk_khz;
+	struct exynos8895_color_win cw[D8895_NR_WIN];
 	u32 used_win = 0, used_ch = 0;
+	u8 cw_on;
 	int win, ch;
 
 	if (!ctx->rpm_held)
@@ -1259,9 +1270,25 @@ static void d8895_atomic_flush(struct exynos_drm_crtc *crtc)
 				 st->fb->pitches[0]);
 		}
 	}
-	for (win = 0; win < D8895_NR_WIN; win++)
-		if (!(used_win & BIT(win)))
+	/*
+	 * A window no plane uses is a colour window if the client asked for one
+	 * (decon_prepare_win_config(), S:.../dpu/decon_core.c:2566-2575: colour
+	 * map on, alpha forced to 0xff, the named channel in CHMAP), else off.
+	 */
+	spin_lock_irqsave(&ctx->cw_lock, flags);
+	cw_on = ctx->cw_on;
+	memcpy(cw, ctx->cw, sizeof(cw));
+	spin_unlock_irqrestore(&ctx->cw_lock, flags);
+	for (win = 0; win < D8895_NR_WIN; win++) {
+		if (used_win & BIT(win))
+			continue;
+		if (cw_on & BIT(win))
+			d8895_win_program(ctx, win, d8895_ch[cw[win].plane].chmap, &cw[win].dst,
+					  cw[win].alpha, cw[win].blend, true, true,
+					  cw[win].argb | 0xff000000);
+		else
 			d8895_win_disable(ctx, win);
+	}
 	/*
 	 * A channel whose window goes away in this update: mask its interrupts
 	 * (the vendor stops the DPPs the new frame no longer uses,
@@ -1701,12 +1728,125 @@ static void d8895_unbind(struct device *dev, struct device *master, void *data)
 	if (ctx->rpm_held)
 		d8895_atomic_disable(ctx->crtc);
 	exynos_drm_unregister_dma(ctx->drm, ctx->dev, &ctx->dma_priv);
+	ctx->crtc = NULL;	/* the client interface refuses an unbound DECON */
 }
 
 static const struct component_ops d8895_component_ops = {
 	.bind	= d8895_bind,
 	.unbind	= d8895_unbind,
 };
+
+/* ---- interface for in-kernel clients (exynos8895_drm_decon.h) ----------- */
+
+static struct decon8895_ctx *d8895_ctx_of(struct device *dev)
+{
+	struct decon8895_ctx *ctx = dev ? dev_get_drvdata(dev) : NULL;
+
+	return ctx && ctx->crtc ? ctx : NULL;
+}
+
+/*
+ * The bound DECON of @np (NULL: the first samsung,exynos8895-decon node):
+ * DRM device, CRTC, the six planes in enum decon_idma_type order and the
+ * connector of the output that can be driven from this CRTC (L6A REQ-L5-7).
+ */
+int exynos8895_decon_get(struct device_node *np, struct exynos8895_decon_handle *h)
+{
+	struct drm_connector_list_iter iter;
+	struct drm_connector *connector;
+	struct platform_device *pdev;
+	struct decon8895_ctx *ctx;
+	struct device_node *node = np;
+	int i, ret = 0;
+
+	if (!node)
+		node = of_find_compatible_node(NULL, NULL, "samsung,exynos8895-decon");
+	pdev = node ? of_find_device_by_node(node) : NULL;
+	if (!np)
+		of_node_put(node);
+	if (!pdev)
+		return -ENODEV;
+
+	ctx = d8895_ctx_of(&pdev->dev);
+	if (!ctx) {
+		ret = -EPROBE_DEFER;
+		goto out;
+	}
+
+	memset(h, 0, sizeof(*h));
+	h->dev = ctx->dev;
+	h->drm = ctx->drm;
+	h->crtc = &ctx->crtc->base;
+	for (i = 0; i < D8895_NR_CH; i++)
+		h->planes[i] = &ctx->planes[i].base;
+
+	drm_connector_list_iter_begin(ctx->drm, &iter);
+	drm_for_each_connector_iter(connector, &iter) {
+		struct drm_encoder *encoder;
+
+		drm_connector_for_each_possible_encoder(connector, encoder) {
+			if (encoder->possible_crtcs & drm_crtc_mask(h->crtc)) {
+				h->connector = connector;
+				break;
+			}
+		}
+		if (h->connector)
+			break;
+	}
+	drm_connector_list_iter_end(&iter);
+	if (!h->connector)
+		ret = -ENODEV;
+out:
+	put_device(&pdev->dev);
+	return ret;
+}
+
+/*
+ * The window (0..5, or -1 to derive it from zpos) and the AFBC flag of a
+ * plane in an atomic state being built by a client (L6A REQ-L5-3, the AFBC
+ * part of REQ-L5-2); atomic_check validates both.
+ */
+int exynos8895_decon_plane_set_win(struct drm_plane_state *st, int win, bool afbc)
+{
+	struct d8895_plane_state *ps;
+
+	if (!st || st->plane->funcs != &d8895_plane_funcs ||
+	    win < -1 || win >= D8895_NR_WIN)
+		return -EINVAL;
+	ps = to_d8895_pstate(st);
+	ps->win = win;
+	ps->afbc = afbc;
+
+	return 0;
+}
+
+/*
+ * Colour window @win (@cw == NULL: none) for the next commit; a window a
+ * visible plane uses is a buffer window whatever is set here (L6A REQ-L5-4).
+ */
+int exynos8895_decon_set_color_win(struct device *dev, unsigned int win,
+				   const struct exynos8895_color_win *cw)
+{
+	struct decon8895_ctx *ctx = d8895_ctx_of(dev);
+	unsigned long flags;
+
+	if (!ctx || win >= D8895_NR_WIN || (cw && cw->plane >= D8895_NR_CH))
+		return -EINVAL;
+	if (cw && (drm_rect_width(&cw->dst) < D8895_IMG_WIDTH_MIN ||
+		   drm_rect_height(&cw->dst) <= 0 || cw->dst.x1 < 0 || cw->dst.y1 < 0))
+		return -EINVAL;
+
+	spin_lock_irqsave(&ctx->cw_lock, flags);
+	if (cw) {
+		ctx->cw[win] = *cw;
+		ctx->cw_on |= BIT(win);
+	} else {
+		ctx->cw_on &= ~BIT(win);
+	}
+	spin_unlock_irqrestore(&ctx->cw_lock, flags);
+
+	return 0;
+}
 
 /* ---- probe / PM ---------------------------------------------------------- */
 
@@ -1723,6 +1863,7 @@ static int d8895_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	ctx->dev = dev;
 	spin_lock_init(&ctx->vblank_lock);
+	spin_lock_init(&ctx->cw_lock);
 	platform_set_drvdata(pdev, ctx);
 
 	/* 1. resources */
