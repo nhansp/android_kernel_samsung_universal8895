@@ -1480,6 +1480,11 @@
 				snps,usb2-gadget-lpm-disable;
 				snps,dis-u1-entry-quirk;
 				snps,dis-u2-entry-quirk;
+				/*
+				 * DWC_usb3 2.80a (GSNPSID 0x5533280a): stock sets
+				 * GUSB3PIPECTL.DIS_RXDETP3 for >= 2.50a, S:drivers/usb/dwc3/core.c:162-166
+				 */
+				snps,dis_rxdet_inp3_quirk;
 			};
 		};
 
