@@ -1647,8 +1647,9 @@
 		 * FDT reg[1]/reg[2]): the vendor's seven "dpp" devices are part of
 		 * this one device, the only master of the display System MMUs.
 		 * Interrupts: frame start/done and extra by the vendor's index
-		 * (S:drivers/video/fbdev/exynos/dpu/decon_dsi.c:151-214), then G0's
-		 * DMA and DPP interrupts (FDT:7386, S:.../dpu/dpp_drv.c:1033-1065).
+		 * (S:drivers/video/fbdev/exynos/dpu/decon_dsi.c:151-214), then each
+		 * channel's DMA and DPP interrupts (vendor order, S:.../dpu/
+		 * dpp_drv.c:1033-1065).
 		 * Clocks: the CMU_DPU0 gates of DECON0 (0x207c), DPP G0 (0x2080),
 		 * DPU_DMA SFR (0x209c) and DMA channel 1 = G0/VG0 (0x2090,
 		 * S:.../dpu/helper.c:593-597).
@@ -1662,10 +1663,22 @@
 			interrupts = <GIC_SPI 143 IRQ_TYPE_LEVEL_HIGH>,	/* FDT:7531 0x8f */
 				     <GIC_SPI 144 IRQ_TYPE_LEVEL_HIGH>,	/* 0x90 */
 				     <GIC_SPI 149 IRQ_TYPE_LEVEL_HIGH>,	/* 0x95 */
-				     <GIC_SPI 183 IRQ_TYPE_LEVEL_HIGH>,	/* FDT:7386 0xb7 */
-				     <GIC_SPI 179 IRQ_TYPE_LEVEL_HIGH>;	/* 0xb3 */
+				     <GIC_SPI 183 IRQ_TYPE_LEVEL_HIGH>,	/* G0 FDT:7386 0xb7 */
+				     <GIC_SPI 179 IRQ_TYPE_LEVEL_HIGH>,	/* 0xb3 */
+				     <GIC_SPI 184 IRQ_TYPE_LEVEL_HIGH>,	/* G1 FDT:7397 0xb8 */
+				     <GIC_SPI 181 IRQ_TYPE_LEVEL_HIGH>,	/* 0xb5 */
+				     <GIC_SPI 185 IRQ_TYPE_LEVEL_HIGH>,	/* VG0 FDT:7408 0xb9 */
+				     <GIC_SPI 180 IRQ_TYPE_LEVEL_HIGH>,	/* 0xb4 */
+				     <GIC_SPI 186 IRQ_TYPE_LEVEL_HIGH>,	/* VG1 FDT:7419 0xba */
+				     <GIC_SPI 182 IRQ_TYPE_LEVEL_HIGH>,	/* 0xb6 */
+				     <GIC_SPI 188 IRQ_TYPE_LEVEL_HIGH>,	/* VGF0 FDT:7430 0xbc */
+				     <GIC_SPI 177 IRQ_TYPE_LEVEL_HIGH>,	/* 0xb1 */
+				     <GIC_SPI 187 IRQ_TYPE_LEVEL_HIGH>,	/* VGF1 FDT:7441 0xbb */
+				     <GIC_SPI 178 IRQ_TYPE_LEVEL_HIGH>;	/* 0xb2 */
 			interrupt-names = "frame_start", "frame_done", "extra",
-					  "g0_dma", "g0_dpp";
+					  "g0_dma", "g0_dpp", "g1_dma", "g1_dpp",
+					  "vg0_dma", "vg0_dpp", "vg1_dma", "vg1_dpp",
+					  "vgf0_dma", "vgf0_dpp", "vgf1_dma", "vgf1_dpp";
 			clocks = <&cmu_dpu0 CLK_GOUT_DPU0_DECON0_ACLK>,	/* CAL:cmucal-sfr.c:971 */
 				 <&cmu_dpu0 CLK_GOUT_DPU0_DPP_DPP_G0_ACLK>,	/* :1001 */
 				 <&cmu_dpu0 CLK_GOUT_DPU0_DPU_DMA_ACLK_SFR>,	/* :1010 */
