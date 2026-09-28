@@ -14,6 +14,7 @@
  */
 #include <linux/delay.h>
 #include <linux/iopoll.h>
+#include <linux/moduleparam.h>
 
 #include "phy-samsung-ufs.h"
 
@@ -83,6 +84,36 @@ static const struct samsung_ufs_phy_cfg *exynos8895_ufs_phy_cfgs[CFG_TAG_MAX] = 
 	[CFG_PRE_PWR_HS]	= exynos8895_pre_pwr_hs_cfg,
 	[CFG_POST_PWR_HS]	= exynos8895_post_pwr_hs_cfg,
 };
+
+#if IS_ENABLED(CONFIG_GREATLTE_HB)
+/*
+ * DEBUG: deviation D-3 test (spec/L4_storage.md 5.2): phy_exynos_ufs.d3_no_t0=1
+ * starts CFG_PRE_INIT after the three post-clk-on rows, i.e. the PMA state
+ * before the first link-up is the one stock left untouched. Parsed before any
+ * initcall, so the PHY probe already sees the shortened table.
+ */
+#define EXYNOS8895_POST_CLK_ON_ROWS	3	/* first rows of exynos8895_pre_init_cfg */
+
+static bool exynos8895_d3_no_t0;
+
+static int exynos8895_d3_set(const char *val, const struct kernel_param *kp)
+{
+	int ret = param_set_bool(val, kp);
+
+	if (ret)
+		return ret;
+	exynos8895_ufs_phy_cfgs[CFG_PRE_INIT] = exynos8895_pre_init_cfg +
+		(exynos8895_d3_no_t0 ? EXYNOS8895_POST_CLK_ON_ROWS : 0);
+	return 0;
+}
+
+static const struct kernel_param_ops exynos8895_d3_ops = {
+	.set = exynos8895_d3_set,
+	.get = param_get_bool,
+};
+module_param_cb(d3_no_t0, &exynos8895_d3_ops, &exynos8895_d3_no_t0, 0444);
+MODULE_PARM_DESC(d3_no_t0, "DEBUG 8895: no post-clk-on rows before link startup (D-3)");
+#endif
 
 /* COMMON_WAIT of phy-init: one 200 us delay after the whole table (lane 0 only). */
 static int exynos8895_ufs_phy_wait_for_cal(struct phy *phy, u8 lane)
