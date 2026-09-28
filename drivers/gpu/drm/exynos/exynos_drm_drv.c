@@ -291,7 +291,13 @@ static int exynos_drm_bind(struct device *dev)
 	if (ret < 0)
 		goto err_cleanup_poll;
 
-	drm_client_setup(drm, NULL);
+	/*
+	 * With the Exynos8895 S3CFB front-end, fb0 must be its fb_info (the
+	 * stock composer drives /dev/graphics/fb0), so no fbdev client here
+	 * (L6A REQ-L5-6).
+	 */
+	if (!IS_ENABLED(CONFIG_DRM_EXYNOS8895_S3CFB))
+		drm_client_setup(drm, NULL);
 
 	return 0;
 
