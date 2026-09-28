@@ -27,6 +27,9 @@
 #include <linux/soc/samsung/exynos-regs-pmu.h>
 #include <linux/usb/typec.h>
 #include <linux/usb/typec_mux.h>
+#ifdef CONFIG_ANDROID_VENDOR_HOOKS
+#include <trace/hooks/dwc3.h>
+#endif
 
 /* Exynos USB PHY registers */
 #define EXYNOS5_FSEL_9MHZ6		0x0
@@ -548,6 +551,8 @@ struct exynos5_usbdrd_phy_drvdata {
  * @muic_after: Exynos8895 MUIC CONTROL1 read back after it, or -errno
  * @cr_timeouts: Exynos8895 CR-port handshake timeouts
  * @init_count: Exynos8895 number of .init calls
+ * @retunes: Exynos8895 re-tunes done from the dwc3 soft-reset hook
+ * @tune_armed: Exynos8895 set by .power_on, cleared by .exit: the hook re-tunes only when set
  */
 struct exynos5_usbdrd_phy {
 	struct device *dev;
@@ -587,6 +592,8 @@ struct exynos5_usbdrd_phy {
 	int muic_after;
 	unsigned int cr_timeouts;
 	unsigned int init_count;
+	unsigned int retunes;
+	bool tune_armed;
 };
 
 static inline
@@ -2272,11 +2279,14 @@ err_rail:
 static int exynos8895_usbdrd_phy_power_on(struct phy *phy)
 {
 	struct phy_usb_instance *inst = phy_get_drvdata(phy);
+	struct exynos5_usbdrd_phy *d;
 
 	if (inst->phy_cfg->id != EXYNOS5_DRDPHY_PIPE3)
 		return 0;
+	d = to_usbdrd_phy(inst);
 	/* after the dwc3_core_init CSFTRST (A:drivers/usb/dwc3/core.c:1385 -> 1411) */
-	exynos8895_cal_tune_dev(to_usbdrd_phy(inst));
+	exynos8895_cal_tune_dev(d);
+	WRITE_ONCE(d->tune_armed, true);	/* later CSFTRSTs re-tune from the dwc3 hook */
 	return 0;
 }
 
@@ -2287,6 +2297,7 @@ static int exynos8895_usbdrd_phy_exit(struct phy *phy)
 
 	if (inst->phy_cfg->id != EXYNOS5_DRDPHY_PIPE3)
 		return 0;
+	WRITE_ONCE(d->tune_armed, false);	/* no re-tune of a PHY that goes down */
 	exynos8895_cal_disable(d);
 	exynos8895_muic_switch(d, EXYNOS8895_MUIC_COM_OPEN);	/* stock detach_usb, shutdown */
 	inst->phy_cfg->phy_isol(inst, true);			/* usbdrd.c:989 */
@@ -2304,9 +2315,45 @@ static const struct phy_ops exynos8895_usbdrd_phy_ops = {
 	.owner		= THIS_MODULE,
 };
 
+#ifdef CONFIG_ANDROID_VENDOR_HOOKS
+/*
+ * Re-tune after every dwc3 CSFTRST (spec 5.1.6b). Stock keeps "every CSFTRST is followed by a
+ * full PHY tune before RUN_STOP": at attach (S:drivers/usb/dwc3/core.c:768-787) and at every
+ * gadget pullup(1) (S:drivers/usb/dwc3/gadget.c:1962-1978). ACK issues a CSFTRST at every
+ * soft-connect (A:drivers/usb/dwc3/gadget.c:2782) and sets RUN_STOP right after it (:2788)
+ * with no PHY op in between; its only callback there is this vendor hook, fired with
+ * POST_SOFT_RESET after the CSFTRST poll (A:drivers/usb/dwc3/core.c:369-371, 384-386).
+ * Called with preemption disabled (tracepoint): the tune only uses readl/writel/udelay.
+ */
+static void exynos8895_vh_dwc3_soft_reset(void *data, struct device *dwc3_dev,
+					  void __iomem *dwc3_regs, struct phy **usb3_phy,
+					  enum soft_reset_phase phase)
+{
+	struct exynos5_usbdrd_phy *d = data;
+
+	if (phase != POST_SOFT_RESET || !usb3_phy ||
+	    usb3_phy[0] != d->phys[EXYNOS5_DRDPHY_PIPE3].phy)
+		return;				/* not this PHY */
+	if (!READ_ONCE(d->tune_armed))
+		return;				/* core-init CSFTRST: .power_on tunes after it */
+	exynos8895_cal_tune_dev(d);		/* as S:drivers/usb/dwc3/gadget.c:1965-1966 */
+	d->retunes++;
+	dev_info(d->dev, "8895: re-tune #%u after CSFTRST cr_timeouts=%u\n",
+		 d->retunes, d->cr_timeouts);
+}
+
+static void exynos8895_unregister_vh(void *data)
+{
+	unregister_trace_android_vh_dwc3_core_soft_reset(exynos8895_vh_dwc3_soft_reset, data);
+	tracepoint_synchronize_unregister();
+}
+#endif
+
 static int exynos8895_usbdrd_probe_extra(struct exynos5_usbdrd_phy *d,
 					 struct platform_device *pdev)
 {
+	int ret = 0;
+
 	d->reg_phy2 = devm_platform_ioremap_resource(pdev, 1);		/* usbdrd.c:1118-1123 */
 	if (IS_ERR(d->reg_phy2))
 		return PTR_ERR(d->reg_phy2);
@@ -2331,7 +2378,22 @@ static int exynos8895_usbdrd_probe_extra(struct exynos5_usbdrd_phy *d,
 			return dev_err_probe(d->dev, PTR_ERR(d->vdd_dp), "vdd18-dp\n");
 		d->vdd_dp = NULL;
 	}
-	return 0;
+
+#ifdef CONFIG_ANDROID_VENDOR_HOOKS
+	/*
+	 * Registered once per PHY instance; the handler compares against phys[PIPE3].phy at
+	 * call time (the two struct phy are created after this hook runs).
+	 */
+	ret = register_trace_android_vh_dwc3_core_soft_reset(exynos8895_vh_dwc3_soft_reset, d);
+	if (ret)
+		return dev_err_probe(d->dev, ret, "dwc3 soft-reset hook\n");
+	ret = devm_add_action_or_reset(d->dev, exynos8895_unregister_vh, d);
+	if (ret)
+		return ret;
+#else
+	dev_warn(d->dev, "8895: no vendor hooks, PHY not re-tuned after soft-connect CSFTRST\n");
+#endif
+	return ret;
 }
 
 static void exynos5_usbdrd_gs101_pipe3_init(struct exynos5_usbdrd_phy *phy_drd)
