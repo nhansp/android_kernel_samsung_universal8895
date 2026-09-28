@@ -22,10 +22,12 @@
 #include <linux/pinctrl/consumer.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
+#include <linux/slab.h>
 
 #include <drm/display/drm_dsc.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_atomic_state_helper.h>
 #include <drm/drm_blend.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
@@ -286,6 +288,23 @@ struct d8895_plane {
 	unsigned int ch;
 };
 
+/*
+ * Plane state: the DECON window a plane is blended in. The stock composer
+ * names the window of every layer itself (WIN_CONFIG slot = window); an
+ * in-kernel client sets @win, plain DRM userspace gets a window derived from
+ * the normalized zpos (L6A REQ-L5-3).
+ */
+struct d8895_plane_state {
+	struct drm_plane_state base;
+	int win;		/* requested window 0..5, or -1: derive from zpos */
+	int hw_win;		/* window chosen by atomic_check, -1 when not visible */
+};
+
+static inline struct d8895_plane_state *to_d8895_pstate(struct drm_plane_state *st)
+{
+	return container_of(st, struct d8895_plane_state, base);
+}
+
 struct decon8895_ctx {
 	struct device *dev;
 	struct drm_device *drm;
@@ -312,6 +331,7 @@ struct decon8895_ctx {
 	bool vblank_on;
 	bool first_frame_done;
 	u32 ch_on;		/* channels initialised since the last enable */
+	u32 ch_used;		/* channels of the frame last started */
 	spinlock_t vblank_lock;
 
 	/* counters (heartbeat / debugfs) */
@@ -872,23 +892,91 @@ static void d8895_win_program(struct decon8895_ctx *ctx, unsigned int win, unsig
 
 /* ---- CRTC ops ------------------------------------------------------------ */
 
+/*
+ * Window of every visible plane (L6A REQ-L5-3). Explicit windows (set by an
+ * in-kernel client for all its planes) are taken as given; otherwise the
+ * planes are stacked bottom-up in normalized zpos order from window 0, the
+ * way the vendor composer numbers the windows of its layers (bottom layer =
+ * lowest window, SLSI:graphics/base/libhwc2/libresource/
+ * ExynosResourceManager.cpp:1220-1275), and G0, which the DECON only blends
+ * in window 5, the top one (S:.../dpu/decon_core.c:1312-1318 "IDMA_G0
+ * channel is dedicated to WIN5"), must be the top-most plane.
+ */
+static int d8895_assign_windows(struct decon8895_ctx *ctx, struct drm_crtc_state *cs)
+{
+	struct d8895_plane_state *vis[D8895_NR_CH];
+	struct drm_plane *plane;
+	unsigned int n = 0, n_explicit = 0, i, j, used = 0;
+	int ret;
+
+	ret = drm_atomic_add_affected_planes(cs->state, cs->crtc);
+	if (ret)
+		return ret;
+
+	drm_for_each_plane_mask(plane, ctx->drm, cs->plane_mask) {
+		struct drm_plane_state *st = drm_atomic_get_new_plane_state(cs->state, plane);
+		struct d8895_plane_state *ps;
+
+		if (!st)
+			return -EINVAL;
+		ps = to_d8895_pstate(st);
+		ps->hw_win = -1;
+		if (!st->visible || !st->fb)
+			continue;
+		vis[n++] = ps;
+		if (ps->win >= 0)
+			n_explicit++;
+	}
+
+	/* the DECON never starts without a window (decon_core.c:1714-1719) */
+	if (!n)
+		return -EINVAL;
+	if (n_explicit && n_explicit != n)
+		return -EINVAL;
+
+	/* bottom-up by normalized zpos */
+	for (i = 1; i < n; i++)
+		for (j = i; j > 0 && vis[j - 1]->base.normalized_zpos >
+				     vis[j]->base.normalized_zpos; j--)
+			swap(vis[j - 1], vis[j]);
+
+	for (i = 0, j = 0; i < n; i++) {
+		unsigned int ch = to_d8895_plane(vis[i]->base.plane)->ch;
+		int win;
+
+		if (n_explicit)
+			win = vis[i]->win;
+		else if (ch == D8895_CH_G0)
+			win = i == n - 1 ? D8895_WIN_G0 : -1;
+		else
+			win = j++;
+		if (win < 0 || win >= D8895_NR_WIN || (used & BIT(win)) ||
+		    (ch == D8895_CH_G0 && win != D8895_WIN_G0))
+			return -EINVAL;
+		used |= BIT(win);
+		vis[i]->hw_win = win;
+	}
+
+	return 0;
+}
+
 static int d8895_atomic_check(struct exynos_drm_crtc *crtc, struct drm_crtc_state *state)
 {
 	struct decon8895_ctx *ctx = crtc->ctx;
 	const struct drm_display_mode *m = &state->adjusted_mode;
 	const struct drm_dsc_config *dsc = crtc->dsc;
-	int ret;
 
 	if (!state->active)
 		return 0;
 
 	/*
-	 * The DECON must never start without a configured window (stock
-	 * refuses: S:.../dpu/decon_core.c:1714-1719, :717-719).
+	 * Any of the six planes starts the DECON, as the vendor driver starts
+	 * it with any configured window (decon_get_active_win_count(),
+	 * S:.../dpu/decon_core.c:2446-2471); only no window at all is refused
+	 * (L6A REQ-L5-9).
 	 */
-	ret = drm_atomic_helper_check_crtc_primary_plane(state);
-	if (ret)
-		return ret;
+	if (!state->plane_mask)
+		return -EINVAL;
 
 	/* the one configuration the encoders and the DSIM are programmed for */
 	if (!dsc || dsc->slice_count != 2 || !dsc->slice_height ||
@@ -899,7 +987,7 @@ static int d8895_atomic_check(struct exynos_drm_crtc *crtc, struct drm_crtc_stat
 		return -EINVAL;
 	}
 
-	return 0;
+	return d8895_assign_windows(ctx, state);
 }
 
 static void d8895_atomic_enable(struct exynos_drm_crtc *crtc)
@@ -1021,8 +1109,8 @@ static void d8895_atomic_flush(struct exynos_drm_crtc *crtc)
 	struct drm_crtc_state *cs = crtc->base.state;
 	struct drm_plane *plane;
 	unsigned long flags, aclk_khz;
-	u32 used_win = 0;
-	int win;
+	u32 used_win = 0, used_ch = 0;
+	int win, ch;
 
 	if (!ctx->rpm_held)
 		goto out_event;
@@ -1037,13 +1125,14 @@ static void d8895_atomic_flush(struct exynos_drm_crtc *crtc)
 		struct d8895_plane *dp = to_d8895_plane(plane);
 		struct drm_plane_state *st = plane->state;
 
-		if (!st->visible || !st->fb)
+		win = to_d8895_pstate(st)->hw_win;
+		if (!st->visible || !st->fb || win < 0)
 			continue;
-		win = D8895_WIN_G0;
 		d8895_dpp_init(ctx, dp->ch);
 		d8895_dpp_configure(ctx, dp->ch, st);
 		d8895_win_program(ctx, win, dp->ch, st);
 		used_win |= BIT(win);
+		used_ch |= BIT(dp->ch);
 
 		if (!ctx->first_frame_done) {
 			dma_addr_t a = exynos_drm_fb_dma_addr(st->fb, 0);
@@ -1057,6 +1146,17 @@ static void d8895_atomic_flush(struct exynos_drm_crtc *crtc)
 	for (win = 0; win < D8895_NR_WIN; win++)
 		if (!(used_win & BIT(win)))
 			d8895_win_disable(ctx, win);
+	/*
+	 * A channel whose window goes away in this update: mask its interrupts
+	 * (the vendor stops the DPPs the new frame no longer uses,
+	 * decon_dpp_stop(), S:.../dpu/decon_core.c:428-448). Its window is
+	 * disabled by the same shadow update, so the fetch of the frame on
+	 * screen is not disturbed.
+	 */
+	for (ch = 0; ch < D8895_NR_CH; ch++)
+		if ((ctx->ch_on & BIT(ch)) && !(used_ch & BIT(ch)))
+			d8895_dpp_deinit(ctx, ch, false);
+	ctx->ch_used = used_ch;
 
 	/* aclk_khz * (1000 / 60) * 2 ms (decon_core.c:1638-1652,1724-1731) */
 	aclk_khz = clk_get_rate(ctx->clks[0].clk) / 1000;
@@ -1163,19 +1263,60 @@ static const struct drm_plane_helper_funcs d8895_plane_helper_funcs = {
 	.atomic_check = d8895_plane_atomic_check,
 };
 
+static void d8895_plane_reset(struct drm_plane *plane)
+{
+	struct d8895_plane_state *ps;
+
+	if (plane->state) {
+		__drm_atomic_helper_plane_destroy_state(plane->state);
+		kfree(to_d8895_pstate(plane->state));
+		plane->state = NULL;
+	}
+	ps = kzalloc(sizeof(*ps), GFP_KERNEL);
+	if (!ps)
+		return;
+	__drm_atomic_helper_plane_reset(plane, &ps->base);
+	ps->win = -1;
+	ps->hw_win = -1;
+}
+
+static struct drm_plane_state *d8895_plane_duplicate_state(struct drm_plane *plane)
+{
+	struct d8895_plane_state *old = to_d8895_pstate(plane->state), *ps;
+
+	ps = kmemdup(old, sizeof(*ps), GFP_KERNEL);
+	if (!ps)
+		return NULL;
+	__drm_atomic_helper_plane_duplicate_state(plane, &ps->base);
+
+	return &ps->base;
+}
+
+static void d8895_plane_destroy_state(struct drm_plane *plane, struct drm_plane_state *st)
+{
+	__drm_atomic_helper_plane_destroy_state(st);
+	kfree(to_d8895_pstate(st));
+}
+
 static const struct drm_plane_funcs d8895_plane_funcs = {
 	.update_plane		= drm_atomic_helper_update_plane,
 	.disable_plane		= drm_atomic_helper_disable_plane,
 	.destroy		= drm_plane_cleanup,
-	.reset			= drm_atomic_helper_plane_reset,
-	.atomic_duplicate_state	= drm_atomic_helper_plane_duplicate_state,
-	.atomic_destroy_state	= drm_atomic_helper_plane_destroy_state,
+	.reset			= d8895_plane_reset,
+	.atomic_duplicate_state	= d8895_plane_duplicate_state,
+	.atomic_destroy_state	= d8895_plane_destroy_state,
 };
 
-static int d8895_plane_init(struct decon8895_ctx *ctx, unsigned int ch,
-			    enum drm_plane_type type)
+/*
+ * One plane per DPP channel, plane index = stock enum decon_idma_type
+ * (S:.../dpu/decon.h:309-318; L6A REQ-L5-1). G0 is the primary plane (the
+ * boot pairing with window 5); its default zpos puts it on top, where the
+ * window-5 rule of d8895_assign_windows() wants it.
+ */
+static int d8895_plane_init(struct decon8895_ctx *ctx, unsigned int ch)
 {
-	struct d8895_plane *p = &ctx->planes[ctx->nr_planes];
+	static const u8 zpos_default[D8895_NR_CH] = { 5, 0, 1, 2, 3, 4 };
+	struct d8895_plane *p = &ctx->planes[ch];
 	u32 formats[ARRAY_SIZE(d8895_rgb_formats)];
 	int i, ret;
 
@@ -1184,12 +1325,17 @@ static int d8895_plane_init(struct decon8895_ctx *ctx, unsigned int ch,
 
 	ret = drm_universal_plane_init(ctx->drm, &p->base, 1 << ctx->drm->mode_config.num_crtc,
 				       &d8895_plane_funcs, formats,
-				       ARRAY_SIZE(formats), NULL, type, "%s",
-				       d8895_ch[ch].name);
+				       ARRAY_SIZE(formats), NULL,
+				       ch == D8895_CH_G0 ? DRM_PLANE_TYPE_PRIMARY :
+							   DRM_PLANE_TYPE_OVERLAY,
+				       "%s", d8895_ch[ch].name);
 	if (ret)
 		return ret;
 	drm_plane_helper_add(&p->base, &d8895_plane_helper_funcs);
 	p->ch = ch;
+	ret = drm_plane_create_zpos_property(&p->base, zpos_default[ch], 0, D8895_NR_WIN - 1);
+	if (ret)
+		return ret;
 	ctx->nr_planes++;
 
 	return 0;
@@ -1334,15 +1480,17 @@ static int d8895_bind(struct device *dev, struct device *master, void *data)
 {
 	struct decon8895_ctx *ctx = dev_get_drvdata(dev);
 	struct drm_device *drm = data;
-	int ret;
+	int ch, ret;
 
 	ctx->drm = drm;
 
-	ret = d8895_plane_init(ctx, D8895_CH_G0, DRM_PLANE_TYPE_PRIMARY);
-	if (ret)
-		return ret;
+	for (ch = 0; ch < D8895_NR_CH; ch++) {
+		ret = d8895_plane_init(ctx, ch);
+		if (ret)
+			return ret;
+	}
 
-	ctx->crtc = exynos_drm_crtc_create(drm, &ctx->planes[0].base, EXYNOS_DISPLAY_TYPE_LCD,
+	ctx->crtc = exynos_drm_crtc_create(drm, &ctx->planes[D8895_CH_G0].base, EXYNOS_DISPLAY_TYPE_LCD,
 					   &d8895_crtc_ops, ctx);
 	if (IS_ERR(ctx->crtc))
 		return PTR_ERR(ctx->crtc);
@@ -1458,14 +1606,25 @@ static int d8895_probe(struct platform_device *pdev)
 	if (ret < 0)
 		goto err_put;
 	ctx->irq_extra = ret;
-	ret = d8895_get_irq(ctx, "g0_dma", d8895_dma_irq, false);
-	if (ret < 0)
-		goto err_put;
-	ctx->irq_dma[D8895_CH_G0] = ret;
-	ret = d8895_get_irq(ctx, "g0_dpp", d8895_dpp_irq, false);
-	if (ret < 0)
-		goto err_put;
-	ctx->irq_dpp[D8895_CH_G0] = ret;
+	/*
+	 * "<ch>_dma" and "<ch>_dpp" of every channel (vendor order dma, dpp:
+	 * S:.../dpu/dpp_drv.c:1033-1065); G0's are required, a channel without
+	 * its interrupts in the DT still scans out, its errors are not counted.
+	 */
+	for (i = 0; i < D8895_NR_CH; i++) {
+		char name[16];
+
+		snprintf(name, sizeof(name), "%s_dma", d8895_ch[i].name);
+		ret = d8895_get_irq(ctx, name, d8895_dma_irq, i != D8895_CH_G0);
+		if (ret < 0)
+			goto err_put;
+		ctx->irq_dma[i] = ret;
+		snprintf(name, sizeof(name), "%s_dpp", d8895_ch[i].name);
+		ret = d8895_get_irq(ctx, name, d8895_dpp_irq, i != D8895_CH_G0);
+		if (ret < 0)
+			goto err_put;
+		ctx->irq_dpp[i] = ret;
+	}
 
 	/* 6. component */
 	ret = component_add(dev, &d8895_component_ops);
