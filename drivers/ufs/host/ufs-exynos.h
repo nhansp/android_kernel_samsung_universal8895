@@ -132,6 +132,17 @@ struct exynos_ufs;
 #define PCLK_AVAIL_MIN	70000000
 #define PCLK_AVAIL_MAX	267000000
 
+/*
+ * Sanity window for EXYNOS_UFS_OPT_UNIPRO_PCLK, where the pclk window above does
+ * not apply: every PCS period and the 1 us counter divide by this rate, so a 0
+ * or oscclk rate must fail the probe instead of dividing by zero later. Not a
+ * stock constant: it brackets the Exynos 8895 UFS_EMBD LUT rate 177.667 MHz
+ * (S:drivers/soc/samsung/cal-if/exynos8895/cmucal-vclk.c:2653-2654) and the
+ * shared4_div2 / 2 rate S-Boot selects (166.5625 MHz, PLL_SHARED4 666.25 MHz).
+ */
+#define UNIPRO_PCLK_MIN	100000000
+#define UNIPRO_PCLK_MAX	200000000
+
 struct exynos_ufs_uic_attr {
 	/* TX Attributes */
 	unsigned int tx_trailingclks;
@@ -245,6 +256,8 @@ struct exynos_ufs {
 #define EXYNOS_UFS_OPT_SKIP_CONFIG_PHY_ATTR	BIT(5)
 #define EXYNOS_UFS_OPT_UFSPR_SECURE		BIT(6)
 #define EXYNOS_UFS_OPT_TIMER_TICK_SELECT	BIT(7)
+#define EXYNOS_UFS_OPT_UNIPRO_PCLK		BIT(8)	/* PCS/UniPro APB clock = sclk_unipro_main,
+							 * S:drivers/scsi/ufs/ufs-exynos.c:1478-1481 */
 };
 
 #define for_each_ufs_rx_lane(ufs, i) \
