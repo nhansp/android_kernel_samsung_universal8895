@@ -11,6 +11,8 @@
 #include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
+#include <linux/gpio/consumer.h>
+#include <linux/i2c.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -190,6 +192,81 @@
 #define HSPHYPLLTUNE_PLL_B_TUNE			BIT(6)
 #define HSPHYPLLTUNE_PLL_I_TUNE			GENMASK(5, 4)
 #define HSPHYPLLTUNE_PLL_P_TUNE			GENMASK(3, 0)
+
+/*
+ * Exynos8895: USBCON VER_01_1_1 "KC" (S:drivers/phy/phy-samsung-usb-cal.h:24), programmed as
+ * the stock CAL does it. Short citation forms used below: cal.c = S:drivers/phy/
+ * phy-samsung-usb3-cal.c, cal.h = S:drivers/phy/phy-samsung-usb3-cal.h, usbdrd.c =
+ * S:drivers/phy/phy-exynos-usbdrd.c. Offsets are relative to the window base AFTER the
+ * conditional +4 version shift (cal.c:855-869, see exynos8895_cal_enable()).
+ */
+#define EXYNOS8895_LINKSYSTEM_LINK_SW_RESET	BIT(28)		/* cal.h:8 */
+#define EXYNOS8895_PHYPIPE_PHY_CLOCK_SEL	BIT(4)		/* cal.h:31; "1 : FREE CLOCK" cal.c:669 */
+#define EXYNOS8895_PHYCLKRST_FSEL		GENMASK(10, 5)	/* cal.h:45 */
+#define EXYNOS8895_PHYRESUME_DIS_LINKGATE_QACT	BIT(13)		/* cal.h:139 */
+#define EXYNOS8895_PHYRESUME_DIS_ID0_QACT	BIT(12)		/* cal.h:140 */
+#define EXYNOS8895_PHYRESUME_DIS_VBUSVALID_QACT	BIT(11)		/* cal.h:141 */
+#define EXYNOS8895_PHYRESUME_DIS_BVALID_QACT	BIT(10)		/* cal.h:142 */
+#define EXYNOS8895_PHYRESUME_FORCE_QACT		BIT(9)		/* cal.h:143 */
+#define EXYNOS8895_PHYRESUME_DIS_QACT_ALL	(EXYNOS8895_PHYRESUME_DIS_LINKGATE_QACT | \
+						 EXYNOS8895_PHYRESUME_DIS_ID0_QACT | \
+						 EXYNOS8895_PHYRESUME_DIS_VBUSVALID_QACT | \
+						 EXYNOS8895_PHYRESUME_DIS_BVALID_QACT)	/* cal.c:813-816 */
+#define EXYNOS8895_DRD_PHYSELECTION		0x6c		/* cal.h:203 */
+#define EXYNOS8895_PHYSEL_PIPE_CLK		BIT(3)		/* cal.h:206 */
+#define EXYNOS8895_PHYSEL_PIPE			BIT(1)		/* cal.h:208 */
+#define EXYNOS8895_REFCLK_CTRL			0x0c		/* FDT:7902 offset in the 0x10e50070 block */
+#define EXYNOS8895_REFCLK_CTRL_SEL		BIT(24)		/* FDT:7903-7904 mask = value = 0x1000000 */
+
+/* 26 MHz CLKCORE reference: cal.c:913-918, 600-615; refclk 0x82 = USBPHY_REFCLK_DIFF_26MHZ */
+#define EXYNOS8895_REFCLKSEL_CLKCORE		0x2		/* USBPHY_REFSEL_CLKCORE, S:drivers/phy/phy-samsung-usb-cal.h:77 */
+#define EXYNOS8895_FSEL_26M			0x02		/* 0x82 & 0x3f: S:drivers/phy/phy-exynos-usbdrd.h:27, cal.c:918 */
+#define EXYNOS8895_MPLL_MULT_26M		0x60		/* cal.c:603 */
+/*
+ * cal.c:613 shifts the 9-bit value 0x108 into the 8-bit SSC_REFCLKSEL field at bit 23, so
+ * bit 8 of it lands on bit 31 (EN_UTMISUSPEND). Reproduced with a raw shift, never with
+ * FIELD_PREP() (which would reject 0x108).
+ */
+#define EXYNOS8895_SSC_REFCLKSEL_26M		0x108
+/* PHYCLKRST as cal.c:906-948 writes it after PORTRESET release: every field is set by the code */
+#define EXYNOS8895_PHYCLKRST_EXPECT		0x841b0058
+#define EXYNOS8895_REFCLK_RATE			26000000	/* OSCCLK: S:drivers/clk/samsung/clk-exynos8895.c:34 */
+
+/* Device-mode HS tune: usbdrd.c:396-411 defaults with the :422-431 device overrides (FDT:7896) */
+#define EXYNOS8895_HS_TXVREF			0xc		/* usbdrd.c:426 */
+#define EXYNOS8895_HS_TXRISE			0x1		/* usbdrd.c:402 */
+#define EXYNOS8895_HS_TXRES			0x3		/* usbdrd.c:428 */
+#define EXYNOS8895_HS_TXPREEMPAMP		0x3		/* usbdrd.c:427 */
+#define EXYNOS8895_HS_TXHSXV			0x3		/* usbdrd.c:403 */
+#define EXYNOS8895_HS_TXFSLS			0x3		/* usbdrd.c:404 */
+#define EXYNOS8895_HS_SQRX			0x4		/* usbdrd.c:429 */
+#define EXYNOS8895_HS_OTG			0x3		/* usbdrd.c:407 */
+#define EXYNOS8895_HS_COMPDIS			0x2		/* usbdrd.c:406 */
+/* SS tune: usbdrd.c:513-529 defaults with the :464-471 device overrides; set_crport_level_en = 1 (:528) */
+#define EXYNOS8895_SS_TX_VBOOST			0x6		/* usbdrd.c:468 */
+#define EXYNOS8895_SS_LOS_BIAS			0x5		/* usbdrd.c:524 */
+#define EXYNOS8895_SS_LOS_MASK			0x104		/* usbdrd.c:525 */
+#define EXYNOS8895_SS_DEEMPH_3P5DB		0x16		/* usbdrd.c:469 */
+#define EXYNOS8895_SS_SWING_FULL		0x7f		/* usbdrd.c:517 */
+/* SS CR-port registers and values of the stock late enable, cal.c:1027-1060 */
+#define EXYNOS8895_CR_LANE0_TX_DEBUG		0x1010		/* value 0x80, cal.c:1037 */
+#define EXYNOS8895_CR_TX_OVRD_DRV_LO		0x1002		/* 0x4000 | deemph << 7 | swing, cal.c:1040-1043 */
+#define EXYNOS8895_CR_LOSLEVEL_OVRD_IN		0x0015		/* value 0xa409, cal.c:1056-1057 */
+#define EXYNOS8895_CR_TX_VBOOSTLVL_OVRD		0x0012		/* vboost << 13, cal.c:1059-1060 */
+/*
+ * greatlte: the MAX77865 MUIC's analog switch sits between the connector D+/D- and this PHY.
+ * Stock connects it from its MUIC driver on every USB attach (S:drivers/muic/universal/
+ * muic_apis.c:323-334 switch_to_ap_usb -> :235-245 com_to_usb_ap) and opens it on detach and
+ * at every shutdown (S:drivers/muic/universal/muic_task_max77865.c:642-643). muic_regmap =
+ * S:drivers/muic/universal/muic_regmap_max77865.c.
+ */
+#define EXYNOS8895_MUIC_ADDR			0x25	/* S:drivers/mfd/max77865.c:45 (0x4A >> 1) */
+#define EXYNOS8895_MUIC_CONTROL1		0x19	/* muic_regmap:80 REG_CONTROL1 */
+/* COM_VALUE(dm, open, comp) = dm << 3 | dm | open << 6 | comp << 7, muic_regmap:236-237 */
+#define EXYNOS8895_MUIC_COM_USB_AP		0x89	/* _COM_USB_AP, _D_USB = 1: muic_regmap:228,244 */
+#define EXYNOS8895_MUIC_COM_OPEN		0x80	/* _COM_OPEN(_WITH_V_BUS), muic_regmap:239-240 */
+#define EXYNOS8895_MUIC_RETRIES			6	/* S:drivers/muic/universal/muic_i2c.c:112 */
+#define EXYNOS8895_MUIC_RETRY_MS		100	/* muic_i2c.c:117 */
 
 /* Exynos850: USB DRD PHY registers */
 #define EXYNOS850_DRD_LINKCTRL			0x04
@@ -457,6 +534,20 @@ struct exynos5_usbdrd_phy_drvdata {
  * @regulators: regulators for phy
  * @sw: TypeC orientation switch handle
  * @orientation: TypeC connector orientation - normal or flipped
+ * @reg_phy2: Exynos8895 second PHY window (stock regs_base_2nd)
+ * @reg_refclk: Exynos8895 reference-clock select block
+ * @cal_base: Exynos8895 window bases after the CAL version shift
+ * @port_gpio: Exynos8895 Type-C orientation input
+ * @vdd_dp: Exynos8895 optional 1.8 V DP/PHY rail
+ * @cal_ver: Exynos8895 offset-0 words of both windows, read at the first init
+ * @cal_probed: Exynos8895 CAL version probed (stock hw_version != 0)
+ * @cal_zero: Exynos8895 offset 0 of window 0 read 0 (no shift, stock port -1)
+ * @cal_port: Exynos8895 port in use: 0, 1 (flipped) or -1 (stock used_phy_port)
+ * @muic_adap: Exynos8895 greatlte MUIC I2C bus (samsung,muic-i2c-bus), or NULL
+ * @muic_before: Exynos8895 MUIC CONTROL1 read before the last switch write, or -errno
+ * @muic_after: Exynos8895 MUIC CONTROL1 read back after it, or -errno
+ * @cr_timeouts: Exynos8895 CR-port handshake timeouts
+ * @init_count: Exynos8895 number of .init calls
  */
 struct exynos5_usbdrd_phy {
 	struct device *dev;
@@ -480,6 +571,22 @@ struct exynos5_usbdrd_phy {
 
 	struct typec_switch_dev *sw;
 	enum typec_orientation orientation;
+
+	/* Exynos8895 CAL state (S:drivers/phy/phy-samsung-usb-cal.h:186-222 exynos_usbphy_info) */
+	void __iomem *reg_phy2;
+	void __iomem *reg_refclk;
+	void __iomem *cal_base[2];
+	struct gpio_desc *port_gpio;
+	struct regulator *vdd_dp;
+	u32 cal_ver[2];
+	bool cal_probed;
+	bool cal_zero;
+	int cal_port;
+	struct i2c_adapter *muic_adap;
+	int muic_before;
+	int muic_after;
+	unsigned int cr_timeouts;
+	unsigned int init_count;
 };
 
 static inline
@@ -1638,6 +1745,595 @@ static const struct phy_ops exynos850_usbdrd_phy_ops = {
 	.owner		= THIS_MODULE,
 };
 
+/*
+ * Exynos8895 (spec/L3_usb.md 3.D, 5.1): the stock CAL sequence on the exynos5
+ * register layout, window 0 plus the second PHY window of the flipped Type-C port.
+ */
+enum { E8895_CR_ADDR, E8895_CR_READ, E8895_CR_WRITE };
+
+static void __iomem *exynos8895_port_base(struct exynos5_usbdrd_phy *d)
+{
+	return d->cal_port == 1 ? d->cal_base[1] : d->cal_base[0];	/* cal.c:60-67 */
+}
+
+/*
+ * CR-port access, cal.c:51-132: read-modify-write of PHYREG0 that keeps bits 31:20, the
+ * port's own window, 100 x 1 us handshake per edge, 5 us after each edge and 50 us after
+ * each phase. Stock tests "!usec" after "usec-- > 0" (cal.c:110-124), which can never be
+ * true; the timeout is tested here and counted.
+ */
+static u16 exynos8895_cr_access(struct exynos5_usbdrd_phy *d, int op, u16 data)
+{
+	void __iomem *base = exynos8895_port_base(d);
+	int phase, nphase = op == E8895_CR_ADDR ? 1 : 2, hs, us;
+	u32 r0, r1 = 0, trig;
+
+	r0 = readl(base + EXYNOS5_DRD_PHYREG0);
+	r0 &= ~0xfffff;					/* cal.c:70-72: clear [19:0] only */
+	writel(r0, base + EXYNOS5_DRD_PHYREG0);
+	r0 &= ~PHYREG0_CR_DATA_IN;
+	r0 |= FIELD_PREP(PHYREG0_CR_DATA_IN, data);	/* cal.c:75-77 */
+	writel(r0, base + EXYNOS5_DRD_PHYREG0);
+
+	for (phase = 0; phase < nphase; phase++) {
+		if (op == E8895_CR_ADDR)
+			trig = PHYREG0_CR_CAP_ADDR;
+		else if (phase == 0)
+			trig = PHYREG0_CR_CAP_DATA;
+		else
+			trig = op == E8895_CR_READ ? PHYREG0_CR_READ : PHYREG0_CR_WRITE;
+		for (hs = 2; hs > 0; hs--) {		/* cal.c:100-128 */
+			bool ack_wanted = hs == 2;	/* trigger raised: wait for ack, then for its release */
+
+			if (ack_wanted)
+				r0 |= trig;
+			else
+				r0 &= ~trig;
+			writel(r0, base + EXYNOS5_DRD_PHYREG0);
+			for (us = 100; us >= 0; us--) {
+				r1 = readl(base + EXYNOS5_DRD_PHYREG1);
+				if (!!(r1 & PHYREG1_CR_ACK) == ack_wanted)
+					break;
+				udelay(1);
+			}
+			if (us < 0) {
+				d->cr_timeouts++;
+				dev_err(d->dev, "CRPORT handshake timeout1 (0x%08x)\n", r0);
+			}
+			udelay(5);
+		}
+		udelay(50);
+	}
+	return FIELD_GET(PHYREG0_CR_DATA_OUT, r1);	/* cal.c:131 */
+}
+
+static void exynos8895_cr_write(struct exynos5_usbdrd_phy *d, u16 addr, u16 val)
+{
+	exynos8895_cr_access(d, E8895_CR_ADDR, addr);
+	exynos8895_cr_access(d, E8895_CR_WRITE, val);
+}
+
+static u16 exynos8895_cr_read(struct exynos5_usbdrd_phy *d, u16 addr)
+{
+	exynos8895_cr_access(d, E8895_CR_ADDR, addr);
+	return exynos8895_cr_access(d, E8895_CR_READ, 0);
+}
+
+/* CR read-modify-write: (CR[addr] & ~clr) | set */
+static void exynos8895_cr_rmw(struct exynos5_usbdrd_phy *d, u16 addr, u16 clr, u16 set)
+{
+	exynos8895_cr_write(d, addr, (exynos8895_cr_read(d, addr) & ~clr) | set);
+}
+
+/* Q-channel force on/off, cal.c:806-843 */
+static void exynos8895_q_ch(void __iomem *base, bool enable)
+{
+	u32 r;
+
+	if (enable) {
+		r = readl(base + EXYNOS5_DRD_PHYRESUME);
+		r |= EXYNOS8895_PHYRESUME_DIS_QACT_ALL;		/* :813-816; BIT(14) left alone, :817 */
+		r &= ~EXYNOS8895_PHYRESUME_FORCE_QACT;		/* :818 */
+		udelay(500);
+		writel(r, base + EXYNOS5_DRD_PHYRESUME);
+		udelay(500);
+		r = readl(base + EXYNOS5_DRD_PHYRESUME);
+		r |= EXYNOS8895_PHYRESUME_FORCE_QACT;		/* :823 */
+		udelay(500);
+		writel(r, base + EXYNOS5_DRD_PHYRESUME);
+
+		r = readl(base + EXYNOS5_DRD_LINKSYSTEM);	/* :827-832 */
+		writel(r | EXYNOS8895_LINKSYSTEM_LINK_SW_RESET, base + EXYNOS5_DRD_LINKSYSTEM);
+		udelay(10);
+		writel(r & ~EXYNOS8895_LINKSYSTEM_LINK_SW_RESET, base + EXYNOS5_DRD_LINKSYSTEM);
+	} else {
+		r = readl(base + EXYNOS5_DRD_PHYRESUME);
+		r &= ~EXYNOS8895_PHYRESUME_FORCE_QACT;		/* :835 */
+		r |= EXYNOS8895_PHYRESUME_DIS_QACT_ALL;		/* :836-839 */
+		writel(r, base + EXYNOS5_DRD_PHYRESUME);
+	}
+}
+
+/* SS block of one window, cal.c:541-678 (version 0x0111, refclk DIFF_26MHZ, ss_tune present) */
+static void exynos8895_ss_enable(struct exynos5_usbdrd_phy *d, u32 *clkrst, int port)
+{
+	void __iomem *base = d->cal_base[port];
+	u32 c = *clkrst, v, reg0;
+
+	c &= ~PHYCLKRST_COMMONONN;			/* :565-566, common block kept on */
+	c &= ~PHYCLKRST_EN_UTMISUSPEND;			/* :569 */
+	c |= PHYCLKRST_RETENABLEN;			/* :572 */
+	c |= PHYCLKRST_REF_SSP_EN;			/* :575 */
+
+	v = readl(d->cal_base[0] + EXYNOS5_DRD_PHYPARAM0);	/* :577 reads window 0 */
+	v &= ~PHYPARAM0_REF_USE_PAD;			/* :581, refsel CLKCORE is not DIFF_PAD */
+	writel(v, base + EXYNOS5_DRD_PHYPARAM0);	/* :582 writes the port's window */
+
+	reg0 = readl(base + EXYNOS5_DRD_PHYREG0);	/* :584-585 */
+
+	c &= ~PHYCLKRST_MPLL_MULTIPLIER;
+	c |= FIELD_PREP(PHYCLKRST_MPLL_MULTIPLIER, EXYNOS8895_MPLL_MULT_26M);	/* :602-603 */
+	c &= ~PHYCLKRST_REF_CLKDIV2;			/* :607, 0x82 & 0x40 == 0 */
+	c &= ~PHYCLKRST_SSC_REFCLKSEL;			/* :612 */
+	c |= (u32)EXYNOS8895_SSC_REFCLKSEL_26M << 23;	/* :613, raw shift: also sets bit 31 */
+
+	c |= PHYCLKRST_SSC_EN;				/* :645-646, enable_ssc = 1 (usbdrd.c:522) */
+	c &= ~PHYCLKRST_SSC_RANGE;			/* :651-652, ssc_range = 0 (usbdrd.c:523) */
+
+	v = readl(base + EXYNOS5_DRD_PHYPIPE);
+	v |= EXYNOS8895_PHYPIPE_PHY_CLOCK_SEL;		/* :670-672 */
+	writel(v, base + EXYNOS5_DRD_PHYPIPE);
+
+	writel(reg0, base + EXYNOS5_DRD_PHYREG0);	/* :674-675, unchanged write-back */
+	*clkrst = c;
+}
+
+/* Power-up of the used port and power-down of the unused one, cal.c:680-748 (USB_MUX_UTMI_ENABLE unset, :42) */
+static void exynos8895_ss_power_down(struct exynos5_usbdrd_phy *d, bool en)
+{
+	void __iomem *b0 = d->cal_base[0], *b1 = d->cal_base[1];
+	u32 t0, t1, u;
+
+	t0 = readl(b0 + EXYNOS5_DRD_PHYTEST);
+	if (en) {
+		t0 &= ~(PHYTEST_POWERDOWN_HSP | PHYTEST_POWERDOWN_SSP);
+		writel(t0, b0 + EXYNOS5_DRD_PHYTEST);			/* :687-689 */
+		t1 = readl(b1 + EXYNOS5_DRD_PHYTEST);
+		t1 &= ~(PHYTEST_POWERDOWN_HSP | PHYTEST_POWERDOWN_SSP);
+		writel(t1, b1 + EXYNOS5_DRD_PHYTEST);			/* :691-695, version 0x0111 */
+		udelay(1000);						/* :697 */
+		if (d->cal_port == 0) {
+			t1 |= PHYTEST_POWERDOWN_SSP | PHYTEST_POWERDOWN_HSP;
+			writel(t1, b1 + EXYNOS5_DRD_PHYTEST);		/* :717-720 */
+		} else {						/* port 1 or -1 */
+			t0 |= PHYTEST_POWERDOWN_SSP;
+			writel(t0, b0 + EXYNOS5_DRD_PHYTEST);		/* :722-723 */
+			t1 |= PHYTEST_POWERDOWN_HSP;
+			writel(t1, b1 + EXYNOS5_DRD_PHYTEST);		/* :724-725 */
+		}
+		u = readl(b1 + EXYNOS5_DRD_PHYUTMI);			/* :729-732 "force suspend phy1 hs" */
+		u |= PHYUTMI_FORCESLEEP | PHYUTMI_FORCESUSPEND;
+		writel(u, b1 + EXYNOS5_DRD_PHYUTMI);
+	} else {
+		t0 |= PHYTEST_POWERDOWN_HSP | PHYTEST_POWERDOWN_SSP;
+		writel(t0, b0 + EXYNOS5_DRD_PHYTEST);			/* :736-738 */
+		if (d->cal_port == 1) {
+			t1 = readl(b1 + EXYNOS5_DRD_PHYTEST);
+			t1 |= PHYTEST_POWERDOWN_HSP | PHYTEST_POWERDOWN_SSP;
+			writel(t1, b1 + EXYNOS5_DRD_PHYTEST);		/* :739-746 */
+		}
+	}
+}
+
+/*
+ * greatlte MUIC switch: stock regmap_write_value() with _ATTR_OVERWRITE_M (S:drivers/muic/
+ * universal/muic_regmap.c:162-172 -> :63-95): read CONTROL1, and only if it differs write it and
+ * read it back, retrying the write up to 6 times 100 ms apart (muic_i2c_guaranteed_wbyte,
+ * S:drivers/muic/universal/muic_i2c.c:99-121). Plain SMBus transfers on the adapter, no client
+ * at 0x25 (spec/L6F_power_input_misc.md REQ-L3-1). A failure is logged, never fatal: stock
+ * carries on with the PHY too (muic_apis.c:238-241 only prints).
+ */
+static void exynos8895_muic_switch(struct exynos5_usbdrd_phy *d, u8 val)
+{
+#if IS_REACHABLE(CONFIG_I2C)
+	union i2c_smbus_data data;
+	int ret, tries = 0;
+
+	if (!d->muic_adap)
+		return;
+	ret = i2c_smbus_xfer(d->muic_adap, EXYNOS8895_MUIC_ADDR, 0, I2C_SMBUS_READ,
+			     EXYNOS8895_MUIC_CONTROL1, I2C_SMBUS_BYTE_DATA, &data);
+	d->muic_before = ret ? ret : data.byte;
+	if (!ret && data.byte == val) {
+		d->muic_after = val;
+		return;
+	}
+	for (;;) {
+		data.byte = val;
+		ret = i2c_smbus_xfer(d->muic_adap, EXYNOS8895_MUIC_ADDR, 0, I2C_SMBUS_WRITE,
+				     EXYNOS8895_MUIC_CONTROL1, I2C_SMBUS_BYTE_DATA, &data);
+		if (!ret)
+			ret = i2c_smbus_xfer(d->muic_adap, EXYNOS8895_MUIC_ADDR, 0, I2C_SMBUS_READ,
+					     EXYNOS8895_MUIC_CONTROL1, I2C_SMBUS_BYTE_DATA, &data);
+		d->muic_after = ret ? ret : data.byte;
+		if (!ret && data.byte == val)
+			break;
+		if (tries++ >= EXYNOS8895_MUIC_RETRIES) {
+			dev_err(d->dev, "8895: MUIC CONTROL1 write 0x%02x failed (%d)\n", val,
+				d->muic_after);
+			return;
+		}
+		msleep(EXYNOS8895_MUIC_RETRY_MS);
+	}
+	dev_info(d->dev, "8895: MUIC CONTROL1 %d -> 0x%02x (%d retries)\n", d->muic_before, val,
+		 tries);
+#endif
+}
+
+#if IS_REACHABLE(CONFIG_I2C)
+static void exynos8895_muic_put(void *data)
+{
+	i2c_put_adapter(data);
+}
+#endif
+
+/*
+ * Optional greatlte MUIC bus. Returns NULL (no property), the adapter, or an ERR_PTR:
+ * -EPROBE_DEFER until the adapter is registered, so .init can always switch D+/D-.
+ */
+static struct i2c_adapter *exynos8895_muic_get(struct exynos5_usbdrd_phy *d)
+{
+	struct device_node *np;
+	struct i2c_adapter *adap = NULL;
+
+	d->muic_before = -ENODEV;
+	d->muic_after = -ENODEV;
+	np = of_parse_phandle(d->dev->of_node, "samsung,muic-i2c-bus", 0);
+	if (!np)
+		return NULL;
+#if IS_REACHABLE(CONFIG_I2C)
+	adap = of_get_i2c_adapter_by_node(np);
+	of_node_put(np);
+	if (!adap)
+		return ERR_PTR(dev_err_probe(d->dev, -EPROBE_DEFER, "MUIC I2C bus not ready\n"));
+	if (devm_add_action_or_reset(d->dev, exynos8895_muic_put, adap))
+		return ERR_PTR(-ENOMEM);
+#else
+	of_node_put(np);
+	dev_warn(d->dev, "8895: samsung,muic-i2c-bus ignored, no I2C support\n");
+#endif
+	return adap;
+}
+
+/* CAL enable = stock exynos_usbdrd_pipe3_init (usbdrd.c:757-783) + samsung_exynos_cal_usb3phy_enable (cal.c:845-1025) */
+static void exynos8895_cal_enable(struct exynos5_usbdrd_phy *d)
+{
+	bool first = !d->cal_probed;
+	void __iomem *b0, *qbase;
+	u32 v, c;
+
+	/*
+	 * Orientation, usbdrd.c:767-770 "used_phy_port = !gpio_get_value(...)"; the DT flags
+	 * the GPIO active-low, so the logical value is the port. Stock reads it at every
+	 * attach; here .init runs once per dwc3_core_init (probe and system resume).
+	 */
+	d->cal_port = d->port_gpio ? gpiod_get_value(d->port_gpio) : 0;
+	if (d->cal_port < 0)
+		d->cal_port = 0;
+	d->init_count++;
+	dev_info(d->dev, "8895: init #%u port=%d gpio=%d\n", d->init_count, d->cal_port,
+		 d->port_gpio ? gpiod_get_raw_value(d->port_gpio) : -1);
+
+	/* Reference-clock select, usbdrd.c:603-617 (called at :775) */
+	v = readl(d->reg_refclk + EXYNOS8895_REFCLK_CTRL);
+	v = (v & ~EXYNOS8895_REFCLK_CTRL_SEL) | EXYNOS8895_REFCLK_CTRL_SEL;
+	writel(v, d->reg_refclk + EXYNOS8895_REFCLK_CTRL);
+
+	/* Version probe and the conditional +4 shift of BOTH windows, cal.c:855-869, first init only */
+	if (first) {
+		d->cal_ver[0] = readl(d->reg_phy);
+		d->cal_ver[1] = readl(d->reg_phy2);	/* diagnostic, stock never reads it */
+		d->cal_probed = true;
+		if (!d->cal_ver[0]) {
+			d->cal_zero = true;
+			d->cal_port = -1;			/* cal.c:860 */
+		} else {
+			d->cal_base[0] = d->reg_phy + 4;	/* cal.c:863 */
+			d->cal_base[1] = d->reg_phy2 + 4;	/* cal.c:866-867 */
+		}
+		dev_info(d->dev, "8895: ver0=0x%08x ver1=0x%08x shift=%d port=%d\n",
+			 d->cal_ver[0], d->cal_ver[1], !d->cal_zero, d->cal_port);
+	}
+	b0 = d->cal_base[0];
+
+	/* Q-channel force, cal.c:871-877: (0x0111 & 0xf) >= 1 */
+	qbase = d->cal_port == 1 ? d->cal_base[1] : b0;
+	exynos8895_q_ch(qbase, true);
+
+	/* PHY mux, cal.c:879-904 */
+	if (d->cal_port != -1) {
+		v = readl(b0 + EXYNOS8895_DRD_PHYSELECTION);
+		if (d->cal_port == 0)
+			v &= ~(EXYNOS8895_PHYSEL_PIPE | EXYNOS8895_PHYSEL_PIPE_CLK);
+		else
+			v |= EXYNOS8895_PHYSEL_PIPE | EXYNOS8895_PHYSEL_PIPE_CLK;
+		writel(v, b0 + EXYNOS8895_DRD_PHYSELECTION);
+	}
+
+	/* PHYCLKRST, cal.c:906-948 */
+	c = readl(b0 + EXYNOS5_DRD_PHYCLKRST);
+	c |= PHYCLKRST_PORTRESET;
+	c &= ~PHYCLKRST_REFCLKSEL;
+	c |= FIELD_PREP(PHYCLKRST_REFCLKSEL, EXYNOS8895_REFCLKSEL_CLKCORE);
+	c &= ~EXYNOS8895_PHYCLKRST_FSEL;
+	c |= FIELD_PREP(EXYNOS8895_PHYCLKRST_FSEL, EXYNOS8895_FSEL_26M);
+	exynos8895_ss_enable(d, &c, 0);				/* :923 */
+	if (d->cal_port == 1) {					/* :925-939 */
+		exynos8895_ss_enable(d, &c, 1);
+		writel(c, d->cal_base[1] + EXYNOS5_DRD_PHYCLKRST);
+		udelay(10);
+		c &= ~PHYCLKRST_PORTRESET;
+		writel(c, d->cal_base[1] + EXYNOS5_DRD_PHYCLKRST);
+		c |= PHYCLKRST_PORTRESET;
+	}
+	writel(c, b0 + EXYNOS5_DRD_PHYCLKRST);			/* :944 */
+	udelay(10);
+	c &= ~PHYCLKRST_PORTRESET;
+	writel(c, b0 + EXYNOS5_DRD_PHYCLKRST);			/* :947-948 */
+	/* the value WRITTEN is the check; stock never reads PHYCLKRST back */
+	if (c != EXYNOS8895_PHYCLKRST_EXPECT)
+		dev_warn(d->dev, "8895: PHYCLKRST 0x%08x != 0x%08x\n", c,
+			 EXYNOS8895_PHYCLKRST_EXPECT);
+
+	/* cal.c:950-957 */
+	exynos8895_ss_power_down(d, true);
+	udelay(500);
+
+	/* UTMI and VBUS force, cal.c:959-992 (not_used_vbus_pad: FDT:7886) */
+	v = readl(b0 + EXYNOS5_DRD_PHYUTMI);
+	v &= ~(PHYUTMI_FORCESLEEP | PHYUTMI_FORCESUSPEND | PHYUTMI_DMPULLDOWN | PHYUTMI_DPPULLDOWN);
+	c = readl(b0 + EXYNOS5_DRD_LINKSYSTEM);
+	c |= LINKSYSTEM_FORCE_BVALID | LINKSYSTEM_FORCE_VBUSVALID;
+	writel(c, b0 + EXYNOS5_DRD_LINKSYSTEM);			/* :972-975 */
+	v |= PHYUTMI_VBUSVLDEXTSEL | PHYUTMI_VBUSVLDEXT;	/* :985-986 */
+	v &= ~PHYUTMI_DRVVBUS;					/* :990 */
+	v |= PHYUTMI_OTGDISABLE;				/* :991 */
+	writel(v, b0 + EXYNOS5_DRD_PHYUTMI);			/* :992 */
+
+	/* Over-current select, cal.c:1000-1010 (use_io_for_ovc = false, usbdrd.c:643) */
+	v = readl(b0 + EXYNOS5_DRD_LINKPORT);
+	v |= LINKPORT_HOST_PORT_OVCR_U3_SEL | LINKPORT_HOST_PORT_OVCR_U2_SEL;
+	v &= ~LINKPORT_HOST_U3_PORT_DISABLE;
+	writel(v, b0 + EXYNOS5_DRD_LINKPORT);
+
+	dev_info(d->dev, "8895: init done clkrst=0x%08x utmi=0x%08x linksys=0x%08x resume=0x%08x\n",
+		 readl(b0 + EXYNOS5_DRD_PHYCLKRST), readl(b0 + EXYNOS5_DRD_PHYUTMI),
+		 readl(b0 + EXYNOS5_DRD_LINKSYSTEM), readl(qbase + EXYNOS5_DRD_PHYRESUME));
+}
+
+/*
+ * Flipped cable only: stock samsung_exynos_cal_usb3phy_dp_altmode_set_ss_disable(info, 0)
+ * (cal.c:1075-1077 -> :365-450) stops the SS lane of window 0, through window 0's CR port.
+ */
+static void exynos8895_dp_altmode_ss_disable_port0(struct exynos5_usbdrd_phy *d)
+{
+	int port = d->cal_port;
+	u32 v;
+
+	d->cal_port = 0;					/* cal.c:372-373 */
+	v = readl(d->cal_base[0] + EXYNOS5_DRD_LINKPORT);
+	writel(v | LINKPORT_HOST_U3_PORT_DISABLE, d->cal_base[0] + EXYNOS5_DRD_LINKPORT);	/* :385-387 */
+	exynos8895_cr_rmw(d, 0x0011, 0x3, 0x2);			/* :392-395 MPLL_EN_OVRD=1 MPLL_EN=0 */
+	exynos8895_cr_rmw(d, 0x1000, 0x3 << 8, 0x2 << 8);	/* :400-403 TX_CM_EN_OVRD=1 TX_CM_EN=0 */
+	exynos8895_cr_rmw(d, 0x1005, 0x3 << 12, 0x3 << 12);	/* :408-411 RX_LOS_EN_OVRD=1 RX_LOS_EN=1 */
+	exynos8895_cr_rmw(d, 0x1000, 0xf << 4, 0xa << 4);	/* :418-421 TX_EN/TX_DATA_EN overrides */
+	exynos8895_cr_rmw(d, 0x1005, 0xf << 2, 0xa << 2);	/* :428-431 RX_DATA_EN/RX_PLL_EN overrides */
+	exynos8895_cr_rmw(d, 0x1005, 0x2 << 10, 0x2 << 10);	/* :436-439 RX_TERM_EN_OVRD=1 */
+	exynos8895_cr_rmw(d, 0x1006, 0x3 << 12, 0x3 << 12);	/* :444-447 RX_RESET_OVRD=1 RX_RESET=1 */
+	d->cal_port = port;					/* :449 */
+}
+
+/* Device tune = stock exynos_usbdrd_pipe3_tune device branch (usbdrd.c:862-886) */
+static void exynos8895_cal_tune_dev(struct exynos5_usbdrd_phy *d)
+{
+	void __iomem *b0 = d->cal_base[0];
+	void __iomem *bs = exynos8895_port_base(d);	/* SS block of the port, cal.c:1414-1419 */
+	u32 v;
+
+	/* LINKSYSTEM FLADJ and xHCI version control, cal.c:1362-1366 */
+	v = readl(b0 + EXYNOS5_DRD_LINKSYSTEM);
+	v &= ~LINKSYSTEM_FLADJ;
+	v |= FIELD_PREP(LINKSYSTEM_FLADJ, 0x20) | LINKSYSTEM_XHCI_VERSION_CONTROL;
+	writel(v, b0 + EXYNOS5_DRD_LINKSYSTEM);
+
+	/* HS tune on window 0, cal.c:1369-1408; PHYPARAM0[25:0] = 0x031de71a */
+	v = readl(b0 + EXYNOS5_DRD_PHYPARAM0);
+	v &= ~(PHYPARAM0_TXVREFTUNE | PHYPARAM0_TXRISETUNE | PHYPARAM0_TXRESTUNE |
+	       PHYPARAM0_TXPREEMPPULSETUNE | PHYPARAM0_TXPREEMPAMPTUNE | PHYPARAM0_TXHSXVTUNE |
+	       PHYPARAM0_TXFSLSTUNE | PHYPARAM0_SQRXTUNE | PHYPARAM0_OTGTUNE |
+	       PHYPARAM0_COMPDISTUNE);				/* tx_pre_emp_plus = 0, usbdrd.c:400 */
+	v |= FIELD_PREP(PHYPARAM0_TXVREFTUNE, EXYNOS8895_HS_TXVREF) |
+	     FIELD_PREP(PHYPARAM0_TXRISETUNE, EXYNOS8895_HS_TXRISE) |
+	     FIELD_PREP(PHYPARAM0_TXRESTUNE, EXYNOS8895_HS_TXRES) |
+	     FIELD_PREP(PHYPARAM0_TXPREEMPAMPTUNE, EXYNOS8895_HS_TXPREEMPAMP) |
+	     FIELD_PREP(PHYPARAM0_TXHSXVTUNE, EXYNOS8895_HS_TXHSXV) |
+	     FIELD_PREP(PHYPARAM0_TXFSLSTUNE, EXYNOS8895_HS_TXFSLS) |
+	     FIELD_PREP(PHYPARAM0_SQRXTUNE, EXYNOS8895_HS_SQRX) |
+	     FIELD_PREP(PHYPARAM0_OTGTUNE, EXYNOS8895_HS_OTG) |
+	     FIELD_PREP(PHYPARAM0_COMPDISTUNE, EXYNOS8895_HS_COMPDIS);
+	writel(v, b0 + EXYNOS5_DRD_PHYPARAM0);
+
+	/* SS tune on the port's window, cal.c:1411-1451; PHYPARAM1 not written (USB_SS_TX_TUNE_PCS, cal.c:40) */
+	v = readl(bs + EXYNOS7870_DRD_PHYPARAM2);
+	v &= ~(PHYPARAM2_TX_VBOOST_LVL | PHYPARAM2_LOS_BIAS);
+	v |= FIELD_PREP(PHYPARAM2_TX_VBOOST_LVL, EXYNOS8895_SS_TX_VBOOST) |
+	     FIELD_PREP(PHYPARAM2_LOS_BIAS, EXYNOS8895_SS_LOS_BIAS);
+	writel(v, bs + EXYNOS7870_DRD_PHYPARAM2);
+	v = readl(bs + EXYNOS7870_DRD_PHYPCSVAL);
+	v &= ~PHYPCSVAL_PCS_RX_LOS_MASK;
+	v |= FIELD_PREP(PHYPCSVAL_PCS_RX_LOS_MASK, EXYNOS8895_SS_LOS_MASK);
+	writel(v, bs + EXYNOS7870_DRD_PHYPCSVAL);
+
+	/* Late enable, cal.c:1027-1080 */
+	exynos8895_cr_write(d, EXYNOS8895_CR_LANE0_TX_DEBUG, 0x80);
+	exynos8895_cr_write(d, EXYNOS8895_CR_TX_OVRD_DRV_LO,
+			    0x4000 | (EXYNOS8895_SS_DEEMPH_3P5DB << 7) | EXYNOS8895_SS_SWING_FULL);
+	/*
+	 * rx_decode_mode, set_crport_mpll_charge_pump and decrease_ss_tx_imp are never
+	 * assigned by stock (usbdrd.c:513-529, devm_kmalloc'ed): taken as 0 (spec O6).
+	 */
+	exynos8895_cr_write(d, EXYNOS8895_CR_LOSLEVEL_OVRD_IN, 0xa409);
+	exynos8895_cr_write(d, EXYNOS8895_CR_TX_VBOOSTLVL_OVRD, EXYNOS8895_SS_TX_VBOOST << 13);
+	if (d->cal_port == 1)
+		exynos8895_dp_altmode_ss_disable_port0(d);
+}
+
+/* CAL disable = stock samsung_exynos_cal_usb3phy_disable, cal.c:1082-1136 */
+static void exynos8895_cal_disable(struct exynos5_usbdrd_phy *d)
+{
+	void __iomem *b0 = d->cal_base[0];
+	u32 v;
+
+	v = readl(b0 + EXYNOS5_DRD_PHYCLKRST);
+	v |= PHYCLKRST_EN_UTMISUSPEND | PHYCLKRST_COMMONONN | PHYCLKRST_RETENABLEN;	/* :1090-1092 */
+	v &= ~(PHYCLKRST_REF_SSP_EN | PHYCLKRST_SSC_EN);				/* :1093-1094 */
+	v &= ~PHYCLKRST_REFCLKSEL;
+	v |= FIELD_PREP(PHYCLKRST_REFCLKSEL, EXYNOS8895_REFCLKSEL_CLKCORE);		/* :1096-1097 */
+	v &= ~EXYNOS8895_PHYCLKRST_FSEL;
+	v |= FIELD_PREP(EXYNOS8895_PHYCLKRST_FSEL, EXYNOS8895_FSEL_26M);		/* :1100-1101 */
+	writel(v, b0 + EXYNOS5_DRD_PHYCLKRST);
+
+	v = readl(b0 + EXYNOS5_DRD_PHYUTMI);
+	v &= ~(PHYUTMI_IDPULLUP | PHYUTMI_DRVVBUS | PHYUTMI_VBUSVLDEXTSEL | PHYUTMI_VBUSVLDEXT);
+	v |= PHYUTMI_FORCESUSPEND | PHYUTMI_FORCESLEEP;					/* :1104-1113 */
+	writel(v, b0 + EXYNOS5_DRD_PHYUTMI);
+
+	exynos8895_ss_power_down(d, false);						/* :1115-1117 */
+
+	v = readl(b0 + EXYNOS5_DRD_LINKSYSTEM);
+	v &= ~(LINKSYSTEM_FORCE_BVALID | LINKSYSTEM_FORCE_VBUSVALID);			/* :1124-1130 */
+	writel(v, b0 + EXYNOS5_DRD_LINKSYSTEM);
+
+	exynos8895_q_ch(b0, false);							/* :1133-1135 */
+}
+
+/*
+ * Stock order (spec 5.1.8): the PMU de-isolation (phy_power_on) runs before the CAL enable
+ * (phy_init) and a full tune follows every DCTL.CSFTRST (S:drivers/usb/dwc3/core.c:191-231,
+ * 768-787). ACK dwc3 calls phy_init, CSFTRST, phy_power_on (A:drivers/usb/dwc3/core.c:1381,
+ * 1385,1411) and on exit phy_power_off before phy_exit (:995-1002). So .init = rails, clocks,
+ * de-isolate, CAL enable; .power_on = tune; .exit = CAL disable, isolate, clocks, rail. The
+ * UTMI instance (index 0) is a no-op in every op, as in stock (usbdrd.c:295-299, 805-808).
+ */
+static int exynos8895_usbdrd_phy_init(struct phy *phy)
+{
+	struct phy_usb_instance *inst = phy_get_drvdata(phy);
+	struct exynos5_usbdrd_phy *d = to_usbdrd_phy(inst);
+	unsigned int pmu = 0;
+	int ret;
+
+	if (inst->phy_cfg->id != EXYNOS5_DRDPHY_PIPE3)
+		return 0;
+	if (d->vdd_dp) {
+		ret = regulator_enable(d->vdd_dp);			/* S:drivers/usb/notify/usb_notifier.c:276 */
+		if (ret)
+			return ret;
+	}
+	ret = clk_bulk_prepare_enable(d->drv_data->n_clks, d->clks);
+	if (ret)
+		goto err_rail;
+	ret = clk_bulk_prepare_enable(d->drv_data->n_core_clks, d->core_clks);
+	if (ret)
+		goto err_clk;
+	if (clk_get_rate(d->core_clks[0].clk) != EXYNOS8895_REFCLK_RATE) {
+		dev_err(d->dev, "8895: ref clock %lu Hz, CAL needs 26 MHz\n",
+			clk_get_rate(d->core_clks[0].clk));
+		ret = -EINVAL;
+		goto err_core;
+	}
+	inst->phy_cfg->phy_isol(inst, false);			/* stock power_on, usbdrd.c:966 */
+	exynos8895_cal_enable(d);
+	/* D+/D- to the AP before the gadget can pull up, as stock's MUIC attach_usb */
+	exynos8895_muic_switch(d, EXYNOS8895_MUIC_COM_USB_AP);
+	regmap_read(inst->reg_pmu, inst->pmu_offset, &pmu);
+	dev_info(d->dev, "8895: pmu704=0x%08x\n", pmu);
+	return 0;
+
+err_core:
+	clk_bulk_disable_unprepare(d->drv_data->n_core_clks, d->core_clks);
+err_clk:
+	clk_bulk_disable_unprepare(d->drv_data->n_clks, d->clks);
+err_rail:
+	if (d->vdd_dp)
+		regulator_disable(d->vdd_dp);
+	return ret;
+}
+
+static int exynos8895_usbdrd_phy_power_on(struct phy *phy)
+{
+	struct phy_usb_instance *inst = phy_get_drvdata(phy);
+
+	if (inst->phy_cfg->id != EXYNOS5_DRDPHY_PIPE3)
+		return 0;
+	/* after the dwc3_core_init CSFTRST (A:drivers/usb/dwc3/core.c:1385 -> 1411) */
+	exynos8895_cal_tune_dev(to_usbdrd_phy(inst));
+	return 0;
+}
+
+static int exynos8895_usbdrd_phy_exit(struct phy *phy)
+{
+	struct phy_usb_instance *inst = phy_get_drvdata(phy);
+	struct exynos5_usbdrd_phy *d = to_usbdrd_phy(inst);
+
+	if (inst->phy_cfg->id != EXYNOS5_DRDPHY_PIPE3)
+		return 0;
+	exynos8895_cal_disable(d);
+	exynos8895_muic_switch(d, EXYNOS8895_MUIC_COM_OPEN);	/* stock detach_usb, shutdown */
+	inst->phy_cfg->phy_isol(inst, true);			/* usbdrd.c:989 */
+	clk_bulk_disable_unprepare(d->drv_data->n_core_clks, d->core_clks);
+	clk_bulk_disable_unprepare(d->drv_data->n_clks, d->clks);
+	if (d->vdd_dp)
+		regulator_disable(d->vdd_dp);
+	return 0;
+}
+
+static const struct phy_ops exynos8895_usbdrd_phy_ops = {
+	.init		= exynos8895_usbdrd_phy_init,
+	.exit		= exynos8895_usbdrd_phy_exit,
+	.power_on	= exynos8895_usbdrd_phy_power_on,
+	.owner		= THIS_MODULE,
+};
+
+static int exynos8895_usbdrd_probe_extra(struct exynos5_usbdrd_phy *d,
+					 struct platform_device *pdev)
+{
+	d->reg_phy2 = devm_platform_ioremap_resource(pdev, 1);		/* usbdrd.c:1118-1123 */
+	if (IS_ERR(d->reg_phy2))
+		return PTR_ERR(d->reg_phy2);
+	d->reg_refclk = devm_platform_ioremap_resource(pdev, 2);	/* usbdrd.c:568-578 */
+	if (IS_ERR(d->reg_refclk))
+		return PTR_ERR(d->reg_refclk);
+	d->cal_base[0] = d->reg_phy;					/* usbdrd.c:656 */
+	d->cal_base[1] = d->reg_phy2;					/* usbdrd.c:646 */
+	d->cal_port = 0;						/* usbdrd.c:647 */
+
+	d->port_gpio = devm_gpiod_get_optional(d->dev, "samsung,phy-port", GPIOD_IN);
+	if (IS_ERR(d->port_gpio))
+		return dev_err_probe(d->dev, PTR_ERR(d->port_gpio), "phy-port gpio\n");
+
+	d->muic_adap = exynos8895_muic_get(d);
+	if (IS_ERR(d->muic_adap))
+		return PTR_ERR(d->muic_adap);
+
+	d->vdd_dp = devm_regulator_get_optional(d->dev, "vdd18-dp");
+	if (IS_ERR(d->vdd_dp)) {
+		if (PTR_ERR(d->vdd_dp) != -ENODEV)
+			return dev_err_probe(d->dev, PTR_ERR(d->vdd_dp), "vdd18-dp\n");
+		d->vdd_dp = NULL;
+	}
+	return 0;
+}
+
 static void exynos5_usbdrd_gs101_pipe3_init(struct exynos5_usbdrd_phy *phy_drd)
 {
 	void __iomem *regs_pma = phy_drd->reg_pma;
@@ -1899,6 +2595,18 @@ static const struct exynos5_usbdrd_phy_config phy_cfg_exynos850[] = {
 	},
 };
 
+/* both instances: the probe fills phys[i].phy_cfg = &phy_cfg[i] for i = 0, 1 */
+static const struct exynos5_usbdrd_phy_config phy_cfg_exynos8895[] = {
+	{
+		.id		= EXYNOS5_DRDPHY_UTMI,
+		.phy_isol	= exynos5_usbdrd_phy_isol,
+	},
+	{
+		.id		= EXYNOS5_DRDPHY_PIPE3,
+		.phy_isol	= exynos5_usbdrd_phy_isol,
+	},
+};
+
 static
 const struct exynos5_usbdrd_phy_tuning exynos7870_tunes_utmi_postinit[] = {
 	PHY_TUNING_ENTRY_PHY(EXYNOS5_DRD_PHYPARAM0,
@@ -2025,6 +2733,18 @@ static const struct exynos5_usbdrd_phy_drvdata exynos850_usbdrd_phy = {
 	.n_core_clks		= ARRAY_SIZE(exynos5_core_clk_names),
 	.regulator_names	= exynos5_regulator_names,
 	.n_regulators		= ARRAY_SIZE(exynos5_regulator_names),
+};
+
+static const struct exynos5_usbdrd_phy_drvdata exynos8895_usbdrd_phy = {
+	.phy_cfg		= phy_cfg_exynos8895,
+	.phy_ops		= &exynos8895_usbdrd_phy_ops,
+	.pmu_offset_usbdrd0_phy	= EXYNOS5_USBDRD_PHY_CONTROL,	/* 0x704 = S:drivers/phy/phy-exynos-usbdrd.h:16 */
+	.clk_names		= exynos5_clk_names,		/* "phy" */
+	.n_clks			= ARRAY_SIZE(exynos5_clk_names),
+	.core_clk_names		= exynos5_core_clk_names,	/* "ref" */
+	.n_core_clks		= ARRAY_SIZE(exynos5_core_clk_names),
+	.probe_extra		= exynos8895_usbdrd_probe_extra,
+	/* no regulator_names: this PHY switches no VBUS (no VBUS pad, FDT:7886) */
 };
 
 static const struct exynos5_usbdrd_phy_tuning exynos990_tunes_utmi_postinit[] = {
@@ -2259,6 +2979,9 @@ static const struct of_device_id exynos5_usbdrd_phy_of_match[] = {
 	}, {
 		.compatible = "samsung,exynos850-usbdrd-phy",
 		.data = &exynos850_usbdrd_phy
+	}, {
+		.compatible = "samsung,exynos8895-usbdrd-phy",
+		.data = &exynos8895_usbdrd_phy
 	}, {
 		.compatible = "samsung,exynos990-usbdrd-phy",
 		.data = &exynos990_usbdrd_phy
