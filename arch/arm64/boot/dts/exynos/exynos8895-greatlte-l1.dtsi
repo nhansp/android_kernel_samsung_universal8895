@@ -44,6 +44,25 @@
 &pinctrl_peric1 { status = "okay"; };
 
 /*
+ * The nine power domains of L1 4.4 whose stock on/off is CONFIGURATION/STATUS only
+ * (CAL:pmucal_local_exynos8895.h cam :72, dsp :280, g2d :315, isphq :381, isplp :412,
+ * mfc :498, vpu :567, dcam :168, srdz :532) and that host no DMA master S-Boot leaves
+ * running. Enabled only together with the PMU below: its lpm_init writes the stock
+ * OPTION values (CAL:pmucal_system_exynos8895.h:40-55) at postcore, before genpd can
+ * switch a domain off at sync_state. The other seven (abox dbg dpu0 dpu1 g3d iva vts)
+ * stay disabled in the SoC dtsi until their consumer layer.
+ */
+&pd_cam { status = "okay"; };
+&pd_dsp { status = "okay"; };
+&pd_g2d { status = "okay"; };
+&pd_isphq { status = "okay"; };
+&pd_isplp { status = "okay"; };
+&pd_mfc { status = "okay"; };
+&pd_vpu { status = "okay"; };
+&pd_dcam { status = "okay"; };
+&pd_srdz { status = "okay"; };
+
+/*
  * PMU (spec/L1_platform.md 4.3, 5.7, 5.8a): exynos8895_pmu_data applies stock lpm_init and
  * registers the INFORM2/INFORM3 restart defaults; its children are syscon-reboot (SWRESET),
  * syscon-poweroff (PS_HOLD bit 8) and the INFORM3 reboot-mode node. Stock node:
