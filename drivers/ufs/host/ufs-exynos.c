@@ -193,6 +193,26 @@ enum {
 
 #define CNTR_DIV_VAL 40
 
+#if IS_ENABLED(CONFIG_GREATLTE_HB)
+/*
+ * DEBUG: Exynos 8895 bring-up switches (run tokens, no rebuild), spec/L4_storage.md 8.2:
+ * t_ufs5 - T-UFS-5 clean-failure image: hold the device in reset at every link
+ *          startup, so DME_LINKSTARTUP fails and the probe must fail cleanly.
+ * d1_skip_connt - deviation D-1 / T-UFS-6: skip the generic post-link CPort
+ *          re-establishment, as stock rev 4 does.
+ */
+static bool gl_t_ufs5;
+module_param_named(t_ufs5, gl_t_ufs5, bool, 0444);
+MODULE_PARM_DESC(t_ufs5, "DEBUG 8895: hold the UFS device in reset at link startup (T-UFS-5)");
+static bool gl_d1_skip_connt;
+module_param_named(d1_skip_connt, gl_d1_skip_connt, bool, 0444);
+MODULE_PARM_DESC(d1_skip_connt, "DEBUG 8895: no generic post-link CPort setup (D-1, T-UFS-6)");
+#else
+#define gl_t_ufs5		false
+#define gl_d1_skip_connt	false
+#endif
+#define EXYNOS_UFS_OPT_DBG_SKIP_POST_LINK_CONNT	BIT(31)	/* DEBUG: gl_d1_skip_connt */
+
 static void exynos_ufs_auto_ctrl_hcc(struct exynos_ufs *ufs, bool en);
 static void exynos_ufs_ctrl_clkstop(struct exynos_ufs *ufs, bool en);
 
@@ -1129,7 +1149,8 @@ static int exynos_ufs_post_link(struct ufs_hba *hba)
 	struct exynos_ufs_uic_attr *attr = ufs->drv_data->uic_attr;
 	u32 val = ilog2(DATA_UNIT_SIZE);
 
-	exynos_ufs_establish_connt(ufs);
+	if (!(ufs->opts & EXYNOS_UFS_OPT_DBG_SKIP_POST_LINK_CONNT))	/* DEBUG: D-1 */
+		exynos_ufs_establish_connt(ufs);
 	exynos_ufs_fit_aggr_timeout(ufs);
 
 	hci_writel(ufs, 0xa, HCI_DATA_REORDER);
@@ -2205,6 +2226,9 @@ static int exynos8895_ufs_drv_init(struct exynos_ufs *ufs)
 	hba->rpm_lvl = UFS_PM_LVL_0;
 	pm_runtime_forbid(hba->dev);
 
+	if (gl_d1_skip_connt)		/* DEBUG */
+		ufs->opts |= EXYNOS_UFS_OPT_DBG_SKIP_POST_LINK_CONNT;
+
 	/* no fixed hibern8 parameters: stock uses the capability exchange */
 	attr->pa_granularity = 0;
 	attr->pa_tactivate = 0;
@@ -2310,6 +2334,11 @@ static void exynos8895_ufs_apply(struct exynos_ufs *ufs,
 static int exynos8895_ufs_pre_link(struct exynos_ufs *ufs)
 {
 	struct ufs_hba *hba = ufs->hba;
+
+	if (gl_t_ufs5) {		/* DEBUG: T-UFS-5 */
+		hci_writel(ufs, 0, HCI_GPIO_OUT);
+		return 0;
+	}
 
 	/*
 	 * The per-lane rows need the lane counts, which exynos_ufs_phy_init()
