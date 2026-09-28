@@ -1448,6 +1448,55 @@
 			status = "disabled";
 		};
 
+		/*
+		 * USB 3.0 DRD controller (L3 4.1): stock "samsung,exynos8895-dwusb3" at
+		 * 0x10c00000 size 0x10000 (FDT:7854-7858). Stock "aclk" (FDT:7856-7857, the
+		 * link Q-channel vclk 0x2ca) has no 6.18 clock; the link's AXI gate is
+		 * held instead. Stock "sclk" (0x2bf, USBDRD30) = the REF_CLK gate.
+		 */
+		usbdrd: usb@10c00000 {
+			compatible = "samsung,exynos8895-dwusb3";
+			ranges = <0x0 0x10c00000 0x10000>;
+			clocks = <&cmu_fsys0 CLK_GOUT_FSYS0_USBTV_I_USB30DRD_ACLK>,
+				 <&cmu_fsys0 CLK_GOUT_FSYS0_USBTV_I_USB30DRD_REF_CLK>;
+			clock-names = "aclk", "ref";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			status = "disabled";
+
+			usbdrd_dwc3: usb@0 {
+				compatible = "snps,dwc3";
+				reg = <0x0 0x10000>;				/* FDT:7868 */
+				interrupts = <GIC_SPI 337 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:7869 <0 0x151 0> */
+				/* GCTL.PWRDNSCALE; stock suspend_clk_freq 66 MHz, FDT:7871 */
+				clocks = <&cmu_fsys0 CLK_GOUT_FSYS0_USBTV_I_USB30DRD_SUSPEND_CLK>;
+				clock-names = "suspend";
+				phys = <&usbdrd_phy 0>, <&usbdrd_phy 1>;	/* FDT:7873-7874 */
+				phy-names = "usb2-phy", "usb3-phy";
+				/* stock clears GUSB2PHYCFG SUSPHY and ENBLSLPM: S:drivers/usb/dwc3/core.c:714-715 */
+				snps,dis_u2_susphy_quirk;
+				snps,dis_enblslpm_quirk;
+				/* no LPM, no U1/U2 (IKC:3598): S:drivers/usb/gadget/composite.c:611-612, S:drivers/usb/dwc3/ep0.c:633-652 */
+				snps,usb2-gadget-lpm-disable;
+				snps,dis-u1-entry-quirk;
+				snps,dis-u2-entry-quirk;
+			};
+		};
+
+		/* USB 3.0 DRD PHY (L3 4.1): FDT:7880-7905 */
+		usbdrd_phy: phy@10e00000 {
+			compatible = "samsung,exynos8895-usbdrd-phy";
+			reg = <0x10e00000 0x100>,	/* window 0, FDT:7882 */
+			      <0x10e10000 0x100>,	/* window 1, FDT:7882 */
+			      <0x10e50070 0x10>;	/* refclk select, FDT:7901 */
+			clocks = <&cmu_fsys0 CLK_GOUT_FSYS0_USBTV_I_USB30DRD_ACLK>,
+				 <&oscclk>;		/* stock ext_xtal = OSCCLK, FDT:7883 */
+			clock-names = "phy", "ref";
+			samsung,pmu-syscon = <&pmu_system_controller>;	/* FDT:7885 */
+			#phy-cells = <1>;				/* FDT:7888 */
+			status = "disabled";
+		};
+
 		cmu_fsys0: clock-controller@11000000 {
 			compatible = "samsung,exynos8895-cmu-fsys0";
 			reg = <0x11000000 0x8000>;
