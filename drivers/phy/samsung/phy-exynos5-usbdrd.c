@@ -30,6 +30,9 @@
 #ifdef CONFIG_ANDROID_VENDOR_HOOKS
 #include <trace/hooks/dwc3.h>
 #endif
+#ifdef CONFIG_GREATLTE_USB_DIAG
+#include <linux/soc/samsung/greatlte-l3.h>
+#endif
 
 /* Exynos USB PHY registers */
 #define EXYNOS5_FSEL_9MHZ6		0x0
@@ -2315,6 +2318,36 @@ static const struct phy_ops exynos8895_usbdrd_phy_ops = {
 	.owner		= THIS_MODULE,
 };
 
+#ifdef CONFIG_GREATLTE_USB_DIAG
+/* DEBUG: the heartbeat's read-only view of the one Exynos8895 USB PHY (spec 8.1, 8.3 R2/R8) */
+static struct exynos5_usbdrd_phy *exynos8895_diag_phy;
+static int exynos8895_diag_cr1002 = -1;
+
+int exynos8895_usbdrd_get_snap(struct greatlte_l3_phy_snap *s)
+{
+	struct exynos5_usbdrd_phy *d = READ_ONCE(exynos8895_diag_phy);
+
+	if (!d)
+		return -ENODEV;
+	s->ver[0] = d->cal_ver[0];
+	s->ver[1] = d->cal_ver[1];
+	s->probed = d->cal_probed;
+	s->shift = d->cal_probed && !d->cal_zero;
+	s->port = d->cal_port;
+	s->inits = d->init_count;
+	s->retunes = READ_ONCE(d->retunes);
+	s->cr_timeouts = READ_ONCE(d->cr_timeouts);
+	s->cr1002_before = READ_ONCE(exynos8895_diag_cr1002);
+	s->armed = READ_ONCE(d->tune_armed);
+	return 0;
+}
+
+static void exynos8895_diag_clear(void *data)
+{
+	WRITE_ONCE(exynos8895_diag_phy, NULL);	/* probe failed or deferred after probe_extra */
+}
+#endif
+
 #ifdef CONFIG_ANDROID_VENDOR_HOOKS
 /*
  * Re-tune after every dwc3 CSFTRST (spec 5.1.6b). Stock keeps "every CSFTRST is followed by a
@@ -2336,10 +2369,22 @@ static void exynos8895_vh_dwc3_soft_reset(void *data, struct device *dwc3_dev,
 		return;				/* not this PHY */
 	if (!READ_ONCE(d->tune_armed))
 		return;				/* core-init CSFTRST: .power_on tunes after it */
+#ifdef CONFIG_GREATLTE_USB_DIAG
+	/*
+	 * DEBUG, spec 8.3 R8 / O21: CR[0x1002] after the CSFTRST and before the re-tune (the
+	 * previous tune wrote 0x4b7f): an extra CR read stock never does at this point.
+	 */
+	WRITE_ONCE(exynos8895_diag_cr1002, exynos8895_cr_read(d, EXYNOS8895_CR_TX_OVRD_DRV_LO));
+#endif
 	exynos8895_cal_tune_dev(d);		/* as S:drivers/usb/dwc3/gadget.c:1965-1966 */
 	d->retunes++;
+#ifdef CONFIG_GREATLTE_USB_DIAG
+	dev_info(d->dev, "8895: re-tune #%u after CSFTRST (cr1002 before=0x%04x) cr_timeouts=%u\n",
+		 d->retunes, exynos8895_diag_cr1002, d->cr_timeouts);
+#else
 	dev_info(d->dev, "8895: re-tune #%u after CSFTRST cr_timeouts=%u\n",
 		 d->retunes, d->cr_timeouts);
+#endif
 }
 
 static void exynos8895_unregister_vh(void *data)
@@ -2392,6 +2437,10 @@ static int exynos8895_usbdrd_probe_extra(struct exynos5_usbdrd_phy *d,
 		return ret;
 #else
 	dev_warn(d->dev, "8895: no vendor hooks, PHY not re-tuned after soft-connect CSFTRST\n");
+#endif
+#ifdef CONFIG_GREATLTE_USB_DIAG
+	WRITE_ONCE(exynos8895_diag_phy, d);	/* one USB PHY on this SoC */
+	ret = devm_add_action_or_reset(d->dev, exynos8895_diag_clear, NULL);
 #endif
 	return ret;
 }

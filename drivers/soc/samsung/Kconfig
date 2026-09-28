@@ -113,4 +113,16 @@ config GREATLTE_L1_SELFTEST
 	  exynos_arm64_init_clocks() (L1cmu/L1cg0 lines, spec L1 5.2); the
 	  L1 self-test driver of spec L1 5.9 builds under the same symbol.
 	  Never enable in a release build.
+
+config GREATLTE_USB_DIAG
+	bool "greatlte L3 USB diagnostics and heartbeat rows (debug only)"
+	depends on GREATLTE_HB
+	default GREATLTE_HB
+	help
+	  Bring-up diagnostics of the greatlte L3 layer (USB peripheral
+	  mode, spec L3 8.1): the Exynos8895 USB PHY keeps a read-only
+	  snapshot and reads CR[0x1002] before each re-tune, and the L3
+	  heartbeat rows and printers ("usb", "usbid") read the dwc3, PHY,
+	  CMU_FSYS0 and PMU state. On by default with the heartbeat; never
+	  enable in a release build.
 endif
