@@ -1628,6 +1628,18 @@
 			status = "disabled";
 		};
 
+		/*
+		 * SYSREG_DPU0 (S:drivers/video/fbdev/exynos/dpu/regs-decon.h:69): DISP_SS
+		 * LPMUX/DLMUX/MIPI_PHY_CON/TE_SEL at +0x1000..+0x100c (vendor mapping
+		 * FDT:7465 <0x12821000 0x10>, regs-decon.h:21,27,43,50) and
+		 * BUS_COMPONENT_DRCG_EN at +0x200 (S:.../pmucal_local_exynos8895.h:230).
+		 */
+		syscon_dpu0: syscon@12820000 {
+			compatible = "samsung,exynos8895-dpu0-sysreg", "syscon";
+			reg = <0x12820000 0x2000>;
+			clocks = <&cmu_dpu0 CLK_GOUT_DPU0_SYSREG_DPU0_PCLK>;	/* CAL:cmucal-sfr.c:978 (0x2108) */
+		};
+
 		cmu_dpu1: clock-controller@12a00000 {
 			compatible = "samsung,exynos8895-cmu-dpu1";
 			reg = <0x12a00000 0x8000>;	/* CAL:cmucal-sfr.c:20 SFR_BLOCK(DPU1, 0x12a00000, 0x8000) */
@@ -1638,6 +1650,16 @@
 			clock-names = "oscclk", "busd", "busp";
 			power-domains = <&pd_dpu1>;	/* CAL:pmucal_local_exynos8895.h:247-269 dpu1_save */
 			status = "disabled";
+		};
+
+		/*
+		 * SYSREG_DPU1: only BUS_COMPONENT_DRCG_EN at +0x200 is used
+		 * (S:.../pmucal_local_exynos8895.h:267). Its PCLK gate is in CMU_DPU1
+		 * (CAL:cmucal-sfr.c:1064), which is not registered: no clocks.
+		 */
+		syscon_dpu1: syscon@12a20000 {
+			compatible = "samsung,exynos8895-dpu1-sysreg", "syscon";
+			reg = <0x12a20000 0x1000>;
 		};
 
 		cmu_cam: clock-controller@12c00000 {
@@ -1858,6 +1880,18 @@
 				mode-secure = <0x12345677>;	/* SEC_RESET_REASON_SECURE :57,184-185 */
 				mode-fwup = <0x12345679>;	/* SEC_RESET_REASON_FWUP :58,186-187 */
 				mode-bootloader = <0x1234567d>;	/* SEC_RESET_REASON_BOOTLOADER :60,180-181 */
+			};
+
+			/*
+			 * MIPI D-PHYs: DSIM0 isolation at PMU+0x710 bit 0 (FDT:7476
+			 * "isolation = <0x710>;", S:drivers/phy/phy-exynos8895-mipi.c:25
+			 * EXYNOS_MIPI_PHY_ISO_BYPASS (1 << 0)); the PHY driver takes
+			 * this node's parent as its PMU regmap.
+			 */
+			mipi_phy: mipi-phy {
+				compatible = "samsung,exynos8895-mipi-video-phy";
+				#phy-cells = <1>;
+				status = "disabled";
 			};
 		};
 
