@@ -977,6 +977,7 @@ static const struct samsung_dsim_driver_data exynos8895_dsi_driver_data = {
 	.plltmr_reg = 0xac,		/* regs-dsim.h:331 DSIM_PLLTMR */
 	.has_8895_link = 1,
 	.te_on_long_packet = 1,
+	.handover_hold = 1,
 	.fixed_link = &exynos8895_fixed_link,
 	.clk_data = exynos8895_clk_bulk_data,
 	.num_clks = ARRAY_SIZE(exynos8895_clk_bulk_data),
@@ -2229,6 +2230,22 @@ static int samsung_dsim_init_exynos8895(struct samsung_dsim *dsi)
 
 	samsung_dsim_enable_irq(dsi);
 
+	if (dsi->handover) {
+		/*
+		 * The boot loader left the link running: skip link/D-PHY init as
+		 * the vendor driver does ("PLL is stabled in bootloader, so skip
+		 * DSIM link/DPHY init.", dsim_drv.c:1058-1064), then dsim_reg_start()
+		 * (:1120) and no panel SLEEP_OUT (:1126-1130).
+		 */
+		dsim8895_start(dsi);
+		dsi->hs_clock = dsim8895_hs_mhz(dsi->driver_data->fixed_link) * HZ_PER_MHZ;
+		dsi->state |= DSIM_STATE_INITIALIZED;
+		dsi->handover = false;
+		pm_runtime_put_noidle(dsi->dev);
+		dev_info(dsi->dev, "S-Boot DSIM link kept (PLL stable), HS clock requested\n");
+		return 0;
+	}
+
 	/* D-PHY reset assert (dsim_drv.c:1068, dsim_reg.c:287-291) */
 	dsim8895_mask(dsi, 0x04, 0, DSIM8895_DPHY_RST);
 	dsim8895_sw_reset(dsi);
@@ -2915,6 +2932,9 @@ static const struct drm_bridge_timings samsung_dsim_bridge_timings_de_low = {
 	.input_bus_flags = DRM_BUS_FLAG_DE_LOW,
 };
 
+static int samsung_dsim_suspend(struct device *dev);
+static int samsung_dsim_resume(struct device *dev);
+
 static int samsung_dsim_parse_dt_exynos8895(struct samsung_dsim *dsi)
 {
 	struct device_node *np = dsi->dev->of_node;
@@ -2935,6 +2955,30 @@ static int samsung_dsim_parse_dt_exynos8895(struct samsung_dsim *dsi)
 	init_completion(&dsi->rx_done);
 
 	return 0;
+}
+
+/*
+ * The boot loader may leave the link running (panel on, PLL locked). The vendor
+ * driver then takes a runtime-PM reference in dsim_reg_ready() that it keeps
+ * through boot (dsim_drv.c:1046) and skips the link init; do the same: power
+ * the DSIM up by hand before runtime PM is enabled, and if LINK_STATUS3
+ * PLL_STABLE is set, keep it active with a reference that the first link init
+ * drops.
+ */
+static void samsung_dsim_handover_exynos8895(struct samsung_dsim *dsi)
+{
+	if (samsung_dsim_resume(dsi->dev))
+		return;
+
+	if (dsim8895_read(dsi, 0x14) & BIT(0)) {
+		dev_info(dsi->dev, "S-Boot left DSIM PLL running, holding pd_dpu1\n");
+		dsi->handover = true;
+		pm_runtime_set_active(dsi->dev);
+		pm_runtime_get_noresume(dsi->dev);
+		return;
+	}
+
+	samsung_dsim_suspend(dsi->dev);
 }
 
 int samsung_dsim_probe(struct platform_device *pdev)
@@ -3006,6 +3050,9 @@ int samsung_dsim_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, dsi);
+
+	if (dsi->driver_data->handover_hold)
+		samsung_dsim_handover_exynos8895(dsi);
 
 	pm_runtime_enable(dev);
 

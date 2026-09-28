@@ -66,11 +66,13 @@ struct samsung_dsim_driver_data {
 	unsigned int has_sfrctrl:1;
 	/*
 	 * Exynos 8895: own link init/stop, single-packet transfer engine and
-	 * IRQ handler (the register layout differs from the generic one), and
-	 * TE_ON (DCS 0x35) with one parameter sent as a long packet.
+	 * IRQ handler (the register layout differs from the generic one),
+	 * TE_ON (DCS 0x35) with one parameter sent as a long packet, and a
+	 * link left running by the boot loader is kept at probe.
 	 */
 	unsigned int has_8895_link:1;
 	unsigned int te_on_long_packet:1;
+	unsigned int handover_hold:1;
 	const struct samsung_dsim_fixed_link *fixed_link;
 	struct clk_bulk_data *clk_data;
 	unsigned int num_clks;
@@ -143,6 +145,7 @@ struct samsung_dsim {
 	struct regmap *dpu1_sysreg;
 	const struct drm_dsc_config *dsc;
 	u32 cmd_underrun_lp_ref;
+	bool handover;
 	struct mutex cmd_lock;		/* one packet in flight */
 	struct completion ph_empty;	/* INTSRC SFR_PH_FIFO_EMPTY */
 	struct completion rx_done;	/* INTSRC RX_DATA_DONE */
