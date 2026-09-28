@@ -20,6 +20,7 @@ properties:
           - samsung,exynos7-dwusb3
           - samsung,exynos7870-dwusb3
           - samsung,exynos850-dwusb3
+          - samsung,exynos8895-dwusb3
           - samsung,exynosautov920-dwusb3
       - items:
           - const: samsung,exynos990-dwusb3
@@ -176,6 +177,23 @@ allOf:
         clock-names:
           items:
             - const: bus_early
+            - const: ref
+      required:
+        - vdd10-supply
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: samsung,exynos8895-dwusb3
+    then:
+      properties:
+        clocks:
+          minItems: 2
+          maxItems: 2
+        clock-names:
+          items:
+            - const: aclk
             - const: ref
       required:
         - vdd10-supply
