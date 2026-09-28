@@ -44,11 +44,18 @@ struct dw_mci_exynos_priv_data {
 	u32				dqs_delay;
 	u32				saved_dqs_en;
 	u32				saved_strobe_ctrl;
+	u32				flags;
 };
+
+/* SoC quirks keyed on the specific compatible (exynos_compat[].flags) */
+#define DW_MCI_EXYNOS_HWACG_OFF		BIT(0)	/* keep the HWACG clock stop disabled */
+#define DW_MCI_EXYNOS_FIFO_32BIT	BIT(1)	/* 64-bit FIFO as two 32-bit accesses:
+						 * stock CONFIG_MMC_DW_FORCE_32BIT_SFR_RW=y */
 
 static struct dw_mci_exynos_compatible {
 	char				*compatible;
 	enum dw_mci_exynos_type		ctrl_type;
+	u32				flags;
 } exynos_compat[] = {
 	{
 		.compatible	= "samsung,exynos4210-dw-mshc",
@@ -80,6 +87,12 @@ static struct dw_mci_exynos_compatible {
 	}, {
 		.compatible	= "axis,artpec8-dw-mshc",
 		.ctrl_type	= DW_MCI_TYPE_ARTPEC8,
+	}, {
+		/* after "samsung,exynos7-dw-mshc", its fallback: the last match wins */
+		.compatible	= "samsung,exynos8895-dw-mshc",
+		.ctrl_type	= DW_MCI_TYPE_EXYNOS7,
+		.flags		= DW_MCI_EXYNOS_HWACG_OFF |
+				  DW_MCI_EXYNOS_FIFO_32BIT,
 	},
 };
 
@@ -121,11 +134,33 @@ static void dw_mci_exynos_config_smu(struct dw_mci *host)
 	}
 }
 
+static void dw_mci_exynos_hwacg_off(struct dw_mci *host)
+{
+	struct dw_mci_exynos_priv_data *priv = host->priv;
+
+	if (priv->flags & DW_MCI_EXYNOS_HWACG_OFF)
+		mci_writel(host, FORCE_CLK_STOP,
+			   mci_readl(host, FORCE_CLK_STOP) & ~SDMMC_MMC_HWACG_CONTROL);
+}
+
 static int dw_mci_exynos_priv_init(struct dw_mci *host)
 {
 	struct dw_mci_exynos_priv_data *priv = host->priv;
 
 	dw_mci_exynos_config_smu(host);
+
+	if (priv->flags & DW_MCI_EXYNOS_HWACG_OFF) {
+		u32 before = mci_readl(host, FORCE_CLK_STOP);
+		u32 hcon = mci_readl(host, HCON);
+
+		dw_mci_exynos_hwacg_off(host);
+		dev_info(host->dev, "8895: FORCE_CLK_STOP %#x->%#x hcon=%#x hdata_width=%u\n",
+			 before, mci_readl(host, FORCE_CLK_STOP), hcon,
+			 SDMMC_GET_HDATA_WIDTH(hcon));
+	}
+
+	if (priv->flags & DW_MCI_EXYNOS_FIFO_32BIT)
+		host->quirks |= DW_MMC_QUIRK_FIFO64_32;
 
 	if (priv->ctrl_type >= DW_MCI_TYPE_EXYNOS5420) {
 		priv->saved_strobe_ctrl = mci_readl(host, HS400_DLINE_CTRL);
@@ -199,6 +234,7 @@ static int dw_mci_exynos_runtime_resume(struct device *dev)
 		return ret;
 
 	dw_mci_exynos_config_smu(host);
+	dw_mci_exynos_hwacg_off(host);
 
 	return ret;
 }
@@ -384,8 +420,10 @@ static int dw_mci_exynos_parse_dt(struct dw_mci *host)
 		return -ENOMEM;
 
 	for (idx = 0; idx < ARRAY_SIZE(exynos_compat); idx++) {
-		if (of_device_is_compatible(np, exynos_compat[idx].compatible))
+		if (of_device_is_compatible(np, exynos_compat[idx].compatible)) {
 			priv->ctrl_type = exynos_compat[idx].ctrl_type;
+			priv->flags = exynos_compat[idx].flags;
+		}
 	}
 
 	if (priv->ctrl_type == DW_MCI_TYPE_EXYNOS4412)

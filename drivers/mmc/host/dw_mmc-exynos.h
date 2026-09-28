@@ -16,6 +16,10 @@
 #define SDMMC_HS400_ASYNC_FIFO_CTRL	0x184
 #define SDMMC_HS400_DLINE_CTRL		0x188
 
+/* Exynos 8895: HWACG clock-stop control */
+#define SDMMC_FORCE_CLK_STOP		0x0B0	/* S:drivers/mmc/host/dw_mmc-exynos.h:120 */
+#define SDMMC_MMC_HWACG_CONTROL		BIT(4)	/* S:drivers/mmc/host/dw_mmc-exynos.h:230 */
+
 /* CLKSEL register defines */
 #define SDMMC_CLKSEL_CCLK_SAMPLE(x)	(((x) & 7) << 0)
 #define SDMMC_CLKSEL_CCLK_DRIVE(x)	(((x) & 7) << 16)
