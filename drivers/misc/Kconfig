@@ -670,6 +670,10 @@ config PKVM_IOMMU_TEMPLATE
 
 		Say N here unless you know what you are doing.
 
+config BCM43XX_BT_LPM
+	bool "BCM43xx Bluetooth power, BT_WAKE and HOST_WAKE (Exynos8895 greatlte)"
+	depends on OF && GPIOLIB && RFKILL=y && SERIAL_SAMSUNG=y
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"
