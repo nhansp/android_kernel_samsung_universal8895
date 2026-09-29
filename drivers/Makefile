@@ -200,3 +200,5 @@ obj-$(CONFIG_S390)		+= s390/
 obj-$(CONFIG_TRUSTONIC_TEE)	+= gud/
 # greatlte WP-6C: Samsung SSP sensor hub, sensors class, grip (L6C 5.3, 5.9; stock S:drivers/Makefile:196)
 obj-$(CONFIG_SENSORS_SYSFS)	+= sensorhub/
+# greatlte WP-6C: GPS standby line (L6C 5.4; stock S:drivers/Makefile:212)
+obj-$(CONFIG_GPS_SEC_PWR)	+= gps/

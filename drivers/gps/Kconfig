@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# GPS power control (spec L6C 5.4; replaces the stock S:drivers/gps/sec_gps_bcm47531.c,
+# CONFIG_GPS_BCMxxxxx/CONFIG_GPS_BCM47531, IKC:4835, :4839)
+#
+
+config GPS_SEC_PWR
+	bool "Samsung GPS standby line (GPS_PWR_EN) for lhd"
+	depends on OF && GPIOLIB
+	select SAMSUNG_SEC_CLASS
+	help
+	  Exposes the nSTDBY line of the BCM4774 GNSS/sensor-hub combo as
+	  /sys/class/sec/gps/GPS_PWR_EN/value, where the Broadcom lhd daemon
+	  switches it (Galaxy Note 8).
