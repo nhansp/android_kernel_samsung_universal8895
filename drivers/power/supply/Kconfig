@@ -620,6 +620,18 @@ config CHARGER_MAX77705
 	help
 	  Say Y to enable support for the Maxim MAX77705 battery charger.
 
+config CHARGER_MAX77865
+	bool "Maxim MAX77865 battery charger driver"
+	depends on MFD_MAX77865 && THERMAL && REGULATOR
+	select REGMAP_I2C
+	select MFD_SYSCON
+	help
+	  Say Y to enable the battery charger of the Maxim MAX77865 companion
+	  PMIC (Samsung Galaxy Note 8): charger, "ac" and "usb" power supplies,
+	  the charge-control policy with the stock thermal, full-charge and
+	  safety-timer rules, the USB OTG VBUS boost regulator and the
+	  power-off-with-charger restart into LP charging.
+
 config CHARGER_MAX77976
 	tristate "Maxim MAX77976 battery charger driver"
 	depends on I2C
