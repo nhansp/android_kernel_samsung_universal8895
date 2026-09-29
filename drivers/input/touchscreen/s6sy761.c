@@ -193,6 +193,21 @@ static int s6sy761_read_events(struct s6sy761_data *sdata, u16 n_events)
 	return ret == ARRAY_SIZE(msgs) ? 0 : -EIO;
 }
 
+/*
+ * End of a report. The S6SY661 variant also emits BTN_TOUCH (with the pointer emulation of
+ * INPUT_MT_DIRECT) through input_mt_sync_frame(): stock reports BTN_TOUCH 1 on every press and
+ * 0 when the last finger is released (S:drivers/input/touchscreen/sec_ts_y661/sec_ts.c:1221,
+ * 1273,1324), and input_mt_init_slots(INPUT_MT_DIRECT) advertises BTN_TOUCH
+ * (A:drivers/input/input-mt.c:62-64), so without it Android's multi-touch mapper sees BTN_TOUCH
+ * supported but never pressed and reads every contact as a hover.
+ */
+static void s6sy761_sync(struct s6sy761_data *sdata)
+{
+	if (sdata->variant->s6sy661)
+		input_mt_sync_frame(sdata->input);
+	input_sync(sdata->input);
+}
+
 static void s6sy761_report_coordinates(struct s6sy761_data *sdata,
 				       u8 *event, u8 tid)
 {
@@ -211,7 +226,7 @@ static void s6sy761_report_coordinates(struct s6sy761_data *sdata,
 	input_report_abs(sdata->input, ABS_MT_TOUCH_MINOR, minor);
 	input_report_abs(sdata->input, ABS_MT_PRESSURE, z);
 
-	input_sync(sdata->input);
+	s6sy761_sync(sdata);
 }
 
 static void s6sy761_report_release(struct s6sy761_data *sdata,
@@ -220,7 +235,7 @@ static void s6sy761_report_release(struct s6sy761_data *sdata,
 	input_mt_slot(sdata->input, tid);
 	input_mt_report_slot_state(sdata->input, MT_TOOL_FINGER, false);
 
-	input_sync(sdata->input);
+	s6sy761_sync(sdata);
 }
 
 static void s6sy761_handle_coordinates(struct s6sy761_data *sdata, u8 *event)
@@ -485,7 +500,7 @@ static void s6sy661_power_off(struct s6sy761_data *sdata)
 			input_mt_slot(sdata->input, i);
 			input_mt_report_slot_inactive(sdata->input);
 		}
-		input_sync(sdata->input);
+		s6sy761_sync(sdata);
 	}
 	regulator_disable(sdata->regulators[S6SY761_REGULATOR_VDD].consumer);
 	regulator_disable(sdata->regulators[S6SY761_REGULATOR_AVDD].consumer);
