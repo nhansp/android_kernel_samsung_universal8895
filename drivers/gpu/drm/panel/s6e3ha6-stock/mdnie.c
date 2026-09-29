@@ -25,9 +25,7 @@
 #include "panel_drv.h"
 #include "mdnie.h"
 #include "copr.h"
-#ifdef CONFIG_DISPLAY_USE_INFO
 #include "dpui.h"
-#endif
 
 #ifdef MDNIE_SELF_TEST
 int g_coord_x = MIN_WCRD_X;
@@ -50,9 +48,7 @@ static const char * const mdnie_maptbl_name[] = {
 	[MDNIE_VIDEO_ENHANCER_THIRD_MAPTBL] = "video_enhancer_third",
 	[MDNIE_HMD_8_MAPTBL] = "hmd_8",
 	[MDNIE_HMD_16_MAPTBL] = "hmd_16",
-#if defined(CONFIG_TDMB)
 	[MDNIE_DMB_MAPTBL] = "dmb",
-#endif
 	/* ACCESSIBILITY */
 	[MDNIE_NEGATIVE_MAPTBL] = "negative",
 	[MDNIE_COLOR_BLIND_MAPTBL] = "color_blind",
@@ -153,10 +149,8 @@ int mdnie_current_state(struct mdnie_info *mdnie)
 		return MDNIE_NIGHT_MODE;
 	if (IS_HBM_MODE(mdnie))
 		return MDNIE_HBM_MODE;
-#if defined(CONFIG_TDMB)
 	if (IS_DMB_MODE(mdnie))
 		return MDNIE_DMB_MODE;
-#endif
 	if (IS_SCENARIO_MODE(mdnie))
 		return MDNIE_SCENARIO_MODE;
 	return MDNIE_OFF_MODE;
@@ -192,11 +186,9 @@ int mdnie_get_maptbl_index(struct mdnie_info *mdnie)
 	case MDNIE_HBM_MODE:
 		index = MDNIE_HBM_MAPTBL;
 		break;
-#if defined(CONFIG_TDMB)
 	case MDNIE_DMB_MODE:
 		index = MDNIE_DMB_MAPTBL;
 		break;
-#endif
 	case MDNIE_SCENARIO_MODE:
 		index = MAPTBL_IDX_SCENARIO(mdnie->props.scenario);
 		break;
@@ -503,9 +495,7 @@ int mdnie_update(struct mdnie_info *mdnie)
 	}
 	mutex_unlock(&mdnie->lock);
 
-#ifdef CONFIG_EXYNOS_DECON_LCD_COPR
 	copr_update_start(&panel->copr, 3);
-#endif
 
 	return 0;
 }
@@ -1073,7 +1063,6 @@ static ssize_t mdnie_ldu_store(struct device *dev,
 	return count;
 }
 
-#ifdef CONFIG_SUPPORT_HMD
 static ssize_t hmt_color_temperature_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -1106,7 +1095,6 @@ static ssize_t hmt_color_temperature_store(struct device *dev,
 
 	return count;
 }
-#endif
 
 struct device_attribute mdnie_dev_attrs[] = {
 	__PANEL_ATTR_RW(mode, 0664),
@@ -1122,9 +1110,7 @@ struct device_attribute mdnie_dev_attrs[] = {
 	__PANEL_ATTR_RW(hdr, 0664),
 	__PANEL_ATTR_RW(light_notification, 0664),
 	__PANEL_ATTR_RW(mdnie_ldu, 0664),
-#ifdef CONFIG_SUPPORT_HMD
 	__PANEL_ATTR_RW(hmt_color_temperature, 0664),
-#endif
 };
 
 int mdnie_enable(struct mdnie_info *mdnie)
@@ -1204,7 +1190,6 @@ static int mdnie_register_fb(struct mdnie_info *mdnie)
 	return fb_register_client(&mdnie->fb_notif);
 }
 
-#ifdef CONFIG_DISPLAY_USE_INFO
 #define MDNIE_WOFS_ORG_PATH ("/efs/FactoryApp/mdnie")
 static int mdnie_get_efs(char *filename, int *value)
 {
@@ -1323,7 +1308,6 @@ static int mdnie_register_dpui(struct mdnie_info *mdnie)
 	mdnie->dpui_notif.notifier_call = dpui_notifier_callback;
 	return dpui_logging_register(&mdnie->dpui_notif, DPUI_TYPE_PANEL);
 }
-#endif /* CONFIG_DISPLAY_USE_INFO */
 
 int mdnie_probe(struct panel_device *panel, struct mdnie_tune *mdnie_tune)
 {
@@ -1429,9 +1413,7 @@ int mdnie_probe(struct panel_device *panel, struct mdnie_tune *mdnie_tune)
 	}
 
 	mdnie_register_fb(mdnie);
-#ifdef CONFIG_DISPLAY_USE_INFO
 	mdnie_register_dpui(mdnie);
-#endif
 	mutex_unlock(&mdnie->lock);
 	mdnie_enable(mdnie);
 	dev_info(mdnie->dev, "registered successfully\n");

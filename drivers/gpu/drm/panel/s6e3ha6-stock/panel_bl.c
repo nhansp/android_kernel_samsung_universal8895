@@ -17,10 +17,8 @@
 #include "panel_bl.h"
 #include "copr.h"
 
-#ifdef CONFIG_PANEL_AID_DIMMING
 #include "dimming.h"
 #include "panel_dimming.h"
-#endif
 #include "panel_drv.h"
 
 static int brt_cache_tbl[MAX_PANEL_BL_SUBDEV][BRT_USER(EXTEND_BRIGHTNESS) + 1];
@@ -156,7 +154,6 @@ static int search_tbl(int *tbl, int sz, enum SEARCH_TYPE type, int value)
 	return -1;
 }
 
-#ifdef CONFIG_PANEL_AID_DIMMING
 static int search_brt_tbl(struct brightness_table *brt_tbl, int brightness)
 {
 	if (unlikely(!brt_tbl || !brt_tbl->brt)) {
@@ -377,7 +374,6 @@ int get_actual_brightness_interpolation(struct panel_bl_device *panel_bl, int br
 	return get_subdev_actual_brightness_interpolation(panel_bl,
 			panel_bl->props.id, brightness);
 }
-#endif /* CONFIG_PANEL_AID_DIMMING */
 
 static void panel_bl_update_acl_state(struct panel_bl_device *panel_bl)
 {
@@ -387,13 +383,11 @@ static void panel_bl_update_acl_state(struct panel_bl_device *panel_bl)
 	panel = to_panel_device(panel_bl);
 	panel_data = &panel->panel_data;
 
-#ifdef CONFIG_SUPPORT_HMD
 	if (panel_bl->props.id == PANEL_BL_SUBDEV_TYPE_HMD) {
 		panel_bl->props.acl_opr = ACL_OPR_OFF;
 		panel_bl->props.acl_pwrsave = ACL_PWRSAVE_OFF;
 		return;
 	}
-#endif
 	if (is_hbm_brightness(panel_bl, panel_bl->props.brightness))
 		panel_bl->props.acl_opr = ACL_OPR_08P;
 	else
@@ -473,18 +467,14 @@ int panel_bl_set_brightness(struct panel_bl_device *panel_bl, int id, int force)
 		goto set_br_exit;
 
 	g_tracing_mark_write('C', "lcd_br", luminance);
-#ifdef CONFIG_SUPPORT_HMD
 	if (id == PANEL_BL_SUBDEV_TYPE_HMD)
 		index = PANEL_HMD_BL_SEQ;
-#endif
 	ret = panel_do_seqtbl_by_index(panel, index);
 	if (unlikely(ret < 0)) {
 		pr_err("%s, failed to write seqtbl\n", __func__);
 		goto set_br_exit;
 	}
-#ifdef CONFIG_EXYNOS_DECON_LCD_COPR
 	copr_update_start(&panel->copr, 3);
-#endif
 
 set_br_exit:
 	return ret;
@@ -520,13 +510,11 @@ static int panel_set_brightness(struct backlight_device *bd)
 		goto exit_set;
 	}
 
-#ifdef CONFIG_SUPPORT_DOZE
 	if (panel->state.cur_state == PANEL_STATE_ALPM) {
 		pr_info("%s bl-%d plat_br:%d - store in LPM MODE\n",
 				__func__, PANEL_BL_SUBDEV_TYPE_DISP, brightness);
 		goto exit_set;
 	}
-#endif
 
 	ret = panel_bl_set_brightness(panel_bl, PANEL_BL_SUBDEV_TYPE_DISP, 1);
 	if (ret) {

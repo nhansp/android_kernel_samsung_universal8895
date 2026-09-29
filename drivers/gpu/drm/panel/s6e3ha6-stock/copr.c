@@ -589,15 +589,6 @@ static int copr_fb_notifier_callback(struct notifier_block *self,
 	if (unlikely(!copr->props.support))
 		return 0;
 
-#if 0
-	if (fb_blank == FB_BLANK_UNBLANK) {
-		if (!early_blank)
-			copr_enable(copr);
-	} else if (fb_blank == FB_BLANK_POWERDOWN) {
-		if (early_blank)
-			copr_disable(copr);
-	}
-#endif
 
 	return 0;
 }

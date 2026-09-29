@@ -61,13 +61,7 @@ static u8 POC_PGM_ENABLE[] = { 0xC0, 0x02 };
 static u8 POC_PGM_DISABLE[] = { 0xC0, 0x00 };
 static u8 POC_EXECUTE[] = { 0xC0, 0x03 };
 static u8 POC_WR_ENABLE[] = { 0xC1, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, BDIV };
-#if defined(CONFIG_POC_DREAM)
-static u8 POC_QD_ENABLE[] = { 0xC1, 0x00, 0x01, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10 };
-#elif defined(CONFIG_POC_DREAM2)
-static u8 POC_QD_ENABLE[] = { 0xC1, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x10 };
-#else
 static u8 POC_QD_ENABLE[] = { 0xC1, 0x00, 0x01, 0x40, 0x02, 0x00, 0x00, 0x00, 0x00, 0x10 };
-#endif
 static u8 POC_WR_STT[] = { 0xC1, 0x00, 0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, BDIV };
 static u8 POC_WR_END[] = { 0xC1, 0x00, 0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, BDIV };
 static u8 POC_RD_STT[] = { 0xC1, 0x00, 0x6B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, BDIV, 0x01 };
@@ -1030,7 +1024,6 @@ static const struct file_operations panel_poc_fops = {
 	.release = panel_poc_release,
 };
 
-#ifdef CONFIG_DISPLAY_USE_INFO
 #define EPOCEFS_IMGIDX (100)
 enum {
 	EPOCEFS_NOENT = 1,		/* No such file or directory */
@@ -1265,7 +1258,6 @@ static int poc_notifier_callback(struct notifier_block *self,
 
 	return 0;
 }
-#endif /* CONFIG_DISPLAY_USE_INFO */
 
 int panel_poc_probe(struct panel_poc_device *poc_dev)
 {
@@ -1294,7 +1286,6 @@ int panel_poc_probe(struct panel_poc_device *poc_dev)
 	poc_info->poc = 1;	/* default enabled */
 	poc_dev->opened = 0;
 
-#ifdef CONFIG_DISPLAY_USE_INFO
 	poc_info->total_trycount = -1;
 	poc_info->total_failcount = -1;
 
@@ -1304,7 +1295,6 @@ int panel_poc_probe(struct panel_poc_device *poc_dev)
 		panel_err("ERR:PANEL:%s:failed to register dpui notifier callback\n", __func__);
 		goto exit_probe;
 	}
-#endif
 
 exit_probe:
 	return ret;

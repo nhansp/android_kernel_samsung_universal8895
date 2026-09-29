@@ -1469,9 +1469,6 @@ void print_input_data(struct dimming_info *dim_info)
 	print_dimming_info(dim_info, TAG_TP_LUT_START);
 	print_dimming_info(dim_info, TAG_DIM_LUT_INFO_START);
 	print_dimming_info(dim_info, TAG_DIM_LUT_START);
-#if 0
-	print_dimming_info(dim_info, TAG_MTP_OFFSET_START);
-#endif
 }
 
 void print_tbl(struct dimming_info *dim_info, s32 (*tbl)[MAX_COLOR])
@@ -1625,10 +1622,6 @@ int process_dimming(struct dimming_info *dim_info)
 	 */
 	generate_gamma_table(dim_info);
 
-#if 0
-	print_dimming_tp_output(dim_lut, dim_info->tp, dim_info->nr_luminance);
-	print_dimming_info(dim_info, TAG_MTP_OFFSET_START);
-#endif
 #ifdef DEBUG_DIMMING_RESULT
 	print_dimming_info(dim_info, TAG_GAMMA_CENTER_START);
 #endif

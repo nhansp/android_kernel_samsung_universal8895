@@ -18,15 +18,9 @@ struct panel_info;
 struct panel_device;
 
 #undef DEBUG_PAC
-#define CONFIG_LCD_EXTEND_HBM
 
-#ifdef CONFIG_PANEL_BACKLIGHT_PAC_3_0
 #define BRT_SCALE	(100)
 #define PANEL_BACKLIGHT_PAC_STEPS	(512)
-#else
-#define PANEL_BACKLIGHT_PAC_STEPS	(256)
-#define BRT_SCALE	(1)
-#endif
 #define BRT_SCALE_UP(_val_)	((_val_) * BRT_SCALE)
 #define BRT_SCALE_DN(_val_)	((_val_) / BRT_SCALE)
 #define BRT_TBL_INDEX(_val_)	(BRT_SCALE_DN((_val_) + ((BRT_SCALE) - 1)))
@@ -44,11 +38,7 @@ struct panel_device;
 #define EXTEND_HBM_MAX_BRIGHTNESS	(BRT(366))
 #define EXTEND_HBM_BRIGHTNESS_STEPS	(1)
 
-#ifdef CONFIG_LCD_EXTEND_HBM
 #define EXTEND_BRIGHTNESS			(EXTEND_HBM_MAX_BRIGHTNESS)
-#else
-#define EXTEND_BRIGHTNESS			(HBM_MAX_BRIGHTNESS)
-#endif
 #define IS_UI_BRIGHTNESS(br)            (((br) <= UI_MAX_BRIGHTNESS) ? 1 : 0)
 #define IS_HBM_BRIGHTNESS(br)           ((((br) >= HBM_MIN_BRIGHTNESS) && ((br) <= HBM_MAX_BRIGHTNESS)) ? 1 : 0)
 #define IS_EXT_HBM_BRIGHTNESS(br)       ((((br) >= EXTEND_HBM_MIN_BRIGHTNESS) && ((br) <= EXTEND_HBM_MAX_BRIGHTNESS)) ? 1 : 0)
@@ -124,10 +114,6 @@ struct panel_bl_device {
 	struct mutex lock;
 	struct panel_bl_properties props;
 	struct panel_bl_sub_dev subdev[MAX_PANEL_BL_SUBDEV];
-#ifdef CONFIG_SUPPORT_INDISPLAY
-	int saved_br;
-	bool finger_layer;
-#endif
 };
 
 int panel_bl_probe(struct panel_device *panel);

@@ -43,7 +43,6 @@ struct stdphy_pms {
 
 #define LDI_NAME_LENGTH	32
 
-#ifdef CONFIG_SUPPORT_DSU
 #define MAX_DSU_RES_NUMBER 5
 
 struct dsu_res_info {
@@ -59,9 +58,7 @@ struct dsu_info_dt {
 	unsigned int dsu_number;
 	struct dsu_res_info res_info[MAX_DSU_RES_NUMBER];
 };
-#endif
 
-#ifdef CONFIG_SUPPORT_HDR
 #define HDR_CAPA_NUM		4
 
 struct lcd_hdr_info {
@@ -71,7 +68,6 @@ struct lcd_hdr_info {
 	unsigned int hdr_max_avg_luma;
 	unsigned int hdr_min_luma;
 };
-#endif /* CONFIG_SUPPORT_HDR */
 
 struct decon_lcd {
 	enum decon_psr_mode mode;
@@ -107,13 +103,9 @@ struct decon_lcd {
 	unsigned int cmd_underrun_lp_ref;
 	unsigned int vt_compensation;
 	const char *ldi_name;
-#ifdef CONFIG_SUPPORT_DSU
 	unsigned int dsu_mode;
 	struct dsu_info_dt dt_dsu_info;
-#endif
-#ifdef CONFIG_SUPPORT_HDR
 	struct lcd_hdr_info hdr_info;
-#endif
 };
 
 struct decon_dsc {

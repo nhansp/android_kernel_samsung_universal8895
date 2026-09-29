@@ -101,7 +101,6 @@ struct panel_copr_data {
 	u32 nr_maptbl;
 };
 
-#ifdef CONFIG_EXYNOS_DECON_LCD_COPR
 bool copr_is_enabled(struct copr_info *);
 int copr_enable(struct copr_info *);
 int copr_disable(struct copr_info *);
@@ -110,14 +109,4 @@ int copr_update(struct copr_info *);
 int copr_get_value(struct copr_info *);
 int copr_get_average(struct copr_info *, int *, int *);
 int copr_probe(struct panel_device *, struct panel_copr_data *);
-#else
-static inline bool copr_is_enabled(struct copr_info *copr) { return 0; }
-static inline int copr_enable(struct copr_info *copr) { return 0; }
-static inline int copr_disable(struct copr_info *copr) { return 0; }
-static inline int copr_update_start(struct copr_info *copr, int count) { return 0; }
-static inline int copr_update(struct copr_info *copr) { return 0; }
-static inline int copr_get_value(struct copr_info *copr) { return 0; }
-static inline int copr_get_average(struct copr_info *copr, int *c_avg, int *b_avg) { return 0; }
-static inline int copr_probe(struct panel_device *panel, struct panel_copr_data *copr_data) { return 0; }
-#endif
 #endif /* __COPR_H__ */

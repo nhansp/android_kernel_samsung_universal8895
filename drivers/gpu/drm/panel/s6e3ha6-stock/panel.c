@@ -23,14 +23,10 @@
 #include "panel.h"
 #include "panel_bl.h"
 //#include "mdnie.h"
-#ifdef CONFIG_EXYNOS_DECON_LCD_SPI
 #include "spi.h"
-#endif
 
-#ifdef CONFIG_PANEL_AID_DIMMING
 #include "dimming.h"
 #include "panel_dimming.h"
-#endif
 
 const char *cmd_type_name[] = {
 	[CMD_TYPE_NONE] = "NONE",
@@ -41,9 +37,7 @@ const char *cmd_type_name[] = {
 	[SPI_PKT_TYPE_WR] = "SPI_WR",
 	[DSI_PKT_TYPE_WR] = "DSI_WR",
 	[DSI_PKT_TYPE_COMP] = "DSI_DSC_WR",
-#ifdef CONFIG_ACTIVE_CLOCK
 	[DSI_PKT_TYPE_WR_SR] = "DSI_SIDE_RAM_WR",
-#endif
 	[DSI_PKT_TYPE_PPS] = "DSI_PPS_WR",
 	[SPI_PKT_TYPE_RD] = "SPI_RD",
 	[DSI_PKT_TYPE_RD] = "DSI_RD",
@@ -697,7 +691,6 @@ static int panel_do_tx_packet(struct panel_device *panel, struct pktinfo *info)
 			break;
 		case DSI_PKT_TYPE_RD:
 			break;
-#ifdef CONFIG_ACTIVE_CLOCK
 		case DSI_PKT_TYPE_WR_SR:
 			ret = mipi_ops->write(id, MIPI_DSI_OEM1_WR_SIDE_RAM, info->data, info->dlen);
 			if (ret != info->dlen) {
@@ -706,7 +699,6 @@ static int panel_do_tx_packet(struct panel_device *panel, struct pktinfo *info)
 				return -EINVAL;
 			}
 			break;
-#endif
 		default:
 			panel_warn("%s, unknown pakcet type %d\n", __func__, type);
 			break;
@@ -865,15 +857,6 @@ int panel_do_seqtbl(struct panel_device *panel, struct seqinfo *seqtbl)
 				break;
 		}
 
-#ifdef CONFIG_SUPPORT_PANEL_SWAP
-		if (ret < 0) {
-			pr_err("%s, failed to do_seq %s %s %s\n", __func__,
-					seqtbl->name, cmd_type_name[type],
-					(((struct cmdinfo *)cmdtbl[i])->name ?
-					 ((struct cmdinfo *)cmdtbl[i])->name : "none"));
-			return ret;
-		}
-#endif
 
 #ifdef DEBUG_PANEL
 		pr_info("SEQ: %s %s %s-\n", seqtbl->name, cmd_type_name[type],
@@ -1164,10 +1147,8 @@ int panel_rx_nbytes(struct panel_device *panel,
 
 		if (type == DSI_PKT_TYPE_RD) {
 			ret = mipi_ops->read(id, addr, p, read_len);
-#ifdef CONFIG_EXYNOS_DECON_LCD_SPI
 		} else if (type == SPI_PKT_TYPE_RD) {
 			ret = panel_spi_read_data(panel->spi, addr, p, read_len);
-#endif
 		} else {
 			pr_err("%s, unkown packet type %d\n", __func__, type);
 			return -EINVAL;

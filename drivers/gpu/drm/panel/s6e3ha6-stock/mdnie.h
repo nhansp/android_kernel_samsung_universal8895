@@ -281,12 +281,8 @@ enum MDNIE_MAPTBL {
 	MDNIE_VIDEO_ENHANCER_THIRD_MAPTBL,
 	MDNIE_HMD_8_MAPTBL,
 	MDNIE_HMD_16_MAPTBL,
-#if defined(CONFIG_TDMB)
 	MDNIE_DMB_MAPTBL,
 	MDNIE_SCENARIO_MAPTBL_END = MDNIE_DMB_MAPTBL,
-#else
-	MDNIE_SCENARIO_MAPTBL_END = MDNIE_HMD_16_MAPTBL,
-#endif
 	/* ACCESSIBILITY */
 	MDNIE_ACCESSIBILITY_MAPTBL_START,
 	MDNIE_NEGATIVE_MAPTBL = MDNIE_ACCESSIBILITY_MAPTBL_START,
@@ -461,9 +457,7 @@ struct mdnie_properties {
 	unsigned update_sensorRGB:1;	/* sensorRGB scr white updated */
 
 	/* mdnie tuning */
-#ifdef CONFIG_EXYNOS_DECON_LCD_TUNING
 	char tfilepath[128];			/* tuning file path */
-#endif
 };
 
 struct mdnie_info {
@@ -472,9 +466,7 @@ struct mdnie_info {
 	struct mutex lock;
 	struct mdnie_properties props;
 	struct notifier_block fb_notif;
-#ifdef CONFIG_DISPLAY_USE_INFO
 	struct notifier_block dpui_notif;
-#endif
 	struct maptbl *maptbl;
 	u32 nr_maptbl;
 	struct maptbl *scr_white_maptbl;
@@ -486,17 +478,10 @@ struct mdnie_info {
 	u32 nr_reg;
 };
 
-#ifdef CONFIG_EXYNOS_DECON_MDNIE_LITE
 extern int mdnie_probe(struct panel_device *panel, struct mdnie_tune *mdnie_tune);
 extern int mdnie_enable(struct mdnie_info *mdnie);
 extern int mdnie_disable(struct mdnie_info *mdnie);
 extern int mdnie_update(struct mdnie_info *mdnie);
-#else
-static inline int mdnie_probe(struct panel_device *panel, struct mdnie_tune *mdnie_tune) { return 0; }
-static inline int mdnie_enable(struct mdnie_info *mdnie) { return 0; }
-static inline int mdnie_disable(struct mdnie_info *mdnie) { return 0; }
-static inline int mdnie_update(struct mdnie_info *mdnie) { return 0; }
-#endif
 extern struct maptbl *mdnie_find_maptbl(struct mdnie_info *);
 extern struct maptbl *mdnie_find_etc_maptbl(struct mdnie_info *, int);
 extern int mdnie_get_maptbl_index(struct mdnie_info *);

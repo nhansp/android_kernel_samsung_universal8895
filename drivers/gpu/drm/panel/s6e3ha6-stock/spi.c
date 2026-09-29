@@ -18,10 +18,8 @@
 #include <linux/delay.h>
 #include <linux/workqueue.h>
 
-#if defined (CONFIG_OF)
 #include <linux/of_device.h>
 #include <linux/of_gpio.h>
-#endif /* CONFIG_OF */
 
 #define DRIVER_NAME "panel_spi"
 #define MAX_PANEL_SPI_RX_BUF	(256)
@@ -65,18 +63,12 @@ int panel_spi_read_data(struct spi_device *spi, u8 addr, u8 *buf, int size)
 {
 	int i, status;
 	u8 ctrl_data = PANEL_SPI_CTRL_DATA_RX;
-#ifdef CONFIG_SUPPORT_PANEL_SPI_SHORT_TEST
-	u8 dummy_rx_buf[1];
-#endif
 	u8 rx_buf[MAX_PANEL_SPI_RX_BUF];
 	struct spi_message msg;
 	struct spi_transfer xfer[] = {
 		{ .bits_per_word = 1, .len = 1, .tx_buf = &ctrl_data, },
 		{ .bits_per_word = 8, .len = 1, .tx_buf = &addr, },
 		{ .bits_per_word = 8, .len = size, .rx_buf = rx_buf, },
-#ifdef CONFIG_SUPPORT_PANEL_SPI_SHORT_TEST
-		{ .bits_per_word = 1, .len = 1, .rx_buf = dummy_rx_buf, },
-#endif
 	};
 
 	if (unlikely(!spi || !buf)) {

@@ -20,11 +20,7 @@
 #include "panel.h"
 #include "panel_drv.h"
 #include "panel_poc.h"
-#ifdef CONFIG_PANEL_POC_2_0
 #define POC_IMG_SIZE	(546008)
-#else
-#define POC_IMG_SIZE	(532816)
-#endif
 #define POC_IMG_ADDR	(0x000000)
 #define POC_PAGE		(4096)
 #define POC_TEST_PATTERN_SIZE	(4096)
@@ -33,34 +29,15 @@
 #define POC_CHKSUM_DATA_LEN		(4)
 #define POC_CHKSUM_RES_LEN		(1)
 #define POC_CHKSUM_LEN		(POC_CHKSUM_DATA_LEN + POC_CHKSUM_RES_LEN)
-#ifdef CONFIG_DISPLAY_USE_INFO
-#ifdef CONFIG_SEC_FACTORY
-#define POC_TOTAL_TRY_COUNT_FILE_PATH	("/efs/FactoryApp/poc_totaltrycount")
-#define POC_TOTAL_FAIL_COUNT_FILE_PATH	("/efs/FactoryApp/poc_totalfailcount")
-#else
 #define POC_TOTAL_TRY_COUNT_FILE_PATH	("/efs/etc/poc/totaltrycount")
 #define POC_TOTAL_FAIL_COUNT_FILE_PATH	("/efs/etc/poc/totalfailcount")
-#endif
 #define POC_INFO_FILE_PATH	("/efs/FactoryApp/poc_info")
 #define POC_USER_FILE_PATH	("/efs/FactoryApp/poc_user")
-#endif
 
-#if defined(CONFIG_POC_DREAM)
 #define ERASE_WAIT_COUNT	(180)
 #define WR_DONE_UDELAY		(4000)
 #define QD_DONE_MDELAY		(30)
 #define RD_DONE_UDELAY		(200)
-#elif defined(CONFIG_POC_DREAM2)
-#define ERASE_WAIT_COUNT	(41)
-#define WR_DONE_UDELAY		(800)
-#define QD_DONE_MDELAY		(10)
-#define RD_DONE_UDELAY		(200)
-#else
-#define ERASE_WAIT_COUNT	(180)
-#define WR_DONE_UDELAY		(4000)
-#define QD_DONE_MDELAY		(30)
-#define RD_DONE_UDELAY		(200)
-#endif
 
 enum poc_flash_state {
 	POC_FLASH_STATE_UNKNOWN = -1,
@@ -127,10 +104,8 @@ struct panel_poc_info {
 	u32 rpos;
 	u32 rsize;
 
-#ifdef CONFIG_DISPLAY_USE_INFO
 	int total_failcount;
 	int total_trycount;
-#endif
 };
 
 struct panel_poc_device {
@@ -142,9 +117,7 @@ struct panel_poc_device {
 	atomic_t cancel;
 	bool opened;
 	struct panel_poc_info poc_info;
-#ifdef CONFIG_DISPLAY_USE_INFO
 	struct notifier_block poc_notif;
-#endif
 };
 
 #define IOC_GET_POC_STATUS	_IOR('A', 100, __u32)		/* 0:NONE, 1:ERASED, 2:WROTE, 3:READ */

@@ -379,7 +379,6 @@ struct dimming_init_info {
 	s32 hbm_luminance;
 };
 
-#ifdef CONFIG_PANEL_AID_DIMMING
 int init_dimming_info(struct dimming_info *, struct dimming_init_info *);
 int init_dimming_mtp(struct dimming_info *, s32 (*)[MAX_COLOR]);
 int init_dimming_hbm_info(struct dimming_info *, s32 (*)[MAX_COLOR], u32);
@@ -388,14 +387,4 @@ void get_dimming_gamma_compact(struct dimming_info *, u32, u8 *);
 void get_dimming_gamma(struct dimming_info *, u32, u8 *);
 /* for debug */
 void print_dimming_info(struct dimming_info *dim_info, int tag);
-#else
-static inline int init_dimming_info(struct dimming_info *dim_info, struct dimming_init_info *src) { return 0; }
-static inline int init_dimming_mtp(struct dimming_info *dim_info, s32 (*mtp)[MAX_COLOR]) { return 0; }
-static inline int init_dimming_hbm_info(struct dimming_info *dim_info, s32 (*hbm_gamma_tbl)[MAX_COLOR], u32 hbm_luminance) { return 0; }
-static inline int process_dimming(struct dimming_info *dim_info) { return 0; }
-static inline void get_dimming_gamma_compact(struct dimming_info *dim_info, u32 luminance, u8 *output) {}
-static inline void get_dimming_gamma(struct dimming_info *dim_info, u32 luminance, u8 *output) {}
-/* for debug */
-static inline void print_dimming_info(struct dimming_info *dim_info, int tag) {}
-#endif	/* CONFIG_PANEL_AID_DIMMING */
 #endif	/* _DIMMING_H_ */

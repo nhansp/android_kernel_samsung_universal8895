@@ -20,15 +20,9 @@
 #include "panel_bl.h"
 #include "../dpu/decon.h"
 #include "copr.h"
-#if defined(CONFIG_EXYNOS_DECON_MDNIE_LITE)
 #include "mdnie.h"
-#endif
-#ifdef CONFIG_PANEL_AID_DIMMING
 #include "dimming.h"
-#endif
-#ifdef CONFIG_SUPPORT_POC_FLASH
 #include "panel_poc.h"
-#endif
 
 extern struct kset *devices_kset;
 
@@ -535,7 +529,6 @@ static ssize_t mcd_mode_store(struct device *dev,
 	return size;
 }
 
-#ifdef CONFIG_SUPPORT_MST
 static ssize_t mst_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
@@ -588,242 +581,12 @@ static ssize_t mst_store(struct device *dev,
 
 	return size;
 }
-#endif
 
 
-#ifdef CONFIG_SUPPORT_GRAM_CHECKSUM
-u8 checksum[4] = { 0x12, 0x34, 0x56, 0x78 };
-static bool gct_chksum_is_valid(struct panel_device *panel)
-{
-	int i;
-	struct panel_info *panel_data;
-	panel_data = &panel->panel_data;
-
-	for(i = 0; i < 4; i++)
-		if (checksum[i] != panel_data->props.gct_valid_chksum)
-			return false;
-	return true;
-}
-
-static void prepare_gct_mode(struct panel_device *panel)
-{
-	struct panel_info *panel_data;
-	panel_data = &panel->panel_data;
-	set_decon_gct_state(0, panel_data->props.gct_on);
-	usleep_range(90000, 100000);
-	disable_irq(panel->pad.irq_disp_det);
-}
-
-static void clear_gct_mode(struct panel_device *panel)
-{
-	struct panel_info *panel_data;
-	int ret = 0;
-	panel_data = &panel->panel_data;
-	clear_disp_det_pend(panel);
-	enable_irq(panel->pad.irq_disp_det);
-	panel_data->props.gct_on = GRAM_TEST_OFF;
-	set_decon_gct_state(0, panel_data->props.gct_on);
-	usleep_range(90000, 100000);
-	ret = panel_do_seqtbl_by_index(panel, PANEL_DISPLAY_ON_SEQ);
-	if (unlikely(ret < 0)) {
-		panel_err("PANEL:ERR:%s, failed to write init seqtbl\n", __func__);
-	}
-}
-
-static ssize_t gct_show(struct device *dev,
-	struct device_attribute *attr, char *buf)
-{
-	struct panel_info *panel_data;
-	struct panel_device *panel = dev_get_drvdata(dev);
-
-	if (panel == NULL) {
-		panel_err("PANEL:ERR:%s:panel is null\n", __func__);
-		return -EINVAL;
-	}
-	panel_data = &panel->panel_data;
-
-	sprintf(buf, "%u 0x%x\n", gct_chksum_is_valid(panel) ? 1 : 0,
-			*(u32 *)checksum);
-
-	return strlen(buf);
-}
-
-static ssize_t gct_store(struct device *dev,
-	struct device_attribute *attr, const char *buf, size_t size)
-{
-	int value, rc, ret;
-	struct panel_info *panel_data;
-	struct panel_device *panel = dev_get_drvdata(dev);
-	int index = 0, vddm = 0, pattern = 0;
-
-	if (panel == NULL) {
-		panel_err("PANEL:ERR:%s:panel is null\n", __func__);
-		return -EINVAL;
-	}
-	panel_data = &panel->panel_data;
-
-	rc = kstrtouint(buf, (unsigned int)0, &value);
-	if (rc < 0)
-		return rc;
-
-	mutex_lock(&panel->op_lock);
-	panel_data->props.gct_on = value;
-	mutex_unlock(&panel->op_lock);
-
-	if (panel_data->props.gct_on == GRAM_TEST_ON) {
-		prepare_gct_mode(panel);
-
-		/* clear checksum buffer */
-		checksum[0] = 0x12;
-		checksum[1] = 0x34;
-		checksum[2] = 0x56;
-		checksum[3] = 0x78;
-
-		ret = panel_do_seqtbl_by_index(panel, PANEL_GCT_ENTER_SEQ);
-		if (unlikely(ret < 0)) {
-			pr_err("%s, failed to write gram-checksum-test-enter seq\n", __func__);
-			clear_gct_mode(panel);
-			return ret;
-		}
-
-		for (vddm = VDDM_LV; vddm < MAX_VDDM; vddm++) {
-			mutex_lock(&panel->op_lock);
-			panel_data->props.gct_vddm = vddm;
-			mutex_unlock(&panel->op_lock);
-			ret = panel_do_seqtbl_by_index(panel, PANEL_GCT_VDDM_SEQ);
-			if (unlikely(ret < 0)) {
-				pr_err("%s, failed to write gram-checksum-on seq\n", __func__);
-				clear_gct_mode(panel);
-				return ret;
-			}
-			for (pattern = GCT_PATTERN_1; pattern < MAX_GCT_PATTERN; pattern++) {
-				mutex_lock(&panel->op_lock);
-				panel_data->props.gct_pattern = pattern;
-				mutex_unlock(&panel->op_lock);
-				ret = panel_do_seqtbl_by_index(panel, PANEL_GCT_IMG_UPDATE_SEQ);
-				if (unlikely(ret < 0)) {
-					pr_err("%s, failed to write gram-img-update seq\n", __func__);
-					clear_gct_mode(panel);
-					return ret;
-				}
-
-				resource_copy_by_name(panel_data, checksum + index, "gram_checksum");
-				pr_info("%s gram_checksum 0x%x\n", __func__, checksum[index++]);
-			}
-		}
-		ret = panel_do_seqtbl_by_index(panel, PANEL_GCT_EXIT_SEQ);
-		if (unlikely(ret < 0)) {
-			pr_err("%s, failed to write gram-checksum-off seq\n", __func__);
-			clear_gct_mode(panel);
-			return ret;
-		}
-		clear_gct_mode(panel);
-	}
-	dev_info(dev, "%s, gct %s\n",
-			__func__, panel_data->props.gct_on ? "on" : "off");
-
-	return size;
-}
-#endif
 
 
-#ifdef CONFIG_SUPPORT_XTALK_MODE
-static ssize_t xtalk_mode_show(struct device *dev,
-	struct device_attribute *attr, char *buf)
-{
-	struct panel_info *panel_data;
-	struct panel_device *panel = dev_get_drvdata(dev);
 
-	if (panel == NULL) {
-		panel_err("PANEL:ERR:%s:panel is null\n", __func__);
-		return -EINVAL;
-	}
-	panel_data = &panel->panel_data;
 
-	sprintf(buf, "%u\n", panel_data->props.xtalk_mode);
-
-	return strlen(buf);
-}
-
-static ssize_t xtalk_mode_store(struct device *dev,
-	struct device_attribute *attr, const char *buf, size_t size)
-{
-	int value, rc;
-	struct panel_info *panel_data;
-	struct panel_bl_device *panel_bl;
-	struct panel_device *panel = dev_get_drvdata(dev);
-	struct backlight_device *bd;
-
-	if (panel == NULL) {
-		panel_err("PANEL:ERR:%s:panel is null\n", __func__);
-		return -EINVAL;
-	}
-	panel_data = &panel->panel_data;
-	panel_bl = &panel->panel_bl;
-	bd = panel_bl->bd;
-
-	if (bd == NULL) {
-		panel_err("PANEL:ERR:%s:backlight device is null\n", __func__);
-		return -EINVAL;
-	}
-
-	rc = kstrtouint(buf, (unsigned int)0, &value);
-	if (rc < 0)
-		return rc;
-
-	if (panel_data->props.xtalk_mode == value)
-		return size;
-
-	mutex_lock(&panel_bl->lock);
-	panel_data->props.xtalk_mode = value;
-	mutex_unlock(&panel_bl->lock);
-	backlight_update_status(bd);
-
-	dev_info(dev, "%s, xtalk_mode %d\n",
-			__func__, panel_data->props.xtalk_mode);
-
-	return size;
-}
-#endif
-
-#ifdef CONFIG_DSC_DECODE_CRC
-static ssize_t dsc_decode_crc_show(struct device *dev,
-	struct device_attribute *attr, char *buf)
-{
-	int ret;
-	u8 crc[2] = {0, 0};
-	struct panel_info *panel_data;
-	struct panel_device *panel = dev_get_drvdata(dev);
-
-	if (panel == NULL) {
-		panel_err("PANEL:ERR:%s:panel is null\n", __func__);
-		return -EINVAL;
-	}
-	panel_data = &panel->panel_data;
-
-	panel_info("%s :was called\n", __func__);
-
-	ret = panel_do_seqtbl_by_index(panel, PANEL_DSC_DECODE_CRC);
-	if (unlikely(ret < 0)) {
-		pr_err("%s, failed to write dsc-decode-crc seq\n", __func__);
-		goto exit_show;
-	}
-
-	ret = resource_copy_by_name(panel_data, crc, "dsc_crc");
-	if (ret < 0) {
-		pr_err("%s, failed to read dsc crc\n", __func__);
-		goto exit_show;
-	}
-exit_show:
-	panel_info("%s : crc value : %x %x\n", __func__, crc[0], crc[1]);
-
-	sprintf(buf, "%x", crc[0] << 8 | crc[1]);
-
-	return strlen(buf);
-}
-#endif
-
-#ifdef CONFIG_SUPPORT_POC_FLASH
 static ssize_t poc_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
@@ -920,9 +683,7 @@ static ssize_t poc_store(struct device *dev,
 
 	return size;
 }
-#endif
 
-#ifdef CONFIG_SUPPORT_GRAYSPOT_TEST
 static ssize_t grayspot_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
@@ -975,9 +736,7 @@ static ssize_t grayspot_store(struct device *dev,
 
 	return size;
 }
-#endif
 
-#ifdef CONFIG_SUPPORT_HMD
 static ssize_t hmt_bright_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
@@ -1124,65 +883,8 @@ exit_store:
 	mutex_unlock(&panel_bl->lock);
 	return size;
 }
-#endif /* CONFIG_SUPPORT_HMD */
 
-#ifdef CONFIG_SUPPORT_DOZE
 
-#ifdef CONFIG_SEC_FACTORY
-
-static int backup_br = 0;
-static int factory_set_alpm(struct panel_device *panel, int mode)
-{
-	int ret = 0;
-	struct backlight_device *bd = panel->panel_bl.bd;
-	struct panel_info *panel_data = &panel->panel_data;
-
-	if (mode == panel_data->props.alpm_mode) {
-		goto do_exit;
-	}
-
-	switch (mode) {
-		case ALPM_LOW_BR:
-		case HLPM_LOW_BR:
-		case ALPM_HIGH_BR:
-		case HLPM_HIGH_BR:
-			if (panel_data->props.alpm_mode == ALPM_OFF) {
-				backup_br = bd->props.brightness;
-				bd->props.brightness = UI_MIN_BRIGHTNESS;
-				backlight_update_status(bd);
-			}
-			panel_data->props.alpm_mode = mode;
-			ret = panel_do_seqtbl_by_index(panel, PANEL_ALPM_ENTER_SEQ);
-			if (unlikely(ret < 0)) {
-				panel_err("PANEL:ERR:%s, failed to write init seqtbl\n",
-					__func__);
-			}
-		break;
-
-	case ALPM_OFF:
-		if (backup_br) {
-			bd->props.brightness = backup_br;
-			backlight_update_status(bd);
-		}
-		ret = panel_do_seqtbl_by_index(panel, PANEL_ALPM_EXIT_SEQ);
-		if (unlikely(ret < 0)) {
-			panel_err("PANEL:ERR:%s, failed to write init seqtbl\n",
-				__func__);
-		}
-		panel_data->props.alpm_mode = mode;
-		break;
-
-	default:
-		panel_err("PANEL:ERR:%s:Invalid ALPM Mode : %d\n", __func__, mode);
-		goto do_exit;
-	}
-
-	return ret;
-
-do_exit:
-	return ret;
-}
-#endif // CONFIG_SEC_FACTORY
 
 static int set_alpm_mode(struct panel_device *panel, int mode)
 {
@@ -1214,7 +916,6 @@ static int set_alpm_mode(struct panel_device *panel, int mode)
 	}
 	return ret;
 }
-#endif
 
 static ssize_t alpm_store(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t size)
@@ -1228,23 +929,14 @@ static ssize_t alpm_store(struct device *dev,
 	sscanf(buf, "%9d", &value);
 
 	panel_info("PANEL:INFO:%s:mode : %d\n", __func__, value);
-#ifdef CONFIG_SEC_FACTORY
-	if (factory_set_alpm(panel, value))
-		panel_err("PANEL:ERR:%s:failed to set factory alpm\n", __func__);
-	goto exit_store;
-#endif
 
-#ifdef CONFIG_SUPPORT_DOZE
 	if (set_alpm_mode(panel, value)) {
 		panel_err("PANEL:ERR:%s:failed to set alpm\n", __func__);
 		goto exit_store;
 	}
-#endif
 	panel_data->props.alpm_mode = value;
 
-#if defined(CONFIG_SEC_FACTORY) || defined(CONFIG_SUPPORT_DOZE)
 exit_store:
-#endif
 	mutex_unlock(&panel->io_lock);
 	return size;
 }
@@ -1267,7 +959,6 @@ static ssize_t alpm_show(struct device *dev,
 	return strlen(buf);
 }
 
-#ifdef CONFIG_PANEL_AID_DIMMING
 static void show_aid_log(struct panel_info *panel_data, int id)
 {
 	struct dimming_info *dim_info;
@@ -1384,149 +1075,12 @@ static ssize_t aid_log_show(struct device *dev,
 	print_panel_resource(panel);
 
 	show_aid_log(panel_data, PANEL_BL_SUBDEV_TYPE_DISP);
-#ifdef CONFIG_SUPPORT_HMD
 	show_aid_log(panel_data, PANEL_BL_SUBDEV_TYPE_HMD);
-#endif
 
 	return strlen(buf);
 }
-#endif /* CONFIG_PANEL_AID_DIMMING */
 
-#ifdef CONFIG_LCD_WEAKNESS_CCB
-void ccb_set_mode(struct panel_device *panel, u8 ccb, int stepping)
-{
-#if 0
-	u8 ccb_cmd[3] = {0xB7, 0x00, 0x00};
-	u8 secondval = 0;
 
-	dsim_write_hl_data(dsim, SEQ_TEST_KEY_ON_F0, ARRAY_SIZE(SEQ_TEST_KEY_ON_F0));
-	switch (dsim->priv.panel_type) {
-
-	case LCD_TYPE_S6E3HF4_WQHD:
-		ccb_cmd[1] = ccb;
-		ccb_cmd[2] = 0x2A;
-		dsim_write_hl_data(dsim, ccb_cmd, ARRAY_SIZE(ccb_cmd));
-		break;
-	case LCD_TYPE_S6E3HA3_WQHD:
-		if((ccb & 0x0F) == 0x00) {		// off
-			if(stepping) {
-				ccb_cmd[1] = dsim->priv.current_ccb;
-				for(secondval = 0x2A; secondval <= 0x3F; secondval += 1) {
-					ccb_cmd[2] = secondval;
-					dsim_write_hl_data(dsim, ccb_cmd, ARRAY_SIZE(ccb_cmd));
-					msleep(17);
-				}
-			}
-			ccb_cmd[1] = 0x00;
-			ccb_cmd[2] = 0x3F;
-			dsim_write_hl_data(dsim, ccb_cmd, ARRAY_SIZE(ccb_cmd));
-		} else {						// on
-			ccb_cmd[1] = ccb;
-			if(stepping) {
-				for(secondval = 0x3F; secondval >= 0x2A; secondval -= 1) {
-					ccb_cmd[2] = secondval;
-					dsim_write_hl_data(dsim, ccb_cmd, ARRAY_SIZE(ccb_cmd));
-					if(secondval != 0x2A)
-						msleep(17);
-				}
-			} else {
-				ccb_cmd[2] = 0x2A;
-				dsim_write_hl_data(dsim, ccb_cmd, ARRAY_SIZE(ccb_cmd));
-			}
-		}
-		msleep(17);
-		break;
-	default:
-		pr_info("%s unknown panel \n", __func__);
-		break;
-	}
-
-	dsim_write_hl_data(dsim, SEQ_TEST_KEY_OFF_F0, ARRAY_SIZE(SEQ_TEST_KEY_OFF_F0));
-#endif
-}
-
-static ssize_t weakness_ccb_show(struct device *dev,
-	struct device_attribute *attr, char *buf)
-{
-	return strlen(buf);
-}
-
-static ssize_t weakness_ccb_store(struct device *dev,
-	struct device_attribute *attr, const char *buf, size_t size)
-{
-	int ret, type, serverity;
-	unsigned char set_ccb = 0x00;
-	struct panel_info *panel_data;
-	struct panel_device *panel = dev_get_drvdata(dev);
-
-	if (panel == NULL) {
-		panel_err("PANEL:ERR:%s:panel is null\n", __func__);
-		return -EINVAL;
-	}
-	panel_data = &panel->panel_data;
-
-	ret = sscanf(buf, "%d %d", &type, &serverity);
-	if (ret < 0)
-		return ret;
-
-	dev_info(dev, "%s: type = %d serverity = %d\n", __func__, type, serverity);
-
-	if (panel_data->ccb_support == UNSUPPORT_CCB) {
-		pr_info("%s, CCB unsupported\n", __func__);
-		return size;
-	}
-
-	if ((type < 0) || (type > 3)) {
-		dev_info(dev, "%s: type is out of range\n", __func__);
-		return -EINVAL;
-	}
-
-	if ((serverity < 0) || (serverity > 9)) {
-		dev_info(dev, "%s: serverity is out of range\n", __func__);
-		return -EINVAL;
-	}
-
-	set_ccb = ((u8)(serverity) << 4);
-	switch (type) {
-		case 0:
-			set_ccb = 0;
-			panel_dbg("%s: disable ccb\n", __func__);
-			break;
-		case 1:
-			set_ccb += 1;
-			panel_dbg("%s: enable red\n", __func__);
-			break;
-		case 2:
-			set_ccb += 5;
-			panel_dbg( "%s: enable green\n", __func__);
-			break;
-		case 3:
-			if (serverity == 0) {
-				set_ccb += 9;
-				panel_dbg("%s: enable blue\n", __func__);
-			} else {
-				set_ccb = 0;
-				set_ccb += 9;
-				panel_dbg("%s, serverity is out of range, blue only support 0\n", __func__);
-			}
-			break;
-		default:
-			set_ccb = 0;
-			break;
-	}
-	if (panel->current_ccb == set_ccb) {
-		panel_dbg("%s: aleady set same ccb\n", __func__);
-	} else {
-		ccb_set_mode(panel, set_ccb, 1);
-		panel_data->current_ccb = set_ccb;
-	}
-	dev_info(dev, "%s: --\n", __func__);
-
-	return size;
-}
-#endif /* CONFIG_LCD_WEAKNESS_CCB */
-
-#if defined(CONFIG_EXYNOS_DECON_MDNIE_LITE)
 static ssize_t lux_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
@@ -1574,9 +1128,7 @@ static ssize_t lux_store(struct device *dev,
 
 	return size;
 }
-#endif /* CONFIG_EXYNOS_DECON_MDNIE_LITE */
 
-#ifdef CONFIG_EXYNOS_DECON_LCD_COPR
 static ssize_t copr_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
@@ -1673,130 +1225,7 @@ static ssize_t read_copr_show(struct device *dev,
 
 	return strlen(buf);
 }
-#endif
 
-#if 0
-#ifdef CONFIG_ACTIVE_CLOCK
-static ssize_t active_clock_show(struct device *dev,
-	struct device_attribute *attr, char *buf)
-{
-	int len = 0;
-	struct act_clk_info *info;
-	struct panel_device *panel = dev_get_drvdata(dev);
-
-	info = &panel->act_clk_dev.act_info;
-
-	len = sprintf(buf, "active en : %d\n", info->en);
-	len += sprintf(buf+len, "interval : %d ms\n", info->interval);
-	len += sprintf(buf+len, "time %d:%d:%d:%d\n",
-		info->time_hr, info->time_min, info->time_sec, info->time_ms);
-	len += sprintf(buf+len, "pos : %d, %d\n", info->pos_x, info->pos_y);
-
-	return strlen(buf);
-}
-
-static ssize_t active_clock_store(struct device *dev,
-	struct device_attribute *attr, const char *buf, size_t size)
-{
-	int rc;
-	struct act_clk_info *info;
-	struct act_clk_info new_info;
-	struct panel_device *panel = dev_get_drvdata(dev);
-
-	panel_info("%s was called\n", __func__);
-
-	info = &panel->act_clk_dev.act_info;
-
-	rc = sscanf(buf, "%d %d %d %d %d %d %d %d\n",
-			&new_info.en, &new_info.interval, &new_info.time_hr, &new_info.time_min,
-			&new_info.time_sec, &new_info.time_ms, &new_info.pos_x, &new_info.pos_y);
-
-	if (rc < 0)
-		return rc;
-
-	info->en = new_info.en;
-	info->interval = new_info.interval;
-	info->time_hr = new_info.time_hr;
-	info->time_min = new_info.time_min;
-	info->time_sec = new_info.time_sec;
-	info->time_ms = new_info.time_ms;
-	info->pos_x = new_info.pos_x;
-	info->pos_y = new_info.pos_y;
-
-	return size;
-}
-
-
-static ssize_t active_blink_show(struct device *dev,
-	struct device_attribute *attr, char *buf)
-{
-	int len = 0;
-	struct act_blink_info *info;
-	struct panel_device *panel = dev_get_drvdata(dev);
-
-	info = &panel->act_clk_dev.blink_info;
-
-	len = sprintf(buf, "blink en : %d\n", info->en);
-	len += sprintf(buf+len, "interval : %d ms\n", info->interval);
-	len += sprintf(buf+len, "pos %d:%d:%d:%d\n",
-		info->pos1_x, info->pos1_y, info->pos2_x, info->pos2_y);
-	len += sprintf(buf+len, "radius : %d,  color : %x\n", info->radius, info->color);
-
-	return strlen(buf);
-}
-
-static ssize_t active_blink_store(struct device *dev,
-	struct device_attribute *attr, const char *buf, size_t size)
-{
-	int rc;
-	struct act_blink_info *info;
-	struct act_blink_info new_info;
-	struct panel_device *panel = dev_get_drvdata(dev);
-
-	panel_info("%s was called\n", __func__);
-
-	info = &panel->act_clk_dev.blink_info;
-
-	rc = sscanf(buf, "%d %d %d %d %d %d %d %d %d\n",
-			&new_info.en, &new_info.interval, &new_info.color, &new_info.radius, &new_info.line_width,
-			&new_info.pos1_x, &new_info.pos1_y, &new_info.pos2_x, &new_info.pos2_y);
-
-	switch (new_info.color) {
-		case 0 :
-			new_info.color = 0x000000;
-			break;
-		case 1 :
-			new_info.color = 0x0000ff;
-			break;
-		case 2 :
-			new_info.color = 0x00ff00;
-			break;
-		case 3:
-			new_info.color = 0xff0000;
-			break;
-		case 4:
-			new_info.color = 0xffffff;
-			break;
-	}
-
-	if (rc < 0)
-		return rc;
-
-	info->en = new_info.en;
-	info->interval = new_info.interval;
-	info->radius = new_info.radius;
-	info->color = new_info.color;
-	info->line_width = new_info.line_width;
-	info->pos1_x = new_info.pos1_x;
-	info->pos1_y = new_info.pos1_y;
-	info->pos2_x = new_info.pos2_x;
-	info->pos2_y = new_info.pos2_y;
-
-	return size;
-}
-#endif
-#endif
-#ifdef CONFIG_DISPLAY_USE_INFO
 /*
  * HW PARAM LOGGING SYSFS NODE
  */
@@ -1911,7 +1340,6 @@ static ssize_t dpci_dbg_store(struct device *dev,
 
 	return size;
 }
-#endif
 
 static ssize_t poc_onoff_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
@@ -2017,24 +1445,9 @@ struct device_attribute panel_attrs[] = {
 	__PANEL_ATTR_RO(octa_id, 0444),
 	__PANEL_ATTR_RO(SVC_OCTA, 0444),
 	__PANEL_ATTR_RO(SVC_OCTA_CHIPID, 0444),
-#ifdef CONFIG_SUPPORT_XTALK_MODE
-	__PANEL_ATTR_RW(xtalk_mode, 0664),
-#endif
-#ifdef CONFIG_DSC_DECODE_CRC
-	__PANEL_ATTR_RO(dsc_decode_crc, 0444),
-#endif
-#ifdef CONFIG_SUPPORT_MST
 	__PANEL_ATTR_RW(mst, 0664),
-#endif
-#ifdef CONFIG_SUPPORT_POC_FLASH
 	__PANEL_ATTR_RW(poc, 0660),
-#endif
-#ifdef CONFIG_SUPPORT_GRAM_CHECKSUM
-	__PANEL_ATTR_RW(gct, 0664),
-#endif
-#ifdef CONFIG_SUPPORT_GRAYSPOT_TEST
 	__PANEL_ATTR_RW(grayspot, 0664),
-#endif
 	__PANEL_ATTR_RO(color_coordinate, 0444),
 	__PANEL_ATTR_RO(manufacture_date, 0444),
 	__PANEL_ATTR_RO(brightness_table, 0444),
@@ -2043,37 +1456,18 @@ struct device_attribute panel_attrs[] = {
 	__PANEL_ATTR_RW(temperature, 0664),
 	__PANEL_ATTR_RW(read_mtp, 0644),
 	__PANEL_ATTR_RW(mcd_mode, 0664),
-#ifdef CONFIG_PANEL_AID_DIMMING
 	__PANEL_ATTR_RO(aid_log, 0440),
-#endif
-#ifdef CONFIG_LCD_WEAKNESS_CCB
-	__PANEL_ATTR_RO(weakness_ccb, 0644),
-#endif
-#if defined(CONFIG_EXYNOS_DECON_MDNIE_LITE)
 	__PANEL_ATTR_RW(lux, 0644),
-#endif
-#if defined(CONFIG_EXYNOS_DECON_LCD_COPR)
 	__PANEL_ATTR_RW(copr, 0600),
 	__PANEL_ATTR_RO(read_copr, 0440),
-#endif
 	__PANEL_ATTR_RW(alpm, 0664),
 	__PANEL_ATTR_RW(fingerprint, 0644),
-#if 0
-#ifdef CONFIG_ACTIVE_CLOCK
-	__PANEL_ATTR_RW(active_clock, 0644),
-	__PANEL_ATTR_RW(active_blink, 0644),
-#endif
-#endif
-#ifdef CONFIG_SUPPORT_HMD
 	__PANEL_ATTR_RW(hmt_bright, 0664),
 	__PANEL_ATTR_RW(hmt_on, 0664),
-#endif
-#ifdef CONFIG_DISPLAY_USE_INFO
 	__PANEL_ATTR_RW(dpui, 0660),
 	__PANEL_ATTR_RW(dpui_dbg, 0660),
 	__PANEL_ATTR_RW(dpci, 0660),
 	__PANEL_ATTR_RW(dpci_dbg, 0660),
-#endif
 	__PANEL_ATTR_RW(poc_onoff, 0664),
 	__PANEL_ATTR_RW(irc_onoff, 0664),
 };
