@@ -198,7 +198,7 @@ struct mem_ipc_device {
 
 struct __packed mem_snapshot {
 	/* Timestamp */
-	struct timespec ts;
+	struct timespec64 ts;
 
 	/* Direction (TX or RX) */
 	enum direction dir;
@@ -404,7 +404,7 @@ struct mem_link_device {
 	unsigned int irq_cp2ap_status;	/* INTR# for TX FLOWCTL */
 	unsigned int tx_flowctrl_cmd;
 
-	struct wake_lock cp_wakelock;	/* Requested by CP */
+	struct wakeup_source *cp_ws;	/* Requested by CP (L6C G-1) */
 
 	/**
 	 * Member variables for TX & RX
@@ -510,7 +510,7 @@ struct mem_link_device {
 	struct notifier_block reboot_nb;
 
 #ifdef CONFIG_LINK_DEVICE_NAPI
-	struct net_device dummy_net;
+	struct net_device *dummy_net;	/* L6C G-6: alloc_netdev_dummy() */
 	struct napi_struct mld_napi;
 	unsigned int rx_int_enable;
 	unsigned int rx_int_count;

@@ -693,4 +693,6 @@ source "drivers/misc/amd-sbi/Kconfig"
 source "drivers/misc/rp1/Kconfig"
 # greatlte WP-6C: CP mailbox + shared memory (L6C 5.1.0, S:drivers/misc/Kconfig:588)
 source "drivers/misc/mcu_ipc/Kconfig"
+# greatlte WP-6C: Samsung SIPC modem interface (L6C 5.1.0, S:drivers/misc/Kconfig:590)
+source "drivers/misc/modem_v1/Kconfig"
 endmenu

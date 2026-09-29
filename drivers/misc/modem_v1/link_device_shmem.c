@@ -16,7 +16,7 @@
 #include <linux/time.h>
 #include <linux/interrupt.h>
 #include <linux/timer.h>
-#include <linux/wakelock.h>
+#include <linux/device.h>	/* wakeup_source API; <linux/pm_wakeup.h> must not be included directly in 6.18 */
 #include <linux/delay.h>
 #include <linux/wait.h>
 #include <linux/sched.h>
@@ -26,25 +26,26 @@
 #include <linux/suspend.h>
 #include <linux/pm_qos.h>
 #include <linux/reboot.h>
-#if defined(CONFIG_SOC_EXYNOS3475)
-#include <mach/smc.h>
-#else
-#include <linux/smc.h>
-#endif
+#include <linux/netdevice.h>
 #include <linux/shm_ipc.h>
 #include <linux/mcu_ipc.h>
-#include <linux/exynos-pci-ctrl.h>
-
+#include <linux/exynos-pci-ctrl.h>	/* L6D 5.3.1: PCIE_L1SS_CTRL_MODEM_IF, exynos_pcie_l1ss_ctrl() */
+#include <soc/samsung/exynos8895-smc.h>	/* L6C D-4; stock <linux/smc.h> is the SMC-R UAPI in 6.18 */
 #include <soc/samsung/pmu-cp.h>
-#if defined(CONFIG_ECT)
-#include <soc/samsung/ect_parser.h>
-#endif
+
+/*
+ * L6C 5.1.7 (O-4): the L6D PCIe host exports the strong, IRQ-safe symbol; this weak
+ * fallback keeps the CP RAT-mode request harmless in an image without it.
+ */
+int __weak exynos_pcie_l1ss_ctrl(int enable, int id)
+{
+	return -ENODEV;
+}
 
 #include <trace/events/napi.h>
 #include "modem_prj.h"
 #include "modem_utils.h"
 #include "link_device_memory.h"
-#include "link_ctrlmsg_iosm.h"
 #include "modem_dump.h"
 #include <linux/modem_notifier.h>
 
@@ -172,7 +173,7 @@ static inline bool ipc_active(struct mem_link_device *mld)
 	struct modem_ctl *mc = ld->mc;
 
 	if (unlikely(!cp_online(mc))) {
-		mif_err("%s<->%s: %s.state %s != ONLINE <%pf>\n",
+		mif_err("%s<->%s: %s.state %s != ONLINE <%ps>\n",
 			ld->name, mc->name, mc->name, mc_state(mc), CALLER);
 		return false;
 	}
@@ -181,14 +182,14 @@ static inline bool ipc_active(struct mem_link_device *mld)
 		unsigned int magic = get_magic(mld);
 		unsigned int access = get_access(mld);
 		if (magic != MEM_IPC_MAGIC || access != 1) {
-			mif_err("%s<->%s: ERR! magic:0x%X access:%d <%pf>\n",
+			mif_err("%s<->%s: ERR! magic:0x%X access:%d <%ps>\n",
 				ld->name, mc->name, magic, access, CALLER);
 			return false;
 		}
 	}
 
 	if (atomic_read(&mld->forced_cp_crash)) {
-		mif_err("%s<->%s: ERR! forced_cp_crash:%d <%pf>\n",
+		mif_err("%s<->%s: ERR! forced_cp_crash:%d <%ps>\n",
 			ld->name, mc->name, atomic_read(&mld->forced_cp_crash),
 			CALLER);
 		return false;
@@ -267,9 +268,9 @@ static void shmem_handle_cp_crash(struct mem_link_device *mld,
 	clean_vss_magic_code();
 }
 
-static void handle_no_cp_crash_ack(unsigned long arg)
+static void handle_no_cp_crash_ack(struct timer_list *t)
 {
-	struct mem_link_device *mld = (struct mem_link_device *)arg;
+	struct mem_link_device *mld = timer_container_of(mld, t, crash_ack_timer);
 	struct link_device *ld = &mld->link_dev;
 	struct modem_ctl *mc = ld->mc;
 
@@ -294,13 +295,13 @@ static void shmem_forced_cp_crash(struct mem_link_device *mld,
 	set_access(mld, 0);
 
 	if (atomic_inc_return(&mld->forced_cp_crash) > 1) {
-		mif_err("%s: ALREADY in progress <%pf>\n",
+		mif_err("%s: ALREADY in progress <%ps>\n",
 			ld->name, CALLER);
 		return;
 	}
 
 	if (!cp_online(mc) && !cp_booting(mc)) {
-		mif_err("%s: %s.state %s != ONLINE <%pf>\n",
+		mif_err("%s: %s.state %s != ONLINE <%ps>\n",
 			ld->name, mc->name, mc_state(mc), CALLER);
 		return;
 	}
@@ -309,7 +310,7 @@ static void shmem_forced_cp_crash(struct mem_link_device *mld,
 	mif_set_snapshot(false);
 
 	mld->crash_reason.owner = crash_reason_owner;
-	strlcpy(mld->crash_reason.string, crash_reason_string,
+	strscpy(mld->crash_reason.string, crash_reason_string,
 		CRASH_REASON_SIZE);
 
 	stop_net_ifaces(ld);
@@ -322,7 +323,7 @@ static void shmem_forced_cp_crash(struct mem_link_device *mld,
 	 * handle_no_cp_crash_ack() will be executed.
 	 */
 	mif_add_timer(&mld->crash_ack_timer, FORCE_CRASH_ACK_TIMEOUT,
-		      handle_no_cp_crash_ack, (unsigned long)mld);
+		      handle_no_cp_crash_ack);
 
 	/* Update crash type to msg box */
 	mbox_update_value(MCU_CP, ap_status, mld->crash_reason.owner, 
@@ -333,7 +334,7 @@ static void shmem_forced_cp_crash(struct mem_link_device *mld,
 
 	clean_vss_magic_code();
 
-	mif_err("%s->%s: CP_CRASH_REQ by %d, %s <%pf>\n",
+	mif_err("%s->%s: CP_CRASH_REQ by %d, %s <%ps>\n",
 				ld->name, mc->name,
 				crash_reason_owner, crash_reason_string,
 				CALLER);
@@ -555,7 +556,7 @@ static void cmd_crash_exit_handler(struct mem_link_device *mld)
 	spin_unlock_irqrestore(&mld->state_lock, flags);
 
 	if (timer_pending(&mld->crash_ack_timer))
-		del_timer(&mld->crash_ack_timer);
+		timer_delete(&mld->crash_ack_timer);
 
 	if (atomic_read(&mld->forced_cp_crash))
 		mif_err("%s<-%s: CP_CRASH_ACK\n", ld->name, mc->name);
@@ -1356,7 +1357,7 @@ static struct sk_buff *rxq_read(struct mem_link_device *mld,
 
 #ifdef DEBUG_MODEM_IF
 	/* Record the time-stamp */
-	getnstimeofday(&skbpriv(skb)->ts);
+	ktime_get_real_ts64(&skbpriv(skb)->ts);
 #endif
 
 	return skb;
@@ -1522,14 +1523,13 @@ static int rx_net_frames_from_zerocopy_adaptor(struct sbd_ring_buffer *rb,
 	num_frames = rb_usage(rb);
 #endif /* CONFIG_LINK_DEVICE_NAPI */
 
-	if (mld->force_use_memcpy || (num_frames > ld->mif_buff_mng->free_cell_count)
-		|| (FREE_RB_BUF_COUNT > circ_get_space(zdptr->len, *(zdptr->rp), *(zdptr->wp)))) {
-		use_memcpy = 1;
-		mld->memcpy_packet_count++;
-	} else {
-		use_memcpy = 0;
-		mld->zeromemcpy_packet_count++;
-	}
+	/*
+	 * L6C D-6: always the stock memcpy branch, so no skb head ever points into the ZMB
+	 * and 6.18 needs no core-net zero-copy hook (stock took the zero-copy branch when
+	 * force_use_memcpy was 0 and enough ZMB cells were free, :1525-1532).
+	 */
+	use_memcpy = 1;
+	mld->memcpy_packet_count++;
 
 	while (rcvd < num_frames) {
 		struct sk_buff *skb;
@@ -1617,7 +1617,7 @@ static int rx_ipc_frames_from_zerocopy_adaptor(struct sbd_ring_buffer *rb)
 	while (rcvd < num_frames) {
 		struct sk_buff *skb;
 
-		skb = sbd_pio_rx_zerocopy_adaptor(rb, 0);
+		skb = sbd_pio_rx_zerocopy_adaptor(rb, 1);	/* L6C D-6: memcpy (stock 0, :1620) */
 		if (!skb) {
 #ifdef DEBUG_MODEM_IF
 			panic("skb alloc failed.");
@@ -1722,7 +1722,7 @@ static int shmem_poll_recv_on_iod(struct link_device *ld, struct io_device *iod,
 	else
 		ret = rx_net_frames_from_rb(rb, budget, &rcvd);
 
-	if (IS_ERR_VALUE(ret))
+	if (ret < 0)
 		mif_err("RX error (%d)\n", ret);
 
 	return rcvd;
@@ -1736,12 +1736,12 @@ static int shmem_enable_rx_int(struct link_device *ld)
 	struct mem_link_device *mld = to_mem_link_device(ld);
 
 	mld->rx_int_enable = 1;
-	if (rx_int_disable_time.tv64) {
+	if (rx_int_disable_time) {
 		rx_int_enable_time = ktime_get();
 		mld->rx_int_disabled_time += ktime_to_us(
 			ktime_sub(rx_int_enable_time, rx_int_disable_time));
-		rx_int_enable_time.tv64 = 0;
-		rx_int_disable_time.tv64 = 0;
+		rx_int_enable_time = 0;
+		rx_int_disable_time = 0;
 	}
 	return mbox_enable_irq(MCU_CP, mld->irq_cp2ap_msg);
 }
@@ -1867,9 +1867,9 @@ static void udl_rx_work(struct work_struct *ws)
 	ipc_rx_func(mld, 0);
 }
 
-static void shmem_rx_task(unsigned long data)
+static void shmem_rx_task(struct tasklet_struct *t)
 {
-	struct mem_link_device *mld = (struct mem_link_device *)data;
+	struct mem_link_device *mld = from_tasklet(mld, t, rx_tsk);
 	struct link_device *ld = &mld->link_dev;
 	struct modem_ctl *mc = ld->mc;
 
@@ -1987,6 +1987,7 @@ static int shmem_send(struct link_device *ld, struct io_device *iod,
 				}
 			}
 		}
+		fallthrough;
 
 	case IPC_RFS:
 	case IPC_FMT:
@@ -2152,9 +2153,9 @@ static int shmem_security_request(struct link_device *ld, struct io_device *iod,
 		shmem_check_modem_binary_crc(ld);
 #else
 	mif_err("mode=%u, size=%lu, addr=%lu\n", msr.mode, param2, param3);
-	exynos_smc(SMC_ID_CLK, SSS_CLK_ENABLE, 0, 0);
-	err = exynos_smc(SMC_ID, msr.mode, param2, param3);
-	exynos_smc(SMC_ID_CLK, SSS_CLK_DISABLE, 0, 0);
+	exynos8895_smc(SMC_ID_CLK, SSS_CLK_ENABLE, 0, 0);
+	err = (int)exynos8895_smc(SMC_ID, msr.mode, param2, param3);
+	exynos8895_smc(SMC_ID_CLK, SSS_CLK_DISABLE, 0, 0);
 	mif_info("%s: return_value=%d\n", ld->name, err);
 #endif
 
@@ -2191,7 +2192,7 @@ static int mld_rx_int_poll(struct napi_struct *napi, int budget)
 	int total_budget;
 
 	ret = mbox_check_irq(MCU_CP, mld->irq_cp2ap_msg);
-	if (IS_ERR_VALUE(ret))
+	if (ret < 0)
 		goto dummy_poll_complete;
 
 	mld->rx_poll_count++;
@@ -2257,7 +2258,7 @@ static void sync_net_dev(struct link_device *ld)
 	struct mem_link_device *mld = to_mem_link_device(ld);
 
 	napi_synchronize(&mld->mld_napi);
-	mif_info("%s\n", netdev_name(&mld->dummy_net));
+	mif_info("%s\n", netdev_name(mld->dummy_net));
 }
 #endif /* CONFIG_LINK_DEVICE_NAPI */
 
@@ -2367,7 +2368,7 @@ static void shmem_close_tx(struct link_device *ld)
 	spin_unlock_irqrestore(&mld->state_lock, flags);
 
 	if (timer_pending(&mld->crash_ack_timer))
-		del_timer(&mld->crash_ack_timer);
+		timer_delete(&mld->crash_ack_timer);
 
 	stop_net_ifaces(ld);
 	purge_txq(mld);
@@ -2628,10 +2629,20 @@ static void shmem_irq_handler(void *data)
 #endif /* CONFIG_LINK_DEVICE_NAPI */
 }
 
-static struct pm_qos_request pm_qos_req_mif;
-static struct pm_qos_request pm_qos_req_cl0;
-static struct pm_qos_request pm_qos_req_cl1;
-static struct pm_qos_request pm_qos_req_int;
+/* L6C G-5: 6.18 has no PM QoS class for cluster min-freq, MIF or INT throughput (A:include/linux/pm_qos.h); the
+ * requested kHz is recorded (the stock handlers already print it) and applied later (O-5). */
+struct mif_qos_shadow {
+	s32 khz;
+};
+static struct mif_qos_shadow pm_qos_req_mif;
+static struct mif_qos_shadow pm_qos_req_cl0;
+static struct mif_qos_shadow pm_qos_req_cl1;
+static struct mif_qos_shadow pm_qos_req_int;
+
+static inline void mif_qos_update(struct mif_qos_shadow *req, s32 khz)
+{
+	WRITE_ONCE(req->khz, khz);
+}
 
 static void shmem_qos_work_cpu(struct work_struct *work)
 {
@@ -2649,22 +2660,22 @@ static void shmem_qos_work_cpu(struct work_struct *work)
 		if (cpu_val > 0 && cpu_val <= mld->cl0_table.num_of_table) {
 			mif_err("Lock CL0[%d] : %u\n", cpu_val,
 					mld->cl0_table.freq[cpu_val - 1]);
-			pm_qos_update_request(&pm_qos_req_cl0,
+			mif_qos_update(&pm_qos_req_cl0,
 				mld->cl0_table.freq[cpu_val - 1]);
 		} else {
 			mif_err("Unlock CL0(req_val : %d)\n", qos_val);
-			pm_qos_update_request(&pm_qos_req_cl0, 0);
+			mif_qos_update(&pm_qos_req_cl0, 0);
 		}
 	} else {
 		/* CL1 - Little */
 		if (cpu_val > 0 && cpu_val <= mld->cl1_table.num_of_table) {
 			mif_err("Lock CL1[%d] : %u\n", cpu_val,
 					mld->cl1_table.freq[cpu_val - 1]);
-			pm_qos_update_request(&pm_qos_req_cl1,
+			mif_qos_update(&pm_qos_req_cl1,
 				mld->cl1_table.freq[cpu_val - 1]);
 		} else {
 			mif_err("Unlock CL1(req_val : %d)\n", qos_val);
-			pm_qos_update_request(&pm_qos_req_cl1, 0);
+			mif_qos_update(&pm_qos_req_cl1, 0);
 		}
 	}
 }
@@ -2683,10 +2694,10 @@ static void shmem_qos_work_mif(struct work_struct *work)
 	if (mif_val > 0 && mif_val <= mld->mif_table.num_of_table) {
 		mif_err("Lock MIF[%d] : %u\n", mif_val,
 				mld->mif_table.freq[mif_val - 1]);
-		pm_qos_update_request(&pm_qos_req_mif, mld->mif_table.freq[mif_val - 1]);
+		mif_qos_update(&pm_qos_req_mif, mld->mif_table.freq[mif_val - 1]);
 	} else {
 		mif_err("Unlock MIF(req_val : %d)\n", qos_val);
-		pm_qos_update_request(&pm_qos_req_mif, 0);
+		mif_qos_update(&pm_qos_req_mif, 0);
 	}
 
 	/* Save current mif_val */
@@ -2707,10 +2718,10 @@ static void shmem_qos_work_int(struct work_struct *work)
 	if (int_val > 0 && int_val <= mld->int_table.num_of_table) {
 		mif_err("Lock INT[%d] : %u\n", int_val,
 				mld->int_table.freq[int_val - 1]);
-		pm_qos_update_request(&pm_qos_req_int, mld->int_table.freq[int_val - 1]);
+		mif_qos_update(&pm_qos_req_int, mld->int_table.freq[int_val - 1]);
 	} else {
 		mif_err("Unlock INT(req_val : %d)\n", qos_val);
-		pm_qos_update_request(&pm_qos_req_int, 0);
+		mif_qos_update(&pm_qos_req_int, 0);
 	}
 }
 
@@ -2748,17 +2759,17 @@ static void shmem_cp2ap_wakelock_handler(void *data)
 			mld->sbi_cp2ap_wakelock_mask, mld->sbi_cp2ap_wakelock_pos);
 
 	if (req == 0) {
-	       if (wake_lock_active(&mld->cp_wakelock)) {
-			wake_unlock(&mld->cp_wakelock);
+	       if (mld->cp_ws->active) {
+			__pm_relax(mld->cp_ws);
 			mif_err("cp_wakelock unlocked\n");
 	       } else {
 			mif_err("cp_wakelock already unlocked\n");
 	       }
 	} else if (req == 1) {
-	       if (wake_lock_active(&mld->cp_wakelock)) {
+	       if (mld->cp_ws->active) {
 			mif_err("cp_wakelock already unlocked\n");
 	       } else {
-			wake_lock(&mld->cp_wakelock);
+			__pm_stay_awake(mld->cp_ws);
 			mif_err("cp_wakelock locked\n");
 	       }
 	} else {
@@ -2790,7 +2801,7 @@ void shmem_unlock_mif_freq(struct mem_link_device *mld)
 	if (mld) {
 		mif_err("Currnet MIF value: %d)\n", mld->current_mif_val);
 		mif_err("Unlock MIF\n");
-		pm_qos_update_request(&pm_qos_req_mif, 0);
+		mif_qos_update(&pm_qos_req_mif, 0);
 	}
 }
 
@@ -2805,23 +2816,76 @@ void shmem_restore_mif_freq(struct mem_link_device *mld)
 		if (mif_val > 0 && mif_val <= mld->mif_table.num_of_table) {
 			mif_err("Lock MIF[%d] : %u\n", mif_val,
 					mld->mif_table.freq[mif_val - 1]);
-			pm_qos_update_request(&pm_qos_req_mif, mld->mif_table.freq[mif_val - 1]);
+			mif_qos_update(&pm_qos_req_mif, mld->mif_table.freq[mif_val - 1]);
 		}
 	}
 }
 
-#if defined(CONFIG_ECT)
+/*
+ * L6C D-17: stock filled the CP DVFS tables from the ECT (CONFIG_ECT, IKC:4308) that S-Boot
+ * leaves at 0xa0000000; 6.18 has no ECT parser, so its DVFS level lists (kHz, level 0 first,
+ * ECT "PARA" "003j") are transcribed here from rewrite/work/scratch/L2_power/ect_dvfs_asv_dump.txt:
+ * dvfs_mif (SB:0x46508), dvfs_cpucl0 (SB:0x462d4), dvfs_cpucl1 (SB:0x463cc), dvfs_int (SB:0x46654).
+ * The CP requests DVFS by 1-based index into exactly these tables (mailbox words 5/6/7).
+ */
+struct mif_ect_level {
+	u32 level;
+};
+
+struct mif_ect_domain {
+	const char *name;
+	u32 num_of_level;
+	const struct mif_ect_level *list_level;
+};
+
+static const struct mif_ect_level mif_ect_lv_mif[] = {
+	{ 2093000 }, { 2002000 }, { 1794000 }, { 1540000 }, { 1352000 }, { 1014000 },
+	{ 845000 }, { 676000 }, { 546000 }, { 421000 }, { 286000 }, { 208000 },
+};
+
+static const struct mif_ect_level mif_ect_lv_cpucl0[] = {
+	{ 2808000 }, { 2704000 }, { 2652000 }, { 2574000 }, { 2496000 }, { 2314000 },
+	{ 2158000 }, { 2002000 }, { 1937000 }, { 1807000 }, { 1703000 }, { 1469000 },
+	{ 1261000 }, { 1170000 }, { 1066000 }, { 962000 }, { 858000 }, { 741000 },
+};
+
+static const struct mif_ect_level mif_ect_lv_cpucl1[] = {
+	{ 2002000 }, { 1898000 }, { 1794000 }, { 1690000 }, { 1456000 }, { 1248000 },
+	{ 1053000 }, { 949000 }, { 832000 }, { 715000 }, { 598000 }, { 455000 },
+};
+
+static const struct mif_ect_level mif_ect_lv_int[] = {
+	{ 667000 }, { 533000 }, { 400000 }, { 333000 }, { 267000 }, { 178000 }, { 107000 },
+};
+
+static const struct mif_ect_domain mif_ect_dvfs[] = {
+	{ "dvfs_mif", ARRAY_SIZE(mif_ect_lv_mif), mif_ect_lv_mif },
+	{ "dvfs_cpucl0", ARRAY_SIZE(mif_ect_lv_cpucl0), mif_ect_lv_cpucl0 },
+	{ "dvfs_cpucl1", ARRAY_SIZE(mif_ect_lv_cpucl1), mif_ect_lv_cpucl1 },
+	{ "dvfs_int", ARRAY_SIZE(mif_ect_lv_int), mif_ect_lv_int },
+};
+
+/* every table fits struct freq_table (FREQ_MAX_LV 40, link_device_memory.h) */
+static_assert(ARRAY_SIZE(mif_ect_lv_cpucl0) <= FREQ_MAX_LV);
+
+/* stands in for stock ect_get_block(BLOCK_DVFS) + ect_dvfs_get_domain() */
+static const struct mif_ect_domain *mif_ect_get_domain(const char *name)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(mif_ect_dvfs); i++)
+		if (!strcmp(name, mif_ect_dvfs[i].name))
+			return &mif_ect_dvfs[i];
+	return NULL;
+}
+
+/* stock body (:2813-2855) with the lookup above */
 static int exynos_devfreq_parse_ect(struct mem_link_device *mld, char *dvfs_domain_name)
 {
 	int i, counter = 0;
-	void *dvfs_block;
-	struct ect_dvfs_domain *dvfs_domain;
+	const struct mif_ect_domain *dvfs_domain;
 
-	dvfs_block = ect_get_block(BLOCK_DVFS);
-	if (dvfs_block == NULL)
-		return -ENODEV;
-
-	dvfs_domain = ect_dvfs_get_domain(dvfs_block, (char *)dvfs_domain_name);
+	dvfs_domain = mif_ect_get_domain(dvfs_domain_name);
 	if (dvfs_domain == NULL)
 		return -ENODEV;
 
@@ -2853,19 +2917,6 @@ static int exynos_devfreq_parse_ect(struct mem_link_device *mld, char *dvfs_doma
 
 	return 0;
 }
-#else
-static int exynos_devfreq_parse_ect(struct mem_link_device *mld, char *dvfs_domain_name)
-{
-	mif_err("ECT is not defined(%s)\n", __func__);
-
-	mld->cpu_table.num_of_table = 0;
-	mld->mif_table.num_of_table = 0;
-	mld->int_table.num_of_table = 0;
-
-	return 0;
-}
-#endif
-
 static void remap_4mb_map_to_ipc_dev(struct mem_link_device *mld)
 {
 	struct link_device *ld = &mld->link_dev;
@@ -3171,6 +3222,14 @@ static char *napi_state_string[8] = {
 	"NAPI_STATE_HASHED",
 };
 
+/* stock indexed napi_state_string[] with the state bit mask (:3190, :3206): bound it */
+static const char *napi_state_str(unsigned long state)
+{
+	if (state < ARRAY_SIZE(napi_state_string) && napi_state_string[state])
+		return napi_state_string[state];
+	return "?";
+}
+
 static ssize_t rx_napi_list_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -3182,7 +3241,7 @@ static ssize_t rx_napi_list_show(struct device *dev,
 	ssize_t count = 0;
 
 	modem = (struct modem_data *)dev->platform_data;
-	netdev = &modem->mld->dummy_net;
+	netdev = modem->mld->dummy_net;
 	sl = &modem->mld->sbd_link_dev;
 
 	count += sprintf(&buf[count],
@@ -3190,7 +3249,7 @@ static ssize_t rx_napi_list_show(struct device *dev,
 	list_for_each_entry(n, &netdev->napi_list, dev_list)
 		count += sprintf(&buf[count],
 				"state:%s(%ld), weight:%d, poll:0x%pK\n",
-				napi_state_string[n->state], n->state,
+				napi_state_str(n->state), n->state,
 				n->weight, (void *)n->poll);
 
 	for (i = 0; i < sl->num_channels; i++) {
@@ -3203,7 +3262,7 @@ static ssize_t rx_napi_list_show(struct device *dev,
 			list_for_each_entry(n, &netdev->napi_list, dev_list)
 				count += sprintf(&buf[count],
 					"state:%s(%ld), weight:%d, poll:0x%pK\n",
-					napi_state_string[n->state], n->state,
+					napi_state_str(n->state), n->state,
 					n->weight, (void *)n->poll);
 		}
 	}
@@ -3259,7 +3318,7 @@ static ssize_t rx_poll_count_show(struct device *dev,
 	mld = modem->mld;
 
 	count += sprintf(&buf[count],
-		"%s: %d\n", netdev_name(&mld->dummy_net), mld->rx_poll_count);
+		"%s: %d\n", netdev_name(mld->dummy_net), mld->rx_poll_count);
 
 	for (i = 0; i < sl->num_channels; i++) {
 		struct sbd_ring_buffer *rb = sbd_id2rb(sl, i, RX);
@@ -3460,8 +3519,10 @@ struct link_device *shmem_create_link_device(struct platform_device *pdev)
 	ld->enable_rx_int = shmem_enable_rx_int;
 	ld->disable_rx_int = shmem_disable_rx_int;
 
-	init_dummy_netdev(&mld->dummy_net);
-	netif_napi_add(&mld->dummy_net, &mld->mld_napi, mld_rx_int_poll, 64);
+	mld->dummy_net = alloc_netdev_dummy(0);
+	if (!mld->dummy_net)
+		goto error;
+	netif_napi_add_weight(mld->dummy_net, &mld->mld_napi, mld_rx_int_poll, 64);
 	napi_enable(&mld->mld_napi);
 #endif /* CONFIG_LINK_DEVICE_NAPI */
 
@@ -3497,10 +3558,9 @@ struct link_device *shmem_create_link_device(struct platform_device *pdev)
 	msb_queue_head_init(&mld->msb_rxq);
 	msb_queue_head_init(&mld->msb_log);
 
-	tasklet_init(&mld->rx_tsk, shmem_rx_task, (unsigned long)mld);
+	tasklet_setup(&mld->rx_tsk, shmem_rx_task);
 
-	hrtimer_init(&mld->tx_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	mld->tx_timer.function = tx_timer_func;
+	hrtimer_setup(&mld->tx_timer, tx_timer_func, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 
 	INIT_WORK(&mld->page_reclaim_work, shmem_oom_handler_work);
 
@@ -3580,9 +3640,8 @@ struct link_device *shmem_create_link_device(struct platform_device *pdev)
 	remap_4mb_map_to_ipc_dev(mld);
 
 	if (ld->sbd_ipc) {
-		hrtimer_init(&mld->sbd_tx_timer,
+		hrtimer_setup(&mld->sbd_tx_timer, sbd_tx_timer_func,
 				CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-		mld->sbd_tx_timer.function = sbd_tx_timer_func;
 
 		err = create_sbd_link_device(ld,
 				&mld->sbd_link_dev, mld->base, mld->size);
@@ -3634,10 +3693,10 @@ struct link_device *shmem_create_link_device(struct platform_device *pdev)
 	mld->int_clk_table = modem->mbx->int_clk_table;
 	mld->int_clk_cnt = modem->mbx->int_clk_cnt;
 
-	pm_qos_add_request(&pm_qos_req_cl0, PM_QOS_CLUSTER0_FREQ_MIN, 0);
-	pm_qos_add_request(&pm_qos_req_cl1, PM_QOS_CLUSTER1_FREQ_MIN, 0);
-	pm_qos_add_request(&pm_qos_req_mif, PM_QOS_BUS_THROUGHPUT, 0);
-	pm_qos_add_request(&pm_qos_req_int, PM_QOS_DEVICE_THROUGHPUT, 0);
+	mif_qos_update(&pm_qos_req_cl0, 0);
+	mif_qos_update(&pm_qos_req_cl1, 0);
+	mif_qos_update(&pm_qos_req_mif, 0);
+	mif_qos_update(&pm_qos_req_int, 0);
 
 	INIT_WORK(&mld->pm_qos_work_cpu, shmem_qos_work_cpu);
 	INIT_WORK(&mld->pm_qos_work_mif, shmem_qos_work_mif);
@@ -3669,7 +3728,9 @@ struct link_device *shmem_create_link_device(struct platform_device *pdev)
 	 */
 	mld->irq_cp2ap_wakelock = modem->mbx->irq_cp2ap_wakelock;
 
-	wake_lock_init(&mld->cp_wakelock, WAKE_LOCK_SUSPEND, ld->name);
+	mld->cp_ws = wakeup_source_register(&pdev->dev, ld->name);	/* G-1: stock name ld->name */
+	if (!mld->cp_ws)
+		goto error;
 
 	err = mbox_request_irq(MCU_CP, mld->irq_cp2ap_wakelock,
 			shmem_cp2ap_wakelock_handler, mld);
@@ -3736,7 +3797,7 @@ struct link_device *shmem_create_link_device(struct platform_device *pdev)
 
 	/* register reboot notifier */
 	mld->reboot_nb.notifier_call = shm_reboot_notifier;
-	register_reboot_notifier(&mld->reboot_nb);
+	devm_register_reboot_notifier(&pdev->dev, &mld->reboot_nb);
 
 	/* Link mem_link_device to modem_data */
 	modem->mld = mld;
@@ -3769,6 +3830,15 @@ struct link_device *shmem_create_link_device(struct platform_device *pdev)
 	return ld;
 
 error:
+	/* L6C: the two objects the port allocates where stock embedded or needed no release */
+	wakeup_source_unregister(mld->cp_ws);
+#ifdef CONFIG_LINK_DEVICE_NAPI
+	if (mld->dummy_net) {
+		napi_disable(&mld->mld_napi);
+		netif_napi_del(&mld->mld_napi);
+		free_netdev(mld->dummy_net);
+	}
+#endif
 	shm_release_regions();
 
 	kfree(mld);

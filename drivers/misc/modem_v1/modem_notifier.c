@@ -12,7 +12,7 @@
  *
  */
 
-#include <stdarg.h>
+#include <linux/stdarg.h>
 #include <linux/string.h>
 #include <linux/init.h>
 #include <linux/module.h>
@@ -31,6 +31,12 @@ int register_modem_event_notifier(struct notifier_block *nb)
 
 	return raw_notifier_chain_register(&modem_event_notifier, nb);
 }
+/*
+ * L6C 2.6: exported for the L6E ABOX VSS path. Callbacks run in atomic context (hard IRQ,
+ * softirq with IRQs off, or process context) and must not sleep; register at probe, before
+ * the CP can boot, and never unregister while it runs (the chain has no lock of its own).
+ */
+EXPORT_SYMBOL_GPL(register_modem_event_notifier);
 
 void modem_notify_event(enum modem_event evt)
 {

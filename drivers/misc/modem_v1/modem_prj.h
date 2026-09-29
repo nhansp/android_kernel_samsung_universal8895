@@ -22,7 +22,7 @@
 #include <linux/skbuff.h>
 #include <linux/wait.h>
 #include <linux/completion.h>
-#include <linux/wakelock.h>
+#include <linux/device.h>	/* wakeup_source API; <linux/pm_wakeup.h> must not be included directly in 6.18 */
 #include <linux/spinlock.h>
 #include <linux/cdev.h>
 #include <linux/gpio.h>
@@ -261,7 +261,7 @@ struct skbuff_private {
 	struct link_device *ld;
 
 	/* for time-stamping */
-	struct timespec ts;
+	struct timespec64 ts;	/* same 16-byte layout on arm64; skbuff_private still fits skb->cb[48] */
 
 	u32 sipc_ch:8,	/* SIPC Channel Number			*/
 	    frm_ctrl:8,	/* Multi-framing control		*/
@@ -393,7 +393,7 @@ struct io_device {
 	struct modem_ctl *mc;
 	struct modem_shared *msd;
 
-	struct wake_lock wakelock;
+	struct wakeup_source *ws;	/* L6C G-1 (was struct wake_lock wakelock) */
 	long waketime;
 
 	/* DO NOT use __current_link directly

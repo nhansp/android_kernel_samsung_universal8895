@@ -1,7 +1,8 @@
 menuconfig SEC_SIPC_MODEM_IF
 	bool "Samsung Mobile SIPC Modem Interface"
+	depends on ARCH_EXYNOS && OF
 	default n
-	---help---
+	help
 	  Samsung Modem Interface Driver
 
 if SEC_SIPC_MODEM_IF
@@ -12,11 +13,22 @@ config SEC_MODEM_SS310AP
 	select LINK_DEVICE_SHMEM
 	select CP_SECURE_BOOT
 	select CP_RAM_LOGGING
+	# L6C 6: the mailbox, the shared memory, the PMU syscon and the SMC helper it needs
+	select MCU_IPC
+	select SHM_IPC
+	select MFD_SYSCON
+	select EXYNOS8895_SMC
 	default y
 
-config CP_ZEROCOPY
-	bool "Support zero memory copy"
-	default y
+# L6C C-2: CP_ZEROCOPY gated only a core-net skb hook, which is not ported (D-6)
+
+config OPTION_REGION
+	string "Region of the region-specific modem io devices"
+	default "kor_single"
+	help
+	  Compared with the iod,option_region of an io device; stock passed it as
+	  -DCONFIG_OPTION_REGION=$(PROJECT_REGION). "kor_single" is the SM-N950N
+	  value (FDT:10623, smd4) (spec L6C 5.1.0, 6).
 
 menu "Configuration Description"
 config BOOT_DEVICE_SPI

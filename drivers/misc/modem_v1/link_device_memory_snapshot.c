@@ -174,7 +174,7 @@ void msb_queue_purge(struct mst_buff_head *list)
 static void __take_sbd_status(struct mem_link_device *mld, enum direction dir,
 			      struct mem_snapshot *mst)
 {
-	getnstimeofday(&mst->ts);
+	ktime_get_real_ts64(&mst->ts);
 
 	mst->dir = dir;
 
@@ -197,7 +197,7 @@ static void __take_mem_status(struct mem_link_device *mld, enum direction dir,
 {
 	int i;
 
-	getnstimeofday(&mst->ts);
+	ktime_get_real_ts64(&mst->ts);
 
 	mst->dir = dir;
 

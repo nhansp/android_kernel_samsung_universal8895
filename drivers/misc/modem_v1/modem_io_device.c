@@ -166,8 +166,8 @@ static struct device_attribute attr_txlink =
 
 static inline void iodev_lock_wlock(struct io_device *iod)
 {
-	wake_lock_timeout(&iod->wakelock,
-		iod->waketime ?: msecs_to_jiffies(200));
+	__pm_wakeup_event(iod->ws,
+		jiffies_to_msecs(iod->waketime ?: msecs_to_jiffies(200)));	/* L6C G-1 */
 }
 
 static int queue_skb_to_iod(struct sk_buff *skb, struct io_device *iod)
@@ -347,10 +347,7 @@ static int rx_multi_pdp(struct sk_buff *skb)
 #ifdef CONFIG_LINK_DEVICE_NAPI
 	ret = netif_receive_skb(skb);
 #else /* !CONFIG_LINK_DEVICE_NAPI */
-	if (in_interrupt())
-		ret = netif_rx(skb);
-	else
-		ret = netif_rx_ni(skb);
+	ret = netif_rx(skb);	/* G-7: any context since 5.18 (stock netif_rx_ni() outside IRQ) */
 #endif /* CONFIG_LINK_DEVICE_NAPI */
 
 	if (ret != NET_RX_SUCCESS) {
@@ -548,14 +545,15 @@ static int misc_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-static unsigned int misc_poll(struct file *filp, struct poll_table_struct *wait)
+/* G-8: __poll_t / EPOLL* */
+static __poll_t misc_poll(struct file *filp, struct poll_table_struct *wait)
 {
 	struct io_device *iod = (struct io_device *)filp->private_data;
 	struct modem_ctl *mc;
 	struct sk_buff_head *rxq;
 
 	if (!iod)
-		return POLLERR;
+		return EPOLLERR;
 
 	mc = iod->mc;
 	rxq = &iod->sk_rx_q;
@@ -568,11 +566,12 @@ static unsigned int misc_poll(struct file *filp, struct poll_table_struct *wait)
 	case STATE_ONLINE:
 		if (!mc->sim_state.changed) {
 			if (!skb_queue_empty(rxq))
-				return POLLIN | POLLRDNORM;
+				return EPOLLIN | EPOLLRDNORM;
 			else /* wq is waken up without rx, return for wait */
 				return 0;
 		}
 		/* fall through, if sim_state has been changed */
+		fallthrough;	/* G-23 */
 	case STATE_CRASH_EXIT:
 	case STATE_CRASH_RESET:
 	case STATE_NV_REBUILDING:
@@ -581,14 +580,14 @@ static unsigned int misc_poll(struct file *filp, struct poll_table_struct *wait)
 		if (iod->format == IPC_FMT) {
 			mif_err("%s: %s.state == %s\n", iod->name, mc->name,
 				mc_state(mc));
-			return POLLHUP;
+			return EPOLLHUP;
 		} else if (iod->format == IPC_BOOT || sipc5_boot_ch(iod->id)) {
 			mif_err("%s: %s.state == %s\n", iod->name, mc->name,
 				mc_state(mc));
-			return POLLHUP;
+			return EPOLLHUP;
 		} else if (iod->format == IPC_DUMP || sipc5_dump_ch(iod->id)) {
 			if (!skb_queue_empty(rxq))
-				return POLLIN | POLLRDNORM;
+				return EPOLLIN | EPOLLRDNORM;
 			else
 				return 0;
 		} else {
@@ -778,7 +777,8 @@ static long misc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			if (copy_from_user(buff, user_buff, CP_CRASH_INFO_SIZE))
 				return -EFAULT;
 		}
-		panic(iod->msd->cp_crash_info);
+		/* stock policy (L6C D-15, R-3); "%s": the text is user data, not a format */
+		panic("%s", iod->msd->cp_crash_info);
 		return 0;
 	}
 
@@ -919,12 +919,12 @@ static ssize_t misc_write(struct file *filp, const char __user *data,
 	/* 64bit prevent */
 	unsigned int cnt = (unsigned int)count;
 #ifdef DEBUG_MODEM_IF
-	struct timespec ts;
+	struct timespec64 ts;
 #endif
 
 #ifdef DEBUG_MODEM_IF
 	/* Record the timestamp */
-	getnstimeofday(&ts);
+	ktime_get_real_ts64(&ts);
 #endif
 
 	if (iod->format <= IPC_RFS && iod->id == 0)
@@ -992,7 +992,7 @@ static ssize_t misc_write(struct file *filp, const char __user *data,
 
 #ifdef DEBUG_MODEM_IF
 		/* Copy the timestamp to the skb */
-		memcpy(&skbpriv(skb)->ts, &ts, sizeof(struct timespec));
+		memcpy(&skbpriv(skb)->ts, &ts, sizeof(struct timespec64));
 #endif
 #ifdef DEBUG_MODEM_IF_IODEV_TX
 		mif_pkt(iod->id, "IOD-TX", skb);
@@ -1091,7 +1091,7 @@ static const struct file_operations misc_io_fops = {
 	.release = misc_release,
 	.poll = misc_poll,
 	.unlocked_ioctl = misc_ioctl,
-	.compat_ioctl = misc_ioctl,
+	.compat_ioctl = compat_ptr_ioctl,
 	.write = misc_write,
 	.read = misc_read,
 };
@@ -1168,12 +1168,12 @@ static int vnet_xmit(struct sk_buff *skb, struct net_device *ndev)
 	unsigned int tailroom;
 	unsigned int tx_bytes;
 #ifdef DEBUG_MODEM_IF
-	struct timespec ts;
+	struct timespec64 ts;
 #endif
 
 #ifdef DEBUG_MODEM_IF
 	/* Record the timestamp */
-	getnstimeofday(&ts);
+	ktime_get_real_ts64(&ts);
 #endif
 
 	if (unlikely(!cp_online(mc))) {
@@ -1226,7 +1226,7 @@ static int vnet_xmit(struct sk_buff *skb, struct net_device *ndev)
 
 #ifdef DEBUG_MODEM_IF
 	/* Copy the timestamp to the skb */
-	memcpy(&skbpriv(skb_new)->ts, &ts, sizeof(struct timespec));
+	memcpy(&skbpriv(skb_new)->ts, &ts, sizeof(struct timespec64));
 #endif
 #if defined(DEBUG_MODEM_IF_IODEV_TX) && defined(DEBUG_MODEM_IF_PS_DATA)
 	mif_pkt(iod->id, "IOD-TX", skb_new);
@@ -1302,10 +1302,11 @@ drop:
 	return NETDEV_TX_OK;
 }
 
+/* L6C D-7: skb->priomark (Samsung xt_PRIO, S:include/linux/skbuff.h:691) does not exist in 6.18: normal ring always */
 static u16 vnet_select_queue(struct net_device *dev, struct sk_buff *skb,
-		void *accel_priv, select_queue_fallback_t fallback)
+		struct net_device *sb_dev)
 {
-	return (skb && skb->priomark == RAW_HPRIO) ? 1 : 0;
+	return 0;
 }
 
 static int dummy_net_open(struct net_device *ndev)
@@ -1313,11 +1314,11 @@ static int dummy_net_open(struct net_device *ndev)
 	return -EINVAL;
 }
 
-static struct net_device_ops dummy_net_ops = {
+static const struct net_device_ops dummy_net_ops = {
 	.ndo_open = dummy_net_open,
 };
 
-static struct net_device_ops vnet_ops = {
+static const struct net_device_ops vnet_ops = {
 	.ndo_open = vnet_open,
 	.ndo_stop = vnet_stop,
 	.ndo_start_xmit = vnet_xmit,
@@ -1342,7 +1343,7 @@ static void vnet_setup_ether(struct net_device *ndev)
 	ndev->type = ARPHRD_ETHER;
 	ndev->flags = IFF_POINTOPOINT | IFF_NOARP | IFF_MULTICAST | IFF_SLAVE;
 	ndev->addr_len = ETH_ALEN;
-	random_ether_addr(ndev->dev_addr);
+	eth_hw_addr_random(ndev);
 	ndev->hard_header_len = 0;
 	ndev->tx_queue_len = 1000;
 	ndev->mtu = ETH_DATA_LEN;
@@ -1446,7 +1447,7 @@ int sipc5_init_io_device(struct io_device *iod)
 			mif_info("%s: ERR! misc_register failed\n", iod->name);
 
 		if (iod->id == SIPC_CH_ID_CPLOG1) {
-			iod->ndev = alloc_netdev(0, iod->name,
+			iod->ndev = alloc_netdev(sizeof(struct vnet), iod->name,
 					NET_NAME_UNKNOWN, vnet_setup);
 			if (!iod->ndev) {
 				mif_info("%s: ERR! alloc_netdev fail\n", iod->name);
@@ -1471,10 +1472,10 @@ int sipc5_init_io_device(struct io_device *iod)
 		INIT_LIST_HEAD(&iod->node_ndev);
 
 		if (iod->use_handover)
-			iod->ndev = alloc_netdev_mqs(0, iod->name, NET_NAME_UNKNOWN,
+			iod->ndev = alloc_netdev_mqs(sizeof(struct vnet), iod->name, NET_NAME_UNKNOWN,
 				vnet_setup_ether, MAX_NDEV_TX_Q, MAX_NDEV_RX_Q);
 		else
-			iod->ndev = alloc_netdev_mqs(0, iod->name, NET_NAME_UNKNOWN,
+			iod->ndev = alloc_netdev_mqs(sizeof(struct vnet), iod->name, NET_NAME_UNKNOWN,
 				vnet_setup, MAX_NDEV_TX_Q, MAX_NDEV_RX_Q);
 
 		if (!iod->ndev) {
@@ -1486,6 +1487,8 @@ int sipc5_init_io_device(struct io_device *iod)
 		if (ret) {
 			mif_info("%s: ERR! register_netdev fail\n", iod->name);
 			free_netdev(iod->ndev);
+			iod->ndev = NULL;
+			return ret;
 		}
 
 		mif_debug("iod 0x%pK\n", iod);
@@ -1539,7 +1542,7 @@ void sipc5_deinit_io_device(struct io_device *iod)
 {
 	mif_err("%s: io_typ=%d\n", iod->name, iod->io_typ);
 	
-	wake_lock_destroy(&iod->wakelock);
+	wakeup_source_unregister(iod->ws);
 	
 	/* De-register misc or net device */
 	switch (iod->io_typ) {
