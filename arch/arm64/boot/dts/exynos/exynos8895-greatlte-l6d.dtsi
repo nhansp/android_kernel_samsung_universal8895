@@ -58,3 +58,34 @@
 		status = "okay";				/* FDT:11165 */
 	};
 };
+
+/* L6D slice bt */
+/ {
+	bluetooth {
+		compatible = "samsung,bcm43xx";				/* FDT:11976 */
+		bt-en-gpios = <&gpj1 7 GPIO_ACTIVE_HIGH>;		/* FDT:11977 gpios[0] = <0x106 0x07 0x00>; S:drivers/bluetooth/bcm43xx.c:274 */
+		bt-wake-gpios = <&gpj1 4 GPIO_ACTIVE_HIGH>;		/* gpios[1] = <0x106 0x04 0x00>; :288 */
+		bt-host-wake-gpios = <&gpa2 3 GPIO_ACTIVE_HIGH>;	/* BT_HOST_WAKE gpios[2] = <0x4f 0x03 0x0f> (0x4f = gpa2); level read in
+									 * the ISR as stock (:303-317, gpio_get_value in :204-234); the
+									 * Exynos EINT chip has no irq_get_irqchip_state (RL-11) */
+		interrupts-extended = <&gpa2 3 IRQ_TYPE_EDGE_BOTH>;	/* same pin as IRQ (= gpiod_to_irq mapping, samsung_gpio_to_irq
+									 * A:drivers/pinctrl/samsung/pinctrl-samsung.c:712); stock requests rising
+									 * and flips the edge in the ISR (:212, :255); both edges = same events;
+									 * kept so heartbeat row `btw` (HB_IRQ idx 0) resolves; both-edge EINT
+									 * trigger exists: A:drivers/pinctrl/samsung/pinctrl-exynos.c:171-172 */
+		samsung,uart = <&serial_1>;				/* new: the UART whose TX asserts BT_WAKE (stock BT_UPORT 1, :46) */
+		pinctrl-names = "default";
+		pinctrl-0 = <&bt_hostwake &bt_btwake &bt_en>;		/* FDT:11978-11979 <0x15a 0x15b 0x15c> */
+		status = "okay";					/* FDT:11980 */
+	};
+
+	aliases {
+		serial1 = &serial_1;		/* (final, R3-10) stock FDT:4156 uart1 = "/uart@10830000"; 6.18 samsung_tty takes
+						 * the port index only from the "serial" stem (A:drivers/tty/serial/samsung_tty.c:1961) */
+	};
+};
+
+&serial_1 {
+	status = "okay";			/* FDT:4802; ACK node A:.../exynos8895.dtsi:536-547 already has SPI 389 (FDT:4795 0x185),
+						 * uart1_bus pins (FDT:4797 -> 0x27), fifo 256 (FDT:4793) */
+};

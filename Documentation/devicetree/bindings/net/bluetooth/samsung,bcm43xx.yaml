@@ -1,0 +1,74 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/bluetooth/samsung,bcm43xx.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Broadcom BCM43xx Bluetooth power and low-power control on Samsung Exynos SoCs
+
+maintainers:
+  - nhansp <nhan.094.vn@gmail.com>
+
+description: |
+  Broadcom BCM43xx Bluetooth chip connected to Samsung Exynos UART with
+  power enable (BT_EN), host wake (BT_HOST_WAKE), and wake (BT_WAKE) GPIO lines.
+  Local binding for the greatlte port (spec L6D 4.4).
+
+properties:
+  compatible:
+    const: samsung,bcm43xx
+
+  bt-en-gpios:
+    maxItems: 1
+    description: GPIO specifier for the BT_EN power enable line
+
+  bt-wake-gpios:
+    maxItems: 1
+    description: GPIO specifier for the BT_WAKE device wake line
+
+  bt-host-wake-gpios:
+    maxItems: 1
+    description: GPIO specifier for the BT_HOST_WAKE host wake line
+
+  interrupts-extended:
+    maxItems: 1
+    description: Interrupt specifier for the BT_HOST_WAKE line
+
+  samsung,uart:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Phandle to the UART device node used for Bluetooth HCI transport
+
+  pinctrl-names:
+    items:
+      - const: default
+
+  pinctrl-0:
+    minItems: 1
+    maxItems: 3
+    description: Pin control states for host-wake, bt-wake, and bt-en pins
+
+required:
+  - compatible
+  - bt-en-gpios
+  - bt-wake-gpios
+  - bt-host-wake-gpios
+  - interrupts-extended
+  - samsung,uart
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    bluetooth {
+        compatible = "samsung,bcm43xx";
+        bt-en-gpios = <&gpj1 7 GPIO_ACTIVE_HIGH>;
+        bt-wake-gpios = <&gpj1 4 GPIO_ACTIVE_HIGH>;
+        bt-host-wake-gpios = <&gpa2 3 GPIO_ACTIVE_HIGH>;
+        interrupts-extended = <&gpa2 3 IRQ_TYPE_EDGE_BOTH>;
+        samsung,uart = <&serial_1>;
+        pinctrl-names = "default";
+        pinctrl-0 = <&bt_hostwake &bt_btwake &bt_en>;
+    };

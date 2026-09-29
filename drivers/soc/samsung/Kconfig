@@ -232,3 +232,11 @@ config GREATLTE_HB_L6D_WIFI
 	default GREATLTE_HB
 	help
 	  Registers the L6D Wi-Fi heartbeat rows 'wlan' and 'wlw'.
+
+# L6D slice bt
+config GREATLTE_HB_L6D_BT
+	bool "greatlte heartbeat: L6D Bluetooth (bt, btw)"
+	depends on GREATLTE_HB
+	default GREATLTE_HB
+	help
+	  Registers the L6D Bluetooth heartbeat rows.

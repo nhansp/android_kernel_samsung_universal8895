@@ -294,6 +294,9 @@ struct s3c2410_uartcfg {
 	unsigned long	   ufcon;	 /* value of ufcon for port */
 };
 
+/* L6D 5.6: wake-peer hook for Bluetooth LPM */
+int s3c24xx_serial_set_wake_peer(struct device *uart_dev, void (*fn)(struct uart_port *));
+
 #endif /* __ASSEMBLY__ */
 
 #endif /* __ASM_ARM_REGS_SERIAL_H */
