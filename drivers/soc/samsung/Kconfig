@@ -240,3 +240,14 @@ config GREATLTE_HB_L6D_BT
 	default GREATLTE_HB
 	help
 	  Registers the L6D Bluetooth heartbeat rows.
+
+# L6B multimedia QoS shim (spec L6B 5.3)
+config EXYNOS8895_MM_QOS
+	bool "Exynos8895 multimedia QoS requests (camera and MFC DVFS votes)"
+	depends on ARCH_EXYNOS && COMMON_CLK
+	help
+	  Stand-in for the Samsung pm_qos classes the transplanted
+	  Exynos8895 camera and MFC drivers vote on: INTCAM/CAM requests
+	  set the ACPM DVFS clocks of the camera core, CPU cluster
+	  min/max requests become cpufreq freq_qos requests, INT/MIF and
+	  CPU-online requests are only aggregated.
