@@ -192,7 +192,10 @@ static int l5_dpu_fmt(char *buf, size_t size)
 	len += l5_x(buf + len, size - len, "m1p", l5_smmu1, 0x00c, ip);
 	len += l5_x(buf + len, size - len, "m1v", l5_smmu1, 0x034, ip);
 	len += l5_x(buf + len, size - len, "m1a", l5_smmu1, 0x870, ip);
-	len += l5_x(buf + len, size - len, "m1b", l5_smmu1, 0x874, ip);
+	/* CAPA1 exists only if CAPA0 bit 11 says so (A:drivers/iommu/exynos-iommu.c:502-507);
+	 * on 8895 a read of +0x874 without it is a synchronous external abort (image 0043) */
+	len += l5_x(buf + len, size - len, "m1b", l5_smmu1, 0x874,
+		    ip && (readl(l5_smmu1 + 0x870) & BIT(11)));
 	ip = pd0 && pd1 && l5_ip && !drv && !l5_gated(code[G_DSIM]);
 	len += l5_x(buf + len, size - len, "ls3", l5_dsim, 0x14, ip);
 	len += l5_x(buf + len, size - len, "dps", l5_dsim, 0x1c, ip);
