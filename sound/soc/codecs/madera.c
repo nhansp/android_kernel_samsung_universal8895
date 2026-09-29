@@ -10,6 +10,7 @@
 #include <linux/gcd.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
+#include <linux/property.h>
 #include <linux/slab.h>
 #include <linux/string_choices.h>
 #include <sound/pcm.h>
@@ -4848,6 +4849,57 @@ int madera_lhpf_coeff_put(struct snd_kcontrol *kcontrol,
 	return snd_soc_bytes_put(kcontrol, ucontrol);
 }
 EXPORT_SYMBOL_GPL(madera_lhpf_coeff_put);
+
+/*
+ * MICBIAS force-bypass for a machine driver that keeps the bias up through
+ * system suspend (VTS voice trigger), the MICBIAS loop of stock
+ * madera_set_force_bypass() (S:sound/soc/codecs/madera.c:5244-5321): setting
+ * bypasses every MICBIAS, clearing restores the regulated mode of each MICBIAS
+ * whose "cirrus,micbiasN" (<mV ext_cap discharge[4] soft_start bypass>,
+ * S:drivers/mfd/madera-core.c:601-624) has a level and no bypass flag. L6E
+ * 5.2(f).
+ */
+static int madera_set_force_bypass(struct snd_soc_component *component,
+				   bool set_bypass)
+{
+	struct madera_priv *priv = snd_soc_component_get_drvdata(component);
+	struct madera *madera = priv->madera;
+	unsigned int i, micbias_bypass = 0;
+	u32 cfg[4 + MADERA_MAX_CHILD_MICBIAS];
+	char prop[20];
+
+	if (set_bypass)
+		micbias_bypass = MADERA_MICB1_BYPASS;
+
+	for (i = 0; i < madera->num_micbias; i++) {
+		memset(cfg, 0, sizeof(cfg));
+		snprintf(prop, sizeof(prop), "cirrus,micbias%u", i + 1);
+		if (device_property_count_u32(madera->dev, prop) >= (int)ARRAY_SIZE(cfg))
+			device_property_read_u32_array(madera->dev, prop, cfg,
+						       ARRAY_SIZE(cfg));
+
+		/* cfg[0] = mV, bit 0 of cfg[7] = bypass (a 1-bit field in stock) */
+		if (set_bypass || (!(cfg[7] & 1) && cfg[0]))
+			regmap_update_bits(madera->regmap,
+					   MADERA_MIC_BIAS_CTRL_1 + i,
+					   MADERA_MICB1_BYPASS,
+					   micbias_bypass);
+	}
+
+	return 0;
+}
+
+int madera_enable_force_bypass(struct snd_soc_component *component)
+{
+	return madera_set_force_bypass(component, true);
+}
+EXPORT_SYMBOL_GPL(madera_enable_force_bypass);
+
+int madera_disable_force_bypass(struct snd_soc_component *component)
+{
+	return madera_set_force_bypass(component, false);
+}
+EXPORT_SYMBOL_GPL(madera_disable_force_bypass);
 
 MODULE_SOFTDEP("pre: madera");
 MODULE_DESCRIPTION("ASoC Cirrus Logic Madera codec support");
