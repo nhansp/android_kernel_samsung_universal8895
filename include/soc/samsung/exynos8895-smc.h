@@ -14,6 +14,12 @@
 #define SMC_SRPMB_WSM			0x82003811	/* S:include/linux/smc.h:54; user 6T-R (REQ-6T-L6-3, L6T_tee.draft.md 2.6) */
 #define SMC_CMD_SEC_LOG_INFO		0x82000610	/* S:include/linux/smc.h:90; user 6T-S (REQ-6T-L6-4) */
 
+/* ABOX (L6E 5.7.1, F-48) */
+#define SMC_CMD_REG			(-101)				/* S:include/linux/smc.h:24 */
+#define SMC_REG_CLASS_SFR_W		(0x1 << 30)			/* :94 */
+#define SMC_REG_ID_SFR_W(addr)		(SMC_REG_CLASS_SFR_W | ((addr) >> 2))	/* :97 */
+#define SMC_CMD_ABOX_MAGIC		0x82000501			/* S:sound/soc/samsung/abox/abox.c:4992 literal */
+
 unsigned long exynos8895_smc(unsigned long id, unsigned long a1, unsigned long a2, unsigned long a3);
 
 #endif /* __SOC_SAMSUNG_EXYNOS8895_SMC_H */
