@@ -396,3 +396,66 @@
 	pinctrl-0 = <&pwm_tout1>;			/* stock applied through the MFD node (FDT:6168 third entry 0x8f) */
 	status = "okay";
 };
+
+/* slice fp: fingerprint sensor, non-secure side (L6F 4.2, 4.7) */
+&pinctrl_alive {
+	btp_irq: btp-irq-pins {				/* FDT:424-431 (0x9f) */
+		samsung,pins = "gpa1-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;	/* pud 1 */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* 3 */
+	};
+	btp_irqsleep: btp-irqsleep-pins {		/* FDT:433-440 (0xa1) */
+		samsung,pins = "gpa1-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+	};
+	btp_irqidle: btp-irqidle-pins {			/* FDT:442-449 (0xa2) */
+		samsung,pins = "gpa1-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+	};
+};
+
+&pinctrl_peric1 {
+	btp_ldo: btp-ldo-pins {				/* FDT:3860-3867 (0xa0) */
+		samsung,pins = "gpe1-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+};
+
+&spi_2 { status = "disabled"; };	/* FDT:6282 secure-mode: TEE owns the controller; usi0 never programmed (REQ-L1-3b, plan X-16) */
+
+/ {
+	fingerprint {
+		compatible = "samsung,exynos8895-vfsspi";	/* platform device, not an SPI child (L6F 5.10) */
+		drdy-gpios = <&gpa1 3 GPIO_ACTIVE_HIGH>;	/* FDT:6294 vfsspi-drdyPin = <&gpa1 3 0> (0x69 = gpa1) */
+		ldo-gpios = <&gpe1 0 GPIO_ACTIVE_HIGH>;		/* FDT:6295 vfsspi-ldoPin = <&gpe1 0 0> (0x5b = gpe1) */
+		interrupts-extended = <&gpa1 3 IRQ_TYPE_EDGE_RISING>;	/* DRDY: S:drivers/fingerprint/vfs8xxx.h:26 DRDY_IRQ_FLAG IRQF_TRIGGER_RISING */
+		clocks = <&cmu_peric0 CLK_GOUT_PERIC0_USI00_I_PCLK>,	/* stock "fp-spi-pclk" GATE_USI00 S:drivers/clk/samsung/clk-exynos8895.c:372 */
+			 <&cmu_peric0 CLK_GOUT_PERIC0_USI00_I_SCLK_USI>,
+			 <&cmu_top CLK_DOUT_CMU_PERIC0_USI00>,		/* stock "fp-spi-sclk" (:542), rate set 2 x 13 MHz (5.10) */
+			 <&cmu_peric0 CLK_GOUT_PERIC0_USI00_QCH>;	/* REQ-L1-10: the Q-channel CLOCK_REQ gate stock drives for
+									   GATE_USI00 (VCLK_QCH_DIS) */
+		clock-names = "pclk", "sclk_gate", "sclk", "qch";
+		/* stock fp-spi-sclk vclk at 26000 kHz = TOP mux USI00 := OSCCLK (0), div := /1 (V4-11:
+		 * S:drivers/soc/samsung/cal-if/exynos8895/cmucal-vclk.c:2586-2593, cmucal-vclklut.c:158-160);
+		 * ACK muxes never reparent on set_rate (A:drivers/clk/samsung/clk.h:144-145), so select the parent here */
+		assigned-clocks = <&cmu_top CLK_MOUT_CMU_PERIC0_USI00>, <&cmu_top CLK_DOUT_CMU_PERIC0_USI00>;
+		assigned-clock-parents = <&oscclk>, <0>;
+		assigned-clock-rates = <0>, <26000000>;
+		spi-max-frequency = <13000000>;			/* FDT:6287 0xc65d40; S:drivers/fingerprint/vfs8xxx.h:20 */
+		samsung,orient = <1>;				/* FDT:6296 vfsspi-orient */
+		samsung,detect-mode = <1>;			/* FDT:6297 vfsspi-wog (DETECT_ADM, S:drivers/fingerprint/fingerprint.h:49) */
+		samsung,chip-id = "NAMSAN";			/* FDT:6298 vfsspi-chipid */
+		pinctrl-names = "default", "sleep", "idle";	/* FDT:6288-6291 */
+		pinctrl-0 = <&spi2_bus &btp_irq &btp_ldo>;	/* stock child <0x9f 0xa0> + controller's spi2-bus 0x9e (FDT:6280) */
+		pinctrl-1 = <&btp_irqsleep>;			/* FDT:6290 0xa1 */
+		pinctrl-2 = <&btp_irqidle>;			/* FDT:6291 0xa2 */
+		/* no CS gpio: secure mode never requests vfsspi-csgpio (S:drivers/fingerprint/vfs8xxx.c:1298-1308, :1580-1606) */
+	};
+};
