@@ -183,3 +183,12 @@ config GREATLTE_HB_L6T
 	default GREATLTE_HB
 	help
 	  Registers the L6T heartbeat rows.
+
+# L6A slice gpu: stock chip-id sysfs revision (L6A 5.4)
+config EXYNOS_CHIPID_LEGACY_SYSFS
+	bool "Exynos stock /sys/devices/system/chip-id/revision"
+	depends on EXYNOS_CHIPID
+	help
+	  Registers the "chip-id" system subsystem of the stock 4.4 driver
+	  with its "revision" attribute ("%08X\n" of main_rev << 4 |
+	  sub_rev), which the Exynos display HAL blob reads (spec L6A 5.4).
