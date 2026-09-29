@@ -697,6 +697,21 @@
 			};
 		};
 
+		pwm: pwm@104c0000 {
+			compatible = "samsung,s3c6400-pwm";	/* FDT:7741 (kept: 6.18 s3c64xx variant is the correct TCFG1 encoding, C-1) */
+			reg = <0x104c0000 0x1000>;		/* FDT:7742 */
+			samsung,pwm-outputs = <0>, <1>, <2>, <3>, <4>;	/* FDT:7743 */
+			#pwm-cells = <3>;			/* FDT:7744 */
+			clocks = <&cmu_peric0 CLK_GOUT_PERIC0_PWM_I_PCLK_S0>, <&oscclk>;
+			clock-names = "timers", "pwm-ref";	/* timers = PWM APB gate (id 12, A:include/dt-bindings/clock/samsung,exynos8895.h:372).
+								   Stock gate_timers = <0x21 0xd8> (FDT:7745-7746) = 216 = CLK_PERIC0_BASE 200 + 16 =
+								   UMUX_CLKCMU_PERIC0_BUS (S:include/dt-bindings/clock/exynos8895.h:73,90), the PERIC0 bus
+								   user mux feeding GATE_PWM (S:drivers/clk/samsung/clk-exynos8895.c:357,367); the ACK leaf
+								   gate is the equivalent consumer handle (verifier V-5);
+								   pwm-ref = 26 MHz = stock "pwm-clock" (fixed 1:1 of fin_pll, :700) (5.8) */
+			status = "disabled";
+		};
+
 		pinctrl_peric0: pinctrl@104d0000 {
 			compatible = "samsung,exynos8895-pinctrl";
 			reg = <0x104d0000 0x1000>;

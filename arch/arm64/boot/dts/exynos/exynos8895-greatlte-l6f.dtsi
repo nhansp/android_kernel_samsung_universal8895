@@ -237,6 +237,25 @@
 		wakeup-source;					/* FDT:6173 max77865,wakeup */
 		pinctrl-names = "default";
 		pinctrl-0 = <&max77865_irq &muic_irq>;		/* FDT:6168 <0x8d 0x8e 0x8f>; 0x8f (pwm-tout1) is the PWM's */
+
+		/* slice hlp: haptic and LED child nodes (L6F 4.3) */
+		haptic {
+			compatible = "maxim,max77865-haptic";
+			pwms = <&pwm 1 48828 0>;		/* FDT:12440 haptic,pwm_id = <1>; FDT:12438 period[0] 0xbebc;
+								   index 0 = default S:drivers/motor/max77865_haptic.c:726 */
+			maxim,max-duty-ns = <41503>;		/* FDT:12437 haptic,duty[0] 0xa21f (5.7) */
+			maxim,max-timeout-ms = <10000>;		/* FDT:12435 haptic,max_timeout = <0x2710> */
+		};
+
+		leds {
+			compatible = "maxim,max77865-rgb";
+			/* FDT:12444-12511: every window-colour variant (_uu _bk _wh _gd _sv _gr _bl _pg) carries the same values
+			 * (python check of the rgb node), so no lcdtype lookup is needed */
+			maxim,normal-current = <0x0a>;		/* normal_powermode_current_uu FDT:12447 */
+			maxim,lowpower-current = <0x0a>;	/* low_powermode_current_uu FDT:12448 */
+			maxim,brightness-ratio = <0x2d0 0x46 0x96>;	/* br_ratio_r/g/b_uu FDT:12449-12451 */
+			maxim,brightness-ratio-low = <0x5a 0x0a 0x14>;	/* br_ratio_r/g/b_low_uu FDT:12452-12454 */
+		};
 	};
 
 	max77865_charger: charger@69 {			/* 0xD2 >> 1: S:drivers/mfd/max77865.c:46 */
@@ -360,4 +379,20 @@
 			thermal-sensors = <&chg_ntc>;
 		};
 	};
+};
+
+/* slice hlp: PWM pin and board PWM (L6F 4.2, 4.5) */
+&pinctrl_peric0 {
+	pwm_tout1: pwm-tout1-pins {			/* FDT:1529-1535 (0x8f) */
+		samsung,pins = "gpd0-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;	/* pud 1 */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+};
+
+&pwm {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pwm_tout1>;			/* stock applied through the MFD node (FDT:6168 third entry 0x8f) */
+	status = "okay";
 };
