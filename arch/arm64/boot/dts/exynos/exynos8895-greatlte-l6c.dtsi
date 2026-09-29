@@ -13,6 +13,8 @@
 
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/soc/samsung,exynos-usi.h>	/* USI_MODE_SPI, 4.2 */
+#include "exynos-pinctrl.h"			/* A:arch/arm64/boot/dts/exynos/exynos-pinctrl.h, pin macros of 4.2 */
 
 /* L6C 4.1 (6E modem) */
 
@@ -268,5 +270,161 @@
 				iod,option_region = "usa_att";
 			};
 		};
+	};
+};
+
+/* L6C 4.2 (6I sensor hub + GNSS) */
+
+/ {
+	/* L6 4.0 bus alias (stock spi10 = "/spi@108C0000", FDT:4214): bus spi10, device spi10.0, the
+	 * sysfs path of the LOS ueventd/sepolicy lines (L6C 7.5). Planned for WP-L6COM, absent in wp/l6f. */
+	aliases {
+		spi10 = &spi_10;
+	};
+};
+
+/* USI8 in SPI mode. Stock FDT:4987-5082 usi@10821018 usi_mode = "spi" (SW_CONF 0x4); ACK usi8
+ * A:arch/arm64/boot/dts/exynos/exynos8895.dtsi:797-806, sysreg <&syscon_peric1 0x1018> (:805) */
+&usi8 {
+	samsung,mode = <USI_MODE_SPI>;			/* A:include/dt-bindings/soc/samsung,exynos-usi.h:14; A:drivers/soc/samsung/exynos-usi.c:252 */
+	status = "okay";
+};
+
+&pinctrl_peric1 {
+	/* stock spi1_mosi_sck_ssn FDT:3184-3190 without gpe2-6 (that pin is the GPIO chip select, see cs-gpios) */
+	ssp_spi_clk_mosi: ssp-spi-clk-mosi-pins {
+		samsung,pins = "gpe2-5", "gpe2-7";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;	/* FDT:3186 <0x02> */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;	/* FDT:3187 <0x00> */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:3188 <0x03>; LV4 = 3 A:arch/arm64/boot/dts/exynos/exynos-pinctrl.h:51 */
+	};
+	ssp_spi_cs: ssp-spi-cs-pins {
+		samsung,pins = "gpe2-6";			/* FDT:3185 third pin, used as GPIO CS FDT:6588 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;	/* stock drove it as a GPIO (S:drivers/spi/spi-s3c64xx.c:1161) */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;	/* FDT:3187 */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:3188 */
+	};
+	ssp_spi_miso: ssp-spi-miso-pins {
+		samsung,pins = "gpe2-4";			/* FDT:3194 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;	/* FDT:3195 */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;	/* FDT:3196 <0x01> (A:.../exynos-pinctrl.h:15) */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:3197 */
+	};
+	ssp_mcu_req: ssp-mcu-req-pins {
+		samsung,pins = "gpe6-1";			/* FDT:3203 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;	/* FDT:3204 <0x01> */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;	/* FDT:3205 */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:3206 */
+	};
+	ssp_gps_pwr_en: ssp-gps-pwr-en-pins {
+		samsung,pins = "gpf0-3";			/* FDT:3212 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;	/* FDT:3213 */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;	/* FDT:3214 <0x01> */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:3215 */
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;	/* FDT:3216 <0x03>; A:.../exynos-pinctrl.h:22; A:drivers/pinctrl/samsung/pinctrl-samsung.c:44 */
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;	/* FDT:3217 <0x00>; pinctrl-samsung.c:45 */
+	};
+};
+
+&pinctrl_alive {
+	ssp_host_req: ssp-host-req-pins {
+		samsung,pins = "gpa3-4";			/* FDT:346 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;	/* FDT:347 <0x0f> */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;	/* FDT:348 <0x01> */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:349 */
+	};
+	ssp_batch_wake_irq: ssp-batch-wake-irq-pins {
+		samsung,pins = "gpa2-5";			/* FDT:364 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;	/* FDT:365 */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;	/* FDT:366 */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:367 */
+	};
+};
+
+&pinctrl_fsys0 {
+	ssp_mcu_resp: ssp-mcu-resp-pins {
+		samsung,pins = "gpi1-5";			/* FDT:733 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;	/* FDT:734 <0x00> */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;		/* FDT:735 <0x03> */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:736 */
+	};
+};
+
+/* spi@108C0000. FDT:6548-6592; ACK spi_10 = usi8 child @0x108c0000, SPI 409 (L6 V1). */
+&spi_10 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&ssp_spi_clk_mosi &ssp_spi_miso &ssp_spi_cs>;	/* replaces ACK <&spi10_bus> (pull/drive differ, 2.2) */
+	cs-gpios = <&gpe2 6 GPIO_ACTIVE_LOW>;		/* stock controller-data cs-gpio FDT:6588 (<0x60 0x06 0x00>, 0x60 = gpe2),
+							   driven active-low by stock S:drivers/spi/spi-s3c64xx.c:600; 6.18 uses
+							   controller cs-gpios A:drivers/spi/spi-s3c64xx.c:1308 */
+	num-cs = <1>;					/* FDT:6562 */
+	/* stock samsung,spi-fifosize = <0x40> (FDT:6551) = fifo_depth 64 of the new exynos8895 port config (5.2.1, final run I-1);
+	   stock swap-mode (FDT:6554) is not implemented by 6.18 s3c64xx and not needed (8-bit words, 5.3.1);
+	   no dmas (stock had dma-names only, FDT:6553) -> polling (A:.../spi-s3c64xx.c:1183) */
+	/* (final run, I-1) SPI source clock = stock value 50 MHz. Stock asks CAL for 2 x 26 MHz on the USI08 vclk
+	 * (S:drivers/spi/spi-s3c64xx.c:782-783 "There is half-multiplier before the SPI" clk_set_rate(src_clk, cur_speed * 2);
+	 * src_clk = "spi_busclk0" = FDT:6557-6558 <0x21 0x101> = USI08 (S:include/dt-bindings/clock/exynos8895.h:98,106)
+	 * = VCLK_SPL_CLK_PERIC1_USI08_BLK_CMU (S:drivers/clk/samsung/clk-exynos8895.c:559)); CAL get_lut picks the first LUT
+	 * row with rate <= request (S:drivers/soc/samsung/cal-if/vclk.c:15-26, :150 rate/1000): 52000 -> {50000, l2}
+	 * (S:.../cal-if/exynos8895/cmucal-vclk.c:2719-2726) = params {7, 2} (S:.../cmucal-vclklut.c:416-418) =
+	 * DIV_CLKCMU_PERIC1_USI08 ratio 7 (/8) + MUX_CLKCMU_PERIC1_USI08 select 2 = DIV_PLL_SHARED2_DIV2
+	 * (vclk list S:.../cmucal-vclk.c:206-209; parents S:.../cmucal-node.c:217-222); 400 MHz / 8 = 50 MHz (the same
+	 * mux 2 gives 200 MHz with ratio 1 in row nm {1, 2} and 100 MHz with ratio 3 in row l1 {3, 2}, so the parent is 400 MHz).
+	 * 6.18 cannot reach that divider from the SPI driver: gout_peric1_usi08_i_sclk_usi and mout_peric1_usi08_user carry
+	 * no CLK_SET_RATE_PARENT (A:drivers/clk/samsung/clk-exynos8895.c:2706-2709, :2540-2542; MUX() adds only
+	 * CLK_SET_RATE_NO_REPARENT A:drivers/clk/samsung/clk.h:144-145), so clk_set_rate() rounds to the current rate
+	 * (A:drivers/clk/clk.c:1742-1765) and returns 0 without a change (:2603-2607). The rate is therefore set here,
+	 * at the controller's probe (of_clk_set_defaults, A:drivers/base/platform.c:1408), register-equivalent to stock:
+	 * ACK TOP mux 0x10dc [1:0] and div 0x18e4 [3:0] (A:.../clk-exynos8895.c:914-916, :1064-1065) = stock SFRs
+	 * S:.../cmucal-sfr.c:546-547 with SELECT [1:0] and DIVRATIO [3:0] (:3583, :3586); ACK parents
+	 * {oscclk, shared0_div4, shared2_div2, shared4_div2} (A:.../clk-exynos8895.c:722-724) = stock order
+	 * {OSCCLK_CMU, DIV_PLL_SHARED0_DIV4, DIV_PLL_SHARED2_DIV2, DIV_PLL_SHARED4_DIV2}; PERIC1 USER mux 0x0220 bit 4
+	 * (A:.../clk-exynos8895.c:2540-2542) = stock PLL_CON0_MUX_CLKCMU_PERIC1_USI08_USER 0x0220 MUX_SEL bit 4
+	 * (S:.../cmucal-sfr.c:1813, :7239), parents {oscclk, dout_cmu_peric1_usi08} (A:.../clk-exynos8895.c:2500-2501)
+	 * = {OSCCLK_PERIC1, CLKCMU_PERIC1_USI08} (S:.../cmucal-node.c:765-768). With the source equal to stock the
+	 * serial clock equals stock's whatever the IP-internal divider is; the port config's clk_div = 2 (5.2.1) only
+	 * makes 6.18's own cur_speed bookkeeping (timeouts, HS_EN test) read the stock value 25 MHz. Check S-P12. */
+	assigned-clocks = <&cmu_top CLK_MOUT_CMU_PERIC1_USI08>,	/* A:include/dt-bindings/clock/samsung,exynos8895.h:79 */
+			  <&cmu_top CLK_DOUT_CMU_PERIC1_USI08>,	/* :144 */
+			  <&cmu_peric1 CLK_MOUT_PERIC1_USI08_USER>;	/* :397; cmu_top/cmu_peric1 A:.../exynos8895.dtsi:1331, :504 */
+	assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_SHARED2_DIV2>,	/* :158; stock mux select 2 */
+				 <0>,
+				 <&cmu_top CLK_DOUT_CMU_PERIC1_USI08>;	/* stock USER mux = CLKCMU_PERIC1_USI08 */
+	assigned-clock-rates = <0>, <50000000>, <0>;		/* stock LUT row {50000, l2} */
+	status = "okay";
+
+	gnss_hub: gnss-hub@0 {
+		compatible = "samsung,bcm4773-ssp";		/* new; stock "ssp,BCM4773" FDT:6565 */
+		reg = <0>;					/* FDT:6566 */
+		spi-max-frequency = <26000000>;			/* FDT:6567 0x18cba80 */
+		spi-cpol;					/* FDT:6568 */
+		spi-cpha;					/* FDT:6569 (SSP forces SPI_MODE_3 too, S:.../ssp_dev.c:703) */
+		pinctrl-names = "default";
+		pinctrl-0 = <&ssp_host_req &ssp_mcu_req &ssp_mcu_resp &ssp_batch_wake_irq>;	/* FDT:6571 <0xb7 0xb8 0xb9 0xba> */
+		host-req-gpios = <&gpa3 4 GPIO_ACTIVE_HIGH>;	/* FDT:6574 ssp-host-req <0x4c 0x04 0x00>, 0x4c = gpa3 */
+		mcu-req-gpios = <&gpe6 1 GPIO_ACTIVE_HIGH>;	/* FDT:6575 ssp-mcu-req <0x68 0x01 0x00>, 0x68 = gpe6 */
+		mcu-resp-gpios = <&gpi1 5 GPIO_ACTIVE_HIGH>;	/* FDT:6576 ssp-mcu-resp <0x8a 0x05 0x00>, 0x8a = gpi1 */
+		batch-wake-gpios = <&gpa2 5 GPIO_ACTIVE_HIGH>;	/* FDT:6577 ssp-batch-wake-irq <0x4f 0x05 0x00>, 0x4f = gpa2 */
+		vdd-mcu-1p8-supply = <&ldo38_reg>;		/* FDT:6585 ssp-vdd-mcu-1p8 = "vdd_mcu_1p8" = FDT:7249 LDO38 */
+		ssp-acc-position = <3>;				/* FDT:6578 */
+		ssp-mag-position = <6>;				/* FDT:6579 */
+		ssp-sns-combination = <0>;			/* FDT:6580 (not read by the built code; kept for fidelity) */
+		ssp-ap-rev = <1>;				/* FDT:6581 */
+		ssp-mag-array = [1b 56 86 0d 25 f0 fe 82 d4 36 ef 55 28 1c 01 e8 f4 68 57 79 ba fe d3 85 0a 4d 95];	/* FDT:6582 (27 bytes, mag_type 1) */
+		ssp-glass-type = <0>;				/* FDT:6583 */
+		ssp-mag-type = <1>;				/* FDT:6584 */
+		controller-data {
+			samsung,spi-feedback-delay = <0>;	/* FDT:6589; read A:drivers/spi/spi-s3c64xx.c:975 */
+		};
+	};
+};
+
+/ {
+	/* GPS standby (nSTDBY) line. FDT:12533-12539. */
+	gps-pwr {
+		compatible = "samsung,exynos8895-gps-pwr";	/* new; stock "samsung,exynos54xx-bcm4753" FDT:12534 */
+		pinctrl-names = "default";			/* stock state name "hub_en" FDT:12535 (selected by hand, S:drivers/gps/sec_gps_bcm47531.c:260-264) */
+		pinctrl-0 = <&ssp_gps_pwr_en>;			/* FDT:12536 <0x164> */
+		gpios = <&gpf0 3 GPIO_ACTIVE_HIGH>;		/* FDT:12537 <0x84 0x03 0x00>, 0x84 = gpf0 */
 	};
 };
