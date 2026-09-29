@@ -201,34 +201,25 @@ static int assign_irqs(struct platform_device *pdev)
 	if (!kbdev)
 		return -ENODEV;
 
-	/* 3 IRQ resources */
+	/*
+	 * 3 IRQs by name. 6.18 creates no IRQ resources for a DT device, so
+	 * platform_get_irq_byname() and the trigger type of the mapping, as
+	 * R54:mali_kbase_core_linux.c:528-560 (upper-case names; L6A 5.1.4).
+	 */
 	for (i = 0; i < 3; i++) {
-		struct resource *irq_res;
-		int irqtag;
+		static const char *const irq_names[] = { "JOB", "MMU", "GPU" };
+		static const int irq_tags[] = {
+			JOB_IRQ_TAG, MMU_IRQ_TAG, GPU_IRQ_TAG
+		};
+		int irq = platform_get_irq_byname(pdev, irq_names[i]);
 
-		irq_res = platform_get_resource(pdev, IORESOURCE_IRQ, i);
-		if (!irq_res) {
-			dev_err(kbdev->dev, "No IRQ resource at index %d\n", i);
-			return -ENOENT;
+		if (irq < 0) {
+			dev_err(kbdev->dev, "No IRQ resource %s\n", irq_names[i]);
+			return irq;
 		}
 
-#ifdef CONFIG_OF
-		if (!strncmp(irq_res->name, "JOB", 4)) {
-			irqtag = JOB_IRQ_TAG;
-		} else if (!strncmp(irq_res->name, "MMU", 4)) {
-			irqtag = MMU_IRQ_TAG;
-		} else if (!strncmp(irq_res->name, "GPU", 4)) {
-			irqtag = GPU_IRQ_TAG;
-		} else {
-			dev_err(&pdev->dev, "Invalid irq res name: '%s'\n",
-				irq_res->name);
-			return -EINVAL;
-		}
-#else
-		irqtag = i;
-#endif /* CONFIG_OF */
-		kbdev->irqs[irqtag].irq = irq_res->start;
-		kbdev->irqs[irqtag].flags = irq_res->flags & IRQF_TRIGGER_MASK;
+		kbdev->irqs[irq_tags[i]].irq = irq;
+		kbdev->irqs[irq_tags[i]].flags = irq_get_trigger_type(irq);
 	}
 
 	return 0;
@@ -415,7 +406,7 @@ static int kbase_open(struct inode *inode, struct file *filp)
 
 	init_waitqueue_head(&kctx->event_queue);
 	filp->private_data = kctx;
-	filp->f_mode |= FMODE_UNSIGNED_OFFSET;
+	/* FMODE_UNSIGNED_OFFSET: .fop_flags FOP_UNSIGNED_OFFSET in 6.18 (L6A 5.1.3) */
 	kctx->filp = filp;
 
 	if (kbdev->infinite_cache_active_default)
@@ -1459,6 +1450,7 @@ static const struct file_operations kbase_fops = {
 	.mmap = kbase_mmap,
 	.check_flags = kbase_check_flags,
 	.get_unmapped_area = kbase_get_unmapped_area,
+	.fop_flags = FOP_UNSIGNED_OFFSET,
 };
 
 /* MALI_SEC_INTEGRATION */
@@ -3331,7 +3323,8 @@ static int power_control_init(struct platform_device *pdev)
 	/* Register the OPPs if they are available in device tree */
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0)) \
 	|| defined(LSK_OPPV2_BACKPORT)
-	err = dev_pm_opp_of_add_table(kbdev->dev);
+	/* device-managed in 6.18: removed after unbind (L6A 5.1.4) */
+	err = devm_pm_opp_of_add_table(kbdev->dev);
 #elif (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 7, 0))
 	err = of_init_opp_table(kbdev->dev);
 #else
@@ -3362,12 +3355,7 @@ if (kbdev->clock != NULL) {
 
 static void power_control_term(struct kbase_device *kbdev)
 {
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0)) || \
-		defined(LSK_OPPV2_BACKPORT)
-	dev_pm_opp_of_remove_table(kbdev->dev);
-#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 19, 0))
-	of_free_opp_table(kbdev->dev);
-#endif
+	/* the OPP table is device-managed (devm_pm_opp_of_add_table()) */
 
 	if (kbdev->clock) {
 		clk_disable_unprepare(kbdev->clock);
@@ -3490,9 +3478,16 @@ static int kbase_device_debugfs_init(struct kbase_device *kbdev)
 	kbdev->debugfs_ctx_directory = debugfs_create_dir("ctx",
 			kbdev->mali_debugfs_directory);
 #else
+	/*
+	 * kbasep_trace_debugfs_fops exists only with the kbase trace
+	 * (mali_kbase_device.c), which stock always had through Samsung's
+	 * CONFIG_MALI_EXYNOS_TRACE (IKC:2996); not ported (L6A 6.1)
+	 */
+#if KBASE_TRACE_ENABLE
 	kbdev->trace_dentry = debugfs_create_file("mali_trace", S_IRUGO,
 			kbdev->mali_debugfs_directory, kbdev,
 			&kbasep_trace_debugfs_fops);
+#endif
 
 	kbdev->debugfs_ctx_directory = debugfs_create_dir("mem",
 			kbdev->mali_debugfs_directory);
@@ -3680,13 +3675,13 @@ static const struct attribute_group kbase_attr_group = {
 	.attrs = kbase_attrs,
 };
 
-static int kbase_platform_device_remove(struct platform_device *pdev)
+static void kbase_platform_device_remove(struct platform_device *pdev)
 {
 	struct kbase_device *kbdev = to_kbase_device(&pdev->dev);
 	const struct list_head *dev_list;
 
 	if (!kbdev)
-		return -ENODEV;
+		return;
 
 	kfree(kbdev->gpu_props.prop_buffer);
 
@@ -3834,8 +3829,6 @@ static int kbase_platform_device_remove(struct platform_device *pdev)
 		dev_err(kbdev->dev, "Missing sub system termination\n");
 
 	kbase_device_free(kbdev);
-
-	return 0;
 }
 
 

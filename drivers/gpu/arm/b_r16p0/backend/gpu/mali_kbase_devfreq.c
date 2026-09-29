@@ -24,6 +24,7 @@
 #include <mali_kbase_tlstream.h>
 #include <mali_kbase_config_defaults.h>
 #include <backend/gpu/mali_kbase_pm_internal.h>
+#include "mali_kbase_devfreq.h"
 
 #include <linux/of.h>
 #include <linux/clk.h>
@@ -130,7 +131,12 @@ kbase_devfreq_target(struct device *dev, unsigned long *target_freq, u32 flags)
 	}
 #endif
 
-	err = clk_set_rate(kbdev->clock, freq);
+	/*
+	 * Exynos 8895: the ACPM G3D rate is only sent with pd_g3d on; while the
+	 * GPU is off it is stored and applied at the next runtime resume (L6A
+	 * 5.1.4, stock K:platform/exynos/gpu_control.c:127-131).
+	 */
+	err = exynos8895_gpu_set_rate(kbdev, freq);
 	if (err) {
 		dev_err(dev, "Failed to set clock %lu (target %lu)\n",
 				freq, *target_freq);

@@ -203,7 +203,8 @@ static int debug_mem_open(struct inode *i, struct file *file)
 	struct debug_mem_data *mem_data;
 	int ret;
 
-	if (get_file_rcu(kctx_file) == 0)
+	/* 6.18: get_file_active() is the take-unless-zero of 4.4 get_file_rcu() (L6A 5.1.3) */
+	if (!get_file_active(&kctx_file))
 		return -ENOENT;
 
 	ret = seq_open(file, &ops);

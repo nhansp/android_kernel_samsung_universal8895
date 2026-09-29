@@ -1029,7 +1029,7 @@ enum kbase_trace_code {
  *                      in the trace message, used during dumping of the message.
  */
 struct kbase_trace {
-	struct timespec timestamp;
+	struct timespec64 timestamp;
 	u32 thread_id;
 	u32 cpu;
 	void *ctx;
@@ -1143,7 +1143,7 @@ struct kbase_mem_pool {
 	size_t		    order;
 	spinlock_t          pool_lock;
 	struct list_head    page_list;
-	struct shrinker     reclaim;
+	struct shrinker     *reclaim;
 
 	struct kbase_mem_pool *next_pool;
 
@@ -2043,7 +2043,7 @@ struct kbase_context {
 	struct kbase_mem_pool mem_pool;
 	struct kbase_mem_pool lp_mem_pool;
 
-	struct shrinker         reclaim;
+	struct shrinker         *reclaim;
 	struct list_head        evict_list;
 
 	struct list_head waiting_soft_jobs;

@@ -27,6 +27,14 @@
 
 #include <linux/compiler.h>
 
+/*
+ * __asmeq is gone from arm64 since Linux 4.20; the check it adds, as Arm defines
+ * it (R54:mali_kbase_smc.c:29-39; R54 = Arm kbase r54p2), L6A 5.1.3.
+ */
+#ifndef __asmeq
+#define __asmeq(x, y) ".ifnc " x "," y " ; .err ; .endif\n\t"
+#endif
+
 static noinline u64 invoke_smc_fid(u64 function_id,
 		u64 arg0, u64 arg1, u64 arg2)
 {
