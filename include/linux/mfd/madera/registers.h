@@ -1578,6 +1578,9 @@
 #define MADERA_MICB1_EXT_CAP_SHIFT			    15
 #define MADERA_MICB1_LVL_MASK				0x01E0
 #define MADERA_MICB1_LVL_SHIFT				     5
+#define MADERA_MICB1_RATE				0x0008	/* S:include/linux/mfd/madera/registers.h:3248 */
+#define MADERA_MICB1_DISCH				0x0004	/* :3252 */
+#define MADERA_MICB1_BYPASS				0x0002	/* :3256 */
 #define MADERA_MICB1_ENA				0x0001
 #define MADERA_MICB1_ENA_MASK				0x0001
 #define MADERA_MICB1_ENA_SHIFT				     0
@@ -1592,6 +1595,7 @@
 #define MADERA_MICB1B_ENA				0x0010
 #define MADERA_MICB1B_ENA_MASK				0x0010
 #define MADERA_MICB1B_ENA_SHIFT				     4
+#define MADERA_MICB1A_DISCH				0x0002	/* :3393 */
 #define MADERA_MICB1A_ENA				0x0001
 #define MADERA_MICB1A_ENA_MASK				0x0001
 #define MADERA_MICB1A_ENA_SHIFT				     0

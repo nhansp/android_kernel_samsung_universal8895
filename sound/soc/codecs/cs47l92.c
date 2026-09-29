@@ -1978,6 +1978,76 @@ static const struct snd_soc_dapm_route cs47l92_mono_routes[] = {
 	{ "OUT3 Mono Mux", "HPOUT4", "OUT3L" },
 };
 
+/*
+ * MICBIAS levels from the stock "cirrus,micbiasN" arrays <mV ext_cap
+ * discharge[4] soft_start bypass> (parser S:drivers/mfd/madera-core.c:601-624,
+ * which needs all 8 cells), programmed as stock madera_configure_micbias()
+ * (S:drivers/mfd/madera-core.c:708-765). Single-bit pdata fields in stock, so
+ * only bit 0 of the flags counts. L6E 5.2(d).
+ */
+static void cs47l92_configure_micbias(struct madera *madera)
+{
+	u32 cfg[4 + MADERA_MAX_CHILD_MICBIAS];
+	unsigned int val, mask, mv, i, j, nchild;
+	char prop[20];
+
+	for (i = 0; i < madera->num_micbias; i++) {
+		snprintf(prop, sizeof(prop), "cirrus,micbias%u", i + 1);
+		if (device_property_count_u32(madera->dev, prop) < (int)ARRAY_SIZE(cfg) ||
+		    device_property_read_u32_array(madera->dev, prop, cfg,
+						   ARRAY_SIZE(cfg)))
+			continue;
+
+		mv = cfg[0];
+		if (!mv && !(cfg[7] & 1))
+			continue;
+
+		/* Apply default for bypass mode */
+		if (!mv)
+			mv = 2800;
+
+		val = (mv - 1500) / 100;
+
+		mask = MADERA_MICB1_LVL_MASK | MADERA_MICB1_EXT_CAP |
+			MADERA_MICB1_BYPASS | MADERA_MICB1_RATE;
+
+		val <<= MADERA_MICB1_LVL_SHIFT;
+
+		if (cfg[1] & 1)
+			val |= MADERA_MICB1_EXT_CAP;
+
+		nchild = madera->num_childbias[i];
+
+		if (nchild == 0) {
+			mask |= MADERA_MICB1_DISCH;
+			if (cfg[2])
+				val |= MADERA_MICB1_DISCH;
+		}
+
+		if (cfg[6] & 1)
+			val |= MADERA_MICB1_RATE;
+
+		if (cfg[7] & 1)
+			val |= MADERA_MICB1_BYPASS;
+
+		regmap_update_bits(madera->regmap, MADERA_MIC_BIAS_CTRL_1 + i,
+				   mask, val);
+
+		if (nchild) {
+			val = 0;
+			mask = 0;
+			for (j = 0; j < nchild; j++) {
+				mask |= (MADERA_MICB1A_DISCH << (j * 4));
+				if (cfg[2 + j])
+					val |= (MADERA_MICB1A_DISCH << (j * 4));
+			}
+			regmap_update_bits(madera->regmap,
+					   MADERA_MIC_BIAS_CTRL_5 + (i * 2),
+					   mask, val);
+		}
+	}
+}
+
 static int cs47l92_component_probe(struct snd_soc_component *component)
 {
 	struct cs47l92 *cs47l92 = snd_soc_component_get_drvdata(component);
@@ -2009,6 +2079,8 @@ static int cs47l92_component_probe(struct snd_soc_component *component)
 	regmap_update_bits(madera->regmap, MADERA_AUXPDM1_CTRL_0,
 			   MADERA_AUXPDM1_TXEDGE_MASK |
 			   MADERA_AUXPDM1_MSTR_MASK, val);
+
+	cs47l92_configure_micbias(madera);
 
 	ret = madera_init_outputs(component, cs47l92_mono_routes,
 				  ARRAY_SIZE(cs47l92_mono_routes),
