@@ -19,6 +19,8 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_irq.h>
+#include <linux/pm_wakeirq.h>
+#include <linux/pm_wakeup.h>
 #include <linux/regulator/consumer.h>
 #include <linux/unaligned.h>
 
@@ -385,6 +387,19 @@ static int wacom_w9018_probe(struct i2c_client *client)
 					"sec_epen_pdct", w9018);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to request pdct irq\n");
+
+	/*
+	 * Pen removal and insertion wake the system: stock marks the digitizer a
+	 * wakeup device (S:.../wacom_i2c.c:2982) and arms the PDCT IRQ as a wake
+	 * source (:1379-1388). The data IRQ stays unarmed (no screen-off survey
+	 * mode here). L7 4.5 row "S Pen garage", O7-23.
+	 */
+	ret = devm_device_init_wakeup(dev);
+	if (ret)
+		return ret;
+	ret = devm_pm_set_wake_irq(dev, w9018->irq_pdct);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to set pdct wake irq\n");
 
 	ret = input_register_device(w9018->input);
 	if (ret)
