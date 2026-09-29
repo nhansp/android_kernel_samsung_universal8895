@@ -1624,6 +1624,40 @@ EXPORT_SYMBOL_GPL(madera_ng_tlv);
 const DECLARE_TLV_DB_SCALE(madera_mixer_tlv, -3200, 100, 0);
 EXPORT_SYMBOL_GPL(madera_mixer_tlv);
 
+/* Sample-rate enums of stock S:sound/soc/codecs/madera.c:1824-1869 (L6E 5.2(a)) */
+const char * const madera_sample_rate_text[MADERA_SAMPLE_RATE_ENUM_SIZE] = {
+	"12kHz", "24kHz", "48kHz", "96kHz", "192kHz", "384kHz",
+	"11.025kHz", "22.05kHz", "44.1kHz", "88.2kHz", "176.4kHz", "352.8kHz",
+	"4kHz", "8kHz", "16kHz", "32kHz",
+};
+EXPORT_SYMBOL_GPL(madera_sample_rate_text);
+
+const unsigned int madera_sample_rate_val[MADERA_SAMPLE_RATE_ENUM_SIZE] = {
+	0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+	0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
+	0x10, 0x11, 0x12, 0x13,
+};
+EXPORT_SYMBOL_GPL(madera_sample_rate_val);
+
+const struct soc_enum madera_sample_rate[] = {
+	SOC_VALUE_ENUM_SINGLE(MADERA_SAMPLE_RATE_2,
+			      MADERA_SAMPLE_RATE_2_SHIFT, 0x1f,
+			      MADERA_SAMPLE_RATE_ENUM_SIZE,
+			      madera_sample_rate_text,
+			      madera_sample_rate_val),
+	SOC_VALUE_ENUM_SINGLE(MADERA_SAMPLE_RATE_3,
+			      MADERA_SAMPLE_RATE_3_SHIFT, 0x1f,
+			      MADERA_SAMPLE_RATE_ENUM_SIZE,
+			      madera_sample_rate_text,
+			      madera_sample_rate_val),
+	SOC_VALUE_ENUM_SINGLE(MADERA_ASYNC_SAMPLE_RATE_2,
+			      MADERA_ASYNC_SAMPLE_RATE_2_SHIFT, 0x1f,
+			      MADERA_SAMPLE_RATE_ENUM_SIZE,
+			      madera_sample_rate_text,
+			      madera_sample_rate_val),
+};
+EXPORT_SYMBOL_GPL(madera_sample_rate);
+
 const char * const madera_rate_text[MADERA_RATE_ENUM_SIZE] = {
 	"SYNCCLK rate 1", "SYNCCLK rate 2", "SYNCCLK rate 3",
 	"ASYNCCLK rate 1", "ASYNCCLK rate 2",

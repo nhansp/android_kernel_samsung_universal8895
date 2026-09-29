@@ -373,6 +373,14 @@ SOC_ENUM("LHPF2 Mode", madera_lhpf2_mode),
 SOC_ENUM("LHPF3 Mode", madera_lhpf3_mode),
 SOC_ENUM("LHPF4 Mode", madera_lhpf4_mode),
 
+/*
+ * Stock S:sound/soc/codecs/cs47l92.c:496-498 (plain SOC_ENUM: madera_rate_put()
+ * refuses registers outside madera_can_change_grp_rate(); L6E 5.2(a)).
+ */
+SOC_ENUM("Sample Rate 2", madera_sample_rate[0]),
+SOC_ENUM("Sample Rate 3", madera_sample_rate[1]),
+SOC_ENUM("ASYNC Sample Rate 2", madera_sample_rate[2]),
+
 MADERA_RATE_ENUM("ISRC1 FSL", madera_isrc_fsl[0]),
 MADERA_RATE_ENUM("ISRC2 FSL", madera_isrc_fsl[1]),
 MADERA_RATE_ENUM("ISRC1 FSH", madera_isrc_fsh[0]),
