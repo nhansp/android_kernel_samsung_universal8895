@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-2.0
+config ION_LEGACY_EXYNOS
+	bool "Legacy Android ION ABI for the Exynos 8895 blobs (/dev/ion)"
+	depends on DMA_SHARED_BUFFER && DMA_CMA && OF_RESERVED_MEM
+	help
+	  The 4.4 Exynos ION user ABI (client handles, ION_IOC_ALLOC/FREE/
+	  SHARE/MAP/IMPORT/SYNC/SYNC_PARTIAL, 32-bit compat) on /dev/ion,
+	  as its own dma-buf exporter over the page allocator and the
+	  reusable CMA regions named in the "samsung,exynos8895-ion-legacy"
+	  DT node. Needed by the prebuilt Samsung graphics and camera blobs
+	  (libion_exynos.so, gralloc1, the camera HAL) of the greatlte
+	  (Galaxy Note 8) port; spec L6A 5.2.
