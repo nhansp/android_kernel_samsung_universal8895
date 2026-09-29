@@ -16,6 +16,7 @@
 #include <linux/fb.h>
 #include <linux/file.h>
 #include <linux/hrtimer.h>
+#include <linux/ion_legacy.h>
 #include <linux/kref.h>
 #include <linux/kthread.h>
 #include <linux/platform_device.h>
@@ -586,6 +587,20 @@ static void s3cfb_cache_age(struct s3cfb *s)
 }
 
 /*
+ * The cache keeps each buffer mapped for the DECON across frames, so the one
+ * cache clean the exporter does at map time covers only the first use. An
+ * ION-legacy buffer of the auto-sync class (CACHED without CACHED_NEEDS_SYNC,
+ * which user space never syncs) is cleaned again at every use (L6A 5.3.7,
+ * 5.2.6 items 2 and 4; stock cleaned it at every map, S:drivers/staging/
+ * android/ion/ion.c:1324-1335).
+ */
+static void s3cfb_autosync(struct dma_buf *buf)
+{
+	if (ionl_dmabuf_is_autosync(buf))
+		dma_buf_end_cpu_access(buf, DMA_TO_DEVICE);
+}
+
+/*
  * The cache entry of dma-buf fd @fd: a hit reuses its handle; a miss imports
  * it once through the exynos GEM PRIME import (one dma_buf_attach +
  * dma_buf_map_attachment on the DECON device), evicting the least recently
@@ -611,6 +626,7 @@ static struct s3cfb_import *s3cfb_import(struct s3cfb *s, int fd)
 		if (c->buf == buf) {
 			dma_buf_put(buf);
 			c->last_frame = s->frame;
+			s3cfb_autosync(c->buf);
 			return c;
 		}
 		if (!c->buf) {
@@ -649,6 +665,7 @@ static struct s3cfb_import *s3cfb_import(struct s3cfb *s, int fd)
 	e->buf = buf;
 	e->handle = handle;
 	e->last_frame = s->frame;
+	s3cfb_autosync(buf);
 
 	return e;
 }
