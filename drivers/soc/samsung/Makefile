@@ -22,3 +22,4 @@ obj-$(CONFIG_GREATLTE_USB_DIAG) += greatlte-hb-l3.o
 obj-$(CONFIG_GREATLTE_HB) += greatlte-hb-l4.o
 obj-$(CONFIG_GREATLTE_HB_L5) += greatlte-hb-l5.o
 obj-$(CONFIG_SAMSUNG_SEC_CLASS)		+= samsung-sec-class.o
+obj-$(CONFIG_GREATLTE_HB_L6F)		+= greatlte-hb-l6f.o

@@ -147,3 +147,10 @@ config SAMSUNG_SEC_CLASS
 	  sec_device_create_with_groups() (include/linux/sec_sysfs.h). A prompt
 	  rather than select-only, so the greatlte touch fragment can enable it
 	  before the L6F LED and key drivers exist (spec L6F 5.9, 6).
+
+config GREATLTE_HB_L6F
+	bool "greatlte heartbeat: L6F (power/input/misc)"
+	depends on GREATLTE_HB
+	default GREATLTE_HB
+	help
+	  Registers the L6F heartbeat rows.
