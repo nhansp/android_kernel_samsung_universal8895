@@ -86,6 +86,15 @@ config EXTCON_LC824206XA
 	  using I2C and enables USB data, stereo and mono audio, video,
 	  microphone and UART data to use a common connector port.
 
+config EXTCON_MADERA
+	tristate "Cirrus Logic Madera accessory detection"
+	depends on MFD_MADERA && INPUT && SND_SOC
+	help
+	  Say Y here to enable jack, headset microphone and button
+	  detection on Cirrus Logic Madera codecs (the stock Samsung
+	  switch-madera driver of the Galaxy Note 8, reporting through
+	  extcon).
+
 config EXTCON_MAX14577
 	tristate "Maxim MAX14577/77836 EXTCON Support"
 	depends on MFD_MAX14577
