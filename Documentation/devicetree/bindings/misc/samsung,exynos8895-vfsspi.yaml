@@ -1,0 +1,119 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/misc/samsung,exynos8895-vfsspi.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Synaptics VFS8xxx fingerprint sensor on a TEE-owned SPI (Exynos 8895)
+
+maintainers:
+  - nhansp <nhan.094.vn@gmail.com>
+
+description:
+  The fingerprint sensor of the Samsung Galaxy Note 8 sits on an SPI
+  controller that the secure world owns and drives; the SPI node itself stays
+  disabled. This node describes the non-secure side only, the sensor power
+  enable, the data-ready interrupt and the SPI clocks the secure world needs.
+
+properties:
+  compatible:
+    const: samsung,exynos8895-vfsspi
+
+  interrupts:
+    maxItems: 1
+    description: data-ready (DRDY) interrupt, rising edge
+
+  drdy-gpios:
+    maxItems: 1
+    description: data-ready line of the sensor, read to filter replayed edges
+
+  ldo-gpios:
+    maxItems: 1
+    description: enable of the sensor's power supply
+
+  clocks:
+    minItems: 3
+    items:
+      - description: SPI controller bus clock
+      - description: SPI controller functional clock gate
+      - description: SPI functional clock divider, set to twice the SPI clock
+      - description: Q-channel clock request of the SPI controller
+
+  clock-names:
+    minItems: 3
+    items:
+      - const: pclk
+      - const: sclk_gate
+      - const: sclk
+      - const: qch
+
+  spi-max-frequency:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: SPI clock of the transfers the secure world runs
+    maximum: 13000000
+
+  samsung,orient:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    enum: [0, 1]
+    description: sensor orientation reported to userspace (0 normal, 1 upside down)
+
+  samsung,detect-mode:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    enum: [0, 1]
+    description:
+      1 = always-on detect mode, the data-ready interrupt stays a wakeup source
+      while enabled; 0 = normal
+
+  samsung,chip-id:
+    $ref: /schemas/types.yaml#/definitions/string
+    description: sensor name reported to userspace
+
+  pinctrl-0: true
+  pinctrl-1: true
+  pinctrl-2: true
+
+  pinctrl-names:
+    items:
+      - const: default
+      - const: sleep
+      - const: idle
+
+required:
+  - compatible
+  - interrupts
+  - drdy-gpios
+  - ldo-gpios
+  - clocks
+  - clock-names
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/samsung,exynos8895.h>
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    fingerprint {
+        compatible = "samsung,exynos8895-vfsspi";
+        interrupts-extended = <&gpa1 3 IRQ_TYPE_EDGE_RISING>;
+        drdy-gpios = <&gpa1 3 GPIO_ACTIVE_HIGH>;
+        ldo-gpios = <&gpe1 0 GPIO_ACTIVE_HIGH>;
+        clocks = <&cmu_peric0 CLK_GOUT_PERIC0_USI00_I_PCLK>,
+                 <&cmu_peric0 CLK_GOUT_PERIC0_USI00_I_SCLK_USI>,
+                 <&cmu_top CLK_DOUT_CMU_PERIC0_USI00>,
+                 <&cmu_peric0 CLK_GOUT_PERIC0_USI00_QCH>;
+        clock-names = "pclk", "sclk_gate", "sclk", "qch";
+        assigned-clocks = <&cmu_top CLK_MOUT_CMU_PERIC0_USI00>,
+                          <&cmu_top CLK_DOUT_CMU_PERIC0_USI00>;
+        assigned-clock-parents = <&oscclk>, <0>;
+        assigned-clock-rates = <0>, <26000000>;
+        spi-max-frequency = <13000000>;
+        samsung,orient = <1>;
+        samsung,detect-mode = <1>;
+        samsung,chip-id = "NAMSAN";
+        pinctrl-names = "default", "sleep", "idle";
+        pinctrl-0 = <&spi2_bus &btp_irq &btp_ldo>;
+        pinctrl-1 = <&btp_irqsleep>;
+        pinctrl-2 = <&btp_irqidle>;
+    };
