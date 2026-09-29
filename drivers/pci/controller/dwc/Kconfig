@@ -377,6 +377,15 @@ config PCI_EXYNOS
 	  hardware and therefore the driver re-uses the DesignWare core
 	  functions to implement the driver.
 
+config PCIE_EXYNOS8895
+	bool "Samsung Exynos8895 PCIe RC0 host (greatlte BCM4361)"
+	depends on ARCH_EXYNOS && OF && PCI_MSI
+	select PCIE_DW_HOST
+	select MFD_SYSCON
+	help
+	  DesignWare PCIe root complex 0 of the Exynos8895 with its on-demand link power API
+	  (exynos_pcie_pm_resume/_pm_suspend/_l1ss_ctrl) used by the bcmdhd driver.
+
 config PCIE_FU740
 	bool "SiFive FU740 PCIe controller"
 	depends on PCI_MSI
