@@ -36,3 +36,6 @@ obj-$(CONFIG_GREATLTE_HB_L6A_S3CFB)	+= greatlte-hb-l6a-s3cfb.o
 
 # L6A slice gpu
 obj-$(CONFIG_GREATLTE_HB_L6A_GPU)	+= greatlte-hb-l6a-gpu.o
+
+# L6D PCIe RC0 heartbeat
+obj-$(CONFIG_GREATLTE_HB_L6D_PCIE)	+= greatlte-hb-l6d-pcie.o

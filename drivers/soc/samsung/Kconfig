@@ -217,3 +217,11 @@ config GREATLTE_HB_L6A_GPU
 	default GREATLTE_HB
 	help
 	  Registers the L6A GPU heartbeat rows.
+
+# L6D PCIe RC0 heartbeat
+config GREATLTE_HB_L6D_PCIE
+	bool "greatlte heartbeat: L6D PCIe RC0"
+	depends on GREATLTE_HB
+	default GREATLTE_HB
+	help
+	  Registers the L6D PCIe heartbeat rows 'pcie' and 'pcii'.
