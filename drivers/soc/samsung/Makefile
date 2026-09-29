@@ -39,3 +39,5 @@ obj-$(CONFIG_GREATLTE_HB_L6A_GPU)	+= greatlte-hb-l6a-gpu.o
 
 # L6D PCIe RC0 heartbeat
 obj-$(CONFIG_GREATLTE_HB_L6D_PCIE)	+= greatlte-hb-l6d-pcie.o
+# L6D Wi-Fi heartbeat
+obj-$(CONFIG_GREATLTE_HB_L6D_WIFI)	+= greatlte-hb-l6d-wifi.o

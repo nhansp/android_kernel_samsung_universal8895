@@ -225,3 +225,10 @@ config GREATLTE_HB_L6D_PCIE
 	default GREATLTE_HB
 	help
 	  Registers the L6D PCIe heartbeat rows 'pcie' and 'pcii'.
+# L6D Wi-Fi heartbeat
+config GREATLTE_HB_L6D_WIFI
+	bool "greatlte heartbeat: L6D Wi-Fi"
+	depends on GREATLTE_HB
+	default GREATLTE_HB
+	help
+	  Registers the L6D Wi-Fi heartbeat rows 'wlan' and 'wlw'.
