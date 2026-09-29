@@ -10,3 +10,20 @@
  * value, which gl-verify V-DUP reports as an error. L0's reserved-memory stays in
  * the .dts; carveout additions and flag changes are &label edits here (plan X-8).
  */
+
+/*
+ * L6 bus aliases (L6_rest 4.0, L6F 4.1; serial1 is L6D's, plan X-35). ACK has only
+ * pinctrl aliases; with these the buses keep the stock numbers (an I2C bus number comes
+ * from an "i2c" alias, A:drivers/i2c/i2c-core-base.c:1658; an SPI bus number from an "spi"
+ * alias, A:drivers/spi/spi.c:3282), so stock log names such as 32-0066 stay valid.
+ */
+/ {
+	aliases {
+		i2c10 = &hsi2c_10;	/* S Pen: FDT:4181 hsi2c10 = "/hsi2c@10490000" */
+		i2c11 = &hsi2c_11;	/* amp: FDT:4182 hsi2c11 = "/hsi2c@104A0000" */
+		i2c23 = &hsi2c_23;	/* touch: FDT:4194 hsi2c23 = "/hsi2c@108E0000" */
+		i2c32 = &hsi2c_32;	/* MAX77865: FDT:4203 hsi2c32 = "/hsi2c@10970000" */
+		spi3 = &spi_3;		/* codec: FDT:4207 spi3 = "/spi@10460000" */
+		spi10 = &spi_10;	/* sensor hub: FDT:4214 spi10 = "/spi@108C0000" */
+	};
+};
