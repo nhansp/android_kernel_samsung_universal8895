@@ -213,4 +213,3 @@ config MALI_PRFCNT_SET_SECONDARY
 	  If unsure, say N.
 
 source "drivers/gpu/arm/b_r16p0/platform/Kconfig"
-source "drivers/gpu/arm/b_r16p0/tests/Kconfig"
