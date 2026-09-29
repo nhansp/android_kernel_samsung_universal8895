@@ -13,6 +13,7 @@
 #include <linux/clk.h>
 #include <linux/component.h>
 #include <linux/delay.h>
+#include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/iopoll.h>
 #include <linux/mfd/syscon.h>
@@ -39,6 +40,7 @@
 #include <drm/drm_encoder.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
+#include <drm/drm_panic.h>
 #include <drm/drm_vblank.h>
 
 #include "exynos_drm_crtc.h"
@@ -433,6 +435,15 @@ struct decon8895_ctx {
 	u32 bts_prev_total_bw;
 	u32 bts_prev_max_disp_freq;
 	u32 bts_bw[BTS_DPP_MAX];	/* per-DPP KB/s */
+
+	/*
+	 * drm_panic scanout buffer: XRGB8888 of the mode size, allocated at
+	 * atomic_enable; the pointers change under drm_panic_lock().
+	 */
+	void *panic_vaddr;
+	dma_addr_t panic_dma;
+	size_t panic_size;
+	u32 panic_w, panic_h;
 
 	/* counters (heartbeat / debugfs) */
 	atomic_t fd_cnt, fs_cnt, to_cnt, rc_cnt, er_cnt, ude_cnt, dpe_cnt, te_cnt;
@@ -1123,6 +1134,76 @@ static void d8895_win_program_plane(struct decon8895_ctx *ctx, unsigned int win,
 			  st->pixel_blend_mode, f->alpha, false, 0);
 }
 
+/* ---- drm_panic buffer ---------------------------------------------------- */
+
+/*
+ * The planes carry the composer's buffers (several overlapping windows,
+ * possibly AFBC), so the panic screen is not drawn into them: it goes into
+ * a dedicated XRGB8888 buffer of the mode size (XRGB8888 is the format whose
+ * IDMA code was measured on hardware, see d8895_formats), which the panic
+ * flush scans out on G0 alone. Sleepable; reallocated only when the size
+ * changes.
+ */
+static void d8895_panic_alloc(struct decon8895_ctx *ctx, const struct drm_display_mode *m)
+{
+	struct device *dma_dev = to_dma_dev(ctx->drm);
+	size_t size = (size_t)m->hdisplay * m->vdisplay * 4;
+	void *vaddr = NULL, *old_vaddr;
+	dma_addr_t dma = 0, old_dma;
+	unsigned long flags = 0;
+	size_t old_size;
+
+	if (!IS_ENABLED(CONFIG_DRM_PANIC))
+		return;
+
+	if (ctx->panic_vaddr && ctx->panic_size == size) {
+		drm_panic_lock(ctx->drm, flags);
+		ctx->panic_w = m->hdisplay;
+		ctx->panic_h = m->vdisplay;
+		drm_panic_unlock(ctx->drm, flags);
+		return;
+	}
+
+	if (size) {
+		vaddr = dma_alloc_attrs(dma_dev, size, &dma, GFP_KERNEL, DMA_ATTR_WRITE_COMBINE);
+		if (!vaddr)
+			dev_warn(ctx->dev, "no panic buffer (%zu bytes)\n", size);
+	}
+
+	drm_panic_lock(ctx->drm, flags);
+	old_vaddr = ctx->panic_vaddr;
+	old_dma = ctx->panic_dma;
+	old_size = ctx->panic_size;
+	ctx->panic_vaddr = vaddr;
+	ctx->panic_dma = dma;
+	ctx->panic_size = vaddr ? size : 0;
+	ctx->panic_w = m->hdisplay;
+	ctx->panic_h = m->vdisplay;
+	drm_panic_unlock(ctx->drm, flags);
+
+	if (old_vaddr)
+		dma_free_attrs(dma_dev, old_size, old_vaddr, old_dma, DMA_ATTR_WRITE_COMBINE);
+}
+
+static void d8895_panic_free(struct decon8895_ctx *ctx)
+{
+	unsigned long flags = 0;
+	dma_addr_t dma;
+	size_t size;
+	void *vaddr;
+
+	drm_panic_lock(ctx->drm, flags);
+	vaddr = ctx->panic_vaddr;
+	dma = ctx->panic_dma;
+	size = ctx->panic_size;
+	ctx->panic_vaddr = NULL;
+	ctx->panic_size = 0;
+	drm_panic_unlock(ctx->drm, flags);
+
+	if (vaddr)
+		dma_free_attrs(to_dma_dev(ctx->drm), size, vaddr, dma, DMA_ATTR_WRITE_COMBINE);
+}
+
 /* ---- CRTC ops ------------------------------------------------------------ */
 
 /*
@@ -1256,6 +1337,9 @@ static void d8895_atomic_enable(struct exynos_drm_crtc *crtc)
 		enable_irq(ctx->irq_extra);
 		ctx->irqs_on = true;
 	}
+
+	/* the new CRTC state is current here */
+	d8895_panic_alloc(ctx, &crtc->base.state->adjusted_mode);
 }
 
 static void d8895_atomic_disable(struct exynos_drm_crtc *crtc)
@@ -1774,6 +1858,86 @@ static const struct drm_plane_helper_funcs d8895_plane_helper_funcs = {
 	.atomic_update = d8895_plane_atomic_update,
 };
 
+static struct decon8895_ctx *d8895_ctx_of_primary(struct drm_plane *plane)
+{
+	return container_of(plane, struct decon8895_ctx, planes[D8895_CH_G0].base);
+}
+
+/*
+ * drm_panic (A:drivers/gpu/drm/drm_panic.c:874-902), with the panic lock
+ * held: the panic buffer, only while the CRTC is on and initialised.
+ */
+static int d8895_get_scanout_buffer(struct drm_plane *plane, struct drm_scanout_buffer *sb)
+{
+	struct decon8895_ctx *ctx = d8895_ctx_of_primary(plane);
+
+	if (!ctx->panic_vaddr || !READ_ONCE(ctx->rpm_held) || READ_ONCE(ctx->needs_init))
+		return -ENODEV;
+
+	sb->format = drm_format_info(DRM_FORMAT_XRGB8888);
+	sb->width = ctx->panic_w;
+	sb->height = ctx->panic_h;
+	sb->pitch[0] = ctx->panic_w * 4;
+	iosys_map_set_vaddr(&sb->map[0], ctx->panic_vaddr);
+
+	return 0;
+}
+
+/*
+ * Put the panic buffer on screen from a panic: no lock but the held panic
+ * lock (trig_lock may be held by a CPU the panic stopped), no IRQ
+ * enable/disable, no sleep, no allocation. G0 1:1 over the whole screen in
+ * window 5 with every other window off, then the start of d8895_atomic_flush()
+ * and d8895_start() (S:.../dpu/decon_reg.c:825-838, :2097-2111) without the
+ * RUN_STATUS poll.
+ */
+static void d8895_panic_flush(struct drm_plane *plane)
+{
+	struct decon8895_ctx *ctx = d8895_ctx_of_primary(plane);
+	u32 w = ctx->panic_w, h = ctx->panic_h;
+	const struct drm_rect full = DRM_RECT_INIT(0, 0, w, h);
+	const struct d8895_dpp_cfg cfg = {
+		.fmt	= d8895_find_fmt(DRM_FORMAT_XRGB8888),
+		.y	= ctx->panic_dma,
+		.sw	= w,
+		.sh	= h,
+		.fw	= w,
+		.fh	= h,
+		.dw	= w,
+		.dh	= h,
+	};
+	unsigned int win;
+
+	/* the panic screen out of the write-combining buffer before the fetch */
+	wmb();
+
+	if (!(ctx->ch_on & BIT(D8895_CH_G0)))
+		d8895_dpp_init_regs(ctx, D8895_CH_G0);
+	d8895_dpp_program(ctx, D8895_CH_G0, &cfg);
+	for (win = 0; win < D8895_WIN_G0; win++)
+		d8895_win_disable(ctx, win);
+	d8895_win_program(ctx, D8895_WIN_G0, d8895_ch[D8895_CH_G0].chmap, &full,
+			  DRM_BLEND_ALPHA_OPAQUE, DRM_MODE_BLEND_PIXEL_NONE, false, false, 0);
+
+	d_mask(ctx, D8895_SHADOW_REG_UPDATE_REQ, ~0, D8895_SHADOW_REG_UPDATE_REQ_FOR_DECON0);
+	d_mask(ctx, D8895_GLOBAL_CONTROL, ~0,
+	       D8895_GLOBAL_CONTROL_DECON_EN | D8895_GLOBAL_CONTROL_DECON_EN_F);
+	d_mask(ctx, D8895_SHADOW_REG_UPDATE_REQ, ~0, D8895_SHADOW_REG_UPDATE_REQ_GLOBAL);
+	/* decon_reg_set_trigger() enable (S:.../dpu/decon_reg.c:1006-1024), without trig_lock */
+	d_mask(ctx, D8895_HW_SW_TRIG_CONTROL, D8895_HW_TRIG_EN,
+	       D8895_HW_TRIG_EN | D8895_HW_TRIG_MASK_DECON);
+	if (READ_ONCE(ctx->oneshot))
+		atomic_set(&ctx->oneshot_state, 1);
+}
+
+/* G0, the primary plane, also carries the drm_panic hooks */
+static const struct drm_plane_helper_funcs d8895_primary_helper_funcs = {
+	.atomic_check = d8895_plane_atomic_check,
+	.atomic_update = d8895_plane_atomic_update,
+	.get_scanout_buffer = d8895_get_scanout_buffer,
+	.panic_flush = d8895_panic_flush,
+};
+
 static void d8895_plane_reset(struct drm_plane *plane)
 {
 	struct d8895_plane_state *ps;
@@ -1842,7 +2006,8 @@ static int d8895_plane_init(struct decon8895_ctx *ctx, unsigned int ch)
 				       "%s", d8895_ch[ch].name);
 	if (ret)
 		return ret;
-	drm_plane_helper_add(&p->base, &d8895_plane_helper_funcs);
+	drm_plane_helper_add(&p->base, ch == D8895_CH_G0 ? &d8895_primary_helper_funcs :
+							   &d8895_plane_helper_funcs);
 	p->ch = ch;
 	ret = drm_plane_create_zpos_property(&p->base, zpos_default[ch], 0, D8895_NR_WIN - 1);
 	if (ret)
@@ -2084,10 +2249,11 @@ static void d8895_unbind(struct device *dev, struct device *master, void *data)
 
 	if (ctx->rpm_held)
 		d8895_atomic_disable(ctx->crtc);
-	if (ctx->disp_qos_added) {	/* S:dpu/bts.c:429-435 dpu_bts_deinit() */
+if (ctx->disp_qos_added) {	/* S:dpu/bts.c:429-435 dpu_bts_deinit() */
 		exynos_bus_qos_remove_request(&ctx->disp_req);
 		ctx->disp_qos_added = false;
 	}
+	d8895_panic_free(ctx);
 	exynos_drm_unregister_dma(ctx->drm, ctx->dev, &ctx->dma_priv);
 	ctx->crtc = NULL;	/* the client interface refuses an unbound DECON */
 }
