@@ -919,8 +919,11 @@ static int exynos_pcie_dma_mon_event(struct notifier_block *nb, unsigned long ev
 	int ret;
 
 	ret = exynos_pcie_dump_link_down_status(0);
-	if (ep->state == EX_LINK_UP)
-		exynos_pcie_register_dump(0);
+	/*
+	 * Deviation: stock also ran exynos_pcie_register_dump() here (~90 lines). On this port the
+	 * pstore console/dmesg records are 16 KiB, and that dump pushed the oops itself out of both
+	 * (image 0065), so only the 5-line link status is printed on panic.
+	 */
 
 	return notifier_from_errno(ret);
 }
