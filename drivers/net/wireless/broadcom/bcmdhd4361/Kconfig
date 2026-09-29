@@ -2,118 +2,118 @@ config BROADCOM_WIFI
 	bool "Broadcom WiFi Driver"
 	depends on WLAN
 	default n
-	---help---
+	help
 	  This is a configuration for Broadcom WLAN driver.
 
 config BCM4330
 	tristate "Broadcom 4330 wireless cards support"
 	depends on BROADCOM_WIFI
-	---help---
+	help
 	  This module adds support for wireless adapters based on
 	  Broadcom 4330 chipset.
 
 config BCM4343
 	tristate "Broadcom 4343 wireless cards support"
 	depends on BROADCOM_WIFI
-	---help---
+	help
 	  This module adds support for wireless adapters based on
 	  Broadcom 4343 chipset.
 
 config BCM4334
 	tristate "Broadcom 4334 wireless cards support"
 	depends on BROADCOM_WIFI
-	---help---
+	help
 	  This module adds support for wireless adapters based on
 	  Broadcom 4334 chipset.
 
 config BCM4335
 	tristate "Broadcom 4335 wireless cards support"
 	depends on BROADCOM_WIFI
-	---help---
+	help
 	  This module adds support for wireless adapters based on
 	  Broadcom 4335 chipset.
 
 config BCM4339
 	tristate "Broadcom 4339 wireless cards support"
 	depends on BROADCOM_WIFI
-	---help---
+	help
 	  This module adds support for wireless adapters based on
 	  Broadcom 4339 chipset.
 
 config BCM4354
 	tristate "Broadcom 4354 wireless cards support"
 	depends on BROADCOM_WIFI
-	---help---
+	help
 	  This module adds support for wireless adapters based on
 	  Broadcom 4354 chipset.
 
 config BCM43012
 	tristate "Broadcom 43012 wireless cards support"
 	depends on BROADCOM_WIFI
-	---help---
+	help
 	  This module adds support for wireless adapters based on
 	  Broadcom 43012 chipset.
 
 config BCM4358
 	tristate "Broadcom 4358 wireless cards support"
 	depends on BROADCOM_WIFI
-	---help---
+	help
 	  This module adds support for wireless adapters based on
 	  Broadcom 4358 chipset.
 
 config BCM4359
 	tristate "Broadcom 4359 wireless cards support"
 	depends on BROADCOM_WIFI
-	---help---
+	help
 	  This module adds support for wireless adapters based on
 	  Broadcom 4359 chipset.
 
 config BCM4361
 	tristate "Broadcom 4361 wireless cards support"
 	depends on BROADCOM_WIFI
-	---help---
+	help
 	  This module adds support for wireless adapters based on
 	  Broadcom 4361 chipset.
 
 config BCM4375
 	tristate "Broadcom 4375 wireless cards support"
 	depends on BROADCOM_WIFI
-	---help---
+	help
 	  This module adds support for wireless adapters based on
 	  Broadcom 4375 chipset.
 
 config BCM43241
 	tristate "Broadcom 43241 wireless cards support"
 	depends on BROADCOM_WIFI
-	---help---
+	help
 	  This module adds support for wireless adapters based on
 	  Broadcom 43241 chipset.
 
 config BCM43456
 	tristate "Broadcom 43456 wireless cards support"
 	depends on BROADCOM_WIFI
-	---help---
+	help
 	  This module adds support for wireless adapters based on
 	  Broadcom 43456 chipset.
 
 config BCM43455
         tristate "Broadcom 43455 wireless cards support"
         depends on BROADCOM_WIFI
-        ---help---
+        help
           This module adds support for wireless adapters based on
           Broadcom 43455 chipset.
 
 config BCM4334W
 	tristate "Broadcom 4334W wireless cards support"
 	depends on BROADCOM_WIFI
-	---help---
+	help
 	  This module adds support for wireless adapters based on
 	  Broadcom 4334W chipset.
 
 config BCM43454
         tristate "Broadcom 43454 wireless cards support"
         depends on BROADCOM_WIFI
-        ---help---
+        help
           This module adds support for wireless adapters based on
           Broadcom 43454 chipset.
 
@@ -121,40 +121,40 @@ config BCMDHD_FW_PATH
 	depends on BROADCOM_WIFI
 	string "Firmware path"
 	default "/etc/wifi/bcmdhd_sta.bin"
-	---help---
+	help
 	  Path to the firmware file.
 
 config BCMDHD_NVRAM_PATH
 	depends on BROADCOM_WIFI
 	string "NVRAM path"
 	default "/etc/wifi/nvram_net.txt"
-	---help---
+	help
 	  Path to the nvram file.
 
 config BROADCOM_WIFI_RESERVED_MEM
 	bool "BROADCOM Reserved memory for wifi device"
 	depends on BROADCOM_WIFI
-	---help---
+	help
 	  This is a configuration for Broadcom WLAN driver.
 
 config WIFI_BROADCOM_COB
         bool "BROADCOM WIFI COB"
         depends on (BCM43456 || BCM43455 || BCM4343 || BCM43454 || BCM43012)
-        ---help---
+        help
           This is a configuration for Broadcom WIFI COB Type.
 
 config BCM4335BT
 	bool "BROADCOM BTLOCK Enable"
 	depends on BCM4335
 	default y
-	---help---
+	help
 	  This is a configuration for bt lock enable.
 
 config WLAN_REGION_CODE
 	int "---Region codes for Broadcom WiFi Driver"
 	depends on BROADCOM_WIFI
 	default 100
-	---help---
+	help
 		This is a region code for Broadcom Wi-Fi featured functions.
 		- 100 : EUR OPEN
 		- 101 : EUR ORG
@@ -168,33 +168,33 @@ config WLAIBSS
 	bool "Advanced IBSS mode"
 	depends on (BCM4335 || BCM4339 || BCM4354 || BCM4358 || BCM4359 || BCM4361 || BCM4375)
 	default y
-	---help---
+	help
 	  This is a configuration for Oxygen Network.
 
 config WL_RELMCAST
 	bool "Reliable Multicast Support"
 	depends on (BCM4335 || BCM4339 || BCM4354 || BCM4358 || BCM4359 || BCM4361 || BCM4375)
 	default y
-	---help---
+	help
 	  This is a configuration for RMC.
 
 config WL_NAN
 	bool "NAN Feature"
 	depends on BROADCOM_WIFI
 	default n
-	---help---
+	help
 	  This is a configuration for NAN Feature.
 
 config BCMDHD_PCIE
 	bool "Enable PCIe I/F Support"
 	depends on (BCM4354 || BCM4358 || BCM4359 || BCM4361 || BCM4375)
-	---help---
+	help
 	  Enable PCI Express I/F Support
 
 config BCMDHD_PREALLOC_PKTIDMAP
 	bool "BROADCOM PCIE specific memory reserved for PKTIDMAP"
 	depends on BROADCOM_WIFI_RESERVED_MEM && BCMDHD_PCIE
-	---help---
+	help
 	  Preallocated memory support for PCIE interface in Broadcom
 	  WLAN driver.
 
@@ -202,58 +202,85 @@ config BCMDHD_PREALLOC_MEMDUMP
 	bool "BROADCOM PCIE specific memory reserved for MEMDUMP"
 	depends on BROADCOM_WIFI_RESERVED_MEM
 	default y
-	---help---
+	help
 	  Preallocated memory support for dongle memory dump
 
 config WLAN_HERO
 	bool "model code for hero"
 	depends on BROADCOM_WIFI
-	---help---
+	help
 	  This is configuration for USA regrev
 
 config WLAN_HERO2
 	bool "model code for hero2"
 	depends on BROADCOM_WIFI
-	---help---
+	help
 	  This is configuration for USA regrev
 
 config BCMDHD_OOB_HOST_WAKE
 	bool "Use the external WLAN_HOST_WAKE pin"
 	depends on BROADCOM_WIFI
 	default y
-	---help---
+	help
 	  Use the external GPIO pin to wake up host
 
 config SPLIT_ARGOS_SET
 	bool "Support argos table"
 	depends on BROADCOM_WIFI
-	---help---
+	help
 	To support SPLIT_ARGOS_SET
 
 config BCM_DETECT_CONSECUTIVE_HANG
 	bool "Detect consecutive hang event"
 	depends on BROADCOM_WIFI
 	default n
-	---help---
+	help
 	Detecting defect module from consecutive hang event
 
 config WLAN_VHTDISABLE
 	bool "WLAN Disable 11ac"
 	depends on BCM43456
 	default n
-	---help---
+	help
 	This is a configuration to disable 11ac.
 
 config WLAN_TSQ_MULTIPLIER
 	bool "Enable TCP TSQ_MULTIPLIER"
 	depends on BROADCOM_WIFI
 	default n
-	---help---
+	help
 	This is configuration for TCP TSQ_MULTIPLIER
 
 config DHD_DRIVEN_RANDOM_MAC_SCAN
         bool "Enable DHD driven random mac scan"
         depends on BROADCOM_WIFI
         default n
-        ---help---
+        help
         This is configuration for DHD driven random mac scan
+
+# L6D 5.5.2: WLAN_GRACE/WLAN_GREAT, text of the 100.13.36.1 Kconfig (:240-250), absent from the OSRC tree;
+# CONFIG_WLAN_GREAT=y (IKC:1839) selects the GREAT block of the Makefile BCM4361 section
+config WLAN_GRACE
+	bool "Model code for GRACE"
+	depends on BROADCOM_WIFI
+	help
+	  This is configuration for Grace feature
+
+config WLAN_GREAT
+	bool "model code for GREAT"
+	depends on BROADCOM_WIFI
+	help
+	  This is configuration for Great feature
+
+# L6D 6.2: Exynos8895 platform glue
+config BCMDHD_EXYNOS8895
+	bool "bcmdhd platform glue for Exynos8895 (greatlte)"
+	depends on BCM4361 && BCMDHD_PCIE && PCIE_EXYNOS8895
+	default y
+
+config BCMDHD_EXYNOS8895_GLUE_ONLY
+	bool "bring-up only: Exynos8895 Wi-Fi glue without the dhd driver (test T-F1)"
+	depends on PCIE_EXYNOS8895 && !BCM4361
+	help
+	  Builds only dhd_custom_exynos8895.c: WLAN_REG_ON, the first PCIe power-on and enumeration of 01:00.0,
+	  with dhd_module_init()/dhd_init_wlan_mem() stubbed to return 0. Never set in a release image.

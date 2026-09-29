@@ -32,7 +32,11 @@
 #include <typedefs.h>
 #include <bcmdefs.h>
 
+#ifdef BCMDRIVER
+#include <linux/stdarg.h>	/* 6.18 kernel builds are -nostdinc: <stdarg.h> is <linux/stdarg.h> */
+#else
 #include <stdarg.h>
+#endif /* BCMDRIVER */
 
 #ifdef BCMDRIVER
 #include <osl.h>

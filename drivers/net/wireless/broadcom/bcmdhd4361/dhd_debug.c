@@ -1424,9 +1424,9 @@ __dhd_dbg_pkt_hash(uintptr_t pkt, uint32 pktid)
 uint32
 __dhd_dbg_driver_ts_usec(void)
 {
-	struct timespec ts;
+	struct timespec64 ts;	/* L6D 5.5.3 A4 */
 
-	get_monotonic_boottime(&ts);
+	ktime_get_boottime_ts64(&ts);
 	return ((uint32)(__TIMESPEC_TO_US(ts)));
 }
 

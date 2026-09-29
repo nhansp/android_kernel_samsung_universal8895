@@ -107,7 +107,7 @@ endif
 	# DHDCFLAGS += -DDHD_RECOVER_TIMEOUT
 	# HEAP ASLR
 	DHDCFLAGS += -DBCM_ASLR_HEAP
-ifeq ($(filter y,$(CONFIG_SOC_EXYNOS8895) $(CONFIG_SOC_EXYNOS9810) $(CONFIG_ARCH_SDM845)),y)
+ifeq ($(filter y,$(CONFIG_BCMDHD_EXYNOS8895) $(CONFIG_SOC_EXYNOS9810) $(CONFIG_ARCH_SDM845)),y)
 	# Default Tx LB Enable
 	DHDCFLAGS += -DDHD_LB_TXP_DEFAULT_ENAB
 endif
@@ -505,7 +505,7 @@ ifeq ($(filter y,$(CONFIG_ARCH_MSM8998) $(CONFIG_ARCH_SDM845)),y)
   DHDCFLAGS += -DUSE_SMMU_ARCH_MSM
 endif
 
-ifeq ($(filter y,$(CONFIG_ARCH_MSM8996) $(CONFIG_ARCH_MSM8998) $(CONFIG_SOC_EXYNOS8890) $(CONFIG_SOC_EXYNOS8895) $(CONFIG_ARCH_TEGRA) $(CONFIG_SOC_EXYNOS9810) $(CONFIG_ARCH_SDM845)),y)
+ifeq ($(filter y,$(CONFIG_ARCH_MSM8996) $(CONFIG_ARCH_MSM8998) $(CONFIG_SOC_EXYNOS8890) $(CONFIG_BCMDHD_EXYNOS8895) $(CONFIG_BCMDHD_ARCH_TEGRA) $(CONFIG_SOC_EXYNOS9810) $(CONFIG_ARCH_SDM845)),y)
 # IRQSET in DHD
   DHDCFLAGS += -DDHD_LB_IRQSET
 # Runtime PM
@@ -596,7 +596,7 @@ ifeq ($(BUS_IFACE_PCIE),y)
   DHDCFLAGS += -DCUSTOM_TCPACK_SUPP_RATIO=15
   DHDCFLAGS += -DCUSTOM_TCPACK_DELAY_TIME=10
   DHDCFLAGS += -DDHDTCPACK_SUPPRESS
-ifeq ($(filter y,$(CONFIG_SOC_EXYNOS8895) $(CONFIG_ARCH_MSM8998)),y)
+ifeq ($(filter y,$(CONFIG_BCMDHD_EXYNOS8895) $(CONFIG_ARCH_MSM8998)),y)
   DHDCFLAGS += -DDHD_RECOVER_TIMEOUT
 endif
 endif
@@ -618,7 +618,7 @@ ifeq ($(CONFIG_SOC_EXYNOS9810),y)
 endif
 
 # New Features
-ifeq ($(filter y,$(CONFIG_ARCH_MSM8998) $(CONFIG_SOC_EXYNOS8895)),y)
+ifeq ($(filter y,$(CONFIG_ARCH_MSM8998) $(CONFIG_BCMDHD_EXYNOS8895)),y)
   DHDCFLAGS += -DDHD_RANDOM_MAC_SCAN
 endif
   DHDCFLAGS += -DWL11U -DMFP
@@ -684,7 +684,7 @@ ifeq ($(filter y,$(CONFIG_ARCH_MSM8998) $(CONFIG_ARCH_SDM845)),y)
   DHDCFLAGS += -DUSE_SMMU_ARCH_MSM
 endif
 
-ifeq ($(filter y,$(CONFIG_ARCH_MSM8996) $(CONFIG_ARCH_MSM8998) $(CONFIG_SOC_EXYNOS8890) $(CONFIG_SOC_EXYNOS8895) $(CONFIG_ARCH_TEGRA) $(CONFIG_SOC_EXYNOS9810) $(CONFIG_ARCH_SDM845)),y)
+ifeq ($(filter y,$(CONFIG_ARCH_MSM8996) $(CONFIG_ARCH_MSM8998) $(CONFIG_SOC_EXYNOS8890) $(CONFIG_BCMDHD_EXYNOS8895) $(CONFIG_BCMDHD_ARCH_TEGRA) $(CONFIG_SOC_EXYNOS9810) $(CONFIG_ARCH_SDM845)),y)
 # IRQSET in DHD
   DHDCFLAGS += -DDHD_LB_IRQSET
 # Runtime PM
@@ -1385,7 +1385,7 @@ endif
 ifeq ($(CONFIG_SOC_EXYNOS8890),y)
   DHDCFLAGS += -Wno-date-time
 endif
-ifeq ($(CONFIG_SOC_EXYNOS8895),y)
+ifeq ($(CONFIG_BCMDHD_EXYNOS8895),y)
   DHDCFLAGS += -Wno-date-time
 endif
 ifeq ($(CONFIG_ARCH_MSM8996),y)
@@ -1415,7 +1415,7 @@ ifneq ($(CONFIG_SOC_EXYNOS8890),)
 DHDCFLAGS += -DDHD_OF_SUPPORT
 DHDCFLAGS += -DBCMPCIE_OOB_HOST_WAKE
 endif
-ifneq ($(CONFIG_SOC_EXYNOS8895),)
+ifneq ($(CONFIG_BCMDHD_EXYNOS8895),)
 DHDCFLAGS += -DDHD_OF_SUPPORT
 DHDCFLAGS += -DBCMPCIE_OOB_HOST_WAKE
 endif
@@ -1465,7 +1465,10 @@ DHDCFLAGS += -DDHD_OF_SUPPORT
 endif
 endif #CONFIG_OF
 
-ifneq ($(CONFIG_ARCH_TEGRA),)
+# L6D (new, like the SOC_EXYNOS8895 row of 5.5.2): GKI sets CONFIG_ARCH_TEGRA=y, stock 8895 did not
+# (IKC); the dhd tests of it are renamed to CONFIG_BCMDHD_ARCH_TEGRA, defined nowhere, so the Tegra
+# branches stay out exactly as on stock (this one would drop WL_VENDOR_EXT_SUPPORT and GSCAN_SUPPORT)
+ifneq ($(CONFIG_BCMDHD_ARCH_TEGRA),)
 DHDCFLAGS := $(filter-out -DDHD_ALLOC_COHERENT_MEM_FROM_ATOMIC_POOL,$(DHDCFLAGS))
 DHDCFLAGS := $(filter-out -DWL_VENDOR_EXT_SUPPORT,$(DHDCFLAGS))
 DHDCFLAGS := $(filter-out -DGSCAN_SUPPORT,$(DHDCFLAGS))
@@ -1487,12 +1490,15 @@ DHDCFLAGS += -include "dhd_sec_feature.h"
 
 #EXTRA_LDFLAGS += --strip-debug
 
-EXTRA_CFLAGS += $(DHDCFLAGS) -DDHD_DEBUG
-EXTRA_CFLAGS += -DSRCBASE=\"$(src)\"
-EXTRA_CFLAGS += -I$(src)/include/ -I$(src)/
-EXTRA_CFLAGS += $(call cc-option, -Wunused-but-set-variable)
-EXTRA_CFLAGS += $(call cc-option, -Wmaybe-uninitialized)
-KBUILD_CFLAGS += -I$(LINUXDIR)/include -I$(CURDIR)
+DHDCFLAGS += -DANDROID_PLATFORM_VERSION=9	# L6D 5.5.2: shipped-config parity (S:.../dhd.h:2365-2413)
+DHDCFLAGS += -DDHD_INIT_FROM_PLATFORM_GLUE	# L6D 5.3.2: module_init from platform glue
+
+ccflags-y += $(DHDCFLAGS) -DDHD_DEBUG
+ccflags-y += -DSRCBASE=\"$(src)\"
+ccflags-y += -I$(src)/include/ -I$(src)/
+ccflags-y += $(call cc-option, -Wunused-but-set-variable)
+ccflags-y += $(call cc-option, -Wmaybe-uninitialized)
+ccflags-y += -Wno-error		# L6D 5.5.2: cancel global -Werror; per-diagnostic -Werror=<diag> stays
 
 DHDOFILES := dhd_pno.o dhd_common.o dhd_ip.o dhd_custom_gpio.o dhd_custom_sec.o \
 	dhd_linux.o dhd_linux_sched.o dhd_cfg80211.o dhd_linux_wq.o aiutils.o bcmevent.o \

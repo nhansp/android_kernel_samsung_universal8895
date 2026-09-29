@@ -1,0 +1,24 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+/* include/linux/wlan_plat.h
+ *
+ * Copyright (C) 2010 Google, Inc.
+ *
+ * Stock S:include/linux/wlan_plat.h verbatim (L6D 5.5.3 A36): the platform
+ * data the greatlte Wi-Fi glue passes to bcmdhd4361.
+ */
+#ifndef _LINUX_WLAN_PLAT_H_
+#define _LINUX_WLAN_PLAT_H_
+
+#define WLAN_PLAT_NODFS_FLAG	0x01
+
+struct wifi_platform_data {
+	int (*set_power)(int val);
+	int (*set_reset)(int val);
+	int (*set_carddetect)(int val);
+	void *(*mem_prealloc)(int section, unsigned long size);
+	int (*get_mac_addr)(unsigned char *buf);
+	int (*get_wake_irq)(void);
+	void *(*get_country_code)(char *ccode, u32 flags);
+};
+
+#endif

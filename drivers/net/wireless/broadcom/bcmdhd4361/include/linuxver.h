@@ -172,14 +172,27 @@ typedef irqreturn_t(*FN_ISR) (int irq, void *dev_id, struct pt_regs *ptregs);
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 32)
 #include <linux/sched.h>
 #endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 32) */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
+#include <linux/sched/clock.h>	/* local_clock(), split out of <linux/sched.h> in 4.11 */
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0) */
+
+/*
+ * L6D 5.5.3 A6: the 4.4 kernel_read(file, offset, buf, count) read at 'offset' and left
+ * f_pos alone; 4.14+ is kernel_read(file, buf, count, &pos) and needs no set_fs().
+ * The stock call sites keep their 4.4 meaning through this helper.
+ */
+#include <linux/fs.h>
+static inline ssize_t
+dhd_kernel_read_compat(struct file *fp, loff_t offset, void *buf, size_t count)
+{
+	return kernel_read(fp, buf, count, &offset);
+}
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 9, 0))
 #include <linux/sched/rt.h>
 #endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(3, 9, 0) */
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 29)
-#include <net/lib80211.h>
-#endif // endif
+/* <net/lib80211.h> (>= 2.6.29) is gone from 6.18 (no lib80211 header in ACK) and dhd uses none of it */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 29)
 #include <linux/ieee80211.h>
 #else
@@ -598,7 +611,7 @@ static inline bool binary_sema_up(tsk_ctl_t *tsk)
 }
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 0))
-#define SMP_RD_BARRIER_DEPENDS(x) smp_read_barrier_depends(x)
+#define SMP_RD_BARRIER_DEPENDS(x) do { } while (0)
 #else
 #define SMP_RD_BARRIER_DEPENDS(x) smp_rmb(x)
 #endif // endif
@@ -732,15 +745,15 @@ not match our unaligned address for < 2.6.24
 #define KMALLOC_FLAG (CAN_SLEEP() ? GFP_KERNEL: GFP_ATOMIC)
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0))
-#define RANDOM32	prandom_u32
-#define RANDOM_BYTES	prandom_bytes
+#define RANDOM32	get_random_u32
+#define RANDOM_BYTES	get_random_bytes
 #else
 #define RANDOM32	random32
 #define RANDOM_BYTES	get_random_bytes
 #endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0) */
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0))
-#define SRANDOM32(entropy)	prandom_seed(entropy)
+#define SRANDOM32(entropy)	do { } while (0)
 #else
 #define SRANDOM32(entropy)	srandom32(entropy)
 #endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0) */

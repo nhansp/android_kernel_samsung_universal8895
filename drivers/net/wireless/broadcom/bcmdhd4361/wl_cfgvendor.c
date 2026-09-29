@@ -2689,7 +2689,7 @@ wl_cfgvendor_add_nan_reason_str(nan_status_type_t status, nan_hal_resp_t *nan_re
 	int num = (int)(sizeof(nan_status_reasonstr_map)/sizeof(nan_status_reasonstr_map[0]));
 	for (i = 0; i < num; i++) {
 		if (nan_status_reasonstr_map[i].status == status) {
-			strlcpy(nan_req_resp->nan_reason, nan_status_reasonstr_map[i].nan_reason,
+			strscpy(nan_req_resp->nan_reason, nan_status_reasonstr_map[i].nan_reason,
 				sizeof(nan_status_reasonstr_map[i].nan_reason));
 			break;
 		}
@@ -2880,7 +2880,7 @@ wl_cfgvendor_nan_parse_datapath_args(struct wiphy *wiphy,
 				ret = -EINVAL;
 				goto exit;
 			}
-			strlcpy((char *)cmd_data->ndp_iface, (char *)nla_data(iter),
+			strscpy((char *)cmd_data->ndp_iface, (char *)nla_data(iter),
 				nla_len(iter));
 			break;
 		case NAN_ATTRIBUTE_SECURITY:
@@ -6548,6 +6548,10 @@ exit:
 }
 #endif /* NDO_CONFIG_SUPPORT */
 
+/*
+ * L6D 5.5.3 A24: 6.18 wiphy_register() rejects a vendor command without a policy;
+ * VENDOR_CMD_RAW_DATA passes the attributes through unparsed, as 4.4 did.
+ */
 static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 	{
 		{
@@ -6555,6 +6559,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = BRCM_VENDOR_SCMD_PRIV_STR
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_priv_string_handler
 	},
 #ifdef BCM_PRIV_CMD_SUPPORT
@@ -6564,6 +6569,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = BRCM_VENDOR_SCMD_BCM_STR
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_priv_bcm_handler
 	},
 #endif /* BCM_PRIV_CMD_SUPPORT */
@@ -6574,6 +6580,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = GSCAN_SUBCMD_GET_CAPABILITIES
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_gscan_get_capabilities
 	},
 	{
@@ -6582,6 +6589,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = GSCAN_SUBCMD_SET_CONFIG
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_set_scan_cfg
 	},
 	{
@@ -6590,6 +6598,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = GSCAN_SUBCMD_SET_SCAN_CONFIG
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_set_batch_scan_cfg
 	},
 	{
@@ -6598,6 +6607,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = GSCAN_SUBCMD_ENABLE_GSCAN
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_initiate_gscan
 	},
 	{
@@ -6606,6 +6616,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = GSCAN_SUBCMD_ENABLE_FULL_SCAN_RESULTS
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_enable_full_scan_result
 	},
 	{
@@ -6614,6 +6625,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = GSCAN_SUBCMD_SET_HOTLIST
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_hotlist_cfg
 	},
 	{
@@ -6622,6 +6634,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = GSCAN_SUBCMD_GET_SCAN_RESULTS
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_gscan_get_batch_results
 	},
 #endif /* GSCAN_SUPPORT */
@@ -6632,6 +6645,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = GSCAN_SUBCMD_GET_CHANNEL_LIST
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_gscan_get_channel_list
 	},
 #endif /* GSCAN_SUPPORT || DHD_GET_VALID_CHANNELS */
@@ -6642,6 +6656,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = RTT_SUBCMD_SET_CONFIG
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_rtt_set_config
 	},
 	{
@@ -6650,6 +6665,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = RTT_SUBCMD_CANCEL_CONFIG
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_rtt_cancel_config
 	},
 	{
@@ -6658,6 +6674,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = RTT_SUBCMD_GETCAPABILITY
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_rtt_get_capability
 	},
 	{
@@ -6666,6 +6683,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = RTT_SUBCMD_GETAVAILCHANNEL
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_rtt_get_responder_info
 	},
 	{
@@ -6674,6 +6692,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = RTT_SUBCMD_SET_RESPONDER
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_rtt_set_responder
 	},
 	{
@@ -6682,6 +6701,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = RTT_SUBCMD_CANCEL_RESPONDER
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_rtt_cancel_responder
 	},
 #endif /* RTT_SUPPORT */
@@ -6691,6 +6711,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = ANDR_WIFI_SUBCMD_GET_FEATURE_SET
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_get_feature_set
 	},
 	{
@@ -6699,6 +6720,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = ANDR_WIFI_SUBCMD_GET_FEATURE_SET_MATRIX
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_get_feature_set_matrix
 	},
 	{
@@ -6707,6 +6729,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = ANDR_WIFI_RANDOM_MAC_OUI
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_set_rand_mac_oui
 	},
 #ifdef CUSTOM_FORCE_NODFS_FLAG
@@ -6716,6 +6739,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = ANDR_WIFI_NODFS_CHANNELS
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_set_nodfs_flag
 	},
 #endif /* CUSTOM_FORCE_NODFS_FLAG */
@@ -6725,6 +6749,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = ANDR_WIFI_SET_COUNTRY
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_set_country
 	},
 #ifdef LINKSTAT_SUPPORT
@@ -6734,6 +6759,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = LSTATS_SUBCMD_GET_INFO
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_lstats_get_info
 	},
 #endif /* LINKSTAT_SUPPORT */
@@ -6745,6 +6771,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = GSCAN_SUBCMD_SET_EPNO_SSID
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_epno_cfg
 
 	},
@@ -6754,6 +6781,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = WIFI_SUBCMD_SET_LAZY_ROAM_PARAMS
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_set_lazy_roam_cfg
 
 	},
@@ -6763,6 +6791,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = WIFI_SUBCMD_ENABLE_LAZY_ROAM
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_enable_lazy_roam
 
 	},
@@ -6772,6 +6801,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = WIFI_SUBCMD_SET_BSSID_PREF
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_set_bssid_pref
 
 	},
@@ -6783,6 +6813,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = WIFI_SUBCMD_SET_SSID_WHITELIST
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_set_ssid_whitelist
 
 	},
@@ -6792,6 +6823,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = WIFI_SUBCMD_SET_BSSID_BLACKLIST
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_set_bssid_blacklist
 	},
 #endif /* GSCAN_SUPPORT || ROAMEXP_SUPPORT */
@@ -6802,6 +6834,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = WIFI_SUBCMD_FW_ROAM_POLICY
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_set_fw_roaming_state
 	},
 	{
@@ -6810,6 +6843,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = WIFI_SUBCMD_ROAM_CAPABILITY
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_fw_roam_get_capability
 	},
 #endif /* ROAMEXP_SUPPORT */
@@ -6819,6 +6853,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = DEBUG_GET_VER
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_dbg_get_version
 	},
 #ifdef DEBUGABILITY
@@ -6828,6 +6863,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = DEBUG_START_LOGGING
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_dbg_start_logging
 	},
 	{
@@ -6836,6 +6872,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = DEBUG_RESET_LOGGING
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_dbg_reset_logging
 	},
 	{
@@ -6844,6 +6881,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = DEBUG_TRIGGER_MEM_DUMP
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_dbg_trigger_mem_dump
 	},
 	{
@@ -6852,6 +6890,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = DEBUG_GET_MEM_DUMP
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_dbg_get_mem_dump
 	},
 	{
@@ -6860,6 +6899,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = DEBUG_GET_RING_STATUS
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_dbg_get_ring_status
 	},
 	{
@@ -6868,6 +6908,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = DEBUG_GET_RING_DATA
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_dbg_get_ring_data
 	},
 #endif /* DEBUGABILITY */
@@ -6877,6 +6918,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = DEBUG_GET_FEATURE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_dbg_get_feature
 	},
 #ifdef DBG_PKT_MON
@@ -6886,6 +6928,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = DEBUG_START_PKT_FATE_MONITORING
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_dbg_start_pkt_fate_monitoring
 	},
 	{
@@ -6894,6 +6937,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = DEBUG_GET_TX_PKT_FATES
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_dbg_get_tx_pkt_fates
 	},
 	{
@@ -6902,6 +6946,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = DEBUG_GET_RX_PKT_FATES
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_dbg_get_rx_pkt_fates
 	},
 #endif /* DBG_PKT_MON */
@@ -6912,6 +6957,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = WIFI_OFFLOAD_SUBCMD_START_MKEEP_ALIVE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_start_mkeep_alive
 	},
 	{
@@ -6920,6 +6966,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = WIFI_OFFLOAD_SUBCMD_STOP_MKEEP_ALIVE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_stop_mkeep_alive
 	},
 #endif /* KEEP_ALIVE */
@@ -6930,6 +6977,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_ENABLE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_nan_start_handler
 	},
 	{
@@ -6938,6 +6986,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_DISABLE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_nan_stop_handler
 	},
 	{
@@ -6946,6 +6995,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_CONFIG
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_nan_config_handler
 	},
 	{
@@ -6954,6 +7004,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_REQUEST_PUBLISH
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_nan_req_publish
 	},
 	{
@@ -6962,6 +7013,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_REQUEST_SUBSCRIBE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_nan_req_subscribe
 	},
 	{
@@ -6970,6 +7022,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_CANCEL_PUBLISH
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_nan_cancel_publish
 	},
 	{
@@ -6978,6 +7031,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_CANCEL_SUBSCRIBE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_nan_cancel_subscribe
 	},
 	{
@@ -6986,6 +7040,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_TRANSMIT
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_nan_transmit
 	},
 	{
@@ -6994,6 +7049,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_GET_CAPABILITIES
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_nan_get_capablities
 	},
 
@@ -7003,6 +7059,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_DATA_PATH_IFACE_CREATE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_nan_data_path_iface_create
 	},
 	{
@@ -7011,6 +7068,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_DATA_PATH_IFACE_DELETE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_nan_data_path_iface_delete
 	},
 	{
@@ -7019,6 +7077,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_DATA_PATH_REQUEST
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_nan_data_path_request
 	},
 	{
@@ -7027,6 +7086,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_DATA_PATH_RESPONSE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_nan_data_path_response
 	},
 	{
@@ -7035,6 +7095,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_DATA_PATH_END
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_nan_data_path_end
 	},
 #ifdef WL_NAN_DISC_CACHE
@@ -7044,6 +7105,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_DATA_PATH_SEC_INFO
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_nan_data_path_sec_info
 	},
 #endif /* WL_NAN_DISC_CACHE */
@@ -7053,6 +7115,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_VERSION_INFO
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_nan_version_info
 	},
 #endif /* WL_NAN */
@@ -7063,6 +7126,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = APF_SUBCMD_GET_CAPABILITIES
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_apf_get_capabilities
 	},
 
@@ -7072,6 +7136,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = APF_SUBCMD_SET_FILTER
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_apf_set_filter
 	},
 #endif /* PKT_FILTER_SUPPORT && APF */
@@ -7082,6 +7147,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = WIFI_SUBCMD_CONFIG_ND_OFFLOAD
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_configure_nd_offload
 	},
 #endif /* NDO_CONFIG_SUPPORT */
@@ -7092,6 +7158,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = WIFI_SUBCMD_SET_RSSI_MONITOR
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_set_rssi_monitor
 	},
 #endif /* RSSI_MONITOR_SUPPORT */
@@ -7102,6 +7169,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = WIFI_SUBCMD_CONFIG_TCPACK_SUP
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_set_tcpack_sup_mode
 	},
 #endif /* DHDTCPACK_SUPPRESS */
@@ -7112,6 +7180,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = DEBUG_GET_WAKE_REASON_STATS
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.policy = VENDOR_CMD_RAW_DATA,
 		.doit = wl_cfgvendor_get_wake_reason_stats
 	}
 #endif /* DHD_WAKE_STATUS */

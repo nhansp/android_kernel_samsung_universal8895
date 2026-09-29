@@ -49,9 +49,54 @@
 #include <linux/fs.h>
 #include <linux/proc_fs.h>
 #include <asm/uaccess.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>	/* <asm/unaligned.h> moved in 6.12 */
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 27)) && defined(CONFIG_HAS_WAKELOCK)
-#include <linux/wakelock.h>
+/*
+ * L6D 5.5.3 A7: Android's <linux/wakelock.h> does not exist in 6.18. The same
+ * API over a wakeup source, so the stock call sites (all in dhd_linux.c) and the
+ * struct wake_lock members of dhd_info_t (dhd_linux_priv.h) stay as they are.
+ * Timeouts are jiffies, as in the Android API. A NULL source (registration
+ * failed) makes every call a no-op, which the pm_wakeup helpers already allow.
+ */
+#include <linux/jiffies.h>
+#include <linux/pm_wakeup.h>
+
+#define WAKE_LOCK_SUSPEND	0	/* the only type dhd uses */
+
+struct wake_lock {
+	struct wakeup_source *ws;
+};
+
+static inline void wake_lock_init(struct wake_lock *lock, int type, const char *name)
+{
+	lock->ws = wakeup_source_register(NULL, name);
+}
+
+static inline void wake_lock_destroy(struct wake_lock *lock)
+{
+	wakeup_source_unregister(lock->ws);
+	lock->ws = NULL;
+}
+
+static inline void wake_lock(struct wake_lock *lock)
+{
+	__pm_stay_awake(lock->ws);
+}
+
+static inline void wake_lock_timeout(struct wake_lock *lock, long timeout)
+{
+	__pm_wakeup_event(lock->ws, jiffies_to_msecs(timeout));
+}
+
+static inline void wake_unlock(struct wake_lock *lock)
+{
+	__pm_relax(lock->ws);
+}
+
+static inline int wake_lock_active(struct wake_lock *lock)
+{
+	return lock->ws && lock->ws->active;
+}
 #endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 27)) && defined (CONFIG_HAS_WAKELOCK) */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
 #include <linux/sched/types.h>
@@ -1681,7 +1726,13 @@ extern int dhd_attach_net(dhd_pub_t *dhdp, bool need_rtnl_lock);
 extern int dhd_attach_p2p(dhd_pub_t *);
 extern int dhd_detach_p2p(dhd_pub_t *);
 #endif /* WLP2P && WL_CFG80211 */
-extern int dhd_register_if(dhd_pub_t *dhdp, int idx, bool need_rtnl_lock);
+/*
+ * L6D 5.5.3 A28: need_rtnl_lock/rtnl_lock_reqd is an int: FALSE = RTNL held, TRUE = nothing held
+ * (register_netdev/unregister_netdev take it), DHD_IF_CFG_OP = RTNL and the wiphy mutex held
+ * (a cfg80211 op: 6.18 requires cfg80211_[un]register_netdevice there).
+ */
+#define DHD_IF_CFG_OP	2
+extern int dhd_register_if(dhd_pub_t *dhdp, int idx, int need_rtnl_lock);
 
 /* Indication from bus module regarding removal/absence of dongle */
 extern void dhd_detach(dhd_pub_t *dhdp);
@@ -2027,8 +2078,8 @@ extern int dhd_event_ifdel(struct dhd_info *dhd, struct wl_event_data_if *ifeven
 extern int dhd_event_ifchange(struct dhd_info *dhd, struct wl_event_data_if *ifevent,
        char *name, uint8 *mac);
 extern struct net_device* dhd_allocate_if(dhd_pub_t *dhdpub, int ifidx, const char *name,
-	uint8 *mac, uint8 bssidx, bool need_rtnl_lock, const char *dngl_name);
-extern int dhd_remove_if(dhd_pub_t *dhdpub, int ifidx, bool need_rtnl_lock);
+	uint8 *mac, uint8 bssidx, int need_rtnl_lock, const char *dngl_name);
+extern int dhd_remove_if(dhd_pub_t *dhdpub, int ifidx, int need_rtnl_lock);
 #ifdef WL_STATIC_IF
 extern s32 dhd_update_iflist_info(dhd_pub_t *dhdp, struct net_device *ndev, int ifidx,
 	uint8 *mac, uint8 bssidx, const char *dngl_name, int if_state);
