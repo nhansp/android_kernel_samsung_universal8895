@@ -1978,6 +1978,18 @@
 			clock-names = "oscclk";
 		};
 
+		adc: adc@15b70000 {
+			compatible = "samsung,exynos8895-adc";	/* stock "samsung,exynos-adc-v3" FDT:7616 */
+			reg = <0x15b70000 0x100>;			/* FDT:7617 */
+			interrupts = <GIC_SPI 104 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:7618 <0 0x68 0> */
+			/* FDT:7621 <0x21 0x3f2> = GATE_ADCIF_BUSC_S0 (S:include/dt-bindings/clock/exynos8895.h:453) */
+			clocks = <&cmu_busc CLK_GOUT_BUSC_ADCIF_BUSC_PCLK_S0>;
+			clock-names = "adc";
+			#io-channel-cells = <1>;			/* FDT:7619 */
+			/* no vdd-supply: stock has none (FDT:7615-7625) */
+			status = "disabled";
+		};
+
 		cmu_apm: clock-controller@16400000 {
 			compatible = "samsung,exynos8895-cmu-apm";
 			reg = <0x16400000 0x8000>;	/* CAL:cmucal-sfr.c:9 SFR_BLOCK(APM, 0x16400000, 0x8000) */

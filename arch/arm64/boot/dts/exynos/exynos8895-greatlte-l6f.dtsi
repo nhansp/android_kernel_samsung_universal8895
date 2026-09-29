@@ -50,3 +50,178 @@
 							   L5 (REQ-L5-1); delete to keep touch powered while awake */
 	};
 };
+
+/* ---- slice pwr: MAX77865 MFD, charger, fuel gauge, battery, AP ADC + NTC (L6F 4.2-4.4) ---- */
+#include <dt-bindings/gpio/gpio.h>
+
+&pinctrl_alive {
+	max77865_irq: max77865-irq-pins {		/* FDT:467-474 (0x8d) */
+		samsung,pins = "gpa1-6";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;	/* 0x0f */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+	muic_irq: muic-irq-pins {			/* FDT:476-482 (0x8e): stock sets no function */
+		samsung,pins = "gpa0-0";
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+};
+
+/* the AP ADC's clock provider (L1b CMU_BUSC, REQ-L1-6; enabled with the ADC, commit d98884fd8) */
+&cmu_busc {
+	status = "okay";
+};
+
+&adc {
+	status = "okay";
+};
+
+/* identical to exynos8895-greatlte-l3.dtsi (plan 2.3 D1) */
+&usi13 {
+	samsung,mode = <USI_MODE_UART_I2C1>;	/* stock usi@1082102C usi_mode = "uart_hsi2c1" FDT:5077-5081 */
+	status = "okay";
+};
+
+&hsi2c_32 {					/* stock hsi2c@10970000 FDT:6149-6163 (SPI 0x1ab = 427) */
+	#address-cells = <1>;			/* FDT:6154 (the ACK node has none) */
+	#size-cells = <0>;			/* FDT:6155 */
+	clock-frequency = <400000>;		/* FDT:6149-6163 has no clock-frequency -> stock default
+						   HSI2C_FS_TX_CLOCK 400000 (S:drivers/i2c/busses/i2c-exynos5.c:212,1572-1574) */
+	status = "okay";
+
+	pmic_max77865: pmic@66 {
+		compatible = "maxim,max77865";			/* FDT:6166 */
+		reg = <0x66>;					/* FDT:6169 */
+		interrupt-parent = <&gpa1>;
+		interrupts = <6 IRQ_TYPE_LEVEL_LOW>;		/* FDT:6170 max77865,irq-gpio = <&gpa1 6 1>;
+								   S:drivers/mfd/max77865-irq.c:286-287 IRQF_TRIGGER_LOW */
+		interrupt-controller;				/* INTSRC demux (L6F 5.2) */
+		#interrupt-cells = <1>;
+		wakeup-source;					/* FDT:6173 max77865,wakeup */
+		pinctrl-names = "default";
+		pinctrl-0 = <&max77865_irq &muic_irq>;		/* FDT:6168 <0x8d 0x8e 0x8f>; 0x8f (pwm-tout1) is the PWM's */
+	};
+
+	max77865_charger: charger@69 {			/* 0xD2 >> 1: S:drivers/mfd/max77865.c:46 */
+		compatible = "maxim,max77865-charger";
+		reg = <0x69>;
+		interrupt-parent = <&pmic_max77865>;
+		interrupts = <0>;			/* INTSRC bit 0 CHG: S:include/linux/mfd/max77865-private.h:30 */
+		samsung,battery-ntc = "battery-ntc";	/* thermal zone below (L6F 4.4) */
+		samsung,pmu = <&pmu_system_controller>;	/* INFORM2 write on power-off with charger (L6F 5.3.7) */
+		maxim,pmic = <&pmic_max77865>;		/* core regmap for MAINCTRL1 (L6F 5.3.2 step 12) */
+		jig-gpios = <&gpi1 4 GPIO_ACTIVE_LOW>;	/* FDT:12332-12333 fuelgauge,jig_gpio = <&gpi1 4 0> + jig_low_active
+						   (0x8a = gpi1, FDT:705-711); requested GPIOD_ASIS (V4-16) */
+		/*
+		 * samsung,charge-control; (L6F 4.3, 5.3.2) is left out for now: monitor-only until
+		 * the readings are checked on the phone and the charge-control path is reviewed.
+		 */
+
+		otg_vbus: usb-otg-vbus {		/* stock "otg" supply as a regulator (L6F 5.3.8) */
+			regulator-name = "usb_otg_vbus";
+			regulator-min-microvolt = <5020000>;	/* CNFG_11 := 0x16 "Update CHG_CNFG_11 to 0x16(5.020V)"
+								   S:drivers/battery_v2/max77865_charger.c:656-658 */
+			regulator-max-microvolt = <5020000>;
+			/* no consumer in this image (L3 peripheral-only); host-role owner: O-J21 */
+		};
+	};
+
+	fuel-gauge@36 {					/* 0x6C >> 1: S:drivers/mfd/max77865.c:47 */
+		compatible = "maxim,max77865-battery";
+		reg = <0x36>;
+		/* no interrupts: SALRT_Th := 0xff00 path (A:drivers/power/supply/max17042_battery.c:1117-1119) */
+		maxim,rsns-microohm = <10000>;		/* FDT:12351 fuelgauge,fg_resistor = <1>;
+							   S:drivers/battery_v2/max77865_fuelgauge.c:535-541 10 mOhm */
+		maxim,over-heat-temp = <499>;		/* FDT:12225 temp_high_threshold_normal 0x1f4 (50.0 degC); stock
+							   T >= 500 (S:drivers/battery_v2/sec_battery.c:1972), max17042
+							   temp > temp_max (A:drivers/power/supply/max17042_battery.c:218) */
+		maxim,cold-temp = <1>;			/* FDT:12227 temp_low_threshold_normal 0x00; stock T <= 0 (:2014),
+							   max17042 temp < temp_min (:213) */
+		/* no maxim,over-volt / maxim,dead-volt: stock has no battery-voltage health limit,
+		 * battery,ovp_uvlo_check_type 3 = charger polling (FDT:12215, L6F 4.3, O-J15) */
+		power-supplies = <&max77865_charger>;	/* STATUS needs a supplier (A:.../max17042_battery.c:119-127) */
+		monitored-battery = <&battery>;
+		samsung,battery-ntc = "battery-ntc";	/* host temperature source (L6F 5.4) */
+	};
+};
+
+/ {
+	battery: battery {
+		compatible = "simple-battery";
+		constant-charge-voltage-max-microvolt = <4350000>;	/* FDT:12281-12282 0xa9ec = 43500 / conv 0x0a */
+		constant-charge-current-max-microamp = <2100000>;	/* FDT:12361 default_charging_current = <0x834> */
+		charge-full-design-microamp-hours = <3300000>;		/* FDT:12312 battery,battery_full_capacity = <0xce4> */
+	};
+
+	/*
+	 * Battery NTC = ADC 4, USB-connector NTC = ADC 1, charger NTC = ADC 3
+	 * (FDT:12323-12324 "adc-temp" <0x141 0x04>, "adc-usb-temp" <0x141 0x01>,
+	 * "adc-chg-temp" <0x141 0x03>). Tables: FDT:12188-12189 battery,temp_table_adc /
+	 * temp_table_data as <milli-degC code> pairs, code falling, as
+	 * gadc_thermal_adc_to_temp() needs (A:drivers/thermal/thermal-generic-adc.c:27-56);
+	 * the usb and chg tables FDT:12190-12193 are equal to it.
+	 */
+	battery_ntc: thermal-sensor-battery {
+		compatible = "generic-adc-thermal";		/* A:drivers/thermal/thermal-generic-adc.c:212-214 */
+		#thermal-sensor-cells = <0>;
+		io-channels = <&adc 4>;
+		io-channel-names = "sensor-channel";
+		temperature-lookup-table = <
+			(-20000) 3686	(-15000) 3575	(-10000) 3445	(-5000) 3293
+			0 3122		5000 2932	10000 2726	15000 2512
+			20000 2291	25000 2048	30000 1811	35000 1586
+			40000 1378	45000 1189	50000 1021	55000 887
+			60000 769	65000 655	70000 558	75000 474
+			80000 404	85000 345	90000 294 >;
+	};
+
+	usb_ntc: thermal-sensor-usb {
+		compatible = "generic-adc-thermal";
+		#thermal-sensor-cells = <0>;
+		io-channels = <&adc 1>;
+		io-channel-names = "sensor-channel";
+		temperature-lookup-table = <
+			(-20000) 3686	(-15000) 3575	(-10000) 3445	(-5000) 3293
+			0 3122		5000 2932	10000 2726	15000 2512
+			20000 2291	25000 2048	30000 1811	35000 1586
+			40000 1378	45000 1189	50000 1021	55000 887
+			60000 769	65000 655	70000 558	75000 474
+			80000 404	85000 345	90000 294 >;
+	};
+
+	chg_ntc: thermal-sensor-charger {
+		compatible = "generic-adc-thermal";
+		#thermal-sensor-cells = <0>;
+		io-channels = <&adc 3>;
+		io-channel-names = "sensor-channel";
+		temperature-lookup-table = <
+			(-20000) 3686	(-15000) 3575	(-10000) 3445	(-5000) 3293
+			0 3122		5000 2932	10000 2726	15000 2512
+			20000 2291	25000 2048	30000 1811	35000 1586
+			40000 1378	45000 1189	50000 1021	55000 887
+			60000 769	65000 655	70000 558	75000 474
+			80000 404	85000 345	90000 294 >;
+	};
+
+	thermal-zones {
+		battery-ntc {
+			polling-delay = <10000>;	/* 10 s = FDT:12187 battery,polling_time[0] (BASIC) 0x0a */
+			polling-delay-passive = <0>;
+			thermal-sensors = <&battery_ntc>;
+			/* no trips: allowed (A:drivers/thermal/thermal_of.c:387-395) */
+		};
+
+		usb-ntc {
+			polling-delay = <10000>;	/* same cadence as battery-ntc */
+			polling-delay-passive = <0>;
+			thermal-sensors = <&usb_ntc>;
+		};
+
+		chg-ntc {
+			polling-delay = <10000>;
+			polling-delay-passive = <0>;
+			thermal-sensors = <&chg_ntc>;
+		};
+	};
+};
