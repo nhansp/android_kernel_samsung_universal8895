@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/firmware/samsung,exynos-tee.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Trustonic Kinibi TEE (MobiCore) on Samsung Exynos SoCs
+
+maintainers:
+  - Krzysztof Kozlowski <krzk@kernel.org>
+
+description: |
+  Normal-world side of the Trustonic Kinibi ("t-base", MobiCore) trusted
+  execution environment that Samsung's EL3 firmware starts on Exynos SoCs.
+  The driver talks to it with SMC fast calls; the secure world notifies the
+  normal world through one interrupt (S-SIQ). Local binding of the greatlte
+  port (spec L6T 4), not for upstream.
+
+properties:
+  compatible:
+    const: samsung,exynos-tee
+
+  interrupts:
+    maxItems: 1
+    description: S-SIQ, the secure world's notification interrupt
+
+required:
+  - compatible
+  - interrupts
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    tee {
+        compatible = "samsung,exynos-tee";
+        interrupts = <GIC_SPI 233 IRQ_TYPE_EDGE_RISING>;
+    };

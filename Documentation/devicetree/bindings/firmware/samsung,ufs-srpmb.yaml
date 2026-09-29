@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/firmware/samsung,ufs-srpmb.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos secure RPMB proxy
+
+maintainers:
+  - Krzysztof Kozlowski <krzk@kernel.org>
+
+description: |
+  The Exynos secure world places RPMB requests in a buffer shared with the
+  normal world and raises an interrupt; the normal world forwards them to the
+  RPMB well-known logical unit of the UFS device and writes the result back.
+  Local binding of the greatlte port (spec L6T 4, 5.9), not for upstream.
+
+properties:
+  compatible:
+    const: samsung,ufs-srpmb
+
+  interrupts:
+    maxItems: 1
+    description: request interrupt raised by the secure world
+
+  samsung,ufs:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: UFS host controller whose RPMB well-known LU serves the requests
+
+required:
+  - compatible
+  - interrupts
+  - samsung,ufs
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    ufs-srpmb {
+        compatible = "samsung,ufs-srpmb";
+        interrupts = <GIC_SPI 69 IRQ_TYPE_EDGE_RISING>;
+        samsung,ufs = <&ufs>;
+    };
