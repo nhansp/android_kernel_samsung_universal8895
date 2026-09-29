@@ -1,11 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * max98506.h -- MAX98506 ALSA SoC Audio driver
  *
  * Copyright 2013-2015 Maxim Integrated Products
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * Register map of S:sound/soc/codecs/max98506.h (SM-N950N 4.4 kernel).
  */
 #ifndef _MAX98506_H
 #define _MAX98506_H
@@ -705,25 +704,11 @@ enum max98506_type {
 
 struct max98506_priv {
 	struct regmap *regmap;
-	struct snd_soc_codec *codec;
+	struct snd_soc_component *component;
 	struct max98506_pdata *pdata;
 	struct max98506_pc_active pca;
 	struct max98506_volume_step_info vstep;
-#ifdef USE_DSM_LOG
-	struct class *dev_log_class;
-	struct device *dev_log;
-#endif /* USE_DSM_LOG */
-	struct i2c_client *sub_i2c;
-	struct regmap *sub_regmap;
+	struct regmap *sub_regmap;	/* second amplifier: never set here */
 	int speaker_dac_enable;
 };
-
-#ifdef CONFIG_SND_SOC_MAXIM_DSM
-#ifdef USE_DSM_LOG
-struct max98506_spk_amp_reg_diff_log {
-	int seq_num;
-	uint8_t reg_value[4];
-};
-#endif
-#endif
 #endif /* _MAX98506_H */
