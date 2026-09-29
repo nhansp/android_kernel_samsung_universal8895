@@ -285,23 +285,26 @@ struct d8895_fmt {
 };
 
 /*
- * dpp_reg_set_format() (S:.../dpu/dpp_reg.c:1266-1344). DRM names give the
- * component order of a little-endian word, the vendor (Android HAL) names
- * the byte order in memory: DRM ARGB8888 is bytes B,G,R,A = vendor
- * BGRA_8888. The formats the vendor DPP accepts (dpp_check_format(),
+ * dpp_reg_set_format() (S:.../dpu/dpp_reg.c:1266-1344). The IDMA format
+ * codes name the components from bit 31 down, as DRM does: measured on
+ * SM-N950N (image 0050), DRM XBGR8888 (bytes R,G,B,X) scanned out with code
+ * RGBX8888 showed the X byte as red (black -> red, purple -> yellow), so
+ * each DRM format takes the code of the same name. Stock passes its own
+ * DECON format straight to the same-named code (dpp_reg.c:1279-1302); the
+ * HAL-to-DECON step is in the composer. The formats the vendor DPP accepts (dpp_check_format(),
  * dpp_drv.c:465-485) minus RGBA_5551 and the 10-bit NV12N, which the stock
  * composer never scans out on this panel; NV12/NV12M and NV21/NV21M are
  * the same DRM formats. The first D8895_NR_RGB entries are the G formats.
  */
 static const struct d8895_fmt d8895_formats[] = {
-	{ DRM_FORMAT_ARGB8888, D8895_IDMA_IMG_FORMAT_BGRA8888, 1, 0 },
-	{ DRM_FORMAT_ABGR8888, D8895_IDMA_IMG_FORMAT_RGBA8888, 1, 0 },
-	{ DRM_FORMAT_RGBA8888, D8895_IDMA_IMG_FORMAT_ABGR8888, 1, 0 },
-	{ DRM_FORMAT_BGRA8888, D8895_IDMA_IMG_FORMAT_ARGB8888, 1, 0 },
-	{ DRM_FORMAT_XRGB8888, D8895_IDMA_IMG_FORMAT_BGRX8888, 0, 0 },
-	{ DRM_FORMAT_XBGR8888, D8895_IDMA_IMG_FORMAT_RGBX8888, 0, 0 },
-	{ DRM_FORMAT_RGBX8888, D8895_IDMA_IMG_FORMAT_XBGR8888, 0, 0 },
-	{ DRM_FORMAT_BGRX8888, D8895_IDMA_IMG_FORMAT_XRGB8888, 0, 0 },
+	{ DRM_FORMAT_ARGB8888, D8895_IDMA_IMG_FORMAT_ARGB8888, 1, 0 },
+	{ DRM_FORMAT_ABGR8888, D8895_IDMA_IMG_FORMAT_ABGR8888, 1, 0 },
+	{ DRM_FORMAT_RGBA8888, D8895_IDMA_IMG_FORMAT_RGBA8888, 1, 0 },
+	{ DRM_FORMAT_BGRA8888, D8895_IDMA_IMG_FORMAT_BGRA8888, 1, 0 },
+	{ DRM_FORMAT_XRGB8888, D8895_IDMA_IMG_FORMAT_XRGB8888, 0, 0 },
+	{ DRM_FORMAT_XBGR8888, D8895_IDMA_IMG_FORMAT_XBGR8888, 0, 0 },
+	{ DRM_FORMAT_RGBX8888, D8895_IDMA_IMG_FORMAT_RGBX8888, 0, 0 },
+	{ DRM_FORMAT_BGRX8888, D8895_IDMA_IMG_FORMAT_BGRX8888, 0, 0 },
 	{ DRM_FORMAT_RGB565, D8895_IDMA_IMG_FORMAT_RGB565, 0, 0 },
 	{ DRM_FORMAT_NV12, D8895_IDMA_IMG_FORMAT_YUV420_2P, 0, 1 },
 	{ DRM_FORMAT_NV21, D8895_IDMA_IMG_FORMAT_YVU420_2P, 0, 1 },
