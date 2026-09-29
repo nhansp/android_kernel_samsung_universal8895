@@ -176,3 +176,10 @@ config EXYNOS_SECURE_LOG
 	select EXYNOS8895_SMC
 	help
 	  Support Exynos Secure Log
+
+config GREATLTE_HB_L6T
+	bool "greatlte heartbeat: L6T (Trustonic TEE)"
+	depends on GREATLTE_HB
+	default GREATLTE_HB
+	help
+	  Registers the L6T heartbeat rows.
