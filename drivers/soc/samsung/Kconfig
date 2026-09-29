@@ -137,3 +137,13 @@ config GREATLTE_HB_L5
 	  item 1). Driver counters are only collected from display drivers
 	  that are built in. Never enable in a release build.
 endif
+
+config SAMSUNG_SEC_CLASS
+	bool "Samsung \"sec\" device class"
+	depends on ARCH_EXYNOS
+	help
+	  The /sys/class/sec class of Samsung stock kernels, whose device nodes
+	  (tsp, led, ...) the LineageOS device HALs use. Provides
+	  sec_device_create_with_groups() (include/linux/sec_sysfs.h). A prompt
+	  rather than select-only, so the greatlte touch fragment can enable it
+	  before the L6F LED and key drivers exist (spec L6F 5.9, 6).
