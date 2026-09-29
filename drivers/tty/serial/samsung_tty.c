@@ -152,6 +152,9 @@ struct s3c24xx_uart_port {
 	const struct s3c2410_uartcfg	*cfg;
 
 	struct s3c24xx_uart_dma		*dma;
+
+	/* L6D 5.6: wake-peer callback (stock uart_ops.wake_peer S:drivers/tty/serial/samsung.c:1253-1259,1322) */
+	void (*wake_peer)(struct uart_port *port);
 };
 
 static void s3c24xx_serial_tx_chars(struct s3c24xx_uart_port *ourport);
@@ -491,6 +494,11 @@ static void s3c24xx_serial_start_tx(struct uart_port *port)
 {
 	struct s3c24xx_uart_port *ourport = to_ourport(port);
 	struct tty_port *tport = &port->state->port;
+	void (*wp)(struct uart_port *) = READ_ONCE(ourport->wake_peer);
+
+	/* L6D 5.6: wake peer before TX (stock __uart_start -> wake_peer) */
+	if (wp)
+		wp(port);
 
 	if (!ourport->tx_enabled) {
 		if (port->flags & UPF_CONS_FLOW)
@@ -2676,6 +2684,22 @@ static struct platform_driver samsung_serial_driver = {
 		.of_match_table	= of_match_ptr(s3c24xx_uart_dt_match),
 	},
 };
+
+/*
+ * L6D 5.6: register wake_peer callback for Samsung UART (BT LPM K-G1).
+ * Replaces stock s3c2410_serial_wake_peer[] table (S:drivers/tty/serial/samsung.c:127-128).
+ */
+int s3c24xx_serial_set_wake_peer(struct device *uart_dev, void (*fn)(struct uart_port *))
+{
+	struct uart_port *port = dev_get_drvdata(uart_dev);	/* samsung_tty stores &ourport->port as drvdata */
+
+	if (!port)
+		return -EPROBE_DEFER;
+
+	WRITE_ONCE(to_ourport(port)->wake_peer, fn);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(s3c24xx_serial_set_wake_peer);
 
 static int __init samsung_serial_init(void)
 {
