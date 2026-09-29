@@ -2,8 +2,6 @@
 # Makefile for the Kinibi core driver
 #
 
-GUD_ROOT_FOLDER := drivers/gud/gud-exynos8895_kinibi400
-
 # add our modules to kernel.
 obj-$(CONFIG_TRUSTONIC_TEE) += mcDrvModule.o
 
@@ -11,7 +9,6 @@ mcDrvModule-y := \
 	admin.o \
 	client.o \
 	clientlib.o \
-	clock.o \
 	fastcall.o \
 	iwp.o \
 	logging.o \
@@ -19,7 +16,6 @@ mcDrvModule-y := \
 	mcp.o \
 	mmu.o \
 	nq.o \
-	pm.o \
 	scheduler.o \
 	session.o \
 	teeclientapi.o \
@@ -31,5 +27,5 @@ ccflags-y += -Wno-declaration-after-statement
 
 ccflags-$(CONFIG_TRUSTONIC_TEE_DEBUG) += -DDEBUG
 
-# MobiCore Driver includes
-ccflags-y += -I$(GUD_ROOT_FOLDER)/MobiCoreDriver
+# MobiCore Driver includes ($(srctree): the O= build, L6T 5.0)
+ccflags-y += -I$(srctree)/drivers/gud/gud-exynos8895_kinibi400/MobiCoreDriver

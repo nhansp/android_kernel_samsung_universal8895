@@ -23,6 +23,10 @@
 #include <linux/device.h>
 #include <linux/version.h>
 #include <linux/dma-buf.h>
+#include <linux/mm.h>
+#include <linux/mmap_lock.h>
+#include <linux/module.h>
+#include <linux/scatterlist.h>
 
 #include "public/mc_user.h"
 
@@ -32,6 +36,9 @@
 #include "main.h"
 #include "mcp.h"	/* mcp_buffer_map */
 #include "mmu.h"
+
+/* dma_buf_* are exported in the DMA_BUF namespace: A:drivers/dma-buf/dma-buf.c:1827 */
+MODULE_IMPORT_NS("DMA_BUF");
 
 /* Common */
 #define MMU_BUFFERABLE		BIT(2)		/* AttrIndx[0] */
@@ -75,80 +82,6 @@
  * this must be exactly one page, we can hold up to 512 entries.
  */
 #define L1_ENTRIES_MAX	512
-
-#if KERNEL_VERSION(4, 6, 0) > LINUX_VERSION_CODE
-static inline long gup_local(struct mm_struct *mm, uintptr_t start,
-			     unsigned long nr_pages, int write,
-			     struct page **pages)
-{
-	return get_user_pages(NULL, mm, start, nr_pages, write, 0, pages, NULL);
-}
-#elif KERNEL_VERSION(4, 9, 0) > LINUX_VERSION_CODE
-static inline long gup_local(struct mm_struct *mm, uintptr_t start,
-			     unsigned long nr_pages, int write,
-			     struct page **pages)
-{
-	unsigned int flags = 0;
-
-	if (write)
-		flags |= FOLL_WRITE;
-
-	/* ExySp */
-	flags |= FOLL_CMA;
-
-	return get_user_pages_remote(NULL, mm, start, nr_pages, write, 0, pages,
-				     NULL);
-}
-#elif KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE
-static inline long gup_local(struct mm_struct *mm, uintptr_t start,
-			     unsigned long nr_pages, int write,
-			     struct page **pages)
-{
-	unsigned int flags = 0;
-
-	if (write)
-		flags |= FOLL_WRITE;
-
-	/* ExySp */
-	flags |= FOLL_CMA;
-
-	return get_user_pages_remote(NULL, mm, start, nr_pages, flags, pages,
-				     NULL);
-}
-#else
-static inline long gup_local(struct mm_struct *mm, uintptr_t start,
-			     unsigned long nr_pages, int write,
-			     struct page **pages)
-{
-	unsigned int flags = 0;
-
-	if (write)
-		flags |= FOLL_WRITE;
-
-	/* ExySp */
-	flags |= FOLL_CMA;
-
-	return get_user_pages_remote(NULL, mm, start, nr_pages, flags, pages,
-				     NULL, NULL);
-}
-#endif
-
-static inline long gup_local_repeat(struct mm_struct *mm, uintptr_t start,
-				    unsigned long nr_pages, int write,
-				    struct page **pages)
-{
-	int retries = 10;
-	long ret = 0;
-
-	while (retries--) {
-		ret = gup_local(mm, start, nr_pages, write, pages);
-
-		if (-EBUSY != ret)
-			break;
-	}
-
-	return ret;
-}
 
 /*
  * Fake L1 MMU table.
@@ -265,8 +198,8 @@ static void mmu_release(struct tee_mmu *mmu)
 
 #ifdef CONFIG_DMA_SHARED_BUFFER
 	if (mmu->dma_buf) {
-		dma_buf_unmap_attachment(mmu->attach, mmu->sgt,
-					 DMA_BIDIRECTIONAL);
+		dma_buf_unmap_attachment_unlocked(mmu->attach, mmu->sgt,
+						  DMA_BIDIRECTIONAL);
 		dma_buf_detach(mmu->dma_buf, mmu->attach);
 		dma_buf_put(mmu->dma_buf);
 	}
@@ -282,36 +215,35 @@ static void mmu_release(struct tee_mmu *mmu)
 		if (mmu->user) {
 			u64 *pte64 = l2_table->ptes_64;
 			u32 *pte32 = l2_table->ptes_32;
-			pte_t pte;
+			phys_addr_t pa;
 			int i;
 
 			for (i = 0; i < L2_ENTRIES_MAX; i++) {
-#if (KERNEL_VERSION(4, 7, 0) > LINUX_VERSION_CODE) || defined(CONFIG_ARM)
-				{
-					if (g_ctx.f_lpae)
-						pte = *pte64++;
-					else
-						pte = *pte32++;
+				/*
+				 * L6T 5.2 mmu.c item 3: the entry is page_to_phys(page) | flags
+				 * (fill below); every LPAE flag is in bits 0-11 or 54, every
+				 * short-descriptor flag in bits 0-10.
+				 */
+				if (g_ctx.f_lpae) {
+					u64 pte = *pte64++;
+
+					/* Unused entries are 0 */
+					if (!pte)
+						break;
+
+					pa = pte & GENMASK_ULL(47, 12);
+				} else {
+					u32 pte = *pte32++;
+
+					/* Unused entries are 0 */
+					if (!pte)
+						break;
+
+					pa = pte & GENMASK(31, 12);
 				}
 
-				/* Unused entries are 0 */
-				if (!pte)
-					break;
-#else
-				{
-					if (g_ctx.f_lpae)
-						pte.pte = *pte64++;
-					else
-						pte.pte = *pte32++;
-				}
-
-				/* Unused entries are 0 */
-				if (!pte.pte)
-					break;
-#endif
-
-				/* pte_page() cannot return NULL */
-				put_page(pte_page(pte));
+				/* pinned by pin_user_pages_remote(): A:include/linux/mm.h:1546 */
+				unpin_user_page(pfn_to_page(PHYS_PFN(pa)));
 				mmu->pages_locked--;
 			}
 		}
@@ -350,11 +282,13 @@ static bool mmu_get_dma_buffer(struct tee_mmu *mmu, int va)
 		return false;
 
 	mmu->dma_buf = buf;
-	mmu->attach = dma_buf_attach(mmu->dma_buf, g_ctx.mcd);
+	/* the platform device: the fake log device has no dma_mask (L6T 5.2 mmu.c item 5) */
+	mmu->attach = dma_buf_attach(mmu->dma_buf, g_ctx.dev);
 	if (IS_ERR(mmu->attach))
 		goto err_attach;
 
-	mmu->sgt = dma_buf_map_attachment(mmu->attach, DMA_BIDIRECTIONAL);
+	mmu->sgt = dma_buf_map_attachment_unlocked(mmu->attach,
+						   DMA_BIDIRECTIONAL);	/* A:include/linux/dma-buf.h:745 */
 	if (IS_ERR(mmu->sgt))
 		goto err_map;
 
@@ -518,29 +452,50 @@ struct tee_mmu *tee_mmu_create(struct mm_struct *mm,
 		/* Get pages */
 		if (mmu->dma_buf) {
 			/* Buffer is ION */
-			struct sg_mapping_iter miter;
+			struct sg_page_iter piter;
 
+			/*
+			 * L6T 5.2 mmu.c item 5: walk the page list (orig_nents) from
+			 * this chunk's first page and stop after pages_nr pages;
+			 * stock restarted at page 0 for every chunk and copied every
+			 * page of the buffer into the one-page pages[] array.
+			 */
+			i = 0;
 			page_ptr = &pages[0];
-			sg_miter_start(&miter, mmu->sgt->sgl,
-				       mmu->sgt->nents,
-				       SG_MITER_FROM_SG);
-			while (sg_miter_next(&miter))
-				*page_ptr++ = miter.page;
-
-			sg_miter_stop(&miter);
+			for_each_sgtable_page(mmu->sgt, &piter,
+					      chunk * L2_ENTRIES_MAX) {
+				if (i++ == pages_nr)
+					break;
+				*page_ptr++ = sg_page_iter_page(&piter);
+			}
 		} else if (mm) {
 			long gup_ret;
-			/* ExySp: for page migration */
-			unsigned int foll_flags =
-				FOLL_TOUCH | FOLL_GET | FOLL_WRITE | FOLL_CMA;
+			/*
+			 * ExySp: for page migration (stock's Samsung CMA flag). L6T 5.2 mmu.c
+			 * item 1: FOLL_LONGTERM is its upstream form; FOLL_TOUCH and
+			 * FOLL_GET are internal/exclusive with pin in 6.18.
+			 */
+			unsigned int foll_flags = FOLL_WRITE | FOLL_LONGTERM;
 
 			/* Buffer was allocated in user space */
-			down_read(&mm->mmap_sem);
-			gup_ret = __get_user_pages(NULL, mm,
-						 (uintptr_t)reader, pages_nr,
-						 foll_flags, pages, 0, 0);
+			mmap_read_lock(mm);
+			gup_ret = pin_user_pages_remote(mm, (uintptr_t)reader,
+							pages_nr, foll_flags,
+							pages, NULL);
+			if (gup_ret == -EFAULT || gup_ret == -EOPNOTSUPP) {
+				/*
+				 * 6.18 refuses a long-term writable pin of a
+				 * dirty-tracked file mapping (A:mm/gup.c:1195-1211)
+				 * and of fsdax: pin short-term as stock did.
+				 */
+				mc_dev_info("longterm pin refused (%ld), short-term pin",
+					    gup_ret);
+				gup_ret = pin_user_pages_remote(mm, (uintptr_t)reader,
+								pages_nr, FOLL_WRITE,
+								pages, NULL);
+			}
 			/* ExySp: end */
-			up_read(&mm->mmap_sem);
+			mmap_read_unlock(mm);
 			if (gup_ret < 0) {
 				ret = gup_ret;
 				mc_dev_err("failed to get user pages @%p: %d",
@@ -552,7 +507,7 @@ struct tee_mmu *tee_mmu_create(struct mm_struct *mm,
 			if (gup_ret != pages_nr) {
 				mc_dev_err("failed to get user pages: %ld",
 					   gup_ret);
-				release_pages(pages, gup_ret, 0);
+				unpin_user_pages(pages, gup_ret);	/* A:include/linux/mm.h:1552 */
 				ret = -EINVAL;
 				goto end;
 			}

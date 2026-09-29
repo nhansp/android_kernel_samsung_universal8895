@@ -28,9 +28,7 @@
 #include <asm/barrier.h>
 #include <linux/irq.h>
 #include <linux/version.h>
-#if KERNEL_VERSION(4, 11, 0) <= LINUX_VERSION_CODE
 #include <linux/sched/clock.h>	/* local_clock */
-#endif
 
 #include "public/mc_user.h"
 #include "public/mc_admin.h"
@@ -220,7 +218,8 @@ end:
 	mutex_unlock(&session->notif_wait_lock);
 	if (ret && ((ret != -ETIME) || !silent_expiry)) {
 #ifdef CONFIG_FREEZER
-		if (ret == -ERESTARTSYS && system_freezing_cnt.counter == 1)
+		/* system_freezing_cnt is gone in 6.18: A:include/linux/freezer.h:34 */
+		if (ret == -ERESTARTSYS && freezing(current))
 			mc_dev_devel("freezing session %x", session->sid);
 		else
 #endif
@@ -273,11 +272,17 @@ static inline int wait_mcp_notification(void)
 			break;
 	}
 
-	/* TEE halted or dead: dump status and SMC log */
-	/* ExySp */
-//	mark_mcp_dead();
-	nq_dump_status();
-	panic("tbase halt");
+	/*
+	 * TEE halted or dead: dump status and SMC log.
+	 * D-6 (L6T 5.2 mcp.c item 2): Samsung panicked here ("ExySp", with
+	 * mark_mcp_dead() commented out); by default keep the phone up the
+	 * Trustonic way, stock's panic only with CONFIG_TRUSTONIC_TEE_PANIC_ON_HALT.
+	 */
+	if (!IS_ENABLED(CONFIG_TRUSTONIC_TEE_PANIC_ON_HALT))
+		mark_mcp_dead();		/* Trustonic default, stock :278 */
+	nq_dump_status();			/* unconditional, as stock :279 */
+	if (IS_ENABLED(CONFIG_TRUSTONIC_TEE_PANIC_ON_HALT))
+		panic("tbase halt");		/* stock :280 */
 
 	return -ETIME;
 }

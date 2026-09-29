@@ -222,14 +222,21 @@ static int tee_scheduler(void *arg)
 int mc_scheduler_start(void)
 {
 	sched_ctx.thread_run = true;
-	sched_ctx.thread = kthread_run(tee_scheduler, NULL, "tee_scheduler");
+	/* was kthread_run(), S:.../scheduler.c:225 */
+	sched_ctx.thread = kthread_create(tee_scheduler, NULL, "tee_scheduler");
 	if (IS_ERR(sched_ctx.thread)) {
 		mc_dev_err("tee_scheduler thread creation failed");
 		return PTR_ERR(sched_ctx.thread);
 	}
 
-	/* ExySp: set affinity to little */
-	set_cpus_allowed_ptr(sched_ctx.thread, &hmp_slow_cpu_mask);
+	/*
+	 * ExySp: set affinity to little (S:.../scheduler.c:231-232, 4.4 HMP slow cpu mask).
+	 * L6T 5.2 scheduler.c item 1: a 6.18 kthread applies its default affinity on
+	 * its first run, so the preference must be set before the first wake-up
+	 * (A:kernel/kthread.c:423-426, 834-837).
+	 */
+	kthread_affine_preferred(sched_ctx.thread, &tee_little_mask);
+	wake_up_process(sched_ctx.thread);
 
 	nq_register_scheduler(mc_dev_command);
 	complete(&sched_ctx.idle_complete);

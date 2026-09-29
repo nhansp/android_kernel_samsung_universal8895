@@ -1,0 +1,42 @@
+#
+# Trustonic drivers configuration
+#
+# L6T 5.3: stock S:drivers/gud/gud-exynos8895_kinibi400/Kconfig:1-44 with TRUSTONIC_TEE
+# bool (built in, no module hygiene), depends on ARM64 && ARCH_EXYNOS, SHA1 selected
+# (session.c client login hash); TUI and sec-os-ctrl not ported. "---help---" -> "help"
+# (6.18 Kconfig syntax).
+#
+config TRUSTONIC_TEE
+    bool "Trustonic TEE Driver"
+    depends on ARM64 && ARCH_EXYNOS
+    select CRYPTO_SHA1
+    select CRYPTO_HASH
+    default y
+    help
+      Enable Trustonic TEE support
+
+config TRUSTONIC_TEE_LPAE
+    bool "Trustonic TEE uses LPAE"
+    depends on TRUSTONIC_TEE
+    default y if ARM64
+    default n if ARM
+    help
+      Enable Trustonic TEE 64-bit physical addresses support
+
+config TRUSTONIC_TEE_DEBUG
+    bool "Trustonic TEE driver debug mode"
+    depends on TRUSTONIC_TEE
+    default n
+    help
+      Enable the debug mode in the Trustonic TEE Driver.
+
+config TRUSTONIC_TEE_PANIC_ON_HALT
+	bool "Panic when the Trustonic TEE stops answering"
+	depends on TRUSTONIC_TEE
+	default n
+	help
+	  Panic ("tbase halt") after the final MCP timeout, as the stock
+	  Samsung driver did. When unset (default, L6T D-6) the driver marks
+	  MCP dead, dumps the TEE status and keeps the system running.
+
+source "drivers/gud/gud-exynos8895_kinibi400/sec-os-booster/Kconfig"

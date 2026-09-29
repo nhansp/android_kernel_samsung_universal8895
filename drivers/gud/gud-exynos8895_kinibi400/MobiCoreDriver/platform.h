@@ -19,93 +19,37 @@
  *
  * Header file the MobiCore Driver Kernel Module,
  * its internal structures and defines.
+ *
+ * greatlte (Exynos 8895) only (L6T 5.1): the stock CONFIG_SOC_EXYNOS* chains
+ * never match on 6.18; each value keeps its stock line as S:.../platform.h:N.
+ * Dropped: MC_INTR_SSIQ (the S-SIQ comes from DT only, L6T 0 "IRQ"), IRQ_SPI and
+ * MC_INTR_LOCAL_TIMER (MCT-disable only, not set), MC_PM_RUNTIME, MC_NO_UIDGIT_H
+ * (other SoCs); CONFIG_TRUSTONIC_TEE_LPAE comes from Kconfig.
  */
 #ifndef _MC_DRV_PLATFORM_H_
 #define _MC_DRV_PLATFORM_H_
 
-#define IRQ_SPI(x)      (x + 32)
+#define TBASE_CORE_SWITCHER			/* S:.../platform.h:49 */
 
-/* MobiCore Interrupt. */
-#if defined(CONFIG_SOC_EXYNOS3250) || defined(CONFIG_SOC_EXYNOS3472)
-#define MC_INTR_SSIQ	254
-#elif defined(CONFIG_SOC_EXYNOS3475) || defined(CONFIG_SOC_EXYNOS5430) || \
-	defined(CONFIG_SOC_EXYNOS5433) || defined(CONFIG_SOC_EXYNOS7870) || defined(CONFIG_SOC_EXYNOS8890) || defined(CONFIG_SOC_EXYNOS7880) || defined(CONFIG_SOC_EXYNOS8895)
-#define MC_INTR_SSIQ	255
-#elif defined(CONFIG_SOC_EXYNOS7885)
-#define MC_INTR_SSIQ	97
-#elif defined(CONFIG_SOC_EXYNOS7420) || defined(CONFIG_SOC_EXYNOS7580)
-#define MC_INTR_SSIQ	246
-#endif
+#define COUNT_OF_CPUS 8				/* S:.../platform.h:56 */
 
-/* Enable Runtime Power Management */
-#if defined(CONFIG_SOC_EXYNOS3472)
-#ifdef CONFIG_PM_RUNTIME
-#define MC_PM_RUNTIME
-#endif
-#endif /* CONFIG_SOC_EXYNOS3472 */
-
-#if !defined(CONFIG_SOC_EXYNOS3472)
-
-#define TBASE_CORE_SWITCHER
-
-#if defined(CONFIG_SOC_EXYNOS3250)
-#define COUNT_OF_CPUS 2
-#elif defined(CONFIG_SOC_EXYNOS3475)
-#define COUNT_OF_CPUS 4
-#else
-#define COUNT_OF_CPUS 8
-#endif
-
-/* Values of MPIDR regs */
-#if defined(CONFIG_SOC_EXYNOS3250) || defined(CONFIG_SOC_EXYNOS3475)
-#define CPU_IDS {0x0000, 0x0001, 0x0002, 0x0003}
-#elif defined(CONFIG_SOC_EXYNOS7580) || defined(CONFIG_SOC_EXYNOS7870) || defined(CONFIG_SOC_EXYNOS7880)
-#define CPU_IDS {0x0000, 0x0001, 0x0002, 0x0003, 0x0100, 0x0101, 0x0102, 0x0103}
-#elif defined(CONFIG_SOC_EXYNOS9810)
-/* On Cortex A55, bit 24 is used to differentiate
- * between different MPIDR format. So the whole MPIDR
- * must be transmited
- */
-#define CPU_IDS {0x81000000, 0x81000100, 0x81000200, 0x81000300, 0x80000100,\
-		0x80000101, 0x80000102, 0x80000103}
-#elif defined(CONFIG_SOC_EXYNOS7885)
-#define CPU_IDS {0x0100, 0x0101, 0x0102, 0x0103, 0x0200, 0x0201, 0x0000, 0x0001}
-#else
-#define CPU_IDS {0x0100, 0x0101, 0x0102, 0x0103, 0x0000, 0x0001, 0x0002, 0x0003}
-#endif
-
-#endif /* !CONFIG_SOC_EXYNOS3472 */
-
-/* uidgid.h does not exist in kernels before 3.5 */
-#if defined(CONFIG_SOC_EXYNOS3250) || defined(CONFIG_SOC_EXYNOS3472) || \
-	defined(CONFIG_SOC_EXYNOS3475)
-#define MC_NO_UIDGIT_H
-#endif /* CONFIG_SOC_EXYNOS3250|CONFIG_SOC_EXYNOS3472|CONFIG_SOC_EXYNOS3475 */
-
-/* SWd LPAE */
-#if defined(CONFIG_SOC_EXYNOS5433) || defined(CONFIG_SOC_EXYNOS7420) || \
-	defined(CONFIG_SOC_EXYNOS7580) || defined(CONFIG_SOC_EXYNOS7870) || defined(CONFIG_SOC_EXYNOS8890) || defined(CONFIG_SOC_EXYNOS7880) || defined(CONFIG_SOC_EXYNOS8895)
-#ifndef CONFIG_TRUSTONIC_TEE_LPAE
-#define CONFIG_TRUSTONIC_TEE_LPAE
-#endif
-#endif /* CONFIG_SOC_EXYNOS5433 */
+/* Values of MPIDR regs (L0 numbering: cpu0-3 A53 0x100-0x103, cpu4-7 M2 0x0-0x3) */
+#define CPU_IDS {0x0100, 0x0101, 0x0102, 0x0103, 0x0000, 0x0001, 0x0002, 0x0003}	/* S:.../platform.h:74 */
 
 /* Enable Fastcall worker thread */
-#define MC_FASTCALL_WORKER_THREAD
+#define MC_FASTCALL_WORKER_THREAD		/* S:.../platform.h:94 */
 
 /* Set Parameters for Secure OS Boosting */
-#define DEFAULT_LITTLE_CORE		0
-#define NONBOOT_LITTLE_CORE		1
-#define DEFAULT_BIG_CORE		4
-#define MIGRATE_TARGET_CORE     DEFAULT_BIG_CORE
+#define DEFAULT_LITTLE_CORE		0	/* S:.../platform.h:97 */
+#define NONBOOT_LITTLE_CORE		1	/* S:.../platform.h:98 */
+#define DEFAULT_BIG_CORE		4	/* S:.../platform.h:99 */
+#define MIGRATE_TARGET_CORE     DEFAULT_BIG_CORE	/* S:.../platform.h:100 */
 
-#define MC_INTR_LOCAL_TIMER            (IRQ_SPI(459) + DEFAULT_BIG_CORE)
+#define LOCAL_TIMER_PERIOD             50	/* S:.../platform.h:104; sec_os_booster.c mc_timer_work_func() */
 
-#define LOCAL_TIMER_PERIOD             50
+#define DEFAULT_SECOS_BOOST_TIME       5000	/* S:.../platform.h:106 */
+#define MAX_SECOS_BOOST_TIME           600000  /* 600 sec, S:.../platform.h:107 */
 
-#define DEFAULT_SECOS_BOOST_TIME       5000
-#define MAX_SECOS_BOOST_TIME           600000  /* 600 sec */
-
-#define DUMP_TBASE_HALT_STATUS
+#define DUMP_TBASE_HALT_STATUS			/* S:.../platform.h:109 */
 
 #endif /* _MC_DRV_PLATFORM_H_ */

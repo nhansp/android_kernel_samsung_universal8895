@@ -19,6 +19,11 @@
 #include <linux/delay.h>
 #include <linux/reboot.h>
 #include <linux/suspend.h>
+#include <linux/cpumask.h>
+#include <linux/mod_devicetable.h>	/* struct of_device_id */
+#include <linux/dma-mapping.h>
+#include <asm/cputype.h>	/* MPIDR_HWID_BITMASK, MPIDR_AFFINITY_LEVEL */
+#include <asm/smp.h>		/* cpu_logical_map() */
 
 #include "public/mc_user.h"
 #include "public/mc_admin.h"	/* MC_ADMIN_DEVNODE */
@@ -54,6 +59,13 @@ static struct device device = {
 struct mc_device_ctx g_ctx = {
 	.mcd = &device
 };
+
+/*
+ * Little cluster (MPIDR Aff1 == 1), the 6.18 replacement of 4.4 HMP's
+ * slow cpu mask (S:arch/arm64/kernel/topology.c:428-433, little-id <0x01>
+ * FDT:4264) for the tee_scheduler affinity (L6T 5.2 main.c item 4, scheduler.c item 1)
+ */
+struct cpumask tee_little_mask;
 
 static struct {
 	/* TEE start return code */
@@ -401,35 +413,35 @@ static int mobicore_start(void)
 		goto err_version;
 	}
 
-	/* Determine which features are supported */
+	/* Determine which features are supported (stock "Fall through" comments -> fallthrough;) */
 	switch (version_info.version_mci) {
 	case MC_VERSION(1, 6):	/* 400 */
 		g_ctx.f_monotonic_time = true;
-		/* Fall through */
+		fallthrough;
 	case MC_VERSION(1, 5):	/* 400 */
 		g_ctx.f_iwp = true;
-		/* Fall through */
+		fallthrough;
 	case MC_VERSION(1, 4):	/* 310 */
 #ifdef CONFIG_TRUSTONIC_TEE_LPAE
 		dynamic_lpae = true;
 #endif
-		/* Fall through */
+		fallthrough;
 	case MC_VERSION(1, 3):
 		g_ctx.f_time = true;
-		/* Fall through */
+		fallthrough;
 	case MC_VERSION(1, 2):
 		g_ctx.f_client_login = true;
-		/* Fall through */
+		fallthrough;
 	case MC_VERSION(1, 1):
 		g_ctx.f_multimap = true;
-		/* Fall through */
+		fallthrough;
 	case MC_VERSION(1, 0):	/* 302 */
 		g_ctx.f_mem_ext = true;
 		g_ctx.f_ta_auth = true;
-		/* Fall through */
+		fallthrough;
 	case MC_VERSION(0, 7):
 		g_ctx.f_timeout = true;
-		/* Fall through */
+		fallthrough;
 	case MC_VERSION(0, 6):	/* 301 */
 		break;
 	}
@@ -561,7 +573,7 @@ static inline int device_admin_init(void)
 		return ret;
 	}
 
-	main_ctx.class = class_create(THIS_MODULE, "trustonic_tee");
+	main_ctx.class = class_create("trustonic_tee");	/* A:include/linux/device/class.h:232 */
 	if (IS_ERR(main_ctx.class)) {
 		mc_dev_err("class_create failed");
 		ret = PTR_ERR(main_ctx.class);
@@ -623,10 +635,23 @@ static inline void device_admin_exit(void)
  */
 static int mobicore_probe(struct platform_device *pdev)
 {
+	/* MPIDR of each logical cpu as the SWd numbers them (S:.../platform.h:74) */
+	static const u32 cpu_ids[] = CPU_IDS;
+	unsigned int cpu;
 	int err = 0;
 
-	if (pdev)
+	if (pdev) {
 		g_ctx.mcd->of_node = pdev->dev.of_node;
+		/*
+		 * L6T 5.2 main.c item 2: the platform device carries the DMA mask
+		 * (dma-buf attach, mmu.c); the SWd reads the pages through its own
+		 * tables, no bus master sits behind this device.
+		 */
+		g_ctx.dev = &pdev->dev;
+		err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
+		if (err)
+			return err;
+	}
 
 #ifdef MOBICORE_COMPONENT_BUILD_TAG
 	mc_dev_info("MobiCore %s", MOBICORE_COMPONENT_BUILD_TAG);
@@ -642,6 +667,24 @@ static int mobicore_probe(struct platform_device *pdev)
 		mc_dev_err("Running in secure MODE!");
 		return -ENODEV;
 	}
+
+	/*
+	 * L6T 5.2 main.c item 3: MC_FC_SWAP_CPU passes CPU_IDS[cpu] to the SWd,
+	 * so the table must be Linux's logical numbering (L0).
+	 */
+	for (cpu = 0; cpu < ARRAY_SIZE(cpu_ids); cpu++) {
+		if ((cpu_logical_map(cpu) & MPIDR_HWID_BITMASK) != cpu_ids[cpu]) {
+			mc_dev_err("CPU_IDS mismatch cpu%u mpidr 0x%llx", cpu,
+				   cpu_logical_map(cpu));
+			return -ENODEV;
+		}
+	}
+
+	/* L6T 5.2 main.c item 4: little cluster = MPIDR Aff1 1 */
+	cpumask_clear(&tee_little_mask);
+	for_each_possible_cpu(cpu)
+		if (MPIDR_AFFINITY_LEVEL(cpu_logical_map(cpu), 1) == 1)
+			cpumask_set_cpu(cpu, &tee_little_mask);
 
 	/* Make sure we can create debugfs entries */
 	g_ctx.debug_dir = debugfs_create_dir("trustonic_tee", NULL);
@@ -756,6 +799,11 @@ static struct platform_driver mc_plat_driver = {
 		.name = "mcd",
 		.owner = THIS_MODULE,
 		.of_match_table = of_match_table,
+		/*
+		 * No unbind: there is no remove (stock neither) and the SWd keeps
+		 * the NQ/MCP/log buffers it was given at MC_FC_INIT for ever.
+		 */
+		.suppress_bind_attrs = true,
 	}
 };
 

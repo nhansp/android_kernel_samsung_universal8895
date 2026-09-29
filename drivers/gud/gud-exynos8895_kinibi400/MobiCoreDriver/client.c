@@ -18,10 +18,8 @@
 #include <linux/err.h>
 #include <linux/sched.h>	/* struct task_struct */
 #include <linux/version.h>
-#if KERNEL_VERSION(4, 11, 0) <= LINUX_VERSION_CODE
 #include <linux/sched/mm.h>	/* get_task_mm */
 #include <linux/sched/task.h>	/* put_task_struct */
-#endif
 #include <net/sock.h>		/* sockfd_lookup */
 #include <linux/file.h>		/* fput */
 
@@ -170,7 +168,7 @@ static int cbuf_map(struct vm_area_struct *vmarea, uintptr_t addr, u32 len,
 		return -EINVAL;
 	}
 
-	vmarea->vm_flags |= VM_IO;
+	vm_flags_set(vmarea, VM_IO);	/* A:include/linux/mm.h:820 */
 	ret = remap_pfn_range(vmarea, vmarea->vm_start,
 			      page_to_pfn(virt_to_page(addr)),
 			      vmarea->vm_end - vmarea->vm_start,
@@ -210,15 +208,23 @@ static struct mm_struct *get_mm_from_client_fd(int client_fd)
 	if (!sock)
 		return NULL;
 
-	if (sock->sk && sock->sk->sk_peer_pid) {
+	if (sock->sk) {
 		struct task_struct *task;
+		struct pid *peer_pid;
 
-		rcu_read_lock();
-		task = pid_task(sock->sk->sk_peer_pid, PIDTYPE_PID);
-		if (task)
-			mm = get_task_mm(task);
+		/* A:include/net/sock.h:298 "sk_peer_lock: lock protecting sk_peer_pid" */
+		spin_lock(&sock->sk->sk_peer_lock);
+		peer_pid = get_pid(sock->sk->sk_peer_pid);
+		spin_unlock(&sock->sk->sk_peer_lock);
+		if (peer_pid) {
+			rcu_read_lock();
+			task = pid_task(peer_pid, PIDTYPE_PID);
+			if (task)
+				mm = get_task_mm(task);
 
-		rcu_read_unlock();
+			rcu_read_unlock();
+			put_pid(peer_pid);
+		}
 	}
 
 	sockfd_put(sock);
@@ -1210,7 +1216,7 @@ int client_cbuf_create(struct tee_client *client, u32 len, uintptr_t *addr,
 		return -EINVAL;
 
 	order = get_order(len);
-	if (order > MAX_ORDER) {
+	if (order > MAX_PAGE_ORDER) {	/* A:include/linux/mmzone.h:31, inclusive bound */
 		mc_dev_err("Buffer size too large");
 		return -ENOMEM;
 	}

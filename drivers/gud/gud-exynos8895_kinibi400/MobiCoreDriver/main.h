@@ -46,6 +46,8 @@
 /* MobiCore Driver Kernel Module context data. */
 struct mc_device_ctx {
 	struct device		*mcd;
+	/* the platform device, for DMA (dma-buf attach): L6T 5.2 main.c item 2 */
+	struct device		*dev;
 	/* debugfs root */
 	struct dentry		*debug_dir;
 
@@ -82,6 +84,9 @@ struct mc_device_ctx {
 
 extern struct mc_device_ctx g_ctx;
 
+/* tee_scheduler affinity, built at probe (L6T 5.2 main.c item 4) */
+extern struct cpumask tee_little_mask;
+
 /* Debug stuff */
 struct kasnprintf_buf {
 	struct mutex mutex;	/* Protect buf/size/off access */
@@ -101,12 +106,5 @@ ssize_t debug_generic_read(struct file *file, char __user *user_buf,
 			   int (*function)(struct kasnprintf_buf *buf));
 int debug_generic_open(struct inode *inode, struct file *file);
 int debug_generic_release(struct inode *inode, struct file *file);
-
-#if KERNEL_VERSION(4, 11, 0) > LINUX_VERSION_CODE
-static inline unsigned int kref_read(struct kref *kref)
-{
-	return atomic_read(&kref->refcount);
-}
-#endif
 
 #endif /* _MC_MAIN_H_ */
