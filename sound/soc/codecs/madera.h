@@ -334,6 +334,7 @@ extern const unsigned int madera_rate_val[MADERA_RATE_ENUM_SIZE];
 extern const char * const madera_sample_rate_text[MADERA_SAMPLE_RATE_ENUM_SIZE];
 extern const unsigned int madera_sample_rate_val[MADERA_SAMPLE_RATE_ENUM_SIZE];
 extern const struct soc_enum madera_sample_rate[];
+extern const struct soc_enum madera_output_ext_rate;
 extern const struct soc_enum madera_isrc_fsl[];
 extern const struct soc_enum madera_isrc_fsh[];
 extern const struct soc_enum madera_asrc1_rate[];

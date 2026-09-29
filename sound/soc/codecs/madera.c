@@ -1669,6 +1669,16 @@ const unsigned int madera_rate_val[MADERA_RATE_ENUM_SIZE] = {
 };
 EXPORT_SYMBOL_GPL(madera_rate_val);
 
+/* OUTPUT_RATE_1 [15:11], stock S:sound/soc/codecs/madera.c:1891-1898 (L6E 5.2(b)) */
+const struct soc_enum madera_output_ext_rate =
+	SOC_VALUE_ENUM_SINGLE(MADERA_OUTPUT_RATE_1,
+			      MADERA_OUT_RATE_SHIFT,
+			      MADERA_OUT_RATE_MASK >> MADERA_OUT_RATE_SHIFT,
+			      MADERA_RATE_ENUM_SIZE,
+			      madera_rate_text,
+			      madera_rate_val);
+EXPORT_SYMBOL_GPL(madera_output_ext_rate);
+
 static const char * const madera_dfc_width_text[MADERA_DFC_WIDTH_ENUM_SIZE] = {
 	"8 bit", "16 bit", "20 bit", "24 bit", "32 bit",
 };
