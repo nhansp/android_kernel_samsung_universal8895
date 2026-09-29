@@ -15,6 +15,7 @@
 
 #include <linux/atomic.h>
 #include <linux/dma-buf.h>
+#include <linux/ion_legacy.h>
 #include <linux/kref.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
@@ -116,6 +117,5 @@ void ionl_buffer_put(struct ionl_buffer *buf);
 struct dma_buf *ionl_buffer_export(struct ionl_buffer *buf);
 int ionl_sync_fd(int fd);
 int ionl_sync_partial_fd(int fd, off_t offset, size_t len);
-bool ionl_dmabuf_is_autosync(struct dma_buf *dmabuf);
 
 #endif /* _ION_LEGACY_H */
