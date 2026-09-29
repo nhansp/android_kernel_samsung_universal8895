@@ -16,6 +16,11 @@
 #define L6F_ADC_PATH	"/soc@0/adc@15b70000"
 #define L6F_PMIC_PATH	"/soc@0/usi@10960000/i2c@10000/pmic@66"
 
+/* slice hlp (L6F 1.2) */
+#define L6F_HAPTIC_PATH	L6F_PMIC_PATH "/haptic"
+#define L6F_PWM_PATH	"/soc@0/pwm@104c0000"
+#define L6F_LEDS_PATH	L6F_PMIC_PATH "/leds"
+
 static const struct greatlte_hb_item l6f_rows[] = {
 	{ .layer = 6, .tag = "ts",  .kind = GREATLTE_HB_DEV, .path = L6F_TS_PATH },
 	{ .layer = 6, .tag = "tsi", .kind = GREATLTE_HB_IRQ, .path = L6F_TS_PATH, .idx = 0 },
@@ -50,6 +55,10 @@ static const struct greatlte_hb_item l6f_rows[] = {
 	  .idx = POWER_SUPPLY_PROP_ONLINE },
 	{ .layer = 6, .tag = "chgs", .kind = GREATLTE_HB_PSY, .path = "max77865-charger",
 	  .idx = POWER_SUPPLY_PROP_STATUS },
+	/* slice hlp: greatlte haptics, PWM and RGB LED (L6F 1.2) */
+	{ .layer = 6, .tag = "vib", .kind = GREATLTE_HB_DEV, .path = L6F_HAPTIC_PATH },
+	{ .layer = 6, .tag = "pwm", .kind = GREATLTE_HB_DEV, .path = L6F_PWM_PATH },
+	{ .layer = 6, .tag = "led", .kind = GREATLTE_HB_DEV, .path = L6F_LEDS_PATH },
 };
 
 static int __init l6f_hb_init(void)
