@@ -183,3 +183,12 @@ config GREATLTE_HB_L6T
 	default GREATLTE_HB
 	help
 	  Registers the L6T heartbeat rows.
+
+# L6A slice ion
+config GREATLTE_HB_L6A_ION
+	bool "greatlte heartbeat: L6A legacy ION (debug only)"
+	depends on GREATLTE_HB && ION_LEGACY_EXYNOS
+	default GREATLTE_HB
+	help
+	  Registers the L6A heartbeat rows "ion" (legacy ION probe result)
+	  and "ionb" (live ION buffers). Never enable in a release build.
