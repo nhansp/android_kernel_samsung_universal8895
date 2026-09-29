@@ -1653,8 +1653,20 @@
 				 <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_PCIE_SUB_CTRL_INST_0_I_DRIVER_APB_CLK>,
 				 <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_PIPE2_DIGITAL_X2_WRAP_INST_0_I_APB_PCLK_SCL>,
 				 <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_IEEE1500_WRAPPER_FOR_PCIE_PHY_LC_X2_INST_0_I_SCL_APB_PCLK>,
-				 <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_PHY_REF_CLK_IN>;
-			clock-names = "dbi", "mstr", "slv", "apb", "pipe_apb", "phy_apb", "ref";
+				 <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_PHY_REF_CLK_IN>,
+				 <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_DBI_ACLK_1>,
+				 <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_MSTR_ACLK_1>,
+				 <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_SLV_ACLK_1>,
+				 <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_PCIE_SUB_CTRL_INST_1_I_DRIVER_APB_CLK>,
+				 <&cmu_fsys1 CLK_GOUT_FSYS1_TOE_WIFI0_I_CLK>,
+				 <&cmu_fsys1 CLK_GOUT_FSYS1_TOE_WIFI1_I_CLK>;
+			clock-names = "dbi", "mstr", "slv", "apb", "pipe_apb", "phy_apb", "ref",
+				      "dbi1", "mstr1", "slv1", "apb1", "toe0", "toe1";
+			/* The six after "ref" (hardware test, image 0063/0064): stock booted with clk_ignore_unused
+			 * (FDT:11147 bootargs), so no FSYS1 PCIe/TOE gate was ever turned off. Unclaimed, ACK's
+			 * clk_disable_unused stops them after this probe and the next ELBI read (exynos_pcie_poweron,
+			 * PCIE_STATE_HISTORY_CHECK) takes a synchronous external abort. Channel 1 shares the PHY and
+			 * sub-controller with channel 0 (FDT:8220/8256); held here, they keep the stock state. */
 			/* stock claims none (FDT:8239-8240, HWACG Q-channel gates S:drivers/clk/samsung/clk-exynos8895.c:236-245);
 			 * ACK gates are manual, class IP (L1_platform.md:484) -> held here; ids/offsets RL-5 */
 			samsung,pmu-syscon = <&pmu_system_controller>;	/* FDT:8223 samsung,syscon-phandle = <0x1f> (PMU); 0x610, 0x71C */
