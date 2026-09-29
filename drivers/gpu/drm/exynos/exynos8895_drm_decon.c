@@ -717,6 +717,19 @@ static void d8895_dpp_set_csc(struct decon8895_ctx *ctx, unsigned int ch,
 	io_mask(dpp + D8895_DPP_CSC_COEF4, D8895_DPP_CSC_COEF_L(c[2][2]), D8895_DPP_CSC_COEF_L_MASK);
 }
 
+/* the input of one DPP channel: from a plane state, or the panic buffer */
+struct d8895_dpp_cfg {
+	const struct d8895_fmt *fmt;
+	dma_addr_t y, c;	/* base addresses; C = Y for AFBC, 0 for one-plane RGB */
+	u32 sx, sy, sw, sh;	/* source rectangle in the buffer */
+	u32 fw, fh;		/* buffer size in pixels (pitch / cpp, height) */
+	u32 dw, dh;		/* window size */
+	u32 flip;		/* D8895_DPP_FLIP_X | D8895_DPP_FLIP_Y */
+	bool afbc;
+	enum drm_color_encoding enc;
+	enum drm_color_range range;
+};
+
 /*
  * dpp_reg_configure_params() (S:.../dpu/dpp_reg.c:1565-1577), in its order:
  * CSC (VG/VGF, :937-966), scale ratio and coefficients (every channel,
@@ -725,54 +738,76 @@ static void d8895_dpp_set_csc(struct decon8895_ctx *ctx, unsigned int ch,
  * (:1379-1384; the composer's block area is a bandwidth hint only), format,
  * alpha select, RGB/YUV, AFBC, HW recovery off (:1266-1344).
  */
-static void d8895_dpp_configure(struct decon8895_ctx *ctx, unsigned int ch,
-				struct drm_plane_state *st)
+static void d8895_dpp_program(struct decon8895_ctx *ctx, unsigned int ch,
+			      const struct d8895_dpp_cfg *cfg)
 {
 	void __iomem *dma = d_dma(ctx, ch), *dpp = d_dpp(ctx, ch);
-	struct d8895_plane_state *ps = to_d8895_pstate(st);
-	struct drm_framebuffer *fb = st->fb;
-	const struct d8895_fmt *f = d8895_find_fmt(fb->format->format);
-	u32 sx = st->src.x1 >> 16, sy = st->src.y1 >> 16;
-	u32 sw = drm_rect_width(&st->src) >> 16, sh = drm_rect_height(&st->src) >> 16;
-	u32 dw = drm_rect_width(&st->dst), dh = drm_rect_height(&st->dst);
-	u32 cpp = fb->format->cpp[0], flip = 0;
-	dma_addr_t y = exynos_drm_fb_dma_addr(fb, 0), c = 0;
+	const struct d8895_fmt *f = cfg->fmt;
 
 	if (d8895_ch[ch].yuv)
-		d8895_dpp_set_csc(ctx, ch, st->color_encoding, st->color_range);
+		d8895_dpp_set_csc(ctx, ch, cfg->enc, cfg->range);
 
 	/* ratio = (src << 20) / dst (S:.../dpu/dpp_drv.c:335-336) */
-	d8895_dpp_set_scale(ctx, ch, (u32)(((u64)sw << 20) / dw), (u32)(((u64)sh << 20) / dh));
+	d8895_dpp_set_scale(ctx, ch, (u32)(((u64)cfg->sw << 20) / cfg->dw),
+			    (u32)(((u64)cfg->sh << 20) / cfg->dh));
 
-	writel(D8895_IDMA_SRC_OFFSET_Y(sy) | D8895_IDMA_SRC_OFFSET_X(sx),
+	writel(D8895_IDMA_SRC_OFFSET_Y(cfg->sy) | D8895_IDMA_SRC_OFFSET_X(cfg->sx),
 	       dma + D8895_IDMA_SRC_OFFSET);
-	writel(D8895_IDMA_SRC_HEIGHT(fb->height) | D8895_IDMA_SRC_WIDTH(fb->pitches[0] / cpp),
+	writel(D8895_IDMA_SRC_HEIGHT(cfg->fh) | D8895_IDMA_SRC_WIDTH(cfg->fw),
 	       dma + D8895_IDMA_SRC_SIZE);
-	writel(D8895_IDMA_IMG_HEIGHT(sh) | D8895_IDMA_IMG_WIDTH(sw), dma + D8895_IDMA_IMG_SIZE);
-	writel(D8895_DPP_IMG_HEIGHT(sh) | D8895_DPP_IMG_WIDTH(sw), dpp + D8895_DPP_IMG_SIZE);
+	writel(D8895_IDMA_IMG_HEIGHT(cfg->sh) | D8895_IDMA_IMG_WIDTH(cfg->sw),
+	       dma + D8895_IDMA_IMG_SIZE);
+	writel(D8895_DPP_IMG_HEIGHT(cfg->sh) | D8895_DPP_IMG_WIDTH(cfg->sw),
+	       dpp + D8895_DPP_IMG_SIZE);
 	if (d8895_ch[ch].scale)
-		writel(D8895_DPP_SCALED_IMG_HEIGHT(dh) | D8895_DPP_SCALED_IMG_WIDTH(dw),
+		writel(D8895_DPP_SCALED_IMG_HEIGHT(cfg->dh) | D8895_DPP_SCALED_IMG_WIDTH(cfg->dw),
 		       dpp + D8895_DPP_SCALED_IMG_SIZE);
 
-	if (st->rotation & DRM_MODE_REFLECT_X)
-		flip |= D8895_DPP_FLIP_X;
-	if (st->rotation & DRM_MODE_REFLECT_Y)
-		flip |= D8895_DPP_FLIP_Y;
-	io_mask(dma + D8895_IDMA_IN_CON, D8895_IDMA_IN_FLIP(flip), D8895_IDMA_IN_FLIP_MASK);
+	io_mask(dma + D8895_IDMA_IN_CON, D8895_IDMA_IN_FLIP(cfg->flip), D8895_IDMA_IN_FLIP_MASK);
 
-	if (ps->afbc)
-		c = y;
-	else if (f->yuv)
-		c = exynos_drm_fb_dma_addr(fb, 1);
-	writel(lower_32_bits(y), dma + D8895_IDMA_IN_BASE_ADDR_Y);
-	writel(lower_32_bits(c), dma + D8895_IDMA_IN_BASE_ADDR_C);
+	writel(lower_32_bits(cfg->y), dma + D8895_IDMA_IN_BASE_ADDR_Y);
+	writel(lower_32_bits(cfg->c), dma + D8895_IDMA_IN_BASE_ADDR_C);
 	io_mask(dma + D8895_IDMA_IN_CON, 0, D8895_IDMA_BLOCK_EN);
 
 	io_mask(dma + D8895_IDMA_IN_CON, D8895_IDMA_IMG_FORMAT(f->idma), D8895_IDMA_IMG_FORMAT_MASK);
 	io_mask(dpp + D8895_DPP_IN_CON, D8895_DPP_ALPHA_SEL(f->alpha), D8895_DPP_ALPHA_SEL_MASK);
 	io_mask(dpp + D8895_DPP_IN_CON, D8895_DPP_IMG_FORMAT(f->yuv), D8895_DPP_IMG_FORMAT_MASK);
-	io_mask(dma + D8895_IDMA_IN_CON, ps->afbc ? D8895_IDMA_AFBC_EN : 0, D8895_IDMA_AFBC_EN);
+	io_mask(dma + D8895_IDMA_IN_CON, cfg->afbc ? D8895_IDMA_AFBC_EN : 0, D8895_IDMA_AFBC_EN);
 	io_mask(dma + D8895_IDMA_RECOVERY_CTRL, 0, D8895_IDMA_RECOVERY_EN);
+}
+
+/* d8895_dpp_program() with the input of a checked plane state */
+static void d8895_dpp_configure(struct decon8895_ctx *ctx, unsigned int ch,
+				struct drm_plane_state *st)
+{
+	struct d8895_plane_state *ps = to_d8895_pstate(st);
+	struct drm_framebuffer *fb = st->fb;
+	struct d8895_dpp_cfg cfg = {
+		.fmt	= d8895_find_fmt(fb->format->format),
+		.y	= exynos_drm_fb_dma_addr(fb, 0),
+		.sx	= st->src.x1 >> 16,
+		.sy	= st->src.y1 >> 16,
+		.sw	= drm_rect_width(&st->src) >> 16,
+		.sh	= drm_rect_height(&st->src) >> 16,
+		.fw	= fb->pitches[0] / fb->format->cpp[0],
+		.fh	= fb->height,
+		.dw	= drm_rect_width(&st->dst),
+		.dh	= drm_rect_height(&st->dst),
+		.afbc	= ps->afbc,
+		.enc	= st->color_encoding,
+		.range	= st->color_range,
+	};
+
+	if (st->rotation & DRM_MODE_REFLECT_X)
+		cfg.flip |= D8895_DPP_FLIP_X;
+	if (st->rotation & DRM_MODE_REFLECT_Y)
+		cfg.flip |= D8895_DPP_FLIP_Y;
+	if (cfg.afbc)
+		cfg.c = cfg.y;
+	else if (cfg.fmt->yuv)
+		cfg.c = exynos_drm_fb_dma_addr(fb, 1);
+
+	d8895_dpp_program(ctx, ch, &cfg);
 }
 
 /* ---- DSC encoders (S:.../dpu/decon_reg.c:1391-1662, 1879-1900) ---------- */
