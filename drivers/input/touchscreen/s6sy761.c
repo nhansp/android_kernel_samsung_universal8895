@@ -12,8 +12,15 @@
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
+#include <linux/of.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
+#include <linux/sec_sysfs.h>
+#include <linux/sysfs.h>
+#include <linux/workqueue.h>
+#include <drm/drm_panel.h>
 
 /* commands */
 #define S6SY761_SENSE_ON		0x10
@@ -93,12 +100,47 @@
 
 #define S6SY761_DEV_NAME	"s6sy761"
 
+/*
+ * S6SY661 (Galaxy Note 8, stock driver sec_ts_y661): the S6SY761 protocol (event record
+ * S:drivers/input/touchscreen/sec_ts_y661/sec_ts.h:613-627, commands :174-255, boot status
+ * :282) with the stock power sequence and defaults below.
+ */
+#define S6SY661_DEV_NAME		"sec_touchscreen"	/* S:.../sec_ts_y661/sec_ts.c:2301 */
+#define S6SY661_MAX_SLOTS		10	/* MAX_SUPPORT_TOUCH_COUNT, sec_ts.h:112; sec_ts.c:2070 */
+#define S6SY661_WAIT_RETRY_CNT		100	/* SEC_TS_WAIT_RETRY_CNT, sec_ts.h:483 */
+/* SEC_TS_DEFAULT_ENABLE_BIT_SETFUNC = TOUCH | PALM | WET (bits 0, 5, 6), sec_ts.h:339-349 */
+#define S6SY661_FUNC_DEFAULT		0x0061
+#define S6SY661_FUNC_GLOVE		BIT(3)	/* SEC_TS_BIT_SETFUNC_GLOVE, sec_ts.h:343 */
+/* touch types reported as a finger, sec_ts.c:1190-1193 (SEC_TS_TOUCHTYPE_*, sec_ts.h:304-310) */
+#define S6SY661_TT_NORMAL		0
+#define S6SY661_TT_GLOVE		3
+#define S6SY661_TT_PALM			5
+#define S6SY661_TT_WET			6
+/* the sec/tsp command node, S:drivers/input/sec_cmd.c, S:include/linux/input/sec_cmd.h */
+#define S6SY661_CMD_STR_LEN		256	/* SEC_CMD_STR_LEN, sec_cmd.h:37 */
+#define S6SY661_CMD_PARAM_NUM		8	/* SEC_CMD_PARAM_NUM, sec_cmd.h:39 */
+
 enum s6sy761_regulators {
 	S6SY761_REGULATOR_VDD,
 	S6SY761_REGULATOR_AVDD,
 };
 
+struct s6sy761_variant {
+	const char *name;
+	bool s6sy661;
+};
+
+static const struct s6sy761_variant s6sy761_variant = {
+	.name = S6SY761_DEV_NAME,
+};
+
+static const struct s6sy761_variant s6sy661_variant = {
+	.name = S6SY661_DEV_NAME,
+	.s6sy661 = true,
+};
+
 struct s6sy761_data {
+	const struct s6sy761_variant *variant;
 	struct i2c_client *client;
 	struct regulator_bulk_data regulators[2];
 	struct input_dev *input;
@@ -108,6 +150,18 @@ struct s6sy761_data {
 
 	u16 devid;
 	u8 tx_channel;
+
+	/* S6SY661 only */
+	struct mutex power_lock;	/* powered, the rails, the IRQ disable depth */
+	bool powered;
+	u16 touch_functions;		/* TOUCH_FUNCTION word, rewritten at every power-on */
+	struct drm_panel_follower follower;
+	struct work_struct power_on_work;
+	struct mutex cmd_lock;
+	bool cmd_running;
+	const char *cmd_state;
+	char cmd[S6SY661_CMD_STR_LEN];
+	char cmd_result[S6SY661_CMD_STR_LEN + 16];
 };
 
 /*
@@ -179,6 +233,16 @@ static void s6sy761_handle_coordinates(struct s6sy761_data *sdata, u8 *event)
 
 	tid = ((event[0] & S6SY761_MASK_TID) >> 2) - 1;
 	touch_state = (event[0] & S6SY761_MASK_TOUCH_STATE) >> 6;
+
+	if (sdata->variant->s6sy661) {
+		/* ttype_3_2 = byte 6 [7:6], ttype_1_0 = byte 7 [7:6] (sec_ts.h:623-626); stock
+		 * reports press, move and release only for these types (sec_ts.c:1190-1193) */
+		u8 ttype = (event[6] >> 6) << 2 | event[7] >> 6;
+
+		if (ttype != S6SY661_TT_NORMAL && ttype != S6SY661_TT_GLOVE &&
+		    ttype != S6SY661_TT_PALM && ttype != S6SY661_TT_WET)
+			return;
+	}
 
 	switch (touch_state) {
 
@@ -335,13 +399,200 @@ static int s6sy761_power_on(struct s6sy761_data *sdata)
 	return 0;
 }
 
+/*
+ * S6SY661 power-on, stock sec_ts_power(on) + sec_ts_start_device()
+ * (S:drivers/input/touchscreen/sec_ts_y661/sec_ts.c:1673-1686, 2911-2923): tsp_io ("vdd")
+ * first, 1 ms, tsp_avdd ("avdd"), 70 ms. Only the power-on at probe skips the 70 ms when
+ * both rails were already on, as stock does for sec,regulator_boot_on (FDT:5698,
+ * sec_ts.c:2204-2206). Then sec_ts_wait_for_ready() (sec_ts.c:776-800): read one event until
+ * an INFO or VENDOR_INFO event carries BOOT_COMPLETE, 20 ms apart, stopping at a failed read
+ * or after SEC_TS_WAIT_RETRY_CNT + 2 reads; a timeout is not fatal (the return value is
+ * ignored at sec_ts.c:2210), BOOT_STATUS decides. Caller holds power_lock or is probe.
+ */
+static int s6sy661_power_on(struct s6sy761_data *sdata, bool probe)
+{
+	struct regulator *vdd = sdata->regulators[S6SY761_REGULATOR_VDD].consumer;
+	struct regulator *avdd = sdata->regulators[S6SY761_REGULATOR_AVDD].consumer;
+	u8 buffer[S6SY761_EVENT_SIZE];
+	bool boot_on;
+	int retry = 0;
+	int ret;
+
+	boot_on = probe && regulator_is_enabled(vdd) > 0 && regulator_is_enabled(avdd) > 0;
+
+	ret = regulator_enable(vdd);
+	if (ret)
+		return ret;
+	usleep_range(1000, 1100);	/* sec_ts_delay(1), sec_ts.c:1680 */
+	ret = regulator_enable(avdd);
+	if (ret)
+		goto err_vdd;
+	if (!boot_on)
+		msleep(70);		/* sec_ts.c:2922-2923 */
+
+	while (i2c_smbus_read_i2c_block_data(sdata->client, S6SY761_READ_ONE_EVENT,
+					     S6SY761_EVENT_SIZE, buffer) > 0) {
+		u8 event = (buffer[0] >> 2) & 0xf;
+
+		if ((event == S6SY761_EVENT_INFO || event == S6SY761_EVENT_VENDOR_INFO) &&
+		    buffer[1] == S6SY761_INFO_BOOT_COMPLETE)
+			break;
+		if (retry++ > S6SY661_WAIT_RETRY_CNT)
+			break;
+		msleep(20);
+	}
+
+	ret = i2c_smbus_read_byte_data(sdata->client, S6SY761_BOOT_STATUS);
+	if (ret < 0)
+		goto err_avdd;
+	if (ret != S6SY761_BS_APPLICATION) {
+		ret = -ENODEV;
+		goto err_avdd;
+	}
+
+	/* sec_ts.c:2277-2278: the stored functions, glove bit included (item 12) */
+	ret = i2c_smbus_write_word_data(sdata->client, S6SY761_TOUCH_FUNCTION,
+					sdata->touch_functions);
+	if (ret)
+		goto err_avdd;
+
+	sdata->powered = true;
+	return 0;
+
+err_avdd:
+	regulator_disable(avdd);
+err_vdd:
+	regulator_disable(vdd);
+	return ret;
+}
+
+/*
+ * S6SY661 power-off, stock sec_ts_stop_device() (sec_ts.c:2885-2898): IRQ off, every
+ * finger released (sec_ts_locked_release_all_finger()), rails off in stock's order
+ * tsp_io then tsp_avdd (sec_ts_power(off), sec_ts.c:1688-1689), pins to "sleep" = stock
+ * off_state (FDT:275-281). No-op when already off. Caller holds power_lock.
+ */
+static void s6sy661_power_off(struct s6sy761_data *sdata)
+{
+	int i;
+
+	if (!sdata->powered)
+		return;
+
+	disable_irq(sdata->client->irq);
+	if (sdata->input) {
+		for (i = 0; i < S6SY661_MAX_SLOTS; i++) {
+			input_mt_slot(sdata->input, i);
+			input_mt_report_slot_inactive(sdata->input);
+		}
+		input_sync(sdata->input);
+	}
+	regulator_disable(sdata->regulators[S6SY761_REGULATOR_VDD].consumer);
+	regulator_disable(sdata->regulators[S6SY761_REGULATOR_AVDD].consumer);
+	pinctrl_pm_select_sleep_state(&sdata->client->dev);
+	sdata->powered = false;
+}
+
+/*
+ * S6SY661 power-on after a power-off (sec_ts_start_device(), sec_ts.c:2911-3004): pins to
+ * "default" before the rails, power-on, SENSE_ON if the input device is open (stock sends
+ * it at the end of every start, :2998-3002; upstream only from input_open, which does not
+ * run again after a resume), IRQ on. Caller holds power_lock.
+ */
+static int s6sy661_start(struct s6sy761_data *sdata)
+{
+	int ret;
+
+	if (sdata->powered)
+		return 0;
+
+	pinctrl_pm_select_default_state(&sdata->client->dev);
+	ret = s6sy661_power_on(sdata, false);
+	if (ret)
+		return ret;
+
+	/* input_device_enabled() needs the input mutex (A:drivers/input/input.c:2252-2257) */
+	mutex_lock(&sdata->input->mutex);
+	if (input_device_enabled(sdata->input))
+		ret = i2c_smbus_write_byte(sdata->client, S6SY761_SENSE_ON);
+	mutex_unlock(&sdata->input->mutex);
+	if (ret)
+		dev_err(&sdata->client->dev, "failed to turn on sensing\n");
+
+	enable_irq(sdata->client->irq);
+	return 0;
+}
+
+static void s6sy661_devm_power_off(void *data)
+{
+	struct s6sy761_data *sdata = data;
+
+	mutex_lock(&sdata->power_lock);
+	s6sy661_power_off(sdata);
+	mutex_unlock(&sdata->power_lock);
+}
+
+/*
+ * Screen-off power (spec L6F 5.12 item 13): the touch chip follows the DSI panel through
+ * the DRM panel-follower API (A:drivers/gpu/drm/drm_panel.c:580-583), as i2c-hid does
+ * (A:drivers/hid/i2c-hid/i2c-hid-core.c:1161-1189). Stock instead entered a low-power mode
+ * for its under-display pressure home key, which LineageOS does not have (sec_ts.c:2755-2807).
+ */
+static void s6sy661_power_on_work(struct work_struct *work)
+{
+	struct s6sy761_data *sdata = container_of(work, struct s6sy761_data, power_on_work);
+	int ret;
+
+	mutex_lock(&sdata->power_lock);
+	ret = s6sy661_start(sdata);
+	mutex_unlock(&sdata->power_lock);
+	if (ret)
+		dev_err(&sdata->client->dev, "power-on after panel prepare failed: %d\n", ret);
+}
+
+/* 70 ms + up to ~2 s of ready wait: must not block the panel's power-up */
+static int s6sy661_panel_prepared(struct drm_panel_follower *follower)
+{
+	struct s6sy761_data *sdata = container_of(follower, struct s6sy761_data, follower);
+
+	queue_work(system_wq, &sdata->power_on_work);
+	return 0;
+}
+
+/* before the panel powers down: synchronous */
+static int s6sy661_panel_unpreparing(struct drm_panel_follower *follower)
+{
+	struct s6sy761_data *sdata = container_of(follower, struct s6sy761_data, follower);
+
+	cancel_work_sync(&sdata->power_on_work);
+	mutex_lock(&sdata->power_lock);
+	s6sy661_power_off(sdata);
+	mutex_unlock(&sdata->power_lock);
+	return 0;
+}
+
+static const struct drm_panel_follower_funcs s6sy661_follower_funcs = {
+	.panel_prepared = s6sy661_panel_prepared,
+	.panel_unpreparing = s6sy661_panel_unpreparing,
+};
+
+static void s6sy661_cancel_power_on_work(void *data)
+{
+	struct s6sy761_data *sdata = data;
+
+	cancel_work_sync(&sdata->power_on_work);
+}
+
 static int s6sy761_hw_init(struct s6sy761_data *sdata,
 			   unsigned int *max_x, unsigned int *max_y)
 {
 	u8 buffer[S6SY761_PANEL_ID_SIZE]; /* larger read size */
 	int ret;
 
-	ret = s6sy761_power_on(sdata);
+	if (sdata->variant->s6sy661)
+		ret = s6sy661_power_on(sdata, true);
+	else
+		ret = s6sy761_power_on(sdata);
 	if (ret)
 		return ret;
 
@@ -363,6 +614,11 @@ static int s6sy761_hw_init(struct s6sy761_data *sdata,
 
 	*max_x = get_unaligned_be16(buffer);
 	*max_y = get_unaligned_be16(buffer + 2);
+	if (sdata->variant->s6sy661) {
+		/* the chip reports the size; the last coordinate is size - 1 (sec_ts.c:1922-1926) */
+		*max_x -= 1;
+		*max_y -= 1;
+	}
 
 	/* if no tx channels defined, at least keep one */
 	sdata->tx_channel = max_t(u8, buffer[8], 1);
@@ -371,8 +627,8 @@ static int s6sy761_hw_init(struct s6sy761_data *sdata,
 				       S6SY761_FIRMWARE_INTEGRITY);
 	if (ret < 0)
 		return ret;
-	else if (ret != S6SY761_FW_OK)
-		return -ENODEV;
+	else if (sdata->variant->s6sy661 ? !(ret & S6SY761_FW_OK) : ret != S6SY761_FW_OK)
+		return -ENODEV;	/* S6SY661: only bit 7 counts, sec_ts.c:2226 */
 
 	return 0;
 }
@@ -386,10 +642,197 @@ static void s6sy761_power_off(void *data)
 						sdata->regulators);
 }
 
+/*
+ * sec/tsp command node for the LineageOS touch HAL's IGloveMode (spec L6F 5.12 item 12): the
+ * synchronous path of stock sec_cmd (S:drivers/input/sec_cmd.c) with one command.
+ */
+static int s6sy661_cmd_glove_mode(struct s6sy761_data *sdata, int mode)
+{
+	int ret = 0;
+
+	if (mode != 0 && mode != 1)
+		return -EINVAL;
+
+	mutex_lock(&sdata->power_lock);
+	/* stored first, so the next power-on applies it (sec_ts.c:1495-1507) */
+	if (mode)
+		sdata->touch_functions |= S6SY661_FUNC_GLOVE | S6SY661_FUNC_DEFAULT;
+	else
+		sdata->touch_functions = (sdata->touch_functions & ~S6SY661_FUNC_GLOVE) |
+					 S6SY661_FUNC_DEFAULT;
+	if (!sdata->powered)
+		ret = -EIO;	/* stock: power off -> NG, sec_ts.c:1504-1508 */
+	else
+		ret = i2c_smbus_write_word_data(sdata->client, S6SY761_TOUCH_FUNCTION,
+						sdata->touch_functions);
+	mutex_unlock(&sdata->power_lock);
+
+	return ret;
+}
+
+static ssize_t cmd_store(struct device *dev, struct device_attribute *attr,
+			 const char *buf, size_t count)
+{
+	struct s6sy761_data *sdata = dev_get_drvdata(dev);
+	int param[S6SY661_CMD_PARAM_NUM] = { };
+	char params[S6SY661_CMD_STR_LEN];
+	char *name, *cur, *tok;
+	const char *result, *state;
+	size_t len = count;
+	int nparam = 0;
+
+	/* sec_cmd.c:85-96 */
+	if (count >= S6SY661_CMD_STR_LEN || strlen(buf) >= S6SY661_CMD_STR_LEN)
+		return -EINVAL;
+
+	mutex_lock(&sdata->cmd_lock);
+	if (sdata->cmd_running) {
+		mutex_unlock(&sdata->cmd_lock);
+		return -EBUSY;
+	}
+	sdata->cmd_running = true;
+	sdata->cmd_state = "RUNNING";
+	mutex_unlock(&sdata->cmd_lock);
+
+	/* the command text without one trailing newline (sec_cmd.c:111-116) */
+	if (len && buf[len - 1] == '\n')
+		len--;
+	memcpy(sdata->cmd, buf, len);
+	sdata->cmd[len] = '\0';
+
+	/* name up to the first ',', then up to 8 decimal parameters (sec_cmd.c:117-161) */
+	strscpy(params, sdata->cmd, sizeof(params));
+	cur = params;
+	name = strsep(&cur, ",");
+	while (cur && nparam < S6SY661_CMD_PARAM_NUM) {
+		tok = strsep(&cur, ",");
+		if (kstrtoint(tok, 10, &param[nparam++]) < 0) {
+			/*
+			 * Stock returns here with the command still marked running
+			 * (sec_cmd.c:178-179), which blocks every later command; this
+			 * port reports NG instead.
+			 */
+			result = "NG";
+			state = "FAIL";
+			goto out;
+		}
+	}
+
+	if (!strcmp(name, "glove_mode")) {
+		/* sec_ts_fn.c glove_mode(): OK, or NG on a bad value or I/O failure */
+		if (s6sy661_cmd_glove_mode(sdata, param[0])) {
+			result = "NG";
+			state = "FAIL";
+		} else {
+			result = "OK";
+			state = "OK";
+		}
+	} else {
+		/* not_support_cmd(), sec_ts_fn.c:5745-5756 */
+		result = "NA";
+		state = "NOT_APPLICABLE";
+	}
+
+out:
+	mutex_lock(&sdata->cmd_lock);
+	/* "<command text>:<result>" (sec_cmd_set_default_result() + _cmd_result(), sec_cmd.c:54-65) */
+	snprintf(sdata->cmd_result, sizeof(sdata->cmd_result), "%s:%s", sdata->cmd, result);
+	sdata->cmd_state = state;
+	sdata->cmd_running = false;
+	mutex_unlock(&sdata->cmd_lock);
+
+	return count;
+}
+static DEVICE_ATTR(cmd, 0220, NULL, cmd_store);	/* S_IWUSR | S_IWGRP, sec_cmd.c:429 */
+
+static ssize_t cmd_status_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct s6sy761_data *sdata = dev_get_drvdata(dev);
+	ssize_t ret;
+
+	mutex_lock(&sdata->cmd_lock);
+	ret = sysfs_emit(buf, "%s\n", sdata->cmd_state);	/* sec_cmd.c:358-387 */
+	mutex_unlock(&sdata->cmd_lock);
+
+	return ret;
+}
+static DEVICE_ATTR_RO(cmd_status);
+
+static ssize_t cmd_result_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct s6sy761_data *sdata = dev_get_drvdata(dev);
+	ssize_t ret;
+
+	mutex_lock(&sdata->cmd_lock);
+	ret = sysfs_emit(buf, "%s\n", sdata->cmd_result);	/* sec_cmd.c:389-407 */
+	sdata->cmd_state = "WAITING";
+	mutex_unlock(&sdata->cmd_lock);
+
+	return ret;
+}
+static DEVICE_ATTR_RO(cmd_result);
+
+static ssize_t cmd_list_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	/* header, one name per line, then a final "\n" (sec_cmd.c:409-427) */
+	return sysfs_emit(buf, "++factory command list++\nglove_mode\n\n");
+}
+static DEVICE_ATTR_RO(cmd_list);
+
+static struct attribute *s6sy661_cmd_attrs[] = {
+	&dev_attr_cmd.attr,
+	&dev_attr_cmd_status.attr,
+	&dev_attr_cmd_result.attr,
+	&dev_attr_cmd_list.attr,
+	NULL
+};
+ATTRIBUTE_GROUPS(s6sy661_cmd);
+
+static void s6sy661_sec_device_destroy(void *data)
+{
+	sec_device_destroy(data);
+}
+
+/*
+ * The rest of an S6SY661 probe, after the IRQ is requested. No runtime PM: stock never puts
+ * the chip to sleep with SET_POWER_MODE (spec L6F 5.12 item 9).
+ */
+static int s6sy661_probe_finish(struct s6sy761_data *sdata)
+{
+	struct device *dev = &sdata->client->dev;
+	struct device *sec_dev;
+	int err;
+
+	if (drm_is_panel_follower(dev)) {
+		/* registered first, so it runs after the follower is removed */
+		err = devm_add_action_or_reset(dev, s6sy661_cancel_power_on_work, sdata);
+		if (err)
+			return err;
+
+		/* a prepared panel calls panel_prepared at once: powered by probe, no-op */
+		sdata->follower.funcs = &s6sy661_follower_funcs;
+		err = devm_drm_panel_add_follower(dev, &sdata->follower);
+		if (err)
+			return err;
+	}
+
+	/* /sys/class/sec/tsp (sec_cmd.c:494-505); absent without CONFIG_SAMSUNG_SEC_CLASS */
+	sec_dev = sec_device_create_with_groups(sdata, s6sy661_cmd_groups, "tsp");
+	if (IS_ERR(sec_dev)) {
+		if (PTR_ERR(sec_dev) != -ENODEV)
+			dev_warn(dev, "no sec/tsp node: %ld\n", PTR_ERR(sec_dev));
+		return 0;
+	}
+
+	return devm_add_action_or_reset(dev, s6sy661_sec_device_destroy, sec_dev);
+}
+
 static int s6sy761_probe(struct i2c_client *client)
 {
 	struct s6sy761_data *sdata;
 	unsigned int max_x, max_y;
+	struct drm_panel *panel;
+	struct device_node *np;
 	int err;
 
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C |
@@ -403,6 +846,28 @@ static int s6sy761_probe(struct i2c_client *client)
 
 	i2c_set_clientdata(client, sdata);
 	sdata->client = client;
+	sdata->variant = device_get_match_data(&client->dev) ?: &s6sy761_variant;
+
+	if (sdata->variant->s6sy661) {
+		mutex_init(&sdata->power_lock);
+		mutex_init(&sdata->cmd_lock);
+		sdata->cmd_state = "WAITING";
+		sdata->touch_functions = S6SY661_FUNC_DEFAULT;
+		INIT_WORK(&sdata->power_on_work, s6sy661_power_on_work);
+
+		/*
+		 * A panel follower waits for the panel before powering anything
+		 * (A:drivers/gpu/drm/drm_panel.c:450-467): L5's DSI host registers it.
+		 */
+		if (drm_is_panel_follower(&client->dev)) {
+			np = of_parse_phandle(client->dev.of_node, "panel", 0);
+			panel = of_drm_find_panel(np);
+			of_node_put(np);
+			if (IS_ERR(panel))
+				return dev_err_probe(&client->dev, PTR_ERR(panel),
+						     "panel not available\n");
+		}
+	}
 
 	sdata->regulators[S6SY761_REGULATOR_VDD].supply = "vdd";
 	sdata->regulators[S6SY761_REGULATOR_AVDD].supply = "avdd";
@@ -412,7 +877,10 @@ static int s6sy761_probe(struct i2c_client *client)
 	if (err)
 		return err;
 
-	err = devm_add_action_or_reset(&client->dev, s6sy761_power_off, sdata);
+	err = devm_add_action_or_reset(&client->dev,
+				       sdata->variant->s6sy661 ? s6sy661_devm_power_off :
+								 s6sy761_power_off,
+				       sdata);
 	if (err)
 		return err;
 
@@ -424,7 +892,7 @@ static int s6sy761_probe(struct i2c_client *client)
 	if (!sdata->input)
 		return -ENOMEM;
 
-	sdata->input->name = S6SY761_DEV_NAME;
+	sdata->input->name = sdata->variant->name;
 	sdata->input->id.bustype = BUS_I2C;
 	sdata->input->open = s6sy761_input_open;
 	sdata->input->close = s6sy761_input_close;
@@ -444,7 +912,8 @@ static int s6sy761_probe(struct i2c_client *client)
 		dev_warn(&client->dev, "the axis have not been set\n");
 	}
 
-	err = input_mt_init_slots(sdata->input, sdata->tx_channel,
+	err = input_mt_init_slots(sdata->input,
+				  sdata->variant->s6sy661 ? S6SY661_MAX_SLOTS : sdata->tx_channel,
 				  INPUT_MT_DIRECT);
 	if (err)
 		return err;
@@ -462,6 +931,9 @@ static int s6sy761_probe(struct i2c_client *client)
 	if (err)
 		return err;
 
+	if (sdata->variant->s6sy661)
+		return s6sy661_probe_finish(sdata);
+
 	pm_runtime_enable(&client->dev);
 
 	return 0;
@@ -469,7 +941,10 @@ static int s6sy761_probe(struct i2c_client *client)
 
 static void s6sy761_remove(struct i2c_client *client)
 {
-	pm_runtime_disable(&client->dev);
+	struct s6sy761_data *sdata = i2c_get_clientdata(client);
+
+	if (!sdata->variant->s6sy661)
+		pm_runtime_disable(&client->dev);
 }
 
 static int s6sy761_runtime_suspend(struct device *dev)
@@ -488,9 +963,44 @@ static int s6sy761_runtime_resume(struct device *dev)
 				S6SY761_APPLICATION_MODE, S6SY761_APP_NORMAL);
 }
 
+/*
+ * S6SY661 system sleep: nothing to do for a panel follower, whose power follows the panel;
+ * the DRM suspend unprepares a lit panel in its .prepare phase, before any .suspend
+ * (A:drivers/gpu/drm/exynos/exynos_drm_drv.c:128,138-141; as i2c-hid,
+ * A:drivers/hid/i2c-hid/i2c-hid-core.c:1360-1388).
+ */
+static int s6sy661_suspend(struct s6sy761_data *sdata)
+{
+	if (drm_is_panel_follower(&sdata->client->dev))
+		return 0;
+
+	mutex_lock(&sdata->power_lock);
+	s6sy661_power_off(sdata);
+	mutex_unlock(&sdata->power_lock);
+
+	return 0;
+}
+
+static int s6sy661_resume(struct s6sy761_data *sdata)
+{
+	int ret;
+
+	if (drm_is_panel_follower(&sdata->client->dev))
+		return 0;
+
+	mutex_lock(&sdata->power_lock);
+	ret = s6sy661_start(sdata);
+	mutex_unlock(&sdata->power_lock);
+
+	return ret;
+}
+
 static int s6sy761_suspend(struct device *dev)
 {
 	struct s6sy761_data *sdata = dev_get_drvdata(dev);
+
+	if (sdata->variant->s6sy661)
+		return s6sy661_suspend(sdata);
 
 	s6sy761_power_off(sdata);
 
@@ -500,6 +1010,9 @@ static int s6sy761_suspend(struct device *dev)
 static int s6sy761_resume(struct device *dev)
 {
 	struct s6sy761_data *sdata = dev_get_drvdata(dev);
+
+	if (sdata->variant->s6sy661)
+		return s6sy661_resume(sdata);
 
 	enable_irq(sdata->client->irq);
 
@@ -513,7 +1026,8 @@ static const struct dev_pm_ops s6sy761_pm_ops = {
 
 #ifdef CONFIG_OF
 static const struct of_device_id s6sy761_of_match[] = {
-	{ .compatible = "samsung,s6sy761", },
+	{ .compatible = "samsung,s6sy761", .data = &s6sy761_variant },
+	{ .compatible = "samsung,s6sy661", .data = &s6sy661_variant },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, s6sy761_of_match);

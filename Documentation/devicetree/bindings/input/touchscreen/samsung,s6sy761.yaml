@@ -14,7 +14,9 @@ allOf:
 
 properties:
   compatible:
-    const: samsung,s6sy761
+    enum:
+      - samsung,s6sy761
+      - samsung,s6sy661
 
   reg:
     maxItems: 1
@@ -24,6 +26,10 @@ properties:
 
   avdd-supply: true
   vdd-supply: true
+
+  panel:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: phandle to the DRM panel this touchscreen follows
 
 unevaluatedProperties: false
 
