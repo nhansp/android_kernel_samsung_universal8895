@@ -10,18 +10,15 @@
  * option) any later version.
 */
 
-#ifndef MCU_IPC_H
-#define MCU_IPC_H
+#ifndef __MCU_IPC_DRV_H
+#define __MCU_IPC_DRV_H
 
-/* FIXME: will be removed */
-/* Shared register with 64 * 32 words */
-#define MAX_MBOX_NUM	64
-
-enum mcu_ipc_region {
-	MCU_CP,
-	MCU_GNSS,
-	MCU_MAX,
-};
+/*
+ * L6C 5.1.2: stock used the guard MCU_IPC_H of the public <linux/mcu_ipc.h> here and
+ * repeated its MAX_MBOX_NUM and enum mcu_ipc_region, so the exported functions had no
+ * visible prototype (-Wmissing-prototypes); take them from the public header instead.
+ */
+#include <linux/mcu_ipc.h>
 
 struct mcu_ipc_ipc_handler {
 	void *data;

@@ -12,12 +12,6 @@ config MCU_IPC
 	   and 256 bytes memory for communicating messages.
 	   AP and CP can share the messages through this device.
 
-config MCU_IPC_TEST
-     bool "MCU_IPC driver test"
-     depends on MCU_IPC
-     help
-	This enables MCU_IPC_TEST for checking mailbox at probe time.
-
 config SHM_IPC
 	bool "Shared Memory for IPC support"
 	default n
