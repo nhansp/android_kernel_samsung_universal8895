@@ -15,7 +15,6 @@
 #define __MDNIE_H__
 
 #include "panel.h"
-#include "dpui.h"
 
 typedef u8 mdnie_t;
 
@@ -466,7 +465,6 @@ struct mdnie_info {
 	struct mutex lock;
 	struct mdnie_properties props;
 	struct notifier_block fb_notif;
-	struct notifier_block dpui_notif;
 	struct maptbl *maptbl;
 	u32 nr_maptbl;
 	struct maptbl *scr_white_maptbl;

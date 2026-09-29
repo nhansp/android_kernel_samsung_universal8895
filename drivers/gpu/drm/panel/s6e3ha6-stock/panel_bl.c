@@ -408,7 +408,6 @@ int panel_bl_get_acl_opr(struct panel_bl_device *panel_bl)
 	return panel_bl->props.acl_opr;
 }
 
-void g_tracing_mark_write(char id, char *str1, int value);
 int panel_bl_set_brightness(struct panel_bl_device *panel_bl, int id, int force)
 {
 	int ret = 0, ilum = 0, luminance = 0, brightness, index = PANEL_SET_BL_SEQ, step;
@@ -466,7 +465,6 @@ int panel_bl_set_brightness(struct panel_bl_device *panel_bl, int id, int force)
 	if (unlikely(!force || !luminance))
 		goto set_br_exit;
 
-	g_tracing_mark_write('C', "lcd_br", luminance);
 	if (id == PANEL_BL_SUBDEV_TYPE_HMD)
 		index = PANEL_HMD_BL_SEQ;
 	ret = panel_do_seqtbl_by_index(panel, index);

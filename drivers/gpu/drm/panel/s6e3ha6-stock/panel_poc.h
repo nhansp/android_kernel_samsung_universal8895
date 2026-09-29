@@ -29,10 +29,6 @@
 #define POC_CHKSUM_DATA_LEN		(4)
 #define POC_CHKSUM_RES_LEN		(1)
 #define POC_CHKSUM_LEN		(POC_CHKSUM_DATA_LEN + POC_CHKSUM_RES_LEN)
-#define POC_TOTAL_TRY_COUNT_FILE_PATH	("/efs/etc/poc/totaltrycount")
-#define POC_TOTAL_FAIL_COUNT_FILE_PATH	("/efs/etc/poc/totalfailcount")
-#define POC_INFO_FILE_PATH	("/efs/FactoryApp/poc_info")
-#define POC_USER_FILE_PATH	("/efs/FactoryApp/poc_user")
 
 #define ERASE_WAIT_COUNT	(180)
 #define WR_DONE_UDELAY		(4000)
@@ -104,8 +100,6 @@ struct panel_poc_info {
 	u32 rpos;
 	u32 rsize;
 
-	int total_failcount;
-	int total_trycount;
 };
 
 struct panel_poc_device {
@@ -117,7 +111,6 @@ struct panel_poc_device {
 	atomic_t cancel;
 	bool opened;
 	struct panel_poc_info poc_info;
-	struct notifier_block poc_notif;
 };
 
 #define IOC_GET_POC_STATUS	_IOR('A', 100, __u32)		/* 0:NONE, 1:ERASED, 2:WROTE, 3:READ */
