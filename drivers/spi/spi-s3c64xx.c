@@ -1571,6 +1571,24 @@ static const struct s3c64xx_spi_port_config exynos850_spi_port_config = {
 	.quirks		= S3C64XX_SPI_QUIRK_CS_AUTO,
 };
 
+/*
+ * Exynos 8895 (USI v1). Differs from exynos850_spi_port_config only in clk_div: the
+ * greatlte stock driver sets the source clock to twice the SPI clock ("There is
+ * half-multiplier before the SPI", S:drivers/spi/spi-s3c64xx.c:782-783, reached through
+ * exynos_spi_port_config :2071-2077). S: = SM-N950N stock 4.4 kernel, FDT: = its DTB.
+ */
+static const struct s3c64xx_spi_port_config exynos8895_spi_port_config = {
+	.fifo_depth	= 64,	/* samsung,spi-fifosize = <0x40> on every 8895 SPI node, FDT:6551 */
+	.rx_fifomask	= S3C64XX_SPI_ST_RX_FIFO_RDY_V2,	/* stock level >> 15, S:...:131-132 */
+	.tx_fifomask	= S3C64XX_SPI_ST_TX_FIFO_RDY_V2,	/* stock level >> 6, S:...:130 */
+	.tx_st_done	= 25,				/* S:...:2074 */
+	.clk_div	= 2,				/* S:...:782-783 */
+	.high_speed	= true,				/* S:...:2075 */
+	.clk_from_cmu	= true,				/* S:...:2076 */
+	.has_loopback	= true,				/* as exynos850; only used with SPI_LOOP */
+	.quirks		= S3C64XX_SPI_QUIRK_CS_AUTO,	/* as exynos850 */
+};
+
 static const struct s3c64xx_spi_port_config exynosautov9_spi_port_config = {
 	/* fifo_lvl_mask is deprecated. Use {rx, tx}_fifomask instead. */
 	.fifo_lvl_mask	= { 0x1ff, 0x1ff, 0x7f, 0x7f, 0x7f, 0x7f, 0x1ff, 0x7f,
@@ -1639,6 +1657,9 @@ static const struct of_device_id s3c64xx_spi_dt_match[] = {
 	},
 	{ .compatible = "samsung,exynos5433-spi",
 			.data = &exynos5433_spi_port_config,
+	},
+	{ .compatible = "samsung,exynos8895-spi",
+			.data = &exynos8895_spi_port_config,
 	},
 	{ .compatible = "samsung,exynos850-spi",
 			.data = &exynos850_spi_port_config,
