@@ -10,3 +10,20 @@
  * value, which gl-verify V-DUP reports as an error. L0's reserved-memory stays in
  * the .dts; carveout additions and flag changes are &label edits here (plan X-8).
  */
+
+/*
+ * Multimedia domains: BUS_COMPONENT_DRCG_EN at SYSREG + 0x200 is saved before
+ * power-off and restored after power-on by the Exynos8895 PD row of each domain
+ * (drivers/pmdomain/samsung/exynos-pm-domains.c exynos8895_pd_extra[]; the row
+ * carries the 0x200 offset, the property is the bare phandle of pd-samsung.yaml).
+ * Stock: PMUCAL_SAVE_RESTORE entries of S:drivers/soc/samsung/cal-if/exynos8895/
+ * pmucal_local_exynos8895.h cam :111, dcam :186, g2d :345, isphq :399,
+ * isplp :434, mfc :519, srdz :554 (L6B 4.0, 5.2.3).
+ */
+&pd_cam { samsung,sysreg = <&syscon_cam>; };
+&pd_dcam { samsung,sysreg = <&syscon_dcam>; };
+&pd_g2d { samsung,sysreg = <&syscon_g2d>; };
+&pd_isphq { samsung,sysreg = <&syscon_isphq>; };
+&pd_isplp { samsung,sysreg = <&syscon_isplp>; };
+&pd_mfc { samsung,sysreg = <&syscon_mfc>; };
+&pd_srdz { samsung,sysreg = <&syscon_srdz>; };
