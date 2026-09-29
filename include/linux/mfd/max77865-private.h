@@ -1,0 +1,157 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
+/*
+ * Maxim MAX77865 companion PMIC (Samsung Galaxy Note 8): register map shared by the
+ * core (drivers/mfd/max77865.c), the charger and the fuel-gauge temperature feed.
+ * Register names are stock's; spec rewrite/spec/L6F_power_input_misc.md 5.1.
+ * S: = the stock 4.4 tree (greatlte-stock-kernel).
+ */
+
+#ifndef __LINUX_MFD_MAX77865_PRIVATE_H
+#define __LINUX_MFD_MAX77865_PRIVATE_H
+
+#include <linux/bits.h>
+#include <linux/limits.h>
+#include <linux/thermal.h>
+
+/* PMIC page, I2C 0x66 (FDT:6169). S:include/linux/mfd/max77865-private.h:37-61 */
+#define MAX77865_PMIC_REG_PMICID1		0x00	/* :37 */
+#define MAX77865_PMIC_REG_PMICREV		0x01	/* :38 */
+#define MAX77865_PMIC_REG_MAINCTRL1		0x02	/* :54 */
+#define MAX77865_PMIC_REG_MCONFIG		0x10	/* :61 haptic */
+#define MAX77865_PMIC_REG_INTSRC		0x22	/* :39 */
+#define MAX77865_PMIC_REG_INTSRC_MASK		0x23	/* :40 */
+#define MAX77865_PMIC_REG_SYSTEM_INT		0x24	/* :41 */
+#define MAX77865_PMIC_REG_SYSTEM_INT_MASK	0x26	/* :43 */
+#define MAX77865_PMIC_REG_BOOSTCONTROL1		0x4C	/* :47 */
+#define MAX77865_BOOSTCONTROL1_BSTOUT		0x03	/* :48 MAX77865_PMIC_REG_BSTOUT_MASK */
+#define MAX77865_PMIC_REG_BOOSTCONTROL2		0x4F	/* :49 */
+#define MAX77865_BOOSTCONTROL2_FORCE_EN		0x08	/* :50 MAX77865_PMIC_REG_FORCE_EN_MASK */
+#define MAX77865_PMIC_REG_SW_RESET		0x50	/* :51 */
+#define MAX77865_PMIC_REG_USBC_RESET		0x51	/* :52 */
+#define MAX77865_MAINCTRL1_BIASEN		BIT(7)	/* :138 */
+#define MAX77865_MAINCTRL1_ADEN			BIT(0)	/* active discharge, S:drivers/battery_v2/max77865_charger.c:789-791 */
+
+/* INTSRC bits: S:include/linux/mfd/max77865-private.h:30-32 */
+#define MAX77865_IRQSRC_CHG			BIT(0)
+#define MAX77865_IRQSRC_TOP			BIT(1)
+#define MAX77865_IRQSRC_FG			BIT(2)
+
+/* RGB LED, PMIC page: S:include/linux/mfd/max77865-private.h:170-176 */
+#define MAX77865_RGBLED_REG_LEDEN		0x30
+#define MAX77865_RGBLED_REG_LED0BRT		0x31	/* LEDnBRT = 0x31 + n (:171-174) */
+#define MAX77865_RGBLED_REG_LEDRMP		0x36
+#define MAX77865_RGBLED_REG_LEDBLNK		0x38
+
+/* charger page, I2C 0x69: S:include/linux/mfd/max77865-private.h:63-85 */
+#define MAX77865_CHG_REG_INT			0xB0
+#define MAX77865_CHG_REG_INT_MASK		0xB1
+#define MAX77865_CHG_REG_INT_OK			0xB2
+#define MAX77865_CHG_REG_DETAILS_00		0xB3
+#define MAX77865_CHG_REG_DETAILS_01		0xB4
+#define MAX77865_CHG_REG_DETAILS_02		0xB5
+#define MAX77865_CHG_REG_CNFG_00		0xB7	/* CNFG_nn = 0xB7 + nn up to CNFG_14 0xC5 */
+#define MAX77865_CHG_REG_CNFG_01		0xB8
+#define MAX77865_CHG_REG_CNFG_02		0xB9
+#define MAX77865_CHG_REG_CNFG_03		0xBA
+#define MAX77865_CHG_REG_CNFG_04		0xBB
+#define MAX77865_CHG_REG_CNFG_05		0xBC
+#define MAX77865_CHG_REG_CNFG_06		0xBD
+#define MAX77865_CHG_REG_CNFG_07		0xBE
+#define MAX77865_CHG_REG_CNFG_09		0xC0
+#define MAX77865_CHG_REG_CNFG_10		0xC1
+#define MAX77865_CHG_REG_CNFG_11		0xC2	/* :81 */
+#define MAX77865_CHG_REG_CNFG_12		0xC3
+#define MAX77865_CHG_REG_CNFG_14		0xC5
+#define MAX77865_CHG_REG_SAFEOUT_CTRL		0xC6
+
+/* MUIC, I2C 0x25 (S:drivers/mfd/max77865.c:45); read-only use */
+#define MAX77865_MUIC_I2C_ADDR			0x25
+#define MAX77865_MUIC_REG_STATUS1_BC		0x0D	/* S:include/linux/mfd/max77865-private.h:151 */
+#define MAX77865_BC_STATUS1_CHGTYP		GENMASK(1, 0)	/* S:include/linux/muic/max77865-muic.h:118,123 */
+#define MAX77865_BC_STATUS1_CHGDETRUN		BIT(6)		/* S:include/linux/muic/max77865-muic.h:115,120 */
+/* ChgTyp values: S:include/linux/muic/max77865-muic.h:278-284 */
+#define MAX77865_CHGTYP_NO_VOLTAGE		0x00
+#define MAX77865_CHGTYP_USB			0x01
+#define MAX77865_CHGTYP_CDP			0x02
+#define MAX77865_CHGTYP_DEDICATED_CHARGER	0x03
+
+/* charger bits: S:drivers/battery_v2/include/charger/max77865_charger.h */
+/* CHG_INT, CHG_INT_MASK (:50-57, :60-67) */
+#define MAX77865_CHG_BYP			BIT(0)
+#define MAX77865_CHG_BATP			BIT(2)
+#define MAX77865_CHG_CHG			BIT(4)
+#define MAX77865_CHG_WCIN			BIT(5)
+#define MAX77865_CHG_CHGIN			BIT(6)
+/* CHG_INT_OK (:74, :80, :82) */
+#define MAX77865_BATP_OK			BIT(2)
+#define MAX77865_WCIN_OK			BIT(5)
+#define MAX77865_CHGIN_OK			BIT(6)
+/* DETAILS_00 (:90, :92, :94), DETAILS_01 (:98, :100), DETAILS_02 (:104) */
+#define MAX77865_BATP_DTLS			BIT(0)
+#define MAX77865_WCIN_DTLS			GENMASK(4, 3)
+#define MAX77865_CHGIN_DTLS			GENMASK(6, 5)
+#define MAX77865_CHG_DTLS			GENMASK(3, 0)
+#define MAX77865_BAT_DTLS			GENMASK(6, 4)
+#define MAX77865_BYP_DTLS			GENMASK(2, 0)
+/* CNFG_00 (:125-132) */
+#define MAX77865_CNFG_00_CHG			BIT(0)	/* MAX77865_MODE_CHGR */
+#define MAX77865_CNFG_00_OTG			BIT(1)
+#define MAX77865_CNFG_00_BUCK			BIT(2)
+#define MAX77865_CNFG_00_BOOST			BIT(3)
+#define MAX77865_CNFG_00_WDTEN			BIT(4)
+#define MAX77865_CNFG_00_OTG_CTRL		(MAX77865_CNFG_00_OTG | MAX77865_CNFG_00_BOOST)
+/* CNFG_02 CHG_CC (:137), CNFG_03 TO_ITH (:140), CNFG_04 CHG_CV_PRM (:149) */
+#define MAX77865_CNFG_02_CHG_CC			GENMASK(5, 0)
+#define MAX77865_CNFG_03_TO_ITH			GENMASK(2, 0)
+#define MAX77865_CNFG_04_CHG_CV_PRM		GENMASK(5, 0)
+/* CNFG_06 WDTCLR (:152), CHGPROT (S:drivers/battery_v2/max77865_charger.c:66) */
+#define MAX77865_CNFG_06_WDTCLR			BIT(0)
+#define MAX77865_CNFG_06_CHGPROT		GENMASK(3, 2)
+/* CNFG_07 (:157, :159) */
+#define MAX77865_CNFG_07_FGSRC			BIT(1)
+#define MAX77865_CNFG_07_FMBST			BIT(2)
+/* CNFG_09 CHGIN_LIM (:162) */
+#define MAX77865_CNFG_09_CHGIN_LIM		GENMASK(6, 0)
+/* CNFG_12 (:170, :172-175) */
+#define MAX77865_CNFG_12_DISSKIP		BIT(0)
+#define MAX77865_CNFG_12_WCIN_REG		GENMASK(2, 1)
+#define MAX77865_CNFG_12_VCHGIN_REG		GENMASK(4, 3)
+#define MAX77865_CNFG_12_CHGINSEL		BIT(5)
+#define MAX77865_CNFG_12_WCINSEL		BIT(6)
+
+/**
+ * max77865_ntc_avg() - stock's 5-sample battery temperature mean on a thermal zone
+ * @tz: the NTC zone (generic-adc-thermal, 4.4)
+ * @avg: result in milli-degC
+ *
+ * Stock sec_bat_get_adc_data() (S:drivers/battery_v2/sec_adc.c:173-207) on
+ * temperatures: adc_check_count 5 samples (FDT:12206), the first sets max = min,
+ * each later one replaces max if higher, else min if lower (stock's else-if kept),
+ * result (sum - max - min) / 3. Spec L6F 5.3.3 (run 6, O-J13).
+ *
+ * Return: 0, or the first failed sample's -errno (then @avg is untouched).
+ */
+static inline int max77865_ntc_avg(struct thermal_zone_device *tz, int *avg)
+{
+	int i, ret, t, max = 0, min = 0, sum = 0;
+
+	for (i = 0; i < 5; i++) {
+		ret = thermal_zone_get_temp(tz, &t);
+		if (ret)
+			return ret;
+		if (i == 0) {
+			max = t;
+			min = t;
+		} else if (t > max) {
+			max = t;
+		} else if (t < min) {
+			min = t;
+		}
+		sum += t;
+	}
+
+	*avg = (sum - max - min) / 3;
+	return 0;
+}
+
+#endif /* __LINUX_MFD_MAX77865_PRIVATE_H */

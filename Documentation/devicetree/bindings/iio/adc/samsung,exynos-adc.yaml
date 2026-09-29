@@ -18,6 +18,7 @@ properties:
           - samsung,exynos3250-adc
           - samsung,exynos4212-adc                # Exynos4212 and Exynos4412
           - samsung,exynos7-adc
+          - samsung,exynos8895-adc                # 12 channels, data at +0x08
           - samsung,s3c6410-adc
           - samsung,s5pv210-adc
       - items:
@@ -63,12 +64,21 @@ required:
   - clock-names
   - interrupts
   - "#io-channel-cells"
-  - vdd-supply
 
 additionalProperties:
   type: object
 
 allOf:
+  - if:
+      properties:
+        compatible:
+          not:
+            contains:
+              const: samsung,exynos8895-adc
+    then:
+      required:
+        - vdd-supply
+
   - if:
       properties:
         compatible:

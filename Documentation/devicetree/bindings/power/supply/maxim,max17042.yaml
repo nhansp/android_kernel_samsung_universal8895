@@ -11,6 +11,17 @@ maintainers:
 
 allOf:
   - $ref: power-supply.yaml#
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: maxim,max77865-battery
+    then:
+      required:
+        - samsung,battery-ntc
+    else:
+      properties:
+        samsung,battery-ntc: false
 
 properties:
   compatible:
@@ -21,6 +32,7 @@ properties:
       - maxim,max17055
       - maxim,max77705-battery
       - maxim,max77849-battery
+      - maxim,max77865-battery
 
   reg:
     maxItems: 1
@@ -61,6 +73,14 @@ properties:
       Default is not to report over-voltage events.
 
   power-supplies: true
+  monitored-battery: true
+
+  samsung,battery-ntc:
+    $ref: /schemas/types.yaml#/definitions/string
+    description:
+      maxim,max77865-battery only. Type of the thermal zone (battery NTC) whose
+      temperature the driver writes to the TEMP register; required for that
+      compatible, whose temperature is host-written (CONFIG.TEX set).
 
 required:
   - compatible

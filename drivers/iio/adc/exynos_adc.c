@@ -70,6 +70,8 @@
 
 /* Bit definitions for ADC_V2 */
 #define ADC_V2_CON1_SOFT_RESET	(1u << 2)
+/* Exynos8895: S:drivers/iio/adc/exynos_adc.c:83 */
+#define ADC_V2_CON1_SOFT_NON_RESET	(1u << 1)
 
 #define ADC_V2_CON2_OSEL	(1u << 10)
 #define ADC_V2_CON2_ESEL	(1u << 9)
@@ -128,6 +130,7 @@ struct exynos_adc_data {
 	bool needs_adc_phy;
 	int phy_offset;
 	u32 mask;
+	unsigned int data_reg;	/* data register offset, 0 = ADC_V1_DATX (0x0C) */
 
 	void (*init_hw)(struct exynos_adc *info);
 	void (*exit_hw)(struct exynos_adc *info);
@@ -397,6 +400,48 @@ static const struct exynos_adc_data exynos7_adc_data = {
 	.start_conv	= exynos_adc_v2_start_conv,
 };
 
+/*
+ * Exynos8895: stock "samsung,exynos-adc-v3" (S:drivers/iio/adc/exynos_adc.c:468-523),
+ * spec rewrite/spec/L6F_power_input_misc.md 5.5
+ */
+static void exynos8895_adc_init_hw(struct exynos_adc *info)	/* stock v3: :468-483 */
+{
+	writel(ADC_V2_CON1_SOFT_RESET, ADC_V2_CON1(info->regs));
+	writel(ADC_V2_CON1_SOFT_NON_RESET, ADC_V2_CON1(info->regs));
+	writel(ADC_V2_CON2_C_TIME(6), ADC_V2_CON2(info->regs));
+	writel(1, ADC_V2_INT_EN(info->regs));
+}
+
+static void exynos8895_adc_exit_hw(struct exynos_adc *info)	/* stock v3: :485-495 */
+{
+	u32 con2 = readl(ADC_V2_CON2(info->regs));
+
+	con2 &= ~ADC_V2_CON2_C_TIME(7);
+	writel(con2, ADC_V2_CON2(info->regs));
+	writel(0, ADC_V2_INT_EN(info->regs));
+}
+
+/*
+ * Stock re-inits before every conversion (S:drivers/iio/adc/exynos_adc.c:618-624:
+ * enable_irq; init_hw; start_conv), so do the same; exynos_read_raw() holds
+ * info->lock around this.
+ */
+static void exynos8895_adc_start_conv(struct exynos_adc *info, unsigned long addr)
+{
+	exynos8895_adc_init_hw(info);
+	exynos_adc_v2_start_conv(info, addr);
+}
+
+static const struct exynos_adc_data exynos8895_adc_data = {
+	.num_channels	= 12,			/* MAX_ADC_V3_CHANNELS, S:...:95 */
+	.mask		= ADC_DATX_MASK,	/* 0xFFF, S:...:516 */
+	.data_reg	= 0x08,			/* ADC_V3_DAT, S:...:66 */
+	.init_hw	= exynos8895_adc_init_hw,
+	.exit_hw	= exynos8895_adc_exit_hw,
+	.clear_irq	= exynos_adc_v2_clear_irq,
+	.start_conv	= exynos8895_adc_start_conv,
+};
+
 static const struct of_device_id exynos_adc_match[] = {
 	{
 		.compatible = "samsung,s3c6410-adc",
@@ -419,6 +464,9 @@ static const struct of_device_id exynos_adc_match[] = {
 	}, {
 		.compatible = "samsung,exynos7-adc",
 		.data = &exynos7_adc_data,
+	}, {
+		.compatible = "samsung,exynos8895-adc",
+		.data = &exynos8895_adc_data,
 	},
 	{ }
 };
@@ -487,7 +535,7 @@ static irqreturn_t exynos_adc_isr(int irq, void *dev_id)
 	u32 mask = info->data->mask;
 
 	/* Read value */
-	info->value = readl(ADC_V1_DATX(info->regs)) & mask;
+	info->value = readl(info->regs + (info->data->data_reg ?: 0x0C)) & mask;
 
 	/* clear irq */
 	if (info->data->clear_irq)
@@ -538,6 +586,8 @@ static const struct iio_chan_spec exynos_adc_iio_channels[] = {
 	ADC_CHANNEL(7, "adc7"),
 	ADC_CHANNEL(8, "adc8"),
 	ADC_CHANNEL(9, "adc9"),
+	ADC_CHANNEL(10, "adc10"),
+	ADC_CHANNEL(11, "adc11"),
 };
 
 static int exynos_adc_probe(struct platform_device *pdev)
