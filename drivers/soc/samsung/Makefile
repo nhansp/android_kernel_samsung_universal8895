@@ -44,3 +44,6 @@ obj-$(CONFIG_GREATLTE_HB_L6D_WIFI)	+= greatlte-hb-l6d-wifi.o
 
 # L6D slice bt
 obj-$(CONFIG_GREATLTE_HB_L6D_BT)	+= greatlte-hb-l6d-bt.o
+
+# L6F slice fp (WP-6F)
+obj-$(CONFIG_GREATLTE_HB_L6F_FP)	+= greatlte-hb-l6f-fp.o
