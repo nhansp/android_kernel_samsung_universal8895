@@ -192,3 +192,12 @@ config GREATLTE_HB_L6A_ION
 	help
 	  Registers the L6A heartbeat rows "ion" (legacy ION probe result)
 	  and "ionb" (live ION buffers). Never enable in a release build.
+
+# L6A S3CFB front-end (spec L6A 8.1): heartbeat rows s3f s3e s3t
+config GREATLTE_HB_L6A_S3CFB
+	bool "greatlte heartbeat: L6A S3CFB front-end"
+	depends on GREATLTE_HB
+	default GREATLTE_HB
+	help
+	  Registers the heartbeat rows of the S3CFB front-end: frames
+	  applied, rejected commits and acquire-fence timeouts.

@@ -294,7 +294,12 @@ struct d8895_fmt {
  * HAL-to-DECON step is in the composer. The formats the vendor DPP accepts (dpp_check_format(),
  * dpp_drv.c:465-485) minus RGBA_5551 and the 10-bit NV12N, which the stock
  * composer never scans out on this panel; NV12/NV12M and NV21/NV21M are
- * the same DRM formats. The first D8895_NR_RGB entries are the G formats.
+ * the same DRM formats. The same MSB-first naming holds for the two-plane
+ * YUV codes: DRM NV12 (Cb in the low byte of each chroma pair) is
+ * YVU420_2P, which is what stock scanned an NV12 buffer with (DECON NV12 ->
+ * dpu_translate_fmt_to_dpp() NV21, S:.../dpu/helper.c:84-85 -> YVU420_2P,
+ * S:.../dpu/dpp_reg.c:1320-1324), and DRM NV21 is YUV420_2P (:1314-1318).
+ * The first D8895_NR_RGB entries are the G formats.
  */
 static const struct d8895_fmt d8895_formats[] = {
 	{ DRM_FORMAT_ARGB8888, D8895_IDMA_IMG_FORMAT_ARGB8888, 1, 0 },
@@ -306,8 +311,8 @@ static const struct d8895_fmt d8895_formats[] = {
 	{ DRM_FORMAT_RGBX8888, D8895_IDMA_IMG_FORMAT_RGBX8888, 0, 0 },
 	{ DRM_FORMAT_BGRX8888, D8895_IDMA_IMG_FORMAT_BGRX8888, 0, 0 },
 	{ DRM_FORMAT_RGB565, D8895_IDMA_IMG_FORMAT_RGB565, 0, 0 },
-	{ DRM_FORMAT_NV12, D8895_IDMA_IMG_FORMAT_YUV420_2P, 0, 1 },
-	{ DRM_FORMAT_NV21, D8895_IDMA_IMG_FORMAT_YVU420_2P, 0, 1 },
+	{ DRM_FORMAT_NV12, D8895_IDMA_IMG_FORMAT_YVU420_2P, 0, 1 },
+	{ DRM_FORMAT_NV21, D8895_IDMA_IMG_FORMAT_YUV420_2P, 0, 1 },
 };
 #define D8895_NR_RGB		9
 

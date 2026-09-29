@@ -30,3 +30,6 @@ obj-$(CONFIG_EXYNOS_SECURE_LOG)		+= exynos-seclog.o
 obj-$(CONFIG_GREATLTE_HB_L6T)		+= greatlte-hb-l6t.o
 # L6A slice ion
 obj-$(CONFIG_GREATLTE_HB_L6A_ION)	+= greatlte-hb-l6a-ion.o
+
+# L6A S3CFB front-end
+obj-$(CONFIG_GREATLTE_HB_L6A_S3CFB)	+= greatlte-hb-l6a-s3cfb.o
