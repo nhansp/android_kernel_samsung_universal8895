@@ -10,3 +10,51 @@
  * value, which gl-verify V-DUP reports as an error. L0's reserved-memory stays in
  * the .dts; carveout additions and flag changes are &label edits here (plan X-8).
  */
+
+/* L6D PCIe RC0 (K-F3) */
+&pinctrl_fsys1 {
+	/* FDT:958-967 pcie0_clkreq (phandle 0x108) */
+	pcie0_clkreq: pcie0-clkreq-pins {
+		samsung,pins = "gpj1-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;	/* FDT:960 0x02 */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;		/* FDT:961 0x03; A:.../exynos-pinctrl.h:16 PULL_UP = 3 */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:962 0x03; A:.../exynos-pinctrl.h:51 = 3 (value ACK cfg_wlanen uses in the same bank) */
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;	/* FDT:963 0x03; exynos-pinctrl.h:22 */
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_UP>;	/* FDT:964 0x03 */
+	};
+
+	/* FDT:979-986 pcie0_perst (phandle 0x109) */
+	pcie0_perst: pcie0-perst-pins {
+		samsung,pins = "gpj1-2";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;	/* FDT:981 0x01 */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:982 0x03 */
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;	/* FDT:983 0x03 */
+	};
+};
+
+&pcie0 {
+	pinctrl-names = "default", "clkreq_output";		/* FDT:8225 */
+	pinctrl-0 = <&pcie0_clkreq &pcie0_perst &pcie_wake>;	/* FDT:8226 <0x108 0x109 0x10a 0x10b 0x10c>; 0x10b/0x10c (cfg_wlanen,
+								 * wlan_host_wake) are claimed by the wlan node only: 6.18 pinmux refuses a
+								 * second owner of a muxed pin (pinmux_request "already requested") */
+	pinctrl-1 = <&pcie0_perst &pcie_wake>;			/* FDT:8227 <0x109 0x10a 0x10b 0x10c> (clkreq not in this state) */
+	reset-gpios = <&gpj1 2 GPIO_ACTIVE_LOW>;		/* PERST#: FDT:8219 gpios = <0x106 0x02 0x01> (0x106 = gpj1, flag 1 = active low) */
+	status = "okay";
+};
+
+/* L6D Wi-Fi (K-F6, L6D 4.4) */
+/ {
+	wlan {
+		compatible = "samsung,brcm-wlan";		/* FDT:11161 */
+		wlan-reg-on-gpios = <&gpj1 3 GPIO_ACTIVE_HIGH>;	/* FDT:11162 gpios[0] = <0x106 0x03 0x01>;
+								 * stock drives raw level (S:.../dhd_custom_exynos.c:131,232) */
+		interrupts-extended = <&gpa0 7 IRQ_TYPE_EDGE_RISING>;	/* WLAN_HOST_WAKE: FDT:11162 gpios[1] =
+								 * <0x90 0x07 0x01> (0x90 = gpa0); rising edge =
+								 * IORESOURCE_IRQ_HIGHEDGE, S:.../dhd_custom_exynos.c:303-305 */
+		samsung,pcie = <&pcie0>;			/* new: the RC this module hangs off
+							 * (stock: SAMSUNG_PCIE_CH_NUM 0, :96-98) */
+		pinctrl-names = "default";
+		pinctrl-0 = <&cfg_wlanen &wlan_host_wake>;	/* FDT:11163-11164 <0x10b 0x10c> */
+		status = "okay";				/* FDT:11165 */
+	};
+};
