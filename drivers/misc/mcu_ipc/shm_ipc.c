@@ -19,6 +19,9 @@
 #include <linux/slab.h>
 #include <linux/shm_ipc.h>
 #include <linux/of_reserved_mem.h>
+#include <linux/of_address.h>
+#include <linux/vmalloc.h>	/* vmap/vunmap/VM_MAP: 4.4 got them transitively (L6C 5.8) */
+#include <linux/memblock.h>	/* memblock_is_map_memory() (L6C 5.1.3) */
 
 #ifdef CONFIG_CP_RAM_LOGGING
 #include <linux/uaccess.h>
@@ -29,7 +32,8 @@
 #define MEMSHARE_DEV_NAME "memshare"
 #endif
 
-struct shm_plat_data {
+/* L6C 5.1.3: static (stock exported a global named "pdata", S:.../shm_ipc.c:32-62) */
+static struct shm_plat_data {
 	unsigned long p_addr;
 	unsigned p_acpm_addr;
 	void __iomem *v_boot;
@@ -49,8 +53,8 @@ struct shm_plat_data {
 	unsigned long p_sysram_addr;
 	unsigned t_sysram_size;
 
+	int cplog_on;	/* L6C 5.1.3: set by the S-Boot token whatever CONFIG_CP_RAM_LOGGING is */
 #ifdef CONFIG_CP_RAM_LOGGING
-	int cplog_on;
 	unsigned long p_cplog_addr;
 	unsigned cplog_size;
 	void __iomem *v_cplog;
@@ -178,7 +182,9 @@ create_memshare_device_exit:
 
 static void destroy_memshare_device(void)
 {
-	misc_deregister(&pdata.mdev);
+	/* only what create_memshare_device() registered (it is not created when cplog is off) */
+	if (pdata.data_ready)
+		misc_deregister(&pdata.mdev);
 }
 #endif
 
@@ -186,20 +192,11 @@ unsigned long shm_get_phys_base(void)
 {
 	return pdata.p_addr;
 }
+EXPORT_SYMBOL_GPL(shm_get_phys_base);	/* L6C 2.6: L6E ABOX (VSS) */
 
 unsigned shm_get_phys_size(void)
 {
 	return pdata.t_size;
-}
-
-unsigned long shm_get_sysram_base(void)
-{
-	return pdata.p_sysram_addr;
-}
-
-unsigned shm_get_sysram_size(void)
-{
-	return pdata.t_sysram_size;
 }
 
 unsigned shm_get_boot_size(void)
@@ -226,6 +223,7 @@ unsigned shm_get_vss_size(void)
 {
 	return pdata.vss_size;
 }
+EXPORT_SYMBOL_GPL(shm_get_vss_size);	/* L6C 2.6 */
 
 unsigned shm_get_acpm_size(void)
 {
@@ -236,6 +234,7 @@ unsigned shm_get_cp_size(void)
 {
 	return pdata.cp_size;
 }
+EXPORT_SYMBOL_GPL(shm_get_cp_size);	/* L6C 2.6 */
 
 #ifdef CONFIG_CP_RAM_LOGGING
 unsigned long shm_get_cplog_base(void)
@@ -314,7 +313,7 @@ void __iomem *shm_request_region(unsigned long sh_addr, unsigned size)
 	if (size > (num_pages << PAGE_SHIFT))
 		num_pages++;
 
-	pages = kmalloc(sizeof(struct page *) * num_pages, GFP_ATOMIC);
+	pages = kmalloc_array(num_pages, sizeof(*pages), GFP_ATOMIC);
 	if (!pages) {
 		pr_err("%s: pages allocation fail!\n", __func__);
 		return NULL;
@@ -367,6 +366,7 @@ void __iomem *shm_get_vss_region(void)
 
 	return pdata.v_vss;
 }
+EXPORT_SYMBOL_GPL(shm_get_vss_region);	/* L6C 2.6 */
 
 void clean_vss_magic_code(void)
 {
@@ -382,12 +382,12 @@ void clean_vss_magic_code(void)
 	iowrite32(0, vss_magic);
 }
 
+/*
+ * L6C D-3: the APM SRAM is MMIO (no struct page, vmap() refuses it, A:mm/vmalloc.c:547-549);
+ * it is devm_ioremap()ed once in shm_probe() and read with memcpy_fromio() (modem_dump.c).
+ */
 void __iomem *shm_get_acpm_region(void)
 {
-	if (!pdata.v_acpm)
-		pdata.v_acpm = shm_request_region(pdata.p_acpm_addr,
-				pdata.acpm_size);
-
 	return pdata.v_acpm;
 }
 
@@ -418,11 +418,10 @@ void shm_release_regions(void)
 	if (pdata.v_vss)
 		vunmap(pdata.v_vss);
 
-	if (pdata.v_acpm)
-		vunmap(pdata.v_acpm);
-
-	if (pdata.v_zmb)
-		vunmap(pdata.v_zmb);
+	/*
+	 * L6C 5.1.3: v_acpm is a devm mapping (D-3) and v_zmb the linear-map address
+	 * (phys_to_virt, :357); neither is a vmap area (stock vunmap()ed both, :421-425).
+	 */
 
 #ifdef CONFIG_CP_RAM_LOGGING
 	if (pdata.v_cplog)
@@ -436,6 +435,11 @@ static void shm_free_reserved_mem(unsigned long addr, unsigned size)
 	int i;
 	struct page *page;
 
+	/* L6C 5.1.3: a no-map region has no linear map to hand back (D-2 guard) */
+	if (!memblock_is_map_memory(addr)) {
+		pr_err("cplog region 0x%lx is no-map: not released (L6C D-2)\n", addr);
+		return;
+	}
 	pr_err("Release cplog reserved memory\n");
 	for (i = 0; i < (size >> PAGE_SHIFT); i++) {
 		page = phys_to_page(addr);
@@ -445,50 +449,7 @@ static void shm_free_reserved_mem(unsigned long addr, unsigned size)
 }
 #endif
 
-#ifdef CONFIG_OF_RESERVED_MEM
-static int __init modem_if_reserved_mem_setup(struct reserved_mem *remem)
-{
-   pdata.p_addr = remem->base;
-   pdata.t_size = remem->size;
-
-   pr_err("%s: memory reserved: paddr=%lu, t_size=%u\n",
-        __func__, pdata.p_addr, pdata.t_size);
-
-   return 0;
-}
-RESERVEDMEM_OF_DECLARE(modem_if, "exynos,modem_if", modem_if_reserved_mem_setup);
-
-#ifdef CONFIG_CP_RAM_LOGGING
-static int __init modem_if_reserved_cplog_setup(struct reserved_mem *remem)
-{
-   pdata.p_cplog_addr = remem->base;
-   pdata.cplog_size = remem->size;
-
-   pr_err("%s: cplog memory reserved: paddr=%lu, t_size=%u\n",
-        __func__, pdata.p_cplog_addr, pdata.cplog_size);
-
-   return 0;
-}
-RESERVEDMEM_OF_DECLARE(cp_ram_logging, "exynos,cp_ram_logging",
-		modem_if_reserved_cplog_setup);
-#endif
-
-#if !defined (CONFIG_SOC_EXYNOS7570)
-static int __init deliver_cp_reserved_mem_setup(struct reserved_mem *remem)
-{
-   pdata.p_sysram_addr = remem->base;
-   pdata.t_sysram_size = remem->size;
-
-   pr_err("%s: memory reserved: paddr=%u, t_size=%u\n",
-        __func__, (u32)remem->base, (u32)remem->size);
-
-   return 0;
-}
-RESERVEDMEM_OF_DECLARE(deliver_cp, "exynos,deliver_cp", deliver_cp_reserved_mem_setup);
-#endif
-#endif
-
-#ifdef CONFIG_CP_RAM_LOGGING
+/* S-Boot token (L6C 2.1); L6C 5.1.3: independent of CONFIG_CP_RAM_LOGGING */
 static int __init console_setup(char *str)
 {
 	if (!strcmp(str, "ON") || !strcmp(str, "on"))
@@ -498,15 +459,51 @@ static int __init console_setup(char *str)
 	return 0;
  }
 __setup("androidboot.cp_reserved_mem=", console_setup);
-#endif
 
 static int shm_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	int ret;
-	struct device_node *np_acpm = of_find_node_by_name(NULL, "acpm_ipc");
+	struct resource r;
+	struct device_node *np_acpm;
 
 	dev_err(dev, "%s: shmem driver init\n", __func__);
+
+	/*
+	 * L6C 5.1.3: the carveouts come from memory-region (L0 labels modem_mem,
+	 * cp_ram_logging_mem); stock read them with RESERVEDMEM_OF_DECLARE (:448-489).
+	 * deliver_cp has no node on this board, so p_sysram_addr stays 0 as on stock.
+	 */
+	ret = of_reserved_mem_region_to_resource_byname(dev->of_node, "modem_if", &r);
+	if (ret)
+		return dev_err_probe(dev, ret, "memory-region modem_if\n");
+	pdata.p_addr = r.start;
+	pdata.t_size = resource_size(&r);
+#ifdef CONFIG_CP_RAM_LOGGING
+	ret = of_reserved_mem_region_to_resource_byname(dev->of_node, "cp_ram_logging", &r);
+	if (ret)
+		return dev_err_probe(dev, ret, "memory-region cp_ram_logging\n");
+	pdata.p_cplog_addr = r.start;
+	pdata.cplog_size = resource_size(&r);
+#endif
+
+	/*
+	 * L6C D-3: ACPM dump window = the L2 apm_sram node (0x16500000/0xb400), stock
+	 * acpm_ipc dump-base/dump-size (FDT:6692-6693). The mmio-sram driver owns the
+	 * resource, so it is only mapped here, not requested.
+	 */
+	np_acpm = of_parse_phandle(dev->of_node, "samsung,acpm-dump", 0);
+	if (!np_acpm)
+		return dev_err_probe(dev, -ENODEV, "samsung,acpm-dump\n");
+	ret = of_address_to_resource(np_acpm, 0, &r);
+	of_node_put(np_acpm);
+	if (ret)
+		return dev_err_probe(dev, ret, "samsung,acpm-dump resource\n");
+	pdata.p_acpm_addr = r.start;
+	pdata.acpm_size = resource_size(&r);
+	pdata.v_acpm = devm_ioremap(dev, r.start, resource_size(&r));
+	if (!pdata.v_acpm)
+		return -ENOMEM;
 
 	if (dev->of_node) {
 		ret = of_property_read_u32(dev->of_node, "shmem,ipc_offset",
@@ -547,17 +544,6 @@ static int shm_probe(struct platform_device *pdev)
 		if (ret)
 			dev_err(dev, "failed to get property, vss_size\n");
 
-
-		ret = of_property_read_u32(np_acpm, "dump-base",
-				&pdata.p_acpm_addr);
-		if (ret)
-			dev_err(dev, "failed to get property, acpm_base\n");
-
-		ret = of_property_read_u32(np_acpm, "dump-size",
-				&pdata.acpm_size);
-		if (ret)
-			dev_err(dev, "failed to get property, acpm_size\n");
-
 	} else {
 		/* To do: In case of non-DT */
 	}
@@ -586,22 +572,21 @@ static int shm_probe(struct platform_device *pdev)
 		shm_free_reserved_mem(pdata.p_cplog_addr, pdata.cplog_size);
 	}
 #endif
+	/* L6C 5.1.1: the modem driver defers until this is set */
+	platform_set_drvdata(pdev, &pdata);
 	return 0;
 }
 
-static int shm_remove(struct platform_device *pdev)
+/* G-12: void remove (A:include/linux/platform_device.h:241) */
+static void shm_remove(struct platform_device *pdev)
 {
 #ifdef CONFIG_CP_RAM_LOGGING
 	destroy_memshare_device();
 #endif
-	return 0;
 }
 
 static const struct of_device_id exynos_shm_dt_match[] = {
-		{ .compatible = "samsung,exynos7580-shm_ipc", },
-		{ .compatible = "samsung,exynos8890-shm_ipc", },
-		{ .compatible = "samsung,exynos7870-shm_ipc", },
-		{ .compatible = "samsung,exynos-shm_ipc", },
+		{ .compatible = "samsung,exynos8895-shm-ipc", },	/* L6C 4.1 */
 		{},
 };
 MODULE_DEVICE_TABLE(of, exynos_shm_dt_match);
@@ -611,8 +596,7 @@ static struct platform_driver shmem_driver = {
 	.remove		= shm_remove,
 	.driver		= {
 		.name = "shm_ipc",
-		.owner = THIS_MODULE,
-		.of_match_table = of_match_ptr(exynos_shm_dt_match),
+		.of_match_table = exynos_shm_dt_match,
 		.suppress_bind_attrs = true,
 	},
 };
