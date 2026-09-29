@@ -41,3 +41,20 @@
 	reset-gpios = <&gpj1 2 GPIO_ACTIVE_LOW>;		/* PERST#: FDT:8219 gpios = <0x106 0x02 0x01> (0x106 = gpj1, flag 1 = active low) */
 	status = "okay";
 };
+
+/* L6D Wi-Fi (K-F6, L6D 4.4) */
+/ {
+	wlan {
+		compatible = "samsung,brcm-wlan";		/* FDT:11161 */
+		wlan-reg-on-gpios = <&gpj1 3 GPIO_ACTIVE_HIGH>;	/* FDT:11162 gpios[0] = <0x106 0x03 0x01>;
+								 * stock drives raw level (S:.../dhd_custom_exynos.c:131,232) */
+		interrupts-extended = <&gpa0 7 IRQ_TYPE_EDGE_RISING>;	/* WLAN_HOST_WAKE: FDT:11162 gpios[1] =
+								 * <0x90 0x07 0x01> (0x90 = gpa0); rising edge =
+								 * IORESOURCE_IRQ_HIGHEDGE, S:.../dhd_custom_exynos.c:303-305 */
+		samsung,pcie = <&pcie0>;			/* new: the RC this module hangs off
+							 * (stock: SAMSUNG_PCIE_CH_NUM 0, :96-98) */
+		pinctrl-names = "default";
+		pinctrl-0 = <&cfg_wlanen &wlan_host_wake>;	/* FDT:11163-11164 <0x10b 0x10c> */
+		status = "okay";				/* FDT:11165 */
+	};
+};
