@@ -23,3 +23,6 @@ obj-$(CONFIG_GREATLTE_HB) += greatlte-hb-l4.o
 obj-$(CONFIG_GREATLTE_HB_L5) += greatlte-hb-l5.o
 obj-$(CONFIG_SAMSUNG_SEC_CLASS)		+= samsung-sec-class.o
 obj-$(CONFIG_GREATLTE_HB_L6F)		+= greatlte-hb-l6f.o
+# L6T (Trustonic TEE)
+obj-$(CONFIG_EXYNOS8895_SMC)		+= exynos8895-smc.o
+obj-$(CONFIG_EXYNOS_UFS_SRPMB)		+= exynos-srpmb.o

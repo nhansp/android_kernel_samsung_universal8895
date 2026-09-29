@@ -154,3 +154,18 @@ config GREATLTE_HB_L6F
 	default GREATLTE_HB
 	help
 	  Registers the L6F heartbeat rows.
+
+# L6T (Trustonic TEE): SMC helper of L6F 5.11 (users 6T-R/6T-S), secure RPMB proxy, secure log, heartbeat rows
+config EXYNOS8895_SMC
+	bool
+	help
+	  exynos8895_smc(): plain secure monitor calls to Samsung's EL3
+	  monitor on the Exynos 8895 (spec L6F 5.11). Selected by its users.
+
+config EXYNOS_UFS_SRPMB
+	bool "Exynos secure RPMB proxy for the Trustonic TEE"
+	depends on SCSI_UFSHCD && ARCH_EXYNOS
+	select EXYNOS8895_SMC
+	help
+	  Forwards the RPMB requests of the Exynos 8895 secure world to the
+	  UFS RPMB well-known LU (stock CONFIG_UFS_SRPMB, spec L6T 5.9).
