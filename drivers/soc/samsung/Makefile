@@ -33,3 +33,6 @@ obj-$(CONFIG_GREATLTE_HB_L6A_ION)	+= greatlte-hb-l6a-ion.o
 
 # L6A S3CFB front-end
 obj-$(CONFIG_GREATLTE_HB_L6A_S3CFB)	+= greatlte-hb-l6a-s3cfb.o
+
+# L6A slice gpu
+obj-$(CONFIG_GREATLTE_HB_L6A_GPU)	+= greatlte-hb-l6a-gpu.o

@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# Exynos 8895 kbase platform (spec L6A_graphics.md 5.1.5), included by the
+# kbase Kbuild into mali_kbase.o.
+
+mali_kbase-y += $(MALI_PLATFORM_DIR)/mali_kbase_config_exynos8895.o
