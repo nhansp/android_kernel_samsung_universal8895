@@ -1588,6 +1588,7 @@ static const struct samsung_pin_ctrl exynos8895_pin_ctrl[] __initconst = {
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
 		.retention_data	= &exynos8895_retention_data,
+		.syscore_pm	= true,
 	}, {
 		/* pin-controller instance 1 ABOX data */
 		.pin_banks	= exynos8895_pin_banks1,
@@ -1615,6 +1616,7 @@ static const struct samsung_pin_ctrl exynos8895_pin_ctrl[] __initconst = {
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
 		.retention_data	= &exynos8895_retention_data,
+		.syscore_pm	= true,
 	}, {
 		/* pin-controller instance 4 FSYS1 data */
 		.pin_banks	= exynos8895_pin_banks4,
@@ -1623,6 +1625,7 @@ static const struct samsung_pin_ctrl exynos8895_pin_ctrl[] __initconst = {
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
 		.retention_data	= &exynos8895_retention_data,
+		.syscore_pm	= true,
 	}, {
 		/* pin-controller instance 5 BUSC data */
 		.pin_banks	= exynos8895_pin_banks5,
@@ -1631,6 +1634,7 @@ static const struct samsung_pin_ctrl exynos8895_pin_ctrl[] __initconst = {
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
 		.retention_data	= &exynos8895_retention_data,
+		.syscore_pm	= true,
 	}, {
 		/* pin-controller instance 6 PERIC0 data */
 		.pin_banks	= exynos8895_pin_banks6,
@@ -1639,6 +1643,7 @@ static const struct samsung_pin_ctrl exynos8895_pin_ctrl[] __initconst = {
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
 		.retention_data	= &exynos8895_retention_data,
+		.syscore_pm	= true,
 	}, {
 		/* pin-controller instance 7 PERIC1 data */
 		.pin_banks	= exynos8895_pin_banks7,
@@ -1647,6 +1652,7 @@ static const struct samsung_pin_ctrl exynos8895_pin_ctrl[] __initconst = {
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
 		.retention_data	= &exynos8895_retention_data,
+		.syscore_pm	= true,
 	},
 };
 

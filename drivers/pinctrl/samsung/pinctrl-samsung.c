@@ -21,15 +21,26 @@
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/irqdomain.h>
+#include <linux/notifier.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
+#include <linux/soc/samsung/exynos-pinctrl-pm.h>
 #include <linux/spinlock.h>
+#include <linux/syscore_ops.h>
 
 #include "../core.h"
 #include "pinctrl-samsung.h"
+
+/*
+ * Controllers with syscore_pm, in probe order (drvdata->node, the "global
+ * list node" that 6.18 does not otherwise use). Stock kept every controller
+ * on such a list and saved/restored them from syscore ops
+ * (S:drivers/pinctrl/samsung/pinctrl-samsung.c:56,1226,1354-1377).
+ */
+static LIST_HEAD(samsung_pinctrl_syscore_list);
 
 /* maximum number of the memory resources */
 #define	SAMSUNG_PINCTRL_NUM_RESOURCES	2
@@ -1200,6 +1211,7 @@ samsung_pinctrl_get_soc_data(struct samsung_pinctrl_drv_data *d,
 	d->suspend = ctrl->suspend;
 	d->resume = ctrl->resume;
 	d->no_pm_save = ctrl->no_pm_save;
+	d->syscore_pm = ctrl->syscore_pm;
 	d->nr_banks = ctrl->nr_banks;
 	d->pin_banks = devm_kcalloc(&pdev->dev, d->nr_banks,
 					sizeof(*d->pin_banks), GFP_KERNEL);
@@ -1322,6 +1334,9 @@ static int samsung_pinctrl_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, drvdata);
 
+	if (drvdata->syscore_pm)
+		list_add_tail(&drvdata->node, &samsung_pinctrl_syscore_list);
+
 	return 0;
 
 err_unregister:
@@ -1332,18 +1347,14 @@ err_put_banks:
 }
 
 /*
- * samsung_pinctrl_suspend - save pinctrl state for suspend
+ * samsung_pinctrl_save - save pinctrl state for suspend
  *
  * Save data for all banks handled by this device.
  */
-static int __maybe_unused samsung_pinctrl_suspend(struct device *dev)
+static int samsung_pinctrl_save(struct samsung_pinctrl_drv_data *drvdata)
 {
-	struct samsung_pinctrl_drv_data *drvdata = dev_get_drvdata(dev);
 	struct samsung_pin_bank *bank;
 	int i;
-
-	if (drvdata->no_pm_save)
-		return 0;
 
 	i = clk_enable(drvdata->pclk);
 	if (i) {
@@ -1396,22 +1407,18 @@ static int __maybe_unused samsung_pinctrl_suspend(struct device *dev)
 }
 
 /*
- * samsung_pinctrl_resume - restore pinctrl state from suspend
+ * samsung_pinctrl_restore - restore pinctrl state from suspend
  *
  * Restore one of the banks that was saved during suspend.
  *
  * We don't bother doing anything complicated to avoid glitching lines since
  * we're called before pad retention is turned off.
  */
-static int __maybe_unused samsung_pinctrl_resume(struct device *dev)
+static int samsung_pinctrl_restore(struct samsung_pinctrl_drv_data *drvdata)
 {
-	struct samsung_pinctrl_drv_data *drvdata = dev_get_drvdata(dev);
 	struct samsung_pin_bank *bank;
 	int ret;
 	int i;
-
-	if (drvdata->no_pm_save)
-		return 0;
 
 	/*
 	 * enable clock before the callback, as we don't want to have to deal
@@ -1468,6 +1475,79 @@ static int __maybe_unused samsung_pinctrl_resume(struct device *dev)
 
 	return 0;
 }
+
+static int __maybe_unused samsung_pinctrl_suspend(struct device *dev)
+{
+	struct samsung_pinctrl_drv_data *drvdata = dev_get_drvdata(dev);
+
+	if (drvdata->no_pm_save || drvdata->syscore_pm)
+		return 0;
+
+	return samsung_pinctrl_save(drvdata);
+}
+
+static int __maybe_unused samsung_pinctrl_resume(struct device *dev)
+{
+	struct samsung_pinctrl_drv_data *drvdata = dev_get_drvdata(dev);
+
+	if (drvdata->no_pm_save || drvdata->syscore_pm)
+		return 0;
+
+	return samsung_pinctrl_restore(drvdata);
+}
+
+/*
+ * Resume notifier for code that stock ran inside the pinctrl syscore resume,
+ * before the first bank was restored (the secure fingerprint resume SMC,
+ * S:drivers/pinctrl/samsung/pinctrl-samsung.c:1315-1323). Syscore context:
+ * one CPU, IRQs off, so a raw chain and callbacks that never sleep.
+ */
+static RAW_NOTIFIER_HEAD(samsung_pinctrl_resume_chain);
+
+int samsung_pinctrl_register_resume_notifier(struct notifier_block *nb)
+{
+	return raw_notifier_chain_register(&samsung_pinctrl_resume_chain, nb);
+}
+EXPORT_SYMBOL_GPL(samsung_pinctrl_register_resume_notifier);
+
+/*
+ * Stock order (S:drivers/pinctrl/samsung/pinctrl-samsung.c:1354-1377): all
+ * syscore_pm controllers forward on suspend, reverse on resume. Runs on the
+ * boot CPU with IRQs off, after every device's noirq suspend and before any
+ * device's noirq resume: the helpers are plain register copies, an optional
+ * pclk clk_enable() and the PMU syscon regmap (spinlock).
+ */
+static int samsung_pinctrl_syscore_suspend(void)
+{
+	struct samsung_pinctrl_drv_data *drvdata;
+	int ret;
+
+	list_for_each_entry(drvdata, &samsung_pinctrl_syscore_list, node) {
+		ret = samsung_pinctrl_save(drvdata);
+		if (ret) {
+			list_for_each_entry_continue_reverse(drvdata,
+							     &samsung_pinctrl_syscore_list, node)
+				samsung_pinctrl_restore(drvdata);
+			return ret;
+		}
+	}
+	return 0;
+}
+
+static void samsung_pinctrl_syscore_resume(void)
+{
+	struct samsung_pinctrl_drv_data *drvdata;
+
+	raw_notifier_call_chain(&samsung_pinctrl_resume_chain, 0, NULL);
+
+	list_for_each_entry_reverse(drvdata, &samsung_pinctrl_syscore_list, node)
+		samsung_pinctrl_restore(drvdata);
+}
+
+static struct syscore_ops samsung_pinctrl_syscore_ops = {
+	.suspend = samsung_pinctrl_syscore_suspend,
+	.resume  = samsung_pinctrl_syscore_resume,
+};
 
 static const struct of_device_id samsung_pinctrl_dt_match[] = {
 #ifdef CONFIG_PINCTRL_EXYNOS_ARM
@@ -1542,6 +1622,16 @@ static struct platform_driver samsung_pinctrl_driver = {
 
 static int __init samsung_pinctrl_drv_register(void)
 {
+	/*
+	 * Registered first, at postcore_initcall as stock did
+	 * (S:drivers/pinctrl/samsung/pinctrl-samsung.c:1695-1707), so these
+	 * ops come before any arch-specific syscore ops that turn off pad
+	 * retention. The list stays empty (no-op ops) on every SoC without
+	 * syscore_pm.
+	 */
+	if (IS_ENABLED(CONFIG_PM_SLEEP))
+		register_syscore_ops(&samsung_pinctrl_syscore_ops);
+
 	return platform_driver_register(&samsung_pinctrl_driver);
 }
 postcore_initcall(samsung_pinctrl_drv_register);
