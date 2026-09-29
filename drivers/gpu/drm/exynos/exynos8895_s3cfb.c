@@ -25,6 +25,7 @@
 #include <linux/sysfs.h>
 #include <linux/uaccess.h>
 #include <linux/wait.h>
+#include <linux/soc/samsung/greatlte-l6a-s3cfb.h>
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_uapi.h>
@@ -46,6 +47,9 @@
 
 #include "exynos8895_drm_decon.h"
 #include "exynos8895_s3cfb.h"
+
+/* DEBUG: heartbeat counters of greatlte-hb-l6a-s3cfb.c, only when built in */
+#define GL6A_ON			IS_BUILTIN(CONFIG_DRM_EXYNOS)
 
 /* ---- stock UAPI (S:.../dpu/decon.h, arm64, IKC:3105 SUPPORT_DSU=y, IKC:3110 INDISPLAY=n) ---- */
 
@@ -1181,6 +1185,7 @@ static void s3cfb_apply(struct kthread_work *work)
 		if (dma_fence_wait_timeout(win->acquire, false,
 					   msecs_to_jiffies(S3CFB_FENCE_TIMEOUT_MS)) <= 0) {
 			pr_err("s3cfb: win%d acquire fence timeout\n", w);
+			greatlte_l6a_s3cfb_inc(GL6A_ON, s3t);
 			if (win->comp) {
 				win->state = DECON_WIN_STATE_DISABLED;
 				drm_framebuffer_put(win->fb);
@@ -1205,11 +1210,13 @@ static void s3cfb_apply(struct kthread_work *work)
 		ret = s3cfb_commit(s, fr);
 		if (ret) {
 			pr_err_ratelimited("s3cfb: WIN_CONFIG rejected by atomic_check: %d\n", ret);
+			greatlte_l6a_s3cfb_inc(GL6A_ON, s3e);
 		}
 	}
 
 	/* 5. the previous frame's fence (:2336-2338) */
 	s3cfb_timeline_inc(s, false);
+	greatlte_l6a_s3cfb_inc(GL6A_ON, s3f);
 	s3cfb_frame_free(fr);
 }
 
