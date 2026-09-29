@@ -1,0 +1,81 @@
+Samsung Exynos 8895 CP (Shannon 355 / SS310AP) modem interface
+===============================================================
+
+Three nodes describe the AP side of the on-SoC CP of the Exynos 8895
+(Galaxy Note 8, SM-N950N): the AP<->CP mailbox, the CP shared-memory layout and
+the Samsung SIPC modem interface that drives CP boot and the IPC links. The
+drivers are the stock Samsung ones (drivers/misc/mcu_ipc/, drivers/misc/modem_v1/),
+which read the stock vendor property names below (mcu,*, shmem,*, mif,*, mbx_*,
+sbi_*, iod,*); only the properties new to this port use the "samsung," prefix.
+A YAML schema would reject these prefixes, so this binding is text.
+
+1. Mailbox
+----------
+Required properties:
+- compatible: "samsung,exynos8895-mcu-ipc"
+- reg: the mailbox SFR block (0x15b40000, 0x180)
+- interrupts: the CP->AP mailbox interrupt
+- mcu,name: name string of the mailbox
+- mcu,id: mailbox id, 0 for the CP (MCU_CP)
+
+2. Shared memory
+----------------
+Required properties:
+- compatible: "samsung,exynos8895-shm-ipc"
+- memory-region: the whole CP window and the CP RAM-logging window
+- memory-region-names: "modem_if", "cp_ram_logging"
+- shmem,cp_size: size of the CP image area at the start of "modem_if"
+- shmem,vss_size: size of the VSS area that follows it
+- shmem,ipc_offset: offset of the IPC area in "modem_if" (= size of the boot area)
+- shmem,ipc_size: size of the IPC area
+- shmem,zmb_offset: offset of the zero-copy buffer area in "modem_if"
+- shmem,zmb_size: size of the zero-copy buffer area
+- samsung,acpm-dump: phandle of the APM SRAM node whose window the CP dump
+  ioctl reads
+
+3. Modem interface
+------------------
+The node must be a root node named "mif_pdata" with reg = <0x0 0x10000 0x0>:
+the userspace CP boot daemon uses the platform device path
+/sys/devices/platform/10000.mif_pdata/, and the resource start 0x10000 is the
+offset of the CP main binary in the boot area.
+
+Required properties:
+- compatible: "samsung,exynos8895-modem"
+- reg: <0x0 0x10000 0x0>
+- interrupts: CP fail (index 0) and CP watchdog (index 1)
+- samsung,mailbox: phandle of the mailbox node
+- samsung,shmem: phandle of the shared-memory node
+- samsung,pmu-syscon: phandle of the PMU system controller
+- mif,name, mif,modem_net, mif,modem_type, mif,use_handover, mif,ipc_version,
+  mif,link_types, mif,link_name, mif,link_attrs, mif,num_iodevs, mif,buff_offset,
+  mif,buff_size, mif,bufpool_2nd_base, mif,bufpool_2nd_size: modem and link
+  description
+- mbx_ap2cp_msg, mbx_cp2ap_msg, mbx_ap2cp_united_status, mbx_cp2ap_united_status,
+  mbx_ap2cp_mif_value, mbx_ap2cp_kerneltime, mbx_cp2ap_dvfsreq_cpu,
+  mbx_cp2ap_dvfsreq_mif, mbx_cp2ap_dvfsreq_int: mailbox word numbers
+- mif,int_ap2cp_msg, mif,int_ap2cp_wakeup, mif,int_ap2cp_status,
+  mif,int_ap2cp_active: AP->CP doorbell numbers
+- mif,irq_cp2ap_msg, mif,irq_cp2ap_status, mif,irq_cp2ap_active,
+  mif,irq_cp2ap_wakelock, mif,irq_cp2ap_ratmode, mif,irq_cp2ap_perf_req_cpu,
+  mif,irq_cp2ap_perf_req_mif, mif,irq_cp2ap_perf_req_int: CP->AP mailbox
+  interrupt numbers
+- sbi_*_mask, sbi_*_pos: mask and position of each field of the status words
+- gpios: the hardware-revision strap inputs, bit n of the revision = GPIO n
+
+Required child node "iodevs", with one child per io device:
+- iod,name: device node or network interface name
+- iod,id: SIPC channel id
+- iod,format: IPC format (0 FMT, 1 RAW, 2 RFS, 3 MULTI_RAW, 4 BOOT, 5 DUMP)
+- iod,io_type: 0 misc device, 1 network device, 2 dummy
+- iod,links: link type mask
+- iod,attrs: attribute mask
+- iod,ul_num_buffers, iod,ul_buffer_size, iod,dl_num_buffers,
+  iod,dl_buffer_size: SBD ring geometry (with the SBD_IPC attribute)
+Optional:
+- iod,app: user of the device (informational)
+- iod,napi_weight: NAPI weight of a network device
+- iod,option_region: the device is created only when this equals
+  CONFIG_OPTION_REGION (with the OPTION_REGION attribute)
+
+Example: arch/arm64/boot/dts/exynos/exynos8895-greatlte-l6c.dtsi.
