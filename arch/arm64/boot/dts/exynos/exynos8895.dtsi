@@ -1891,6 +1891,23 @@
 			status = "disabled";
 		};
 
+		/*
+		 * SYSREG_CAM: BUS_COMPONENT_DRCG_EN at +0x200
+		 * (S:.../pmucal_local_exynos8895.h:111), saved/restored by pd_cam;
+		 * CSIS D-PHY reset bits 0-3 at +0x1050
+		 * (S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:4157-4192). Size as
+		 * stock's ioremap of SYSREG_CAM (S:drivers/media/platform/exynos/
+		 * fimc-is2/ischain/fimc-is-v5_2_0/fimc-is-hw-chain.c:524). No clocks:
+		 * the APB clock is the HWACG GATE_SYSREG_CAM (S:drivers/clk/samsung/
+		 * clk-exynos8895.c:130); a syscon clock would keep CMU_CAM, hence
+		 * pd_cam, on (A:drivers/mfd/syscon.c:126-137). Accessed only while
+		 * pd_cam is on.
+		 */
+		syscon_cam: syscon@12c20000 {
+			compatible = "samsung,exynos8895-cam-sysreg", "syscon";
+			reg = <0x12c20000 0x10000>;
+		};
+
 		cmu_dcam: clock-controller@12e00000 {
 			compatible = "samsung,exynos8895-cmu-dcam";
 			reg = <0x12e00000 0x8000>;	/* CAL:cmucal-sfr.c:18 SFR_BLOCK(DCAM, 0x12e00000, 0x8000) */
@@ -1903,6 +1920,12 @@
 			assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_DCAM_BUS>, <&cmu_top CLK_DOUT_CMU_DCAM_IMGD>;
 			power-domains = <&pd_dcam>;	/* CAL:pmucal_local_exynos8895.h:172-187 dcam_save */
 			status = "disabled";
+		};
+
+		/* SYSREG_DCAM: DRCG_EN at +0x200 (S:.../pmucal_local_exynos8895.h:186); no clocks, as syscon_cam */
+		syscon_dcam: syscon@12e20000 {
+			compatible = "samsung,exynos8895-dcam-sysreg", "syscon";
+			reg = <0x12e20000 0x1000>;
 		};
 
 		cmu_isplp: clock-controller@13000000 {
@@ -1918,6 +1941,12 @@
 			status = "disabled";
 		};
 
+		/* SYSREG_ISPLP: DRCG_EN at +0x200 (S:.../pmucal_local_exynos8895.h:434); no clocks, as syscon_cam */
+		syscon_isplp: syscon@13020000 {
+			compatible = "samsung,exynos8895-isplp-sysreg", "syscon";
+			reg = <0x13020000 0x1000>;
+		};
+
 		cmu_isphq: clock-controller@13100000 {
 			compatible = "samsung,exynos8895-cmu-isphq";
 			reg = <0x13100000 0x8000>;	/* CAL:cmucal-sfr.c:27 SFR_BLOCK(ISPHQ, 0x13100000, 0x8000) */
@@ -1929,6 +1958,12 @@
 			assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_ISPHQ_BUS>;
 			power-domains = <&pd_isphq>;	/* CAL:pmucal_local_exynos8895.h:385-400 isphq_save */
 			status = "disabled";
+		};
+
+		/* SYSREG_ISPHQ: DRCG_EN at +0x200 (S:.../pmucal_local_exynos8895.h:399); no clocks, as syscon_cam */
+		syscon_isphq: syscon@13120000 {
+			compatible = "samsung,exynos8895-isphq-sysreg", "syscon";
+			reg = <0x13120000 0x1000>;
 		};
 
 		cmu_g3d: clock-controller@13800000 {
@@ -2005,6 +2040,12 @@
 			status = "disabled";
 		};
 
+		/* SYSREG_G2D: DRCG_EN at +0x200 (S:.../pmucal_local_exynos8895.h:345); no clocks, as syscon_cam */
+		syscon_g2d: syscon@13a20000 {
+			compatible = "samsung,exynos8895-g2d-sysreg", "syscon";
+			reg = <0x13a20000 0x1000>;
+		};
+
 		cmu_mfc: clock-controller@13c00000 {
 			compatible = "samsung,exynos8895-cmu-mfc";
 			reg = <0x13c00000 0x8000>;	/* CAL:cmucal-sfr.c:30 SFR_BLOCK(MFC, 0x13c00000, 0x8000) */
@@ -2016,6 +2057,12 @@
 			assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_MFC_BUS>;	/* UMUX := CLKCMU_MFC_BUS, stock ra.c:593-595 */
 			power-domains = <&pd_mfc>;	/* CAL:pmucal_local_exynos8895.h:502-520 mfc_save */
 			status = "disabled";
+		};
+
+		/* SYSREG_MFC: DRCG_EN at +0x200 (S:.../pmucal_local_exynos8895.h:519); no clocks, as syscon_cam */
+		syscon_mfc: syscon@13c20000 {
+			compatible = "samsung,exynos8895-mfc-sysreg", "syscon";
+			reg = <0x13c20000 0x1000>;
 		};
 
 		cmu_abox: clock-controller@13e00000 {
@@ -2061,6 +2108,12 @@
 			assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_SRDZ_BUS>, <&cmu_top CLK_DOUT_CMU_SRDZ_IMGD>;
 			power-domains = <&pd_srdz>;	/* CAL:pmucal_local_exynos8895.h:536-555 srdz_save */
 			status = "disabled";
+		};
+
+		/* SYSREG_SRDZ: DRCG_EN at +0x200 (S:.../pmucal_local_exynos8895.h:554); no clocks, as syscon_cam */
+		syscon_srdz: syscon@14220000 {
+			compatible = "samsung,exynos8895-srdz-sysreg", "syscon";
+			reg = <0x14220000 0x1000>;
 		};
 
 		cmu_busc: clock-controller@15a00000 {
