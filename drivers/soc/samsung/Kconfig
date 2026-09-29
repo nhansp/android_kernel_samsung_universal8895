@@ -169,3 +169,10 @@ config EXYNOS_UFS_SRPMB
 	help
 	  Forwards the RPMB requests of the Exynos 8895 secure world to the
 	  UFS RPMB well-known LU (stock CONFIG_UFS_SRPMB, spec L6T 5.9).
+
+config EXYNOS_SECURE_LOG
+	bool "Exynos Secure Log"
+	depends on ARCH_EXYNOS && OF_RESERVED_MEM
+	select EXYNOS8895_SMC
+	help
+	  Support Exynos Secure Log
