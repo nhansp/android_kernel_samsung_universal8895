@@ -198,3 +198,5 @@ obj-$(CONFIG_DPLL)		+= dpll/
 obj-$(CONFIG_DIBS)		+= dibs/
 obj-$(CONFIG_S390)		+= s390/
 obj-$(CONFIG_TRUSTONIC_TEE)	+= gud/
+# greatlte WP-6C: Samsung SSP sensor hub, sensors class, grip (L6C 5.3, 5.9; stock S:drivers/Makefile:196)
+obj-$(CONFIG_SENSORS_SYSFS)	+= sensorhub/

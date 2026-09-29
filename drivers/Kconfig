@@ -253,4 +253,7 @@ source "drivers/cdx/Kconfig"
 
 source "drivers/gud/Kconfig"
 
+# greatlte WP-6C: Samsung SSP sensor hub, grip (L6C 5.3, 5.9; stock S:drivers/Kconfig:229)
+source "drivers/sensorhub/brcm/Kconfig"
+
 endmenu
