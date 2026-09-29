@@ -27,13 +27,12 @@
 #include <linux/irq.h>
 #include <linux/poll.h>
 #include <linux/uaccess.h>
-#include <linux/wakelock.h>
+#include <linux/device.h>	/* wakeup sources (G-1) */
 #include <linux/suspend.h>
 #include <linux/kernel.h>
 #include <linux/ssp_platformdata.h>
-#include <linux/gpio.h>
-//#include <plat/gpio-cfg.h>
-#include <linux/of_gpio.h>
+#include <linux/gpio/consumer.h>
+#include <linux/regulator/consumer.h>
 #include <linux/miscdevice.h>
 #include <linux/time.h>
 #include <asm/io.h>
@@ -111,9 +110,9 @@ struct bcm_spi_priv {
 	wait_queue_head_t poll_wait;		/* for poll */
 
 		/* GPIO pins */
-	int host_req;
-	int mcu_req;
-	int mcu_resp;
+	struct gpio_desc *host_req;
+	struct gpio_desc *mcu_req;
+	struct gpio_desc *mcu_resp;
 
 		/* IRQ and its control */
 	atomic_t irq_enabled;
@@ -129,7 +128,7 @@ struct bcm_spi_priv {
 	struct bcm_ssi_tx_frame *tx_buf;
 	struct bcm_ssi_rx_frame *rx_buf;
 
-	struct wake_lock bcm_wake_lock;
+	struct wakeup_source *bcm_wake_lock;
 };
 
 static struct bcm_spi_priv *g_bcm_gps;
@@ -312,25 +311,25 @@ static bool bcm4773_hello(struct bcm_spi_priv *priv)
 {
 	int count = 0, retries = 0;
 
-	gpio_set_value(priv->mcu_req, 1);
-	while (!gpio_get_value(priv->mcu_resp)) {
+	gpiod_set_value(priv->mcu_req, 1);
+	while (!gpiod_get_value(priv->mcu_resp)) {
 		if (count++ > 100) {
-			gpio_set_value(priv->mcu_req, 0);
+			gpiod_set_value(priv->mcu_req, 0);
 			pr_info("[SSPBBD] MCU_REQ_RESP timeout. MCU_RESP(gpio%d) not responding to MCU_REQ(gpio%d)\n",
-				priv->mcu_resp, priv->mcu_req);
+				desc_to_gpio(priv->mcu_resp), desc_to_gpio(priv->mcu_req));
 			return false;
 		}
 
 		mdelay(1);
 
 		/*if awake, done */
-		if (gpio_get_value(priv->mcu_resp))
+		if (gpiod_get_value(priv->mcu_resp))
 			break;
 
 		if (count % 20 == 0 && retries++ < 3) {
-			gpio_set_value(priv->mcu_req, 0);
+			gpiod_set_value(priv->mcu_req, 0);
 			mdelay(1);
-			gpio_set_value(priv->mcu_req, 1);
+			gpiod_set_value(priv->mcu_req, 1);
 			mdelay(1);
 		}
 	}
@@ -343,18 +342,18 @@ static bool bcm4773_hello(struct bcm_spi_priv *priv)
  */
 static void bcm4773_bye(struct bcm_spi_priv *priv)
 {
-	gpio_set_value(priv->mcu_req, 0);
+	gpiod_set_value(priv->mcu_req, 0);
 }
 
 
 static unsigned long init_time;
 static unsigned long clock_get_ms(void)
 {
-	struct timeval t;
+	struct timespec64 t;
 	unsigned long now;
 
-	do_gettimeofday(&t);
-	now = t.tv_usec / 1000 + t.tv_sec * 1000;
+	ktime_get_real_ts64(&t);
+	now = t.tv_nsec / NSEC_PER_MSEC + t.tv_sec * 1000;
 	if (init_time == 0)
 		init_time = now;
 
@@ -558,13 +557,13 @@ static void bcm_rxtx_work_func(struct work_struct *work)
 
 	do {
 		/* Read first */
-		if (gpio_get_value(priv->host_req)) {
+		if (gpiod_get_value(priv->host_req)) {
 			size_t avail;
 #ifdef DEBUG_1HZ_STAT
-			struct timespec ts;
+			struct timespec64 ts;
 
 			if (stat1hz.ts_irq) {
-				ts = ktime_to_timespec(ktime_get_boottime());
+				ts = ktime_to_timespec64(ktime_get_boottime());
 				ts_rx_start = ts.tv_sec * 1000000000ULL
 							+ ts.tv_nsec;
 			}
@@ -575,8 +574,8 @@ static void bcm_rxtx_work_func(struct work_struct *work)
 
 #ifdef DEBUG_1HZ_STAT
 			bbd_update_stat(STAT_RX_SSI, avail);
-			if (ts_rx_start && !gpio_get_value(priv->host_req)) {
-				ts = ktime_to_timespec(ktime_get_boottime());
+			if (ts_rx_start && !gpiod_get_value(priv->host_req)) {
+				ts = ktime_to_timespec64(ktime_get_boottime());
 				ts_rx_end = ts.tv_sec * 1000000000ULL
 							+ ts.tv_nsec;
 			}
@@ -624,7 +623,7 @@ static void bcm_rxtx_work_func(struct work_struct *work)
 #endif
 		}
 
-	} while (gpio_get_value(priv->host_req) || CIRC_CNT(wr_circ->head, wr_circ->tail, BCM_SPI_WRITE_BUF_SIZE));
+	} while (gpiod_get_value(priv->host_req) || CIRC_CNT(wr_circ->head, wr_circ->tail, BCM_SPI_WRITE_BUF_SIZE));
 
 	bcm4773_bye(priv);
 
@@ -669,13 +668,13 @@ static irqreturn_t bcm_irq_handler(int irq, void *pdata)
 {
 	struct bcm_spi_priv *priv = (struct bcm_spi_priv *) pdata;
 
-	if (!gpio_get_value(priv->host_req))
+	if (!gpiod_get_value(priv->host_req))
 		return IRQ_HANDLED;
 #ifdef DEBUG_1HZ_STAT
 	{
-	struct timespec ts;
+	struct timespec64 ts;
 
-	ts = ktime_to_timespec(ktime_get_boottime());
+	ts = ktime_to_timespec64(ktime_get_boottime());
 	stat1hz.ts_irq = ts.tv_sec * 1000000000ULL + ts.tv_nsec;
 	}
 #endif
@@ -768,56 +767,48 @@ static void bcm_spi_shutdown(struct spi_device *spi)
 	pr_info("[SSPBBD]: %s --\n", __func__);
 }
 
+/* GPIO number for the stock log lines, or the lookup error */
+static int bcm_gpio_num(struct gpio_desc *d)
+{
+	return IS_ERR(d) ? (int)PTR_ERR(d) : desc_to_gpio(d);
+}
+
 static int bcm_spi_probe(struct spi_device *spi)
 {
-	int host_req, mcu_req, mcu_resp;
+	struct gpio_desc *host_req, *mcu_req, *mcu_resp;
 	struct bcm_spi_priv *priv;
 	int ret;
 
-	/* Check GPIO# */
-#ifndef CONFIG_OF
-	pr_err("[SSPBBD]: Check platform_data for bcm device\n");
-#endif
 	if (!spi->dev.of_node) {
 		pr_err("[SSPBBD]: Failed to find of_node\n");
 		goto err_exit;
 	}
 
-	host_req = of_get_named_gpio(spi->dev.of_node, "ssp-host-req", 0);
-	mcu_req  = of_get_named_gpio(spi->dev.of_node, "ssp-mcu-req", 0);
-	mcu_resp = of_get_named_gpio(spi->dev.of_node, "ssp-mcu-resp", 0);
-	pr_info("[SSPBBD] ssp-host-req=%d, ssp-mcu_req=%d, ssp-mcu-resp=%d\n", host_req, mcu_req, mcu_resp);
-	if (host_req < 0 || mcu_req < 0 || mcu_resp < 0) {
+	/*
+	 * L6C 5.2: the SSP probe that bbd_init() runs needs LDO38 (vdd-mcu-1p8-supply, 4.2) and
+	 * its result is dropped (stock bbd.c:1159), so the whole binding defers instead.
+	 */
+	if (PTR_ERR_OR_ZERO(devm_regulator_get_optional(&spi->dev, "vdd-mcu-1p8")) == -EPROBE_DEFER)
+		return -EPROBE_DEFER;
+
+	/*
+	 * L6C 5.2 (G-13): stock ssp-host-req/ssp-mcu-req/ssp-mcu-resp -> *-gpios (4.2); mcu_req
+	 * output low as stock (:808); the log prints GPIO numbers, or the error, as stock (:789)
+	 */
+	host_req = devm_gpiod_get(&spi->dev, "host-req", GPIOD_IN);
+	mcu_req  = devm_gpiod_get(&spi->dev, "mcu-req", GPIOD_OUT_LOW);
+	mcu_resp = devm_gpiod_get(&spi->dev, "mcu-resp", GPIOD_IN);
+	pr_info("[SSPBBD] ssp-host-req=%d, ssp-mcu_req=%d, ssp-mcu-resp=%d\n",
+		bcm_gpio_num(host_req), bcm_gpio_num(mcu_req), bcm_gpio_num(mcu_resp));
+	if (IS_ERR(host_req) || IS_ERR(mcu_req) || IS_ERR(mcu_resp)) {
 		pr_err("[SSPBBD]: GPIO value not correct\n");
 		goto err_exit;
 	}
 
 	/* Check IRQ# */
-	spi->irq = gpio_to_irq(host_req);
+	spi->irq = gpiod_to_irq(host_req);
 	if (spi->irq < 0) {
-		pr_err("[SSPBBD]: irq=%d for host_req=%d not correct\n", spi->irq, host_req);
-		goto err_exit;
-	}
-
-	/* Config GPIO */
-	ret = gpio_request(mcu_req, "MCU REQ");
-	if (ret) {
-		pr_err("[SSPBBD]: failed to request MCU REQ, ret:%d", ret);
-		goto err_exit;
-	}
-	ret = gpio_direction_output(mcu_req, 0);
-	if (ret) {
-		pr_err("[SSPBBD]: failed set MCU REQ as input mode, ret:%d", ret);
-		goto err_exit;
-	}
-	ret = gpio_request(mcu_resp, "MCU RESP");
-	if (ret) {
-		pr_err("[SSPBBD]: failed to request MCU RESP, ret:%d", ret);
-		goto err_exit;
-	}
-	ret = gpio_direction_input(mcu_resp);
-	if (ret) {
-		pr_err("[SSPBBD]: failed set MCU RESP as input mode, ret:%d", ret);
+		pr_err("[SSPBBD]: irq=%d for host_req=%d not correct\n", spi->irq, desc_to_gpio(host_req));
 		goto err_exit;
 	}
 
@@ -846,31 +837,10 @@ static int bcm_spi_probe(struct spi_device *spi)
 		goto free_mem;
 	}
 
-	/* Request IRQ */
-	ret = request_irq(spi->irq, bcm_irq_handler, IRQF_TRIGGER_HIGH, "ttyBCM", priv);
-	if (ret) {
-		pr_err("[SSPBBD]: Failed to register BCM4773 SPI TTY IRQ %d.\n", spi->irq);
-		goto free_wq;
-	}
-
-	disable_irq(spi->irq);
-
-	pr_notice("[SSPBBD]: Probe OK. ssp-host-req=%d, irq=%d, priv=0x%pK\n", host_req, spi->irq, priv);
-
-	/* Register misc device */
-	priv->misc.minor = MISC_DYNAMIC_MINOR;
-	priv->misc.name = "ttyBCM";
-	priv->misc.fops = &bcm_spi_fops;
-
-	ret = misc_register(&priv->misc);
-	if (ret) {
-		pr_err("[SSPBBD]: Failed to register bcm_gps_spi's misc dev. err=%d\n", ret);
-		goto free_irq;
-	}
-
-	/* Set driver data */
-	spi_set_drvdata(spi, priv);
-
+	/*
+	 * L6C: everything the IRQ handler, the work and the fops use exists before the IRQ is
+	 * requested (stock initialised it after request_irq() and misc_register(), :871-900)
+	 */
 	/* Init - miscdev stuff */
 	init_waitqueue_head(&priv->poll_wait);
 	priv->read_buf.buf = priv->_read_buf;
@@ -897,11 +867,42 @@ static int bcm_spi_probe(struct spi_device *spi)
 	priv->mcu_resp = mcu_resp;
 
 	/* Init - etc */
-	wake_lock_init(&priv->bcm_wake_lock, WAKE_LOCK_SUSPEND, "bcm_spi_wake_lock");
+	priv->bcm_wake_lock = wakeup_source_register(NULL, "bcm_spi_wake_lock");	/* G-1 */
+
+	/* Request IRQ */
+	ret = request_irq(spi->irq, bcm_irq_handler, IRQF_TRIGGER_HIGH, "ttyBCM", priv);
+	if (ret) {
+		pr_err("[SSPBBD]: Failed to register BCM4773 SPI TTY IRQ %d.\n", spi->irq);
+		goto free_wq;
+	}
+
+	disable_irq(spi->irq);
+
+	pr_notice("[SSPBBD]: Probe OK. ssp-host-req=%d, irq=%d, priv=0x%pK\n", desc_to_gpio(host_req), spi->irq, priv);
+
+	/* Register misc device */
+	priv->misc.minor = MISC_DYNAMIC_MINOR;
+	priv->misc.name = "ttyBCM";
+	priv->misc.fops = &bcm_spi_fops;
+
+	ret = misc_register(&priv->misc);
+	if (ret) {
+		pr_err("[SSPBBD]: Failed to register bcm_gps_spi's misc dev. err=%d\n", ret);
+		goto free_irq;
+	}
+
+	/* Set driver data */
+	spi_set_drvdata(spi, priv);
 
 	g_bcm_gps = priv;
 	/* Init BBD & SSP */
-	bbd_init(&spi->dev);
+	ret = bbd_init(&spi->dev);
+	if (ret) {
+		pr_err("[SSPBBD]: bbd_init failed %d\n", ret);
+		g_bcm_gps = NULL;
+		misc_deregister(&priv->misc);
+		goto free_irq;
+	}
 
 	return 0;
 
@@ -909,6 +910,7 @@ free_irq:
 	if (spi->irq)
 		free_irq(spi->irq, priv);
 free_wq:
+	wakeup_source_unregister(priv->bcm_wake_lock);
 	if (priv->serial_wq)
 		destroy_workqueue(priv->serial_wq);
 free_mem:
@@ -920,7 +922,7 @@ err_exit:
 }
 
 
-static int bcm_spi_remove(struct spi_device *spi)
+static void bcm_spi_remove(struct spi_device *spi)
 {
 	struct bcm_spi_priv *priv = (struct bcm_spi_priv *)spi_get_drvdata(spi);
 	unsigned long int flags;
@@ -942,13 +944,12 @@ static int bcm_spi_remove(struct spi_device *spi)
 
 	/* Free everything */
 	free_irq(spi->irq, priv);
+	wakeup_source_unregister(priv->bcm_wake_lock);	/* G-1 */
 	kfree(priv->tx_buf);
 	kfree(priv->rx_buf);
 	kfree(priv);
 
 	g_bcm_gps = NULL;
-
-	return 0;
 }
 
 void bcm4773_debug_info(void)
@@ -956,9 +957,9 @@ void bcm4773_debug_info(void)
 	int pin_ttyBCM, pin_MCU_REQ, pin_MCU_RESP;
 	int irq_enabled, irq_count;
 
-	pin_ttyBCM = gpio_get_value(g_bcm_gps->host_req);
-	pin_MCU_REQ = gpio_get_value(g_bcm_gps->mcu_req);
-	pin_MCU_RESP = gpio_get_value(g_bcm_gps->mcu_resp);
+	pin_ttyBCM = gpiod_get_value(g_bcm_gps->host_req);
+	pin_MCU_REQ = gpiod_get_value(g_bcm_gps->mcu_req);
+	pin_MCU_RESP = gpiod_get_value(g_bcm_gps->mcu_resp);
 
 	irq_enabled = atomic_read(&g_bcm_gps->irq_enabled);
 	irq_count = kstat_irqs_cpu(g_bcm_gps->spi->irq, 0);
@@ -971,20 +972,20 @@ void bcm4773_debug_info(void)
 
 
 static const struct spi_device_id bcm_spi_id[] = {
-	{"ssp-spi", 0},
+	{"bcm4773-ssp", 0},
 	{}
 };
 MODULE_DEVICE_TABLE(spi, bcm_spi_id);
 
 #ifdef CONFIG_OF
 static struct of_device_id const match_table[] = {
-	{ .compatible = "ssp,BCM4773",},
+	{ .compatible = "samsung,bcm4773-ssp",},	/* L6C 4.2; stock "ssp,BCM4773" FDT:6565 */
 	{},
 };
 #endif
 
 const struct dev_pm_ops bcm_spi_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(bcm_spi_suspend, bcm_spi_resume)
+	SYSTEM_SLEEP_PM_OPS(bcm_spi_suspend, bcm_spi_resume)
 };
 EXPORT_SYMBOL_GPL(bcm_spi_pm_ops);
 

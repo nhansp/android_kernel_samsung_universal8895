@@ -1,28 +1,19 @@
-choice
-    depends on SENSORS_SSP_BBD
-    prompt "Choose serial connection with chip"
-    default BCM_GPS_SPI_DRIVER
-
-config BCM_GPS_TTY_DRIVER
-    bool  "TTY"
-    depends on TTY
-    help
-        Support for BRCM GPS UART driver.
-
-config BCM_GPS_I2C_DRIVER
-    bool "I2C"
-    depends on I2C
-    help
-        Support for BRCM GPS I2C driver.
-
+# L6C 5.2: of the stock serial choice (S:drivers/sensorhub/brcm/bbdpl/Kconfig) only SPI is
+# built on this board (IKC:4822-4824); bcm_gps_tty.c/bcm_gps_i2c.c are not ported.
 config BCM_GPS_SPI_DRIVER
-    bool "SPI"
-    depends on SPI
-    help
-        Support for BRCM GPS SPI driver.
+	bool "SPI"
+	depends on SENSORS_SSP_BBD && SPI
+	default y
+	help
+	  Support for BRCM GPS SPI driver.
 
-endchoice
-
-
-
-
+config BBD_PATCH_BUILTIN
+	bool "Serve the stock compiled-in BCM4774 patch on /dev/bbd_patch"
+	depends on SENSORS_SSP_BBD
+	default n
+	help
+	  Serve the stock compiled-in patch (bbd_patch_file_great_p.h, about
+	  1 MiB of rodata) instead of loading
+	  /vendor/firmware/bbd_patch_great_p.bin with request_firmware() on the
+	  first open of /dev/bbd_patch (spec L6C D-18). Both give lhd the same
+	  1,030,766 bytes.
