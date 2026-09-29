@@ -178,6 +178,8 @@ enum {
 #define UNIPRO_DME_POWERMODE_REQ_REMOTEL2TIMER2	0x78C0
 /* UniPro DME result registers of the Exynos 8895 host, S:drivers/scsi/ufs/ufs-exynos.h */
 #define UNIPRO_DME_LINKSTARTUP_CNF_RESULT	0x7854	/* :175 */
+#define UNIPRO_DME_HIBERN8_ENTER_IND_RESULT	0x7868	/* :178 */
+#define UNIPRO_DME_HIBERN8_EXIT_IND_RESULT	0x7878	/* :181 */
 #define UNIPRO_DME_PWR_CNF_RESULT		0x78E8	/* :190 */
 #define UNIPRO_DME_PWR_IND_RESULT		0x78EC	/* :191 */
 
@@ -2069,6 +2071,40 @@ static int gs101_ufs_pre_pwr_change(struct exynos_ufs *ufs,
 	return 0;
 }
 
+/*
+ * Hosts with EXYNOS_UFS_OPT_UPMCRS_IN_UNIPRO leave HCS.UPMCRS at 0 after a power
+ * control command; the result is in the UniPro DME indication registers
+ * (stock UFSHCD_QUIRK_GET_GENERRCODE_DIRECT, S:drivers/scsi/ufs/ufshcd.c:1315-1329,
+ * S:drivers/scsi/ufs/ufs-exynos.c:1880-1894 indexes 3-5).
+ */
+static u8 exynos_ufs_get_upmcrs(struct ufs_hba *hba, const struct uic_command *cmd)
+{
+	struct exynos_ufs *ufs = ufshcd_get_variant(hba);
+	u32 reg;
+
+	if (!(ufs->opts & EXYNOS_UFS_OPT_UPMCRS_IN_UNIPRO))
+		goto hcs;
+
+	switch (cmd->command) {
+	case UIC_CMD_DME_SET:
+		if (cmd->argument1 != UIC_ARG_MIB(PA_PWRMODE))
+			goto hcs;
+		reg = UNIPRO_DME_PWR_IND_RESULT;
+		break;
+	case UIC_CMD_DME_HIBER_ENTER:
+		reg = UNIPRO_DME_HIBERN8_ENTER_IND_RESULT;
+		break;
+	case UIC_CMD_DME_HIBER_EXIT:
+		reg = UNIPRO_DME_HIBERN8_EXIT_IND_RESULT;
+		break;
+	default:
+		goto hcs;
+	}
+	return unipro_readl(ufs, reg);
+hcs:
+	return (ufshcd_readl(hba, REG_CONTROLLER_STATUS) >> 8) & 0x7;
+}
+
 static const struct ufs_hba_variant_ops ufs_hba_exynos_ops = {
 	.name				= "exynos_ufs",
 	.init				= exynos_ufs_init,
@@ -2084,6 +2120,7 @@ static const struct ufs_hba_variant_ops ufs_hba_exynos_ops = {
 	.suspend			= exynos_ufs_suspend,
 	.resume				= exynos_ufs_resume,
 	.fill_crypto_prdt		= exynos_ufs_fmp_fill_prdt,
+	.get_upmcrs			= exynos_ufs_get_upmcrs,
 };
 
 static struct ufs_hba_variant_ops ufs_hba_exynosauto_vh_ops = {
@@ -2702,7 +2739,8 @@ static const struct exynos_ufs_drv_data exynos8895_ufs_drvs = {
 				  EXYNOS_UFS_OPT_UFSPR_SECURE |
 				  EXYNOS_UFS_OPT_TIMER_TICK_SELECT |
 				  EXYNOS_UFS_OPT_UNIPRO_PCLK |
-				  EXYNOS_UFS_OPT_SKIP_SYNC_PATTERN_MASK,
+				  EXYNOS_UFS_OPT_SKIP_SYNC_PATTERN_MASK |
+				  EXYNOS_UFS_OPT_UPMCRS_IN_UNIPRO,
 	.iocc_mask		= BIT(9) | BIT(8),	/* dtsi:1082-1086 */
 	.drv_init		= exynos8895_ufs_drv_init,
 	.pre_hce_enable		= exynos8895_ufs_pre_hce_enable,

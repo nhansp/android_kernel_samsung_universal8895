@@ -260,6 +260,7 @@ struct exynos_ufs {
 #define EXYNOS_UFS_OPT_UNIPRO_PCLK		BIT(8)	/* PCS/UniPro APB clock = sclk_unipro_main,
 							 * S:drivers/scsi/ufs/ufs-exynos.c:1478-1481 */
 #define EXYNOS_UFS_OPT_SKIP_SYNC_PATTERN_MASK	BIT(9)	/* never program RX_SYNC_MASK_LENGTH */
+#define EXYNOS_UFS_OPT_UPMCRS_IN_UNIPRO		BIT(10)	/* PMC/hibern8 result in UniPro, not HCS */
 };
 
 #define for_each_ufs_rx_lane(ufs, i) \
