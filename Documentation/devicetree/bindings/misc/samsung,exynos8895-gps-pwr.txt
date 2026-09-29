@@ -1,0 +1,20 @@
+Samsung GPS standby line (GPS_PWR_EN)
+=====================================
+
+The nSTDBY line of the BCM4774 GNSS/sensor-hub combo of the Galaxy Note 8,
+exposed as /sys/class/sec/gps/GPS_PWR_EN/value for the Broadcom lhd daemon.
+
+Required properties:
+- compatible: "samsung,exynos8895-gps-pwr"
+- gpios: the standby line (active high: 1 = GNSS out of standby)
+
+Optional properties:
+- pinctrl-names, pinctrl-0: "default" pin state of the line
+
+Example:
+	gps-pwr {
+		compatible = "samsung,exynos8895-gps-pwr";
+		pinctrl-names = "default";
+		pinctrl-0 = <&ssp_gps_pwr_en>;
+		gpios = <&gpf0 3 GPIO_ACTIVE_HIGH>;
+	};

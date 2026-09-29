@@ -1,0 +1,33 @@
+Samsung SSP sensor hub on the Broadcom BCM4773/BCM4774 GNSS + sensor-hub combo
+==============================================================================
+
+The BCM4774 of the Galaxy Note 8 (SM-N950N) is a GNSS receiver with an
+integrated sensor-hub MCU, reached over SPI with the Broadcom BBD transport
+(drivers/sensorhub/brcm/bbdpl/) and the Samsung SSP protocol on top
+(drivers/sensorhub/brcm/). The transplanted SSP parser reads the stock ssp-*
+property names below.
+
+Required properties:
+- compatible: "samsung,bcm4773-ssp"
+- reg: chip select, 0
+- spi-max-frequency: 26000000
+- spi-cpol, spi-cpha: SPI mode 3
+- host-req-gpios: host request line from the hub (level-high interrupt)
+- mcu-req-gpios: AP -> MCU wake request (output)
+- mcu-resp-gpios: MCU -> AP wake response (input)
+- batch-wake-gpios: batching wake-up line from the hub (falling edge)
+- vdd-mcu-1p8-supply: the 1.8 V rail of the hub MCU (switched by userspace
+  through /sys/class/sec/sensorhub/mcu_power)
+- ssp-acc-position, ssp-mag-position: accelerometer and magnetometer
+  mounting positions (0..7)
+- ssp-ap-rev: board revision handed to the hub
+- ssp-mag-array: magnetometer compensation matrix (bytes)
+- ssp-mag-type, ssp-glass-type: magnetometer and cover-glass type
+
+Optional properties:
+- ssp-sns-combination: sensor combination (not used by the driver)
+- ssp-pwr-en-gpios: hub power enable (absent on this board)
+- pinctrl-names, pinctrl-0: "default" state of the four hub lines
+- controller-data: SPI controller data (samsung,spi-feedback-delay)
+
+Example: arch/arm64/boot/dts/exynos/exynos8895-greatlte-l6c.dtsi.
