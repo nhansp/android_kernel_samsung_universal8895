@@ -240,3 +240,16 @@ config GREATLTE_HB_L6D_BT
 	default GREATLTE_HB
 	help
 	  Registers the L6D Bluetooth heartbeat rows.
+
+# DEBUG: CoreSight PC sampling at panic
+config GREATLTE_CSPC
+	bool "greatlte: sample the other CPUs' PCs at panic (debug only)"
+	depends on ARCH_EXYNOS && OF && ARM64
+	default GREATLTE_HB
+	help
+	  At panic, reads the program counter of every other online CPU
+	  through its CoreSight external debug block (EDPCSR), five times,
+	  as the stock kernel's EXYNOS_CORESIGHT_PC_INFO did. It names the
+	  code a CPU hangs in with its interrupts masked, which an IPI
+	  backtrace cannot reach on this GICv2 SoC. Also a debugfs trigger,
+	  greatlte-cspc. Never enable in a release build.

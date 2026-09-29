@@ -40,4 +40,25 @@
 			      "apm_mbox", "cpucl0_pll", "cpucl0_byp", "cpucl0",
 			      "cpucl1_pll", "cpucl1_byp", "cpucl1";
 	};
+
+	/*
+	 * DEBUG: CoreSight debug blocks, read only at panic for the PC of a CPU that hangs with
+	 * its interrupts masked (drivers/soc/samsung/greatlte-cspc.c, CONFIG_GREATLTE_CSPC).
+	 * Stock node FDT:7758-7819 without the ETM/funnel/ETF parts; children in stock order,
+	 * cl<MPIDR aff1>_cpu<aff0>, and without unit addresses (they have no reg).
+	 */
+	coresight {
+		compatible = "exynos,coresight";
+		base = <0x17000000>;		/* FDT:7760 */
+		sj-offset = <0x6000>;		/* FDT:7761 */
+
+		cl0_cpu0 { device_type = "cs"; dbg-offset = <0x410000>; };	/* FDT:7765-7770 */
+		cl0_cpu1 { device_type = "cs"; dbg-offset = <0x510000>; };	/* FDT:7772-7777 */
+		cl0_cpu2 { device_type = "cs"; dbg-offset = <0x610000>; };	/* FDT:7779-7784 */
+		cl0_cpu3 { device_type = "cs"; dbg-offset = <0x710000>; };	/* FDT:7786-7791 */
+		cl1_cpu0 { device_type = "cs"; dbg-offset = <0x810000>; };	/* FDT:7793-7798 */
+		cl1_cpu1 { device_type = "cs"; dbg-offset = <0x910000>; };	/* FDT:7800-7805 */
+		cl1_cpu2 { device_type = "cs"; dbg-offset = <0xa10000>; };	/* FDT:7807-7812 */
+		cl1_cpu3 { device_type = "cs"; dbg-offset = <0xb10000>; };	/* FDT:7814-7819 */
+	};
 };
