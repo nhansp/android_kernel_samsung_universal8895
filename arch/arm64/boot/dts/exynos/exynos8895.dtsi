@@ -1881,6 +1881,55 @@
 			status = "disabled";
 		};
 
+		/* L6A slice gpu: Mali-G71 MP20 for the vendor kbase r16p0 (spec L6A_graphics.md 4.1) */
+		gpu: gpu@13900000 {
+			/*
+			 * Stock "arm,mali" (FDT:4637); not "arm,mali-bifrost", whose
+			 * lower-case interrupt names (Documentation/devicetree/bindings/gpu/arm,mali-bifrost.yaml)
+			 * this driver does not use.
+			 */
+			compatible = "samsung,exynos8895-mali";
+			reg = <0x13900000 0x5000>;	/* FDT:4638 <0x00 0x13900000 0x5000> */
+			interrupts = <GIC_SPI 60 IRQ_TYPE_LEVEL_HIGH>,	/* FDT:4639 <0x00 0x3c 0x00> JOB */
+				     <GIC_SPI 61 IRQ_TYPE_LEVEL_HIGH>,	/* <0x00 0x3d 0x00> MMU */
+				     <GIC_SPI 59 IRQ_TYPE_LEVEL_HIGH>;	/* <0x00 0x3b 0x00> GPU */
+			interrupt-names = "JOB", "MMU", "GPU";	/* FDT:4640 */
+			power-domains = <&pd_g3d>;	/* FDT:4642 samsung,power-domain = <0x18> */
+			/* FDT:4641 g3d_cmu_cal_id = <0xb040004>, ACPM index 0xb040004 & 0xffff */
+			clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_G3D>;
+			clock-names = "clk_mali";
+			operating-points-v2 = <&gpu_opp_table>;
+			#cooling-cells = <2>;		/* FDT:4644 */
+			samsung,autosuspend-delay-ms = <50>;	/* FDT:4672 gpu_runtime_pm_delay_time = <0x32> */
+			status = "disabled";
+		};
+
+		/*
+		 * FDT:4648 gpu_dvfs_table column 0 inside [gpu_min_clock FDT:4655
+		 * 0x3f7a0, gpu_max_clock FDT:4653 0x854d0]; each is also an ECT
+		 * dvfs_g3d level (SB+0x4647c). No opp-microvolt: the APM owns the
+		 * G3D voltage.
+		 */
+		gpu_opp_table: opp-table-gpu {
+			compatible = "operating-points-v2";
+
+			opp-260000000 {
+				opp-hz = /bits/ 64 <260000000>;	/* 0x3f7a0 */
+			};
+			opp-338000000 {
+				opp-hz = /bits/ 64 <338000000>;	/* 0x52850 */
+			};
+			opp-385000000 {
+				opp-hz = /bits/ 64 <385000000>;	/* 0x5dfe8 */
+			};
+			opp-455000000 {
+				opp-hz = /bits/ 64 <455000000>;	/* 0x6f158 */
+			};
+			opp-546000000 {
+				opp-hz = /bits/ 64 <546000000>;	/* 0x854d0 */
+			};
+		};
+
 		cmu_g2d: clock-controller@13a00000 {
 			compatible = "samsung,exynos8895-cmu-g2d";
 			reg = <0x13a00000 0x8000>;	/* CAL:cmucal-sfr.c:24 SFR_BLOCK(G2D, 0x13a00000, 0x8000) */

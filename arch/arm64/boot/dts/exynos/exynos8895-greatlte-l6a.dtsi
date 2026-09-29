@@ -10,3 +10,22 @@
  * value, which gl-verify V-DUP reports as an error. L0's reserved-memory stays in
  * the .dts; carveout additions and flag changes are &label edits here (plan X-8).
  */
+
+/* L6A slice gpu: Mali-G71 kbase, pd_g3d, GPU cooling map (spec L6A_graphics.md 4.1, 4.2) */
+&gpu {
+	status = "okay";
+};
+
+/* REQ-L1-6A-1: the CMU_G3D pre-on/post-off hook is in the exynos8895-pd match data */
+&pd_g3d {
+	status = "okay";
+};
+
+&{/thermal-zones/gpu-thermal} {
+	cooling-maps {
+		map0 {
+			trip = <&gpu_passive>;		/* 88000, FDT:9643 gpu-alert1 */
+			cooling-device = <&gpu THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+		};
+	};
+};
