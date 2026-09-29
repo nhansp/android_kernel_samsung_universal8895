@@ -15,6 +15,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
+#include <linux/slab.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
@@ -2048,6 +2049,41 @@ static void cs47l92_configure_micbias(struct madera *madera)
 	}
 }
 
+/*
+ * Raw GPIOn_CTRL_1/2 words from the stock "cirrus,gpio-defaults" array, as
+ * stock madera_configure_gpio() wrote them (S:drivers/mfd/madera-core.c:656-677;
+ * at most MADERA_MAX_GPIO_REGS 80 cells, S:include/linux/mfd/madera/pdata.h:23,
+ * :77): a cell above 0xffff leaves the register at its chip default, any other
+ * cell (0 included) is written verbatim (translation
+ * S:drivers/mfd/madera-core.c:572-599). L6E 5.2(e).
+ */
+static void cs47l92_configure_gpio(struct madera *madera)
+{
+	const char *prop = "cirrus,gpio-defaults";
+	u32 *val;
+	int i, n;
+
+	n = device_property_count_u32(madera->dev, prop);
+	if (n <= 0)
+		return;
+	n = min(n, 80);
+
+	val = kcalloc(n, sizeof(*val), GFP_KERNEL);
+	if (!val)
+		return;
+
+	if (!device_property_read_u32_array(madera->dev, prop, val, n)) {
+		for (i = 0; i < n; i++) {
+			if (val[i] > 0xffff)
+				continue;	/* leave at chip default */
+			regmap_write(madera->regmap, MADERA_GPIO1_CTRL_1 + i,
+				     val[i]);
+		}
+	}
+
+	kfree(val);
+}
+
 static int cs47l92_component_probe(struct snd_soc_component *component)
 {
 	struct cs47l92 *cs47l92 = snd_soc_component_get_drvdata(component);
@@ -2080,6 +2116,7 @@ static int cs47l92_component_probe(struct snd_soc_component *component)
 			   MADERA_AUXPDM1_TXEDGE_MASK |
 			   MADERA_AUXPDM1_MSTR_MASK, val);
 
+	cs47l92_configure_gpio(madera);
 	cs47l92_configure_micbias(madera);
 
 	ret = madera_init_outputs(component, cs47l92_mono_routes,
