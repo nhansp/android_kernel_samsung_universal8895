@@ -28,3 +28,5 @@ obj-$(CONFIG_EXYNOS8895_SMC)		+= exynos8895-smc.o
 obj-$(CONFIG_EXYNOS_UFS_SRPMB)		+= exynos-srpmb.o
 obj-$(CONFIG_EXYNOS_SECURE_LOG)		+= exynos-seclog.o
 obj-$(CONFIG_GREATLTE_HB_L6T)		+= greatlte-hb-l6t.o
+# L6A slice gpu
+obj-$(CONFIG_GREATLTE_HB_L6A_GPU)	+= greatlte-hb-l6a-gpu.o
