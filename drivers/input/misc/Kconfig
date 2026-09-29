@@ -992,4 +992,13 @@ config INPUT_STPMIC1_ONKEY
 	  To compile this driver as a module, choose M here: the
 	  module will be called stpmic1_onkey.
 
+config INPUT_SAMSUNG_SEC_KEY
+	bool "Samsung sec_key sysfs device (greatlte keys and hall)"
+	depends on INPUT
+	select SAMSUNG_SEC_CLASS
+	help
+	  Say Y here to enable the Samsung sec_key sysfs device and hall_detect
+	  node (/sys/devices/virtual/sec/sec_key/hall_detect). Spec L6F 5.14.
+
 endif
+
