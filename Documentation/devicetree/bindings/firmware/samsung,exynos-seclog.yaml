@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/firmware/samsung,exynos-seclog.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos secure-world log
+
+maintainers:
+  - Krzysztof Kozlowski <krzk@kernel.org>
+
+description: |
+  Samsung's EL3 monitor and its loadable firmwares (LDFW) write log messages
+  into per-CPU rings in a reserved memory region and raise an interrupt; the
+  normal world prints them. Local binding of the greatlte port (spec L6T 4,
+  5.12), not for upstream.
+
+properties:
+  compatible:
+    const: samsung,exynos-seclog
+
+  interrupts:
+    maxItems: 1
+
+  memory-region:
+    maxItems: 1
+    description: the no-map reserved region that holds the log rings
+
+required:
+  - compatible
+  - interrupts
+  - memory-region
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    seclog {
+        compatible = "samsung,exynos-seclog";
+        interrupts = <GIC_SPI 68 IRQ_TYPE_EDGE_RISING>;
+        memory-region = <&seclog_mem>;
+    };

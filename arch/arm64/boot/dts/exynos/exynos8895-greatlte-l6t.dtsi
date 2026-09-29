@@ -10,3 +10,38 @@
  * value, which gl-verify V-DUP reports as an error. L0's reserved-memory stays in
  * the .dts; carveout additions and flag changes are &label edits here (plan X-8).
  */
+
+/ {
+	/* Trustonic Kinibi 400 ("tbase"): S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:3728-3732, FDT:8295-8298 */
+	tee {
+		/* S:drivers/gud/gud-exynos8895_kinibi400/MobiCoreDriver/main.c:43 MC_DEVICE_PROPNAME; FDT:8296 */
+		compatible = "samsung,exynos-tee";
+		/*
+		 * SPI 233: FDT:8297 "interrupts = <0x00 0xe9 0x00>" (S:exynos8895.dtsi:3731 "<0 233 0>").
+		 * Stock flag 0 = no type; the driver requests IRQF_TRIGGER_RISING
+		 * (S:drivers/gud/gud-exynos8895_kinibi400/MobiCoreDriver/nq.c:650-651), so the DT states the type that is used.
+		 */
+		interrupts = <GIC_SPI 233 IRQ_TYPE_EDGE_RISING>;
+	};
+
+	/* Secure RPMB proxy for the secure world: S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:3722-3726, FDT:8290-8293 */
+	ufs-srpmb {
+		compatible = "samsung,ufs-srpmb";	/* S:drivers/scsi/scsi_srpmb.c:26; FDT:8291 */
+		/* SPI 69: FDT:8292 "<0x00 0x45 0x00>"; rising: S:drivers/scsi/scsi_srpmb.c:280-281 */
+		interrupts = <GIC_SPI 69 IRQ_TYPE_EDGE_RISING>;
+		/* new in 6.18: the UFS host whose RPMB W-LU serves the requests (L4_storage.md:177) */
+		samsung,ufs = <&ufs>;
+	};
+
+	/* Secure-world (EL3/LDFW) log: S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:3717-3720 ("<0 68 0>"), FDT:8285-8288 */
+	seclog {
+		compatible = "samsung,exynos-seclog";	/* S:drivers/soc/samsung/exynos-seclog.c:330; FDT:8286 */
+		/* SPI 68: FDT:8287 "<0x00 0x44 0x00>"; rising: S:drivers/soc/samsung/exynos-seclog.c:207-209 */
+		interrupts = <GIC_SPI 68 IRQ_TYPE_EDGE_RISING>;
+		/*
+		 * new in 6.18: L0's seclog_mem (L0_boot.md:753-756) carries no compatible, so stock's
+		 * RESERVEDMEM_OF_DECLARE("exynos8895,seclog") hook (exynos-seclog.c:169) cannot find it
+		 */
+		memory-region = <&seclog_mem>;
+	};
+};
