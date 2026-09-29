@@ -1452,14 +1452,19 @@
 		 * USB 3.0 DRD controller (L3 4.1): stock "samsung,exynos8895-dwusb3" at
 		 * 0x10c00000 size 0x10000 (FDT:7854-7858). Stock "aclk" (FDT:7856-7857, the
 		 * link Q-channel vclk 0x2ca) has no 6.18 clock; the link's AXI gate is
-		 * held instead. Stock "sclk" (0x2bf, USBDRD30) = the REF_CLK gate.
+		 * held instead. Stock "sclk" (0x2bf, USBDRD30) = the REF_CLK gate. Stock
+		 * enables the USBTV IP as one vclk that also holds the USBTVH AHB and
+		 * core gates (S:drivers/soc/samsung/cal-if/exynos8895/cmucal-vclk.c:1442-1449);
+		 * without a user, clk_disable_unused gates them and the core never binds.
 		 */
 		usbdrd: usb@10c00000 {
 			compatible = "samsung,exynos8895-dwusb3";
 			ranges = <0x0 0x10c00000 0x10000>;
 			clocks = <&cmu_fsys0 CLK_GOUT_FSYS0_USBTV_I_USB30DRD_ACLK>,
-				 <&cmu_fsys0 CLK_GOUT_FSYS0_USBTV_I_USB30DRD_REF_CLK>;
-			clock-names = "aclk", "ref";
+				 <&cmu_fsys0 CLK_GOUT_FSYS0_USBTV_I_USB30DRD_REF_CLK>,
+				 <&cmu_fsys0 CLK_GOUT_FSYS0_USBTV_I_USBTVH_AHB_CLK>,
+				 <&cmu_fsys0 CLK_GOUT_FSYS0_USBTV_I_USBTVH_CORE_CLK>;
+			clock-names = "aclk", "ref", "usbtvh_ahb", "usbtvh_core";
 			#address-cells = <1>;
 			#size-cells = <1>;
 			status = "disabled";

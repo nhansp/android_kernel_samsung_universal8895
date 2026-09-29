@@ -183,11 +183,13 @@ static const struct dwc3_exynos_driverdata exynos850_drvdata = {
 
 /*
  * Exynos8895: stock glue claims {"aclk", "sclk"} (S:drivers/usb/dwc3/dwc3-exynos.c:125); the
- * suspend clock sits on the core node (PWRDNSCALE), so it is not claimed here.
+ * suspend clock sits on the core node (PWRDNSCALE), so it is not claimed here. The
+ * USBTVH gates belong to the same stock USBTV vclk
+ * (S:drivers/soc/samsung/cal-if/exynos8895/cmucal-vclk.c:1442-1449).
  */
 static const struct dwc3_exynos_driverdata exynos8895_drvdata = {
-	.clk_names = { "aclk", "ref" },
-	.num_clks = 2,
+	.clk_names = { "aclk", "ref", "usbtvh_ahb", "usbtvh_core" },
+	.num_clks = 4,
 	.suspend_clk_idx = -1,
 };
 
