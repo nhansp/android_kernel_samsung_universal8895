@@ -10,3 +10,43 @@
  * value, which gl-verify V-DUP reports as an error. L0's reserved-memory stays in
  * the .dts; carveout additions and flag changes are &label edits here (plan X-8).
  */
+&pinctrl_alive {
+	attn_irq: attn-irq-pins {			/* FDT:266-273 (0x66), touch on_state */
+		samsung,pins = "gpa1-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+	attn_input: attn-input-pins {			/* FDT:275-281 (0x67), touch off_state; stock sets no drv */
+		samsung,pins = "gpa1-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;	/* pud 1 */
+	};
+};
+
+&usi9 {
+	samsung,mode = <USI_MODE_I2C0_1>;		/* stock usi@1082101C "hsi2c0_hsi2c1" FDT:5049-5053 */
+	status = "okay";
+};
+
+&hsi2c_23 {						/* stock hsi2c@108E0000 FDT:5666-5683 (SPI 0x19a = 410) */
+	clock-frequency = <400000>;		/* no clock-frequency in FDT:5666-5683 -> stock 400 kHz default (as 4.3) */
+	status = "okay";
+
+	touchscreen@48 {
+		compatible = "samsung,s6sy661";		/* new s6sy761 variant (5.12); stock "sec,sec_ts" FDT:5685 */
+		reg = <0x48>;				/* FDT:5686 */
+		interrupt-parent = <&gpa1>;
+		interrupts = <0 IRQ_TYPE_LEVEL_LOW>;	/* FDT:5692 sec,irq_gpio = <&gpa1 0 0>; FDT:5693 irq_type 0x2008 =
+							   IRQF_ONESHOT | IRQF_TRIGGER_LOW */
+		vdd-supply = <&ldo34_reg>;		/* FDT:5696 "tsp_io" (L2_power.md:646-651) */
+		avdd-supply = <&ldo35_reg>;		/* FDT:5697 "tsp_avdd" (L2_power.md:652-657) */
+		touchscreen-size-x = <4096>;		/* FDT:5694 sec,max_coords 0xfff = size - 1; chip value - 1 in stock (sec_ts.c:1922-1926) */
+		touchscreen-size-y = <4096>;
+		pinctrl-names = "default", "sleep";	/* FDT:5687 "on_state", "off_state" */
+		pinctrl-0 = <&attn_irq>;		/* FDT:5688 0x66 */
+		pinctrl-1 = <&attn_input>;		/* FDT:5689 0x67 */
+		panel = <&panel>;			/* run 7: DRM panel follower, 5.12 item 13 (closes O-TS3); label from
+							   L5 (REQ-L5-1); delete to keep touch powered while awake */
+	};
+};
