@@ -22,6 +22,13 @@
 		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;	/* pud 1 */
 	};
+	/* greatlte L6F slice pen (L6F 4.2) */
+	epen_int_active: epen-int-active-pins {		/* FDT:354-361 (0x4e) */
+		samsung,pins = "gpa2-1", "gpa2-2";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
 };
 
 &usi9 {
@@ -48,5 +55,47 @@
 		pinctrl-1 = <&attn_input>;		/* FDT:5689 0x67 */
 		panel = <&panel>;			/* run 7: DRM panel follower, 5.12 item 13 (closes O-TS3); label from
 							   L5 (REQ-L5-1); delete to keep touch powered while awake */
+	};
+};
+
+/* greatlte L6F slice pen (L6F 4.9) */
+/ {
+	wacom_3v3: regulator-wacom {
+		compatible = "regulator-fixed";			/* FDT:11963-11971 wacom_ldo_en */
+		regulator-name = "wacom_3.3v";			/* FDT:11965 */
+		regulator-min-microvolt = <3300000>;		/* FDT:11966 0x325aa0 */
+		regulator-max-microvolt = <3300000>;
+		gpio = <&gpe7 2 GPIO_ACTIVE_HIGH>;		/* FDT:11968 <0x51 2 0> (0x51 = gpe7) */
+		enable-active-high;				/* FDT:11969 */
+		regulator-boot-on;				/* FDT:11970 */
+	};
+};
+
+&usi2 {
+	samsung,mode = <USI_MODE_I2C0_1>;		/* stock usi@10421008 "hsi2c0_hsi2c1" FDT:5001-5005 */
+	status = "okay";
+};
+
+&hsi2c_10 {						/* stock hsi2c@10490000 FDT:5350-5366 (SPI 0x175 = 373) */
+	clock-frequency = <400000>;		/* no clock-frequency in FDT:5350-5366 -> stock 400 kHz default (as 4.3) */
+	status = "okay";
+
+	digitizer@56 {
+		compatible = "wacom,w9018";		/* new driver (5.13); stock "wacom,w90xx" FDT:5369 */
+		reg = <0x56>;				/* FDT:5370 */
+		interrupts-extended = <&gpa2 2 IRQ_TYPE_LEVEL_LOW>,	/* data: FDT:5376 wacom,irq-gpio = <&gpa2 2 1>; FDT:5379 irq_type 0x08 =
+								   IRQF_TRIGGER_LOW. Stock "interrupts = <3 0 0>" (FDT:5373) is unused: stock takes
+								   the IRQ from the gpio (S:drivers/input/wacom/wacom_i2c.c:2848) */
+				      <&gpa2 1 IRQ_TYPE_EDGE_BOTH>;	/* pdct: S:.../wacom_i2c.c:2849, :2961-2965 FALLING|RISING */
+		interrupt-names = "data", "pdct";
+		pdct-gpios = <&gpa2 1 GPIO_ACTIVE_HIGH>;	/* FDT:5377 wacom,pdct-gpio = <&gpa2 1 1>; stock ignores the flag and uses the raw
+							   level, 1 = pen in the garage (S:drivers/input/wacom/wacom_i2c.c:1736-1750), so
+							   active-high makes gpiod_get_value() = "inserted" (SW_PEN_INSERTED semantics) */
+		fwe-gpios = <&gpe7 4 GPIO_ACTIVE_HIGH>;	/* FDT:5378 */
+		vddo-supply = <&wacom_3v3>;		/* FDT:5375 */
+		wacom,xy-switch;			/* FDT:5388 wacom,invert = <1 0 1>: x_invert 1, y_invert 0, xy_switch 1 */
+		wacom,x-invert;
+		pinctrl-names = "default";
+		pinctrl-0 = <&epen_int_active>;		/* FDT:5372 0x4e */
 	};
 };
