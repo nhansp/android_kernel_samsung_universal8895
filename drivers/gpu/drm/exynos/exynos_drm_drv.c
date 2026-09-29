@@ -32,6 +32,7 @@
 #include "exynos_drm_ipp.h"
 #include "exynos_drm_plane.h"
 #include "exynos_drm_vidi.h"
+#include "exynos8895_s3cfb.h"
 
 #define DRIVER_NAME	"exynos"
 #define DRIVER_DESC	"Samsung SoC DRM"
@@ -291,6 +292,9 @@ static int exynos_drm_bind(struct device *dev)
 	if (ret < 0)
 		goto err_cleanup_poll;
 
+	/* the S3CFB front-end of the stock composer, if built (L6A 5.3.1) */
+	exynos8895_s3cfb_init(drm);
+
 	/*
 	 * With the Exynos8895 S3CFB front-end, fb0 must be its fb_info (the
 	 * stock composer drives /dev/graphics/fb0), so no fbdev client here
@@ -320,6 +324,7 @@ static void exynos_drm_unbind(struct device *dev)
 {
 	struct drm_device *drm = dev_get_drvdata(dev);
 
+	exynos8895_s3cfb_fini(drm);
 	drm_dev_unregister(drm);
 
 	drm_kms_helper_poll_fini(drm);
