@@ -553,13 +553,10 @@ static int d8895_stop(struct decon8895_ctx *ctx)
 
 /* ---- DPP / IDMA channel (S:.../dpu/dpp_reg.c) ---------------------------- */
 
-/* dpp_reg_init() (dpp_reg.c:1522-1540) + enable_irq (dpp_drv.c:558-563) */
-static void d8895_dpp_init(struct decon8895_ctx *ctx, unsigned int ch)
+/* dpp_reg_init() (dpp_reg.c:1522-1540) */
+static void d8895_dpp_init_regs(struct decon8895_ctx *ctx, unsigned int ch)
 {
 	void __iomem *dma = d_dma(ctx, ch), *dpp = d_dpp(ctx, ch);
-
-	if (ctx->ch_on & BIT(ch))
-		return;
 
 	io_mask(dma + D8895_IDMA_IRQ, 0, D8895_IDMA_ALL_IRQ_MASK);
 	io_mask(dpp + D8895_DPP_IRQ, 0, D8895_DPP_ALL_IRQ_MASK);
@@ -584,7 +581,15 @@ static void d8895_dpp_init(struct decon8895_ctx *ctx, unsigned int ch)
 	/* recovery number (:719-726) */
 	io_mask(dma + D8895_IDMA_RECOVERY_CTRL, D8895_IDMA_RECOVERY_NUM(D8895_INIT_RCV_NUM),
 		D8895_IDMA_RECOVERY_NUM_MASK);
+}
 
+/* dpp_reg_init() + enable_irq (S:.../dpu/dpp_drv.c:558-563), once per enable */
+static void d8895_dpp_init(struct decon8895_ctx *ctx, unsigned int ch)
+{
+	if (ctx->ch_on & BIT(ch))
+		return;
+
+	d8895_dpp_init_regs(ctx, ch);
 	if (ctx->irq_dma[ch] > 0)
 		enable_irq(ctx->irq_dma[ch]);
 	if (ctx->irq_dpp[ch] > 0)
