@@ -1478,8 +1478,18 @@ static int d8895_plane_atomic_check(struct drm_plane *plane, struct drm_atomic_s
 	return 0;
 }
 
+/*
+ * drm_atomic_helper_commit_planes() calls .atomic_update for every plane with a CRTC,
+ * without a NULL check (A:drivers/gpu/drm/drm_atomic_helper.c:3035-3036). The window and
+ * its DPP channel are programmed from d8895_atomic_flush(), under the shadow update.
+ */
+static void d8895_plane_atomic_update(struct drm_plane *plane, struct drm_atomic_state *state)
+{
+}
+
 static const struct drm_plane_helper_funcs d8895_plane_helper_funcs = {
 	.atomic_check = d8895_plane_atomic_check,
+	.atomic_update = d8895_plane_atomic_update,
 };
 
 static void d8895_plane_reset(struct drm_plane *plane)
