@@ -1637,6 +1637,40 @@
 			status = "disabled";
 		};
 
+		/* L6D PCIe RC0 (K-F3) */
+		pcie0: pcie@11700000 {
+			compatible = "samsung,exynos8895-pcie";
+			reg = <0x11700000 0x1000>,	/* dbi    FDT:8220 (4th region) */
+			      <0x116a0000 0x1000>,	/* elbi   FDT:8220 (1st) */
+			      <0x116d0000 0x1000>,	/* phy    FDT:8220 (2nd); shared with ch1 FDT:8256 */
+			      <0x116c0000 0x1fc>,	/* pcs    FDT:8220 (5th); shared with ch1 FDT:8256 */
+			      <0x11bff000 0x1000>;	/* config FDT:8220 (6th) */
+			reg-names = "dbi", "elbi", "phy", "pcs", "config";
+			interrupts = <GIC_SPI 345 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:8222 <0 0x159 0>; type as the stock interrupt-map FDT:8234 (4) */
+			clocks = <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_DBI_ACLK_0>,
+				 <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_MSTR_ACLK_0>,
+				 <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_SLV_ACLK_0>,
+				 <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_PCIE_SUB_CTRL_INST_0_I_DRIVER_APB_CLK>,
+				 <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_PIPE2_DIGITAL_X2_WRAP_INST_0_I_APB_PCLK_SCL>,
+				 <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_IEEE1500_WRAPPER_FOR_PCIE_PHY_LC_X2_INST_0_I_SCL_APB_PCLK>,
+				 <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_PHY_REF_CLK_IN>;
+			clock-names = "dbi", "mstr", "slv", "apb", "pipe_apb", "phy_apb", "ref";
+			/* stock claims none (FDT:8239-8240, HWACG Q-channel gates S:drivers/clk/samsung/clk-exynos8895.c:236-245);
+			 * ACK gates are manual, class IP (L1_platform.md:484) -> held here; ids/offsets RL-5 */
+			samsung,pmu-syscon = <&pmu_system_controller>;	/* FDT:8223 samsung,syscon-phandle = <0x1f> (PMU); 0x610, 0x71C */
+			samsung,fsys-sysreg = <&syscon_fsys1 0x1044>;	/* FDT:8220 "sysreg" 0x11421044 = syscon_fsys1 0x11420000 + 0x1044; FDT:8224 */
+			#address-cells = <3>;			/* FDT:8228 */
+			#size-cells = <2>;			/* FDT:8229 */
+			device_type = "pci";			/* FDT:8230 */
+			ranges = <0x82000000 0x0 0x11800000 0x11800000 0x0 0x400000>;	/* FDT:8231 (parent address = 1 cell here) */
+			bus-range = <0x00 0xff>;		/* stock dw_pcie 4.4 root bus 0 (pci-exynos.c:1051); secondary 1 */
+			#interrupt-cells = <1>;			/* FDT:8232 */
+			interrupt-map-mask = <0 0 0 0>;		/* FDT:8233 */
+			interrupt-map = <0 0 0 0 &gic GIC_SPI 345 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:8234 <.. 0x01 0x00 0x159 0x04> */
+			num-lanes = <1>;			/* FDT:8236 */
+			status = "disabled";
+		};
+
 		cmu_dpu0: clock-controller@12800000 {
 			compatible = "samsung,exynos8895-cmu-dpu0";
 			reg = <0x12800000 0x8000>;	/* CAL:cmucal-sfr.c:19 SFR_BLOCK(DPU0, 0x12800000, 0x8000) */
