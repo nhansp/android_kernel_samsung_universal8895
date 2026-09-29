@@ -915,7 +915,6 @@ static const struct dev_pm_ops exynos8895_pcie_pm_ops = {
 /* S:drivers/pci/host/pci-exynos.c:350-360, registered at :1374-1378 */
 static int exynos_pcie_dma_mon_event(struct notifier_block *nb, unsigned long event, void *data)
 {
-	struct exynos8895_pcie *ep = container_of(nb, struct exynos8895_pcie, panic_nb);
 	int ret;
 
 	ret = exynos_pcie_dump_link_down_status(0);
