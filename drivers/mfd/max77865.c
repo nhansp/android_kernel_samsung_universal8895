@@ -10,6 +10,7 @@
 
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
+#include <linux/mfd/core.h>
 #include <linux/mfd/max77693-common.h>
 #include <linux/mfd/max77865-private.h>
 #include <linux/module.h>
@@ -89,6 +90,12 @@ static const struct regmap_irq_chip max77865_irq_chip = {
 	.num_irqs	= ARRAY_SIZE(max77865_irqs),
 };
 
+/* L6F 5.2 step 5: haptic and RGB LED child cells */
+static const struct mfd_cell max77865_cells[] = {
+	MFD_CELL_OF("max77865-haptic", NULL, NULL, 0, 0, "maxim,max77865-haptic"),
+	MFD_CELL_OF("max77865-rgb", NULL, NULL, 0, 0, "maxim,max77865-rgb"),
+};
+
 static int max77865_i2c_probe(struct i2c_client *i2c)
 {
 	struct device *dev = &i2c->dev;
@@ -137,11 +144,28 @@ static int max77865_i2c_probe(struct i2c_client *i2c)
 		return dev_err_probe(dev, ret, "failed to add IRQ chip\n");
 
 	/*
-	 * The haptic and RGB LED cells, and the 5.2 V boost the vibrator needs
-	 * (L6F 5.2 steps 5 and 5a), belong to the haptic/LED work (L6F 5.7-5.9).
-	 * Wakeup: "wakeup-source" (FDT:6173 max77865,wakeup) makes the I2C core
-	 * set up the device wakeup and the wake IRQ (i2c_device_probe()).
+	 * L6F 5.2 step 5: haptic and RGB LED child cells.
 	 */
+	ret = devm_mfd_add_devices(dev, PLATFORM_DEVID_NONE, max77865_cells,
+				   ARRAY_SIZE(max77865_cells), NULL, 0,
+				   regmap_irq_get_domain(irq_data));
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to add MFD cells\n");
+
+	/*
+	 * L6F 5.2 step 5a: 5.2 V boost on, stock order (after mfd_add_devices,
+	 * S:drivers/mfd/max77865.c:301-310 "Enable booster 5.2v for vibrator").
+	 * The haptic driver switches it off/on around suspend and at shutdown (L6F 5.7 item 7).
+	 */
+	ret = regmap_update_bits(max->regmap, MAX77865_PMIC_REG_BOOSTCONTROL1,
+				 MAX77865_BOOSTCONTROL1_BSTOUT, 0x00);
+	if (!ret)
+		ret = regmap_update_bits(max->regmap, MAX77865_PMIC_REG_BOOSTCONTROL2,
+					 MAX77865_BOOSTCONTROL2_FORCE_EN,
+					 MAX77865_BOOSTCONTROL2_FORCE_EN);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to enable 5.2V booster\n");
+
 	return 0;
 }
 
