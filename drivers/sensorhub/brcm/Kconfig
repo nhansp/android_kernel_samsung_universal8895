@@ -27,6 +27,28 @@ config SENSORS_SSP
 	  If you say yes here you get ssp support for
 	  sensor hub.
 
+# L6C 5.9: the SX9320 grip sensor is a separate I2C input driver in this directory
+# (S:drivers/sensorhub/brcm/Kconfig:461-477, IKC:4810-4811); it needs only the sensors class.
+config SENSORS_SX9320
+	bool "SX9320 driver"
+	depends on I2C && GPIOLIB && OF
+	depends on SENSORS_SYSFS
+	default n
+	help
+	  Say Y here if you use sx9320.
+	  This option enables grip sensors using
+	  SemTech sx9320 device driver.
+	  Say N here if you do not use sx9320.
+
+config SENSORS_SX9320_NORMAL_TOUCH_THRESHOLD
+	int "SX9320 Grip sensor threshold for normal touch"
+	depends on SENSORS_SX9320
+	default "221"
+	help
+	  This value is the standard of normal touch using
+	  SemTech sx9320 device driver (carried for parity; the
+	  driver takes the threshold from DT sx9320,normal_thd).
+
 if SENSORS_SSP
 
 config SENSORS_SSP_BBD

@@ -29,6 +29,7 @@ obj-$(CONFIG_SENSORS_SSP_LPS22H)	+= factory/pressure_lps22h.o
 obj-$(CONFIG_SENSORS_SSP_MOBEAM)	 += factory/barcode_emul_tmg3992.o
 
 obj-$(CONFIG_SENSORS_SSP_SENSORHUB)	+= ssp_sensorhub.o ssp_misc.o
+obj-$(CONFIG_SENSORS_SX9320)		+= sx9320.o
 
 obj-$(CONFIG_SENSORS_SSP_BBD)           += ssp_bbd.o factory/mcu_bcm4774.o
 obj-$(CONFIG_SENSORS_SSP_BBD)           += bbdpl/
