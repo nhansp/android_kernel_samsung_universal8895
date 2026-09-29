@@ -508,7 +508,6 @@ static int kbase_gpu_protected_mode_enter(struct kbase_device *kbdev)
 					err);
 		} else {
 			kbdev->protected_mode = true;
-			kbase_ipa_protection_mode_switch_event(kbdev);
 		}
 	}
 

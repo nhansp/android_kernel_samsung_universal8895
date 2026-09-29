@@ -28,9 +28,6 @@
 #ifdef CONFIG_MALI_DEVFREQ
 #include <linux/devfreq.h>
 #include <backend/gpu/mali_kbase_devfreq.h>
-#ifdef CONFIG_DEVFREQ_THERMAL
-#include <ipa/mali_kbase_ipa_debugfs.h>
-#endif /* CONFIG_DEVFREQ_THERMAL */
 #endif /* CONFIG_MALI_DEVFREQ */
 #ifdef CONFIG_MALI_NO_MALI
 #include "mali_kbase_model_linux.h"
@@ -101,11 +98,6 @@
 #include <mali_kbase_as_fault_debugfs.h>
 /* MALI_SEC_INTEGRATION */
 #include <backend/gpu/mali_kbase_pm_internal.h>
-
-/* MALI_SEC_INTEGRATION */
-#ifdef CONFIG_MALI_ASV_CALIBRATION_SUPPORT
-#include "./platform/exynos/gpu_control.h"
-#endif
 
 /* GPU IRQ Tags */
 #define	JOB_IRQ_TAG	0
@@ -3560,13 +3552,6 @@ static int kbase_device_debugfs_init(struct kbase_device *kbdev)
 	kbasep_trace_debugfs_init(kbdev);
 #endif /* KBASE_TRACE_ENABLE */
 
-#ifdef CONFIG_MALI_DEVFREQ
-#ifdef CONFIG_DEVFREQ_THERMAL
-	if (kbdev->inited_subsys & inited_devfreq)
-		kbase_ipa_debugfs_init(kbdev);
-#endif /* CONFIG_DEVFREQ_THERMAL */
-#endif /* CONFIG_MALI_DEVFREQ */
-
 #ifdef CONFIG_DEBUG_FS
 	debugfs_create_file("serialize_jobs", S_IRUGO | S_IWUSR,
 			kbdev->mali_debugfs_directory, kbdev,
@@ -4353,7 +4338,7 @@ static const struct dev_pm_ops kbase_pm_ops = {
 #ifdef CONFIG_OF
 static const struct of_device_id kbase_dt_ids[] = {
 	/* MALI_SEC_INTEGRATION */
-	{ .compatible = "arm,mali", },
+	{ .compatible = "samsung,exynos8895-mali", },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, kbase_dt_ids);

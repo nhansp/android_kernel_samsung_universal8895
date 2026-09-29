@@ -388,16 +388,10 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 	}
 
 #ifdef CONFIG_DEVFREQ_THERMAL
-	err = kbase_ipa_init(kbdev);
-	if (err) {
-		dev_err(kbdev->dev, "IPA initialization failed\n");
-		goto cooling_failed;
-	}
-
-	kbdev->devfreq_cooling = of_devfreq_cooling_register_power(
+	/* IPA is not ported (L6A 5.1.2): no power model, the GPU node is kept */
+	kbdev->devfreq_cooling = of_devfreq_cooling_register(
 			kbdev->dev->of_node,
-			kbdev->devfreq,
-			&kbase_ipa_power_model_ops);
+			kbdev->devfreq);
 	if (IS_ERR_OR_NULL(kbdev->devfreq_cooling)) {
 		err = PTR_ERR(kbdev->devfreq_cooling);
 		dev_err(kbdev->dev,
@@ -431,8 +425,6 @@ void kbase_devfreq_term(struct kbase_device *kbdev)
 #ifdef CONFIG_DEVFREQ_THERMAL
 	if (kbdev->devfreq_cooling)
 		devfreq_cooling_unregister(kbdev->devfreq_cooling);
-
-	kbase_ipa_term(kbdev);
 #endif
 
 	devfreq_unregister_opp_notifier(kbdev->dev, kbdev->devfreq);

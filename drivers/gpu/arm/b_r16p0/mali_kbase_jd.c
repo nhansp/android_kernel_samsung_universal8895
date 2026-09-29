@@ -39,10 +39,6 @@
 
 #include "mali_kbase_dma_fence.h"
 
-/* MALI_SEC_INTEGRATION */
-#include <linux/smc.h>
-#include "platform/exynos/gpu_integration_defs.h"
-
 #define beenthere(kctx, f, a...)  dev_dbg(kctx->kbdev->dev, "%s:" f, __func__, ##a)
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 8, 0)

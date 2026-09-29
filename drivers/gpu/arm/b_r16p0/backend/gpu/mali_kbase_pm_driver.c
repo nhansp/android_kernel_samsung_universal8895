@@ -44,7 +44,6 @@
 
  /* MALI_SEC_INTEGRATION */
 #define KBASE_TRANS_READY_LOOPS 10000
-#include <linux/soc/samsung/exynos-soc.h>
 
 #include <linux/of.h>
 

@@ -252,7 +252,7 @@ int dummy_array[] = {
 	KBASE_TRACE_CODE_MAKE_CODE(PM_CURRENT_POLICY_TERM),
 
 /* MALI_SEC_INTEGRATION */
-#include "platform/exynos/gpu_trace_defs.h"
+#include "platform/exynos8895/gpu_trace_defs.h"
 
 /* Unused code just to make it easier to not have a comma at the end.
  * All other codes MUST come before this */
