@@ -15,6 +15,10 @@ static const struct greatlte_hb_item l6f_rows[] = {
 	{ .layer = 6, .tag = "tsi", .kind = GREATLTE_HB_IRQ, .path = L6F_TS_PATH, .idx = 0 },
 	{ .layer = 6, .tag = "l34", .kind = GREATLTE_HB_REG, .path = "tsp_io" },
 	{ .layer = 6, .tag = "l35", .kind = GREATLTE_HB_REG, .path = "tsp_avdd" },
+	/* Keys and hall (L6F slice A) */
+	{ .layer = 6, .tag = "keys", .kind = GREATLTE_HB_DEV, .path = "/gpio-keys" },
+	{ .layer = 6, .tag = "hall", .kind = GREATLTE_HB_DEV, .path = "/hall-keys" },
+
 };
 
 static int __init l6f_hb_init(void)
