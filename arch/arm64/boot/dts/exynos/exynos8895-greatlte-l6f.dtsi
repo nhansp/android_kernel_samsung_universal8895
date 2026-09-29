@@ -50,3 +50,91 @@
 							   L5 (REQ-L5-1); delete to keep touch powered while awake */
 	};
 };
+
+/* Keys and hall (L6F slice A) */
+#include <dt-bindings/input/input.h>
+
+&pinctrl_alive {
+	key_wink: key-wink-pins {			/* FDT:283-290 (phandle 0x145) */
+		samsung,pins = "gpa0-6";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;	/* 0x0f */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+	key_voldown: key-voldown-pins {			/* FDT:292-299 (0x146) */
+		samsung,pins = "gpa0-4";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+	key_volup: key-volup-pins {			/* FDT:301-308 (0x147) */
+		samsung,pins = "gpa0-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+	key_power: key-power-pins {			/* FDT:310-317 (0x148) */
+		samsung,pins = "gpa2-4";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+	hall_irq: hall-irq-pins {			/* FDT:248-255 (0x142) */
+		samsung,pins = "gpa0-1";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+};
+
+/ {
+	gpio-keys {
+		compatible = "gpio-keys";			/* FDT:11246 */
+		label = "gpio_keys";				/* input name = stock "gpio_keys" (recon/input/input.txt:57);
+								   A:drivers/input/keyboard/gpio_keys.c:778, :879 */
+		pinctrl-names = "default";
+		pinctrl-0 = <&key_wink &key_voldown &key_volup &key_power>;	/* FDT:11250 <0x145..0x148> */
+
+		key-wink {
+			label = "gpio-keys: KEY_WINK";		/* FDT:11253 */
+			gpios = <&gpa0 6 GPIO_ACTIVE_LOW>;	/* FDT:11257 <0x90 6 0xf> (bit 0 = active low) */
+			linux,code = <0x2bf>;			/* FDT:11256; Samsung KEY_WINK S:include/uapi/linux/input-event-codes.h:341,
+								   inside 6.18 KEY_MAX 0x2ff A:include/uapi/linux/input-event-codes.h:837 */
+			wakeup-source;				/* FDT:11258 gpio-key,wakeup */
+		};
+		key-volume-down {
+			label = "gpio-keys: KEY_VOLUMEDOWN";	/* FDT:11262 */
+			gpios = <&gpa0 4 GPIO_ACTIVE_LOW>;	/* FDT:11266 */
+			linux,code = <KEY_VOLUMEDOWN>;		/* 0x72 FDT:11265 */
+		};
+		key-volume-up {
+			label = "gpio-keys: KEY_VOLUMEUP";	/* FDT:11270 */
+			gpios = <&gpa0 3 GPIO_ACTIVE_LOW>;	/* FDT:11274 */
+			linux,code = <KEY_VOLUMEUP>;		/* 0x73 FDT:11273 */
+		};
+		key-power {
+			label = "gpio-keys: KEY_POWER";		/* FDT:11278 */
+			gpios = <&gpa2 4 GPIO_ACTIVE_LOW>;	/* FDT:11282 <0x4f 4 0xf> (0x4f = gpa2) */
+			linux,code = <KEY_POWER>;		/* 0x74 FDT:11281 */
+			wakeup-source;				/* FDT:11283 */
+		};
+	};
+
+	hall-keys {
+		compatible = "gpio-keys";
+		label = "hall";					/* stock input name S:drivers/input/hall.c:252 */
+		pinctrl-names = "default";
+		pinctrl-0 = <&hall_irq>;			/* FDT:11206 0x142 */
+
+		flip-cover {
+			label = "flip_cover";
+			gpios = <&gpa0 1 GPIO_ACTIVE_LOW>;	/* FDT:11207 hall,gpio_flip_cover = <&gpa0 1 0>; level 1 = open
+								   (S:drivers/input/hall.c:98-104), so active-low = closed */
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_LID>;			/* 0x00 A:include/uapi/linux/input-event-codes.h:934; stock SW_FLIP 0x15 > SW_MAX 0x11 (:954) */
+			wakeup-source;
+			debounce-interval = <10>;		/* stock 10 ms on open, 0 on close: S:drivers/input/hall.c:115-121 */
+		};
+	};
+};
+
