@@ -50,6 +50,12 @@ properties:
       - description: Pipe APB clock
       - description: PHY APB clock
       - description: PHY reference clock
+      - description: DBI clock of channel 1 (shared sub-controller)
+      - description: Master ACLK of channel 1
+      - description: Slave ACLK of channel 1
+      - description: Driver APB clock of channel 1
+      - description: TOE Wi-Fi 0 clock
+      - description: TOE Wi-Fi 1 clock
 
   clock-names:
     items:
@@ -60,6 +66,12 @@ properties:
       - const: pipe_apb
       - const: phy_apb
       - const: ref
+      - const: dbi1
+      - const: mstr1
+      - const: slv1
+      - const: apb1
+      - const: toe0
+      - const: toe1
 
   samsung,pmu-syscon:
     $ref: /schemas/types.yaml#/definitions/phandle
@@ -125,8 +137,15 @@ examples:
                      <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_PCIE_SUB_CTRL_INST_0_I_DRIVER_APB_CLK>,
                      <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_PIPE2_DIGITAL_X2_WRAP_INST_0_I_APB_PCLK_SCL>,
                      <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_IEEE1500_WRAPPER_FOR_PCIE_PHY_LC_X2_INST_0_I_SCL_APB_PCLK>,
-                     <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_PHY_REF_CLK_IN>;
-            clock-names = "dbi", "mstr", "slv", "apb", "pipe_apb", "phy_apb", "ref";
+                     <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_PHY_REF_CLK_IN>,
+                     <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_DBI_ACLK_1>,
+                     <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_MSTR_ACLK_1>,
+                     <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_SLV_ACLK_1>,
+                     <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_PCIE_SUB_CTRL_INST_1_I_DRIVER_APB_CLK>,
+                     <&cmu_fsys1 CLK_GOUT_FSYS1_TOE_WIFI0_I_CLK>,
+                     <&cmu_fsys1 CLK_GOUT_FSYS1_TOE_WIFI1_I_CLK>;
+            clock-names = "dbi", "mstr", "slv", "apb", "pipe_apb", "phy_apb", "ref",
+                          "dbi1", "mstr1", "slv1", "apb1", "toe0", "toe1";
             samsung,pmu-syscon = <&pmu_system_controller>;
             samsung,fsys-sysreg = <&syscon_fsys1 0x1044>;
             #address-cells = <3>;
