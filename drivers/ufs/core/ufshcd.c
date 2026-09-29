@@ -2556,13 +2556,18 @@ static inline bool ufshcd_ready_for_uic_cmd(struct ufs_hba *hba)
 /**
  * ufshcd_get_upmcrs - Get the power mode change request status
  * @hba: Pointer to adapter instance
+ * @cmd: the completed power control UIC command, or NULL
  *
- * This function gets the UPMCRS field of HCS register
+ * This function gets the UPMCRS field of HCS register, or the result the
+ * variant reports for @cmd.
  *
  * Return: value of UPMCRS field.
  */
-static inline u8 ufshcd_get_upmcrs(struct ufs_hba *hba)
+static inline u8 ufshcd_get_upmcrs(struct ufs_hba *hba,
+				   const struct uic_command *cmd)
 {
+	if (cmd && hba->vops && hba->vops->get_upmcrs)
+		return hba->vops->get_upmcrs(hba, cmd);
 	return (ufshcd_readl(hba, REG_CONTROLLER_STATUS) >> 8) & 0x7;
 }
 
@@ -4518,7 +4523,7 @@ static int ufshcd_uic_pwr_ctrl(struct ufs_hba *hba, struct uic_command *cmd)
 	}
 
 check_upmcrs:
-	status = ufshcd_get_upmcrs(hba);
+	status = ufshcd_get_upmcrs(hba, cmd);
 	if (status != PWR_LOCAL) {
 		dev_err(hba->dev,
 			"pwr ctrl cmd 0x%x with (MIBattribute 0x%x, mode 0x%x) failed, host upmcrs:0x%x\n",
@@ -7226,7 +7231,7 @@ static irqreturn_t ufshcd_check_errors(struct ufs_hba *hba, u32 intr_status)
 			"%s: Auto Hibern8 %s failed - status: 0x%08x, upmcrs: 0x%08x\n",
 			__func__, (hba->errors & UIC_HIBERNATE_ENTER) ?
 			"Enter" : "Exit",
-			hba->errors, ufshcd_get_upmcrs(hba));
+			hba->errors, ufshcd_get_upmcrs(hba, NULL));
 		ufshcd_update_evt_hist(hba, UFS_EVT_AUTO_HIBERN8_ERR,
 				       hba->errors);
 		ufshcd_set_link_broken(hba);
