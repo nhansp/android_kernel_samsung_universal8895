@@ -27,3 +27,11 @@
 &pd_isplp { samsung,sysreg = <&syscon_isplp>; };
 &pd_mfc { samsung,sysreg = <&syscon_mfc>; };
 &pd_srdz { samsung,sysreg = <&syscon_srdz>; };
+
+/*
+ * CSIS D-PHY resets: bits 0-3 of SYSREG_CAM + 0x1050 (stock dphy_m4s4_csis0
+ * "reg = <0x0 0x12C21050 0x4>", S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:
+ * 4157-4192), written only from phy_power_on/off while a sensor holds pd_cam
+ * (L6B 4.3, 5.2.4).
+ */
+&mipi_phy { samsung,cam0-sysreg = <&syscon_cam>; };
