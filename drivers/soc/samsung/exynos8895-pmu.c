@@ -10,13 +10,23 @@
 // through the per-SoC pmu_init hook of the upstream PMU driver.
 
 #include <linux/array_size.h>
+#include <linux/bug.h>
 #include <linux/compiler.h>
+#include <linux/cpu.h>
+#include <linux/cpuhotplug.h>
+#include <linux/delay.h>
 #include <linux/init.h>
+#include <linux/io.h>
+#include <linux/kconfig.h>
 #include <linux/notifier.h>
 #include <linux/printk.h>
 #include <linux/reboot.h>
 #include <linux/soc/samsung/exynos-pmu.h>
+#include <linux/soc/samsung/exynos8895-pm.h>
+#include <linux/spinlock.h>
 #include <linux/types.h>
+#include <asm/cputype.h>
+#include <asm/smp_plat.h>
 
 #include "exynos-pmu.h"
 
@@ -137,6 +147,259 @@ static const struct exynos8895_pmu_seq exynos8895_lpm_init[] = {
 	{ 0x2628, 0x00010000, 0x00010000 },	/* CAL:pmucal_system_exynos8895.h:145 CLUSTER1_L2_OPTION */
 };
 
+/*
+ * CPU and cluster power hooks for deep idle and CPU hotplug (spec L7 5.3).
+ *
+ * Stock powers a core down by writing its PMU CONFIGURATION[3:0] = 0 (and, on
+ * a Mongoose core, clearing its droop-detector bit) before every PSCI suspend
+ * and at CPU_DYING, and powers the Mongoose/A53 cluster down with the PMUCAL
+ * cluster sequences (S:drivers/soc/samsung/exynos-powermode.c:73-105,513-575,
+ * 684-722). The sequences are CAL:pmucal_cpu_exynos8895.h (CAL: =
+ * S:drivers/soc/samsung/cal-if/exynos8895/). Raw MMIO, not the syscon regmap:
+ * these run in the idle path and in the hotplug STARTING/DYING context with
+ * IRQs off and must never sleep; the syscon regmap lock is not a raw spinlock.
+ */
+
+/* PMU offsets (PMU base 0x16480000, S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:299-302) */
+#define E8895_CPU_CONF(pc)	(0x2000 + (pc) * 0x80)	/* CAL:pmucal_cpu_exynos8895.h:3,14,25,36,47,56,65,74; S:drivers/soc/samsung/exynos-pmu.c:59 */
+#define E8895_CPU_PWR		0xf			/* (0xf << 0), CAL:pmucal_cpu_exynos8895.h:3; S:drivers/soc/samsung/exynos-pmu.c:61 CPU_LOCAL_PWR_CFG */
+#define E8895_NONCPU_STAT(cl)	(0x2404 + (cl) * 0x20)	/* S:drivers/soc/samsung/exynos-pmu.c:84,86 */
+#define E8895_L2_STAT(cl)	(0x2604 + (cl) * 0x20)	/* S:drivers/soc/samsung/exynos-pmu.c:84,87 */
+/* Mongoose droop-detector block: DD0..DD3 per core, DD4 for the cluster */
+#define E8895_DD_PHYS		0x16840000		/* CAL:pmucal_cpu_exynos8895.h:4; CAL:pmucal_p2vmap_exynos8895.h:73 */
+#define E8895_DD_SIZE		0x2000
+#define E8895_DD_CORE(pc)	((pc) * 0x400)		/* 0x0000/0x0400/0x0800/0x0C00, CAL:pmucal_cpu_exynos8895.h:4,15,26,37 */
+#define E8895_DD_CLUSTER	0x1000			/* DD4_DD_DA_INPUT_0, CAL:pmucal_cpu_exynos8895.h:87,91 */
+
+enum { E_W, E_WAIT, E_DD };
+
+struct e8895_cl_step {
+	u8 op;
+	u16 off;
+	u32 mask, val;
+};
+
+/* cluster 0 = Mongoose (MPIDR Aff1 0) */
+static const struct e8895_cl_step e8895_cl0_on[] = {
+	{ E_W,    0x3C20, 0x1, 0x1 },	/* CAL:pmucal_cpu_exynos8895.h:83 CPU_QCH_EMBEDDED_CMU_CPUCL0_CONFIGURATION */
+	{ E_WAIT, 0x3C24, 0x1, 0x1 },	/* CAL:pmucal_cpu_exynos8895.h:84 CPU_QCH_EMBEDDED_CMU_CPUCL0_STATUS */
+	{ E_W,    0x45C0, 0x1, 0x1 },	/* CAL:pmucal_cpu_exynos8895.h:85 CLKSTOP_CMU_EMBEDDED_CMU_CPUCL0_CONFIGURATION */
+	{ E_WAIT, 0x45C4, 0x1, 0x1 },	/* CAL:pmucal_cpu_exynos8895.h:86 CLKSTOP_CMU_EMBEDDED_CMU_CPUCL0_STATUS */
+	{ E_DD,   E8895_DD_CLUSTER, 0x1, 0x1 },	/* CAL:pmucal_cpu_exynos8895.h:87 DD4_DD_DA_INPUT_0 */
+	{ E_W,    0x2488, 0x1, 0x0 },	/* CAL:pmucal_cpu_exynos8895.h:88 CLUSTER0_CPUSEQUENCER_OPTION */
+};
+
+static const struct e8895_cl_step e8895_cl0_off[] = {
+	{ E_DD,   E8895_DD_CLUSTER, 0x1, 0x0 },	/* CAL:pmucal_cpu_exynos8895.h:91 DD4_DD_DA_INPUT_0 */
+	{ E_W,    0x1438, 0xf, 0x0 },	/* CAL:pmucal_cpu_exynos8895.h:92 EMBEDDED_CMU_CPUCL0_SYS_PWR_REG */
+	{ E_W,    0x1384, 0x1, 0x1 },	/* CAL:pmucal_cpu_exynos8895.h:93 CPU_QCH_EMBEDDED_CMU_CPUCL0 */
+	{ E_W,    0x13F8, 0x3, 0x3 },	/* CAL:pmucal_cpu_exynos8895.h:94 CLKSTOP_OPEN_CMU_EMBEDDED_CMU_CPUCL0 */
+	{ E_W,    0x14B8, 0x1, 0x1 },	/* CAL:pmucal_cpu_exynos8895.h:95 CLKSTOP_CMU_EMBEDDED_CMU_CPUCL0 */
+	{ E_W,    0x2488, 0x1, 0x1 },	/* CAL:pmucal_cpu_exynos8895.h:96 CLUSTER0_CPUSEQUENCER_OPTION */
+};
+
+/* cluster 1 = A53 (MPIDR Aff1 1). The stock PMUCAL_READ of 0x24A4
+ * (CAL:pmucal_cpu_exynos8895.h:102) has no side effect and is omitted. */
+static const struct e8895_cl_step e8895_cl1_on[] = {
+	{ E_W,    0x24A8, 0x1, 0x0 },	/* CAL:pmucal_cpu_exynos8895.h:103 CLUSTER1_CPUSEQUENCER_OPTION */
+};
+
+static const struct e8895_cl_step e8895_cl1_off[] = {
+	{ E_W,    0x143C, 0xf, 0x0 },	/* CAL:pmucal_cpu_exynos8895.h:106 EMBEDDED_CMU_CPUCL1_SYS_PWR_REG */
+	{ E_W,    0x13FC, 0x3, 0x3 },	/* CAL:pmucal_cpu_exynos8895.h:107 CLKSTOP_OPEN_CMU_EMBEDDED_CMU_CPUCL1 */
+	{ E_W,    0x24A8, 0x1, 0x1 },	/* CAL:pmucal_cpu_exynos8895.h:108 CLUSTER1_CPUSEQUENCER_OPTION */
+};
+
+static void __iomem *e8895_dd;
+static bool e8895_hooks_ready;		/* written once at init, read by the cpuidle and PM drivers */
+static DEFINE_RAW_SPINLOCK(e8895_pmu_cpu_lock);
+
+bool e8895_pmu_cpu_hooks_ready(void)
+{
+	return READ_ONCE(e8895_hooks_ready);
+}
+
+/* S:drivers/soc/samsung/cal-if/pmucal_rae.c:112-122: every mask in these tables is partial, so RMW */
+static void e8895_rmw(void __iomem *base, u32 off, u32 mask, u32 val)
+{
+	writel_relaxed((readl_relaxed(base + off) & ~mask) | val, base + off);
+}
+
+static int e8895_run(const struct e8895_cl_step *s, unsigned int n)
+{
+	unsigned int i, t;
+
+	for (i = 0; i < n; i++, s++) {
+		void __iomem *b = s->op == E_DD ? e8895_dd : pmu_base_addr;
+
+		if (s->op != E_WAIT) {
+			e8895_rmw(b, s->off, s->mask, s->val);
+			continue;
+		}
+		/* S:drivers/soc/samsung/cal-if/pmucal_rae.c:84-103: check, udelay(1), give up after 1000 */
+		for (t = 0; (readl_relaxed(b + s->off) & s->mask) != s->val; ) {
+			t++;
+			udelay(1);
+			if (t > 1000)
+				return -ETIMEDOUT;
+		}
+	}
+	return 0;
+}
+
+unsigned int e8895_phycluster(unsigned int cpu)
+{
+	return MPIDR_AFFINITY_LEVEL(cpu_logical_map(cpu), 1);	/* S:drivers/soc/samsung/exynos-powermode.c:92,100 */
+}
+
+static unsigned int e8895_phycpu(unsigned int cpu)
+{
+	u64 mpidr = cpu_logical_map(cpu);
+
+	/* S:drivers/soc/samsung/exynos-powermode.c:69-71 linear_phycpu() */
+	return (MPIDR_AFFINITY_LEVEL(mpidr, 1) << 2) | MPIDR_AFFINITY_LEVEL(mpidr, 0);
+}
+
+/* CAL:pmucal_cpu_exynos8895.h:6-9 (M2 cores 0-3: DD bit 0, then CONFIGURATION), :49-51 (A53) */
+void e8895_pmu_cpu_down(unsigned int cpu)
+{
+	unsigned int pc = e8895_phycpu(cpu);
+
+	if (pc < 4)
+		e8895_rmw(e8895_dd, E8895_DD_CORE(pc), 0x1, 0x0);
+	e8895_rmw(pmu_base_addr, E8895_CPU_CONF(pc), E8895_CPU_PWR, 0x0);
+}
+
+/* CAL:pmucal_cpu_exynos8895.h:2-5 (M2 cores 0-3: CONFIGURATION, then DD bit 0), :46-48 (A53) */
+void e8895_pmu_cpu_up(unsigned int cpu)
+{
+	unsigned int pc = e8895_phycpu(cpu);
+
+	e8895_rmw(pmu_base_addr, E8895_CPU_CONF(pc), E8895_CPU_PWR, E8895_CPU_PWR);
+	if (pc < 4)
+		e8895_rmw(e8895_dd, E8895_DD_CORE(pc), 0x1, 0x1);
+}
+
+/* true when the core is in the state e8895_pmu_cpu_up() leaves */
+bool e8895_pmu_cpu_conf_ok(unsigned int cpu)
+{
+	unsigned int pc = e8895_phycpu(cpu);
+
+	if ((readl_relaxed(pmu_base_addr + E8895_CPU_CONF(pc)) & E8895_CPU_PWR) != E8895_CPU_PWR)
+		return false;
+	return pc >= 4 || (readl_relaxed(e8895_dd + E8895_DD_CORE(pc)) & 0x1);
+}
+
+void e8895_pmu_cluster_down(unsigned int cpu)
+{
+	if (e8895_phycluster(cpu) == 0)
+		e8895_run(e8895_cl0_off, ARRAY_SIZE(e8895_cl0_off));
+	else
+		e8895_run(e8895_cl1_off, ARRAY_SIZE(e8895_cl1_off));
+}
+
+int e8895_pmu_cluster_up(unsigned int cpu)
+{
+	int ret;
+
+	if (e8895_phycluster(cpu) == 0)
+		ret = e8895_run(e8895_cl0_on, ARRAY_SIZE(e8895_cl0_on));
+	else
+		ret = e8895_run(e8895_cl1_on, ARRAY_SIZE(e8895_cl1_on));
+	if (ret)
+		pr_err("exynos8895-pmu: cluster%u on: wait timed out\n", e8895_phycluster(cpu));
+	return ret;
+}
+
+/* S:drivers/soc/samsung/exynos-pmu.c:102-124,151-155: L2_STATUS & 0x7 and NONCPU_STATUS & 0xF */
+bool e8895_pmu_cluster_is_on(unsigned int cpu)
+{
+	unsigned int cl = e8895_phycluster(cpu);
+
+	return (readl_relaxed(pmu_base_addr + E8895_L2_STAT(cl)) & 0x7) &&
+	       (readl_relaxed(pmu_base_addr + E8895_NONCPU_STAT(cl)) & 0xf);
+}
+
+/* no *other* online CPU in this cluster (stock: cpu_coregroup_mask & cpu_online_mask, which
+ * never holds the incoming or outgoing CPU in the STARTING/DYING/DEAD context) */
+static bool e8895_cluster_empty(unsigned int cpu)
+{
+	unsigned int c;
+
+	for_each_online_cpu(c)
+		if (c != cpu && e8895_phycluster(c) == e8895_phycluster(cpu))
+			return false;
+	return true;
+}
+
+/* incoming CPU, IRQs off: S:drivers/soc/samsung/exynos-powermode.c:695-702 */
+static int e8895_pmu_cpu_starting(unsigned int cpu)
+{
+	raw_spin_lock(&e8895_pmu_cpu_lock);
+	if (e8895_cluster_empty(cpu))
+		e8895_pmu_cluster_up(cpu);
+	e8895_pmu_cpu_up(cpu);
+	raw_spin_unlock(&e8895_pmu_cpu_lock);
+	return 0;
+}
+
+/* outgoing CPU after __cpu_disable(), IRQs off: S:drivers/soc/samsung/exynos-powermode.c:703-710 */
+static int e8895_pmu_cpu_dying(unsigned int cpu)
+{
+	raw_spin_lock(&e8895_pmu_cpu_lock);
+	e8895_pmu_cpu_down(cpu);
+	if (e8895_cluster_empty(cpu))
+		e8895_pmu_cluster_down(cpu);
+	raw_spin_unlock(&e8895_pmu_cpu_lock);
+	return 0;
+}
+
+/* control CPU: S:drivers/soc/samsung/exynos-powermode.c:711-718, which waits without a bound;
+ * bounded here to the PMUCAL wait limit (1000 x 1 us) */
+static int e8895_pmu_cpu_dead(unsigned int cpu)
+{
+	unsigned int t;
+
+	if (!e8895_cluster_empty(cpu))
+		return 0;
+	for (t = 0; e8895_pmu_cluster_is_on(cpu); t++) {
+		if (t > 1000) {
+			pr_warn("exynos8895-pmu: cluster%u still on 1 ms after cpu%u died\n",
+				e8895_phycluster(cpu), cpu);
+			break;
+		}
+		udelay(1);
+	}
+	return 0;
+}
+
+static int e8895_pmu_cpu_hooks_init(void)
+{
+	int ret;
+
+	e8895_dd = ioremap(E8895_DD_PHYS, E8895_DD_SIZE);
+	if (!e8895_dd)
+		return -ENOMEM;
+	/*
+	 * Runs the STARTING callback once on every online CPU, in its hotplug
+	 * thread with IRQs off (A:kernel/cpu.c:2345-2372 -> :1061-1100), which
+	 * reproduces stock's STARTING writes for the CPUs EL3 already started.
+	 * The boot CPU finds its cluster populated and skips the cluster write.
+	 */
+	ret = cpuhp_setup_state(CPUHP_AP_EXYNOS8895_PMU_STARTING, "soc/exynos8895-pmu:starting",
+				e8895_pmu_cpu_starting, e8895_pmu_cpu_dying);
+	if (ret)
+		return ret;
+	/* a dynamic state returns the allocated state number (> 0) on success
+	 * (A:kernel/cpu.c:2473-2477,2532-2533), so only a negative value is an error */
+	ret = cpuhp_setup_state_nocalls(CPUHP_BP_PREPARE_DYN, "soc/exynos8895-pmu:dead",
+					NULL, e8895_pmu_cpu_dead);
+	if (ret < 0)
+		return ret;	/* STARTING/DYING stay registered; only the bounded DEAD wait is missing */
+	WRITE_ONCE(e8895_hooks_ready, true);
+	return 0;
+}
+
 #define EXYNOS8895_INFORM2		0x0808		/* S:include/linux/sec_ext.h:27 */
 #define EXYNOS8895_INFORM3		0x080c		/* S:include/linux/sec_ext.h:28 */
 #define SEC_POWER_RESET			0x12345678	/* S:drivers/staging/samsung/sec_reboot.c:44 */
@@ -218,6 +481,10 @@ static void exynos8895_pmu_init(void)
 	register_reboot_notifier(&exynos8895_inform_nb);
 	register_sys_off_handler(SYS_OFF_MODE_RESTART, SYS_OFF_PRIO_HIGH + 1,
 				 exynos8895_inform_restart, NULL);
+
+	/* spec L7 5.3: deep idle and hotplug power hooks, only with the L7 PM driver */
+	if (IS_ENABLED(CONFIG_EXYNOS8895_PM))
+		WARN_ON(e8895_pmu_cpu_hooks_init());
 }
 
 const struct exynos_pmu_data exynos8895_pmu_data = {
