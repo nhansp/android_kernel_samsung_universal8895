@@ -9,6 +9,7 @@
 #include <linux/soc/samsung/greatlte-hb.h>
 
 #define L6F_TS_PATH	"/soc@0/usi@108e0000/i2c@0/touchscreen@48"
+#define L6F_PEN_PATH	"/soc@0/usi@10480000/i2c@10000/digitizer@56"
 
 static const struct greatlte_hb_item l6f_rows[] = {
 	{ .layer = 6, .tag = "ts",  .kind = GREATLTE_HB_DEV, .path = L6F_TS_PATH },
@@ -19,6 +20,10 @@ static const struct greatlte_hb_item l6f_rows[] = {
 	{ .layer = 6, .tag = "keys", .kind = GREATLTE_HB_DEV, .path = "/gpio-keys" },
 	{ .layer = 6, .tag = "hall", .kind = GREATLTE_HB_DEV, .path = "/hall-keys" },
 
+	/* greatlte L6F slice pen */
+	{ .layer = 6, .tag = "pen",  .kind = GREATLTE_HB_DEV, .path = L6F_PEN_PATH },
+	{ .layer = 6, .tag = "peni", .kind = GREATLTE_HB_IRQ, .path = L6F_PEN_PATH, .idx = 0 },
+	{ .layer = 6, .tag = "pdct", .kind = GREATLTE_HB_IRQ, .path = L6F_PEN_PATH, .idx = 1 },
 };
 
 static int __init l6f_hb_init(void)
