@@ -113,7 +113,7 @@ static void __hrm_debug_device_data(struct hrm_device_data *data)
 	HRM_dbg("%s h_func %p\n", __func__, data->h_func);
 	HRM_dbg("%s hrm_enabled_mode %d\n", __func__, data->hrm_enabled_mode);
 	HRM_dbg("%s regulator_state %d\n", __func__, data->regulator_state);
-	HRM_dbg("%s hrm_int %d\n", __func__, data->hrm_int);
+	HRM_dbg("%s hrm_int %d\n", __func__, gpiod_get_value(data->hrm_int));
 	HRM_dbg("%s hrm_en %d\n", __func__, data->hrm_en);
 	HRM_dbg("%s hrm_irq %d\n", __func__, data->hrm_irq);
 	HRM_dbg("%s irq_state %d\n", __func__, data->irq_state);
@@ -170,10 +170,15 @@ static void hrm_irq_set_state(struct hrm_device_data *data, int irq_enable)
 	}
 }
 
+/*
+ * The LDO39 enable of hrm_power_ctrl() (stock function-static i2c_1p8_enable). File scope so
+ * the probe error path can release it: 6.18 WARNs when an enabled handle is put (G-24).
+ */
+static int i2c_1p8_enable;
+
 static int hrm_power_ctrl(struct hrm_device_data *data, int onoff)
 {
 	int rc = 0;
-	static int i2c_1p8_enable;
 	struct regulator *regulator_led_3p3;
 	struct regulator *regulator_vdd_1p8;
 	struct regulator *regulator_i2c_1p8;
@@ -204,55 +209,13 @@ static int hrm_power_ctrl(struct hrm_device_data *data, int onoff)
 		data->regulator_state--;
 	}
 
-	if (data->i2c_1p8 != NULL) {
-		regulator_i2c_1p8 = regulator_get(NULL, data->i2c_1p8);
-		if (IS_ERR(regulator_i2c_1p8) || regulator_i2c_1p8 == NULL) {
-			HRM_dbg("%s - i2c_1p8 regulator_get fail\n", __func__);
-			rc = PTR_ERR(regulator_i2c_1p8);
-			regulator_i2c_1p8 = NULL;
-			goto get_i2c_1p8_failed;
-		}
-	}
-
-#ifdef CONFIG_ARCH_MSM
-#ifdef CONFIG_SPI_TO_I2C_FPGA
-	regulator_vdd_1p8 =
-		regulator_get(&data->pdev->dev, "hrmsensor_1p8");
-#else
-	regulator_vdd_1p8 =
-		regulator_get(&data->hrm_i2c_client->dev, "hrmsensor_1p8");
-#endif
-#else /* EXYNOS8890 */
-	regulator_vdd_1p8 = regulator_get(NULL, data->vdd_1p8);
-#endif
-	if (IS_ERR(regulator_vdd_1p8) || regulator_vdd_1p8 == NULL) {
-		HRM_dbg("%s - vdd_1p8 regulator_get fail\n", __func__);
-		rc = PTR_ERR(regulator_vdd_1p8);
-		regulator_vdd_1p8 = NULL;
-		goto get_vdd_1p8_failed;
-	}
-
-#ifdef CONFIG_ARCH_MSM
-#ifdef CONFIG_SPI_TO_I2C_FPGA
-	regulator_led_3p3 =
-		regulator_get(&data->pdev->dev, "hrmsensor_3p3");
-#else
-	regulator_led_3p3 =
-		regulator_get(&data->hrm_i2c_client->dev, "hrmsensor_3p3");
-#endif
-#else /* EXYNOS8890 */
-	regulator_led_3p3 = regulator_get(NULL, data->led_3p3);
-#endif
-	if (IS_ERR(regulator_led_3p3) || regulator_led_3p3 == NULL) {
-		HRM_dbg("%s - led_3p3 regulator_get fail\n", __func__);
-		rc = PTR_ERR(regulator_led_3p3);
-		regulator_led_3p3 = NULL;
-		goto get_led_3p3_failed;
-	}
+	regulator_i2c_1p8 = data->reg_i2c_1p8;	/* L6C G-24: taken once at probe */
+	regulator_vdd_1p8 = data->reg_vdd_1p8;
+	regulator_led_3p3 = data->reg_led_3p3;
 	HRM_dbg("%s - onoff = %d\n", __func__, onoff);
 
 	if (onoff == HRM_ON) {
-		if (data->i2c_1p8 != NULL && i2c_1p8_enable == 0) {
+		if (regulator_i2c_1p8 && i2c_1p8_enable == 0) {
 			rc = regulator_enable(regulator_i2c_1p8);
 			i2c_1p8_enable = 1;
 			if (rc) {
@@ -330,13 +293,6 @@ enable_vdd_1p8_failed:
 #endif
 enable_i2c_1p8_failed:
 done:
-	regulator_put(regulator_led_3p3);
-get_led_3p3_failed:
-	regulator_put(regulator_vdd_1p8);
-get_vdd_1p8_failed:
-	if (data->i2c_1p8 != NULL)
-		regulator_put(regulator_i2c_1p8);
-get_i2c_1p8_failed:
 	return rc;
 
 }
@@ -778,7 +734,7 @@ static ssize_t hrm_lib_ver_store(struct device *dev,
 		mutex_unlock(&data->activelock);
 		return -ENOMEM;
 	}
-	strlcpy(data->lib_ver, buf, buf_len);
+	strscpy(data->lib_ver, buf, buf_len);
 
 	HRM_info("%s - lib_ver = %s\n", __func__, data->lib_ver);
 	mutex_unlock(&data->activelock);
@@ -1425,14 +1381,12 @@ static int hrm_parse_dt(struct hrm_device_data *data)
 	struct device *dev = &data->hrm_i2c_client->dev;
 #endif
 	struct device_node *dNode = dev->of_node;
-	enum of_gpio_flags flags;
 
 	if (dNode == NULL)
 		return -ENODEV;
 
-	data->hrm_int = of_get_named_gpio_flags(dNode,
-		"hrmsensor,hrm_int-gpio", 0, &flags);
-	if (data->hrm_int < 0) {
+	data->hrm_int = devm_gpiod_get(dev, "hrmsensor,hrm_int", GPIOD_IN);
+	if (IS_ERR(data->hrm_int)) {
 		HRM_dbg("%s - get hrm_int error\n", __func__);
 		return -ENODEV;
 	}
@@ -1515,26 +1469,9 @@ static int hrm_setup_irq(struct hrm_device_data *data)
 
 static int hrm_setup_gpio(struct hrm_device_data *data)
 {
-	int errorno = -EIO;
-
-	errorno = gpio_request(data->hrm_int, "hrm_int");
-	if (errorno) {
-		HRM_dbg("%s - failed to request hrm_int\n", __func__);
-		return errorno;
-	}
-
-	errorno = gpio_direction_input(data->hrm_int);
-	if (errorno) {
-		HRM_dbg("%s - failed to set hrm_int as input\n", __func__);
-		goto err_gpio_direction_input;
-	}
-	data->hrm_irq = gpio_to_irq(data->hrm_int);
-
-	goto done;
-err_gpio_direction_input:
-	gpio_free(data->hrm_int);
-done:
-	return errorno;
+	/* L6C 5.10: requested and set as input by devm_gpiod_get() in hrm_parse_dt() */
+	data->hrm_irq = gpiod_to_irq(data->hrm_int);
+	return data->hrm_irq < 0 ? data->hrm_irq : 0;
 }
 
 int hrm_set_func(struct hrm_device_data *data)
@@ -1577,7 +1514,7 @@ int hrm_set_func(struct hrm_device_data *data)
 #ifdef CONFIG_SPI_TO_I2C_FPGA
 static int hrm_probe(struct platform_device *pdev)
 #else
-int hrm_probe(struct i2c_client *client, const struct i2c_device_id *id)
+int hrm_probe(struct i2c_client *client)
 #endif
 {
 	int err = -ENODEV;
@@ -1636,6 +1573,20 @@ int hrm_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	if (err < 0) {
 		HRM_dbg("[SENSOR] %s - of_node error\n", __func__);
 		err = -ENODEV;
+		goto err_parse_dt;
+	}
+	/*
+	 * L6C 5.10 (G-24): the rails by supply phandle (4.3), each taken once for the driver's
+	 * life (stock took and put a fresh handle per call, :207-250, :331-339, so every 6.18
+	 * power-off would fail); the probe defers until S2DOS03/S2MPS18 are registered.
+	 */
+	data->reg_vdd_1p8 = devm_regulator_get(&client->dev, "vdd-1p8");
+	data->reg_led_3p3 = devm_regulator_get(&client->dev, "led-3p3");
+	data->reg_i2c_1p8 = devm_regulator_get_optional(&client->dev, "i2c-1p8");
+	if (IS_ERR(data->reg_i2c_1p8))
+		data->reg_i2c_1p8 = NULL;
+	if (IS_ERR(data->reg_vdd_1p8) || IS_ERR(data->reg_led_3p3)) {
+		err = IS_ERR(data->reg_vdd_1p8) ? PTR_ERR(data->reg_vdd_1p8) : PTR_ERR(data->reg_led_3p3);
 		goto err_parse_dt;
 	}
 	err = hrm_setup_gpio(data);
@@ -1742,7 +1693,11 @@ err_input_allocate_device:
 hrm_init_device_failed:
 	hrm_power_ctrl(data, HRM_OFF);
 err_power_on:
-	gpio_free(data->hrm_int);
+	/* LDO39 stays on while the driver lives (stock); give it back before the devm put (G-24) */
+	if (data->reg_i2c_1p8 && i2c_1p8_enable) {
+		regulator_disable(data->reg_i2c_1p8);
+		i2c_1p8_enable = 0;
+	}
 err_setup_gpio:
 err_parse_dt:
 	if (data->hrm_pinctrl) {
@@ -1776,7 +1731,7 @@ done:
 #ifdef CONFIG_SPI_TO_I2C_FPGA
 static int hrm_remove(struct platform_device *pdev)
 #else
-int hrm_remove(struct i2c_client *client)
+void hrm_remove(struct i2c_client *client)
 #endif
 {
 #ifdef CONFIG_SPI_TO_I2C_FPGA
@@ -1813,7 +1768,6 @@ int hrm_remove(struct i2c_client *client)
 		data->pins_sleep = NULL;
 	disable_irq(data->hrm_irq);
 	free_irq(data->hrm_irq, data);
-	gpio_free(data->hrm_int);
 	mutex_destroy(&data->i2clock);
 	mutex_destroy(&data->activelock);
 	mutex_destroy(&data->suspendlock);
@@ -1823,7 +1777,6 @@ int hrm_remove(struct i2c_client *client)
 #ifndef CONFIG_SPI_TO_I2C_FPGA
 	i2c_set_clientdata(client, NULL);
 #endif
-	return 0;
 }
 
 #ifndef CONFIG_SPI_TO_I2C_FPGA
@@ -1973,7 +1926,7 @@ static const struct dev_pm_ops hrm_pm_ops = {
 #endif
 
 static struct of_device_id hrm_match_table[] = {
-	{ .compatible = "hrmsensor",},
+	{ .compatible = "maxim,max86902-hrm",},	/* L6C 4.3; stock "hrmsensor" FDT:5966 */
 	{},
 };
 
@@ -2015,14 +1968,7 @@ static struct i2c_driver hrm_i2c_driver = {
 /* initialization and exit functions */
 static int __init hrm_init(void)
 {
-	if (!lpcharge)
-#ifdef CONFIG_SPI_TO_I2C_FPGA
-		return platform_driver_register(&hrm_i2c_driver);
-#else
-		return i2c_add_driver(&hrm_i2c_driver);
-#endif
-	else
-		return 0;
+	return i2c_add_driver(&hrm_i2c_driver);
 }
 
 static void __exit hrm_exit(void)

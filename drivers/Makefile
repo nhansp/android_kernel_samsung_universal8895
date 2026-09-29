@@ -202,3 +202,5 @@ obj-$(CONFIG_TRUSTONIC_TEE)	+= gud/
 obj-$(CONFIG_SENSORS_SYSFS)	+= sensorhub/
 # greatlte WP-6C: GPS standby line (L6C 5.4; stock S:drivers/Makefile:212)
 obj-$(CONFIG_GPS_SEC_PWR)	+= gps/
+# greatlte WP-6C: HRM sensor (L6C 5.10; stock S:drivers/Makefile:203)
+obj-$(CONFIG_SENSORS_HRMSENSOR)	+= optics/

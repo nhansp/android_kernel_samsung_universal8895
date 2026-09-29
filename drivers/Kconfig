@@ -259,4 +259,7 @@ source "drivers/sensorhub/brcm/Kconfig"
 # greatlte WP-6C: GPS standby line (L6C 5.4)
 source "drivers/gps/Kconfig"
 
+# greatlte WP-6C: HRM sensor (L6C 5.10; stock S:drivers/Kconfig:231)
+source "drivers/optics/Kconfig"
+
 endmenu
