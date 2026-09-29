@@ -23,8 +23,12 @@ description: |
   samsung,exynos8895-mipi-video-phy support additional fifth PHY::
     4 - MIPI CSIS 2.
 
+  samsung,exynos8895-mipi-video-phy supports a sixth PHY::
+    5 - MIPI CSIS 3.
+
   samsung,exynos8895-mipi-video-phy is a child of the PMU system controller and
-  takes the PMU regmap from its parent; it needs no other system controller.
+  takes the PMU regmap from its parent; the CSIS D-PHY resets are in the CAM0
+  system controller.
 
 properties:
   compatible:
@@ -64,7 +68,8 @@ properties:
     $ref: /schemas/types.yaml#/definitions/phandle
     description:
       Phandle to CAM0 system controller interface, valid for
-      samsung,exynos5433-mipi-video-phy and samsung,exynos7870-mipi-video-phy.
+      samsung,exynos5433-mipi-video-phy, samsung,exynos7870-mipi-video-phy and
+      samsung,exynos8895-mipi-video-phy.
 
   samsung,cam1-sysreg:
     $ref: /schemas/types.yaml#/definitions/phandle
@@ -127,8 +132,9 @@ allOf:
         syscon: false
         samsung,pmu-syscon: false
         samsung,disp-sysreg: false
-        samsung,cam0-sysreg: false
         samsung,cam1-sysreg: false
+      required:
+        - samsung,cam0-sysreg
 
 additionalProperties: false
 
