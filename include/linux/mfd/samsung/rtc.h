@@ -103,6 +103,41 @@ enum s2mpg10_rtc_reg {
 	S2MPG10_RTC_OSC_CTRL,
 };
 
+/*
+ * S2MPS17 RTC block, ACPM access type 0x02. Addresses: the map the stock
+ * kernel builds, S:include/linux/mfd/samsung/rtc-s2mp.h:45-72 (the #else
+ * branch; no Kconfig defines RTC_DRV_S2MP).
+ */
+enum s2mps17_rtc_reg {
+	S2MPS17_RTC_CTRL,		/* 0x00 rtc-s2mp.h:46 */
+	S2MPS17_RTC_WTSR_SMPL,		/* 0x01 rtc-s2mp.h:47 */
+	S2MPS17_RTC_UPDATE,		/* 0x02 rtc-s2mp.h:48 */
+	S2MPS17_RTC_CAPSEL,		/* 0x03 rtc-s2mp.h:49 */
+	S2MPS17_RTC_MSEC,		/* 0x04 rtc-s2mp.h:50 */
+	S2MPS17_RTC_SEC,		/* 0x05 rtc-s2mp.h:51 */
+	S2MPS17_RTC_MIN,		/* 0x06 rtc-s2mp.h:52 */
+	S2MPS17_RTC_HOUR,		/* 0x07 rtc-s2mp.h:53 */
+	S2MPS17_RTC_WEEK,		/* 0x08 rtc-s2mp.h:54 */
+	S2MPS17_RTC_DAY,		/* 0x09 rtc-s2mp.h:55 */
+	S2MPS17_RTC_MON,		/* 0x0a rtc-s2mp.h:56 */
+	S2MPS17_RTC_YEAR,		/* 0x0b rtc-s2mp.h:57 */
+	S2MPS17_RTC_A0SEC,		/* 0x0c rtc-s2mp.h:58 */
+	S2MPS17_RTC_A0MIN,		/* 0x0d rtc-s2mp.h:59 */
+	S2MPS17_RTC_A0HOUR,		/* 0x0e rtc-s2mp.h:60 */
+	S2MPS17_RTC_A0WEEK,		/* 0x0f rtc-s2mp.h:61 */
+	S2MPS17_RTC_A0DAY,		/* 0x10 rtc-s2mp.h:62 */
+	S2MPS17_RTC_A0MON,		/* 0x11 rtc-s2mp.h:63 */
+	S2MPS17_RTC_A0YEAR,		/* 0x12 rtc-s2mp.h:64 */
+	S2MPS17_RTC_A1SEC,		/* 0x13 rtc-s2mp.h:65 */
+	S2MPS17_RTC_A1MIN,		/* 0x14 rtc-s2mp.h:66 */
+	S2MPS17_RTC_A1HOUR,		/* 0x15 rtc-s2mp.h:67 */
+	S2MPS17_RTC_A1WEEK,		/* 0x16 rtc-s2mp.h:68 */
+	S2MPS17_RTC_A1DAY,		/* 0x17 rtc-s2mp.h:69 */
+	S2MPS17_RTC_A1MON,		/* 0x18 rtc-s2mp.h:70 */
+	S2MPS17_RTC_A1YEAR,		/* 0x19 rtc-s2mp.h:71 */
+	S2MPS17_RTC_OSCCTRL,		/* 0x1a rtc-s2mp.h:72 */
+};
+
 #define RTC_I2C_ADDR		(0x0C >> 1)
 
 #define HOUR_12			(1 << 7)
@@ -161,6 +196,18 @@ enum s2mpg10_rtc_reg {
 
 #define WTSR_ENABLE_SHIFT	6
 #define WTSR_ENABLE_MASK	(1 << WTSR_ENABLE_SHIFT)
+
+/* S2MPS17 UPDATE FREEZE bit, S:include/linux/mfd/samsung/rtc-s2mp.h:94-95 RTC_FREEZE_SHIFT 2 */
+#define S2MPS17_RTC_FREEZE_MASK		BIT(2)
+/* CAPSEL[7:4] = 0xf marks an initialised RTC, S:drivers/rtc/rtc-s2mps17.c:650,671 */
+#define S2MPS17_RTC_CAPSEL_INIT		0xf0
+/*
+ * WTSR_SMPL written at probe: wtsr_en "enabled" (FDT:6935), smpl_en "enabled"
+ * (FDT:6936), wtsr_timer_val <0x03> (FDT:6937), smpl_timer_val <0x00>
+ * (FDT:6938), check_jigon <0x00> (FDT:6939): (1 << 6) | (1 << 7) | (3 << 0) |
+ * (0 << 3) (S:drivers/rtc/rtc-s2mps17.c:578-581; rtc-s2mp.h:81-88,108-109).
+ */
+#define S2MPS17_RTC_WTSR_SMPL_INIT	0xc3
 
 #define S2MPG10_WTSR_COLDTIMER	GENMASK(6, 5)
 #define S2MPG10_WTSR_COLDRST	BIT(4)
