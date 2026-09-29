@@ -793,6 +793,13 @@ config LEDS_MAX77705
 	help
 	  LED driver for MAX77705 PMIC from Maxim Integrated.
 
+config LEDS_MAX77865
+	tristate "LED support for Maxim MAX77865 PMIC"
+	depends on MFD_MAX77865 && LEDS_CLASS
+	select SAMSUNG_SEC_CLASS
+	help
+	  LED driver for MAX77865 PMIC from Maxim Integrated.
+
 config LEDS_MAX8997
 	tristate "LED support for MAX8997 PMIC"
 	depends on LEDS_CLASS && MFD_MAX8997
