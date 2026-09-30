@@ -23,6 +23,7 @@
 #include <linux/regmap.h>
 #include <linux/sys_soc.h>
 #include <linux/soc/samsung/greatlte-l4.h>
+#include <linux/soc/samsung/greatlte-l4b.h>
 
 #include <ufs/ufshcd.h>
 #include "ufshcd-pltfrm.h"
@@ -1445,6 +1446,37 @@ static void exynos_ufs_fmp_resume(struct ufs_hba *hba)
 			"SMC_CMD_FMP_SMU_RESUME failed: %ld\n", res.a0);
 }
 
+#ifdef CONFIG_SCSI_UFS_EXYNOS8895_FMP_KAT
+/*
+ * DEBUG: known-answer test override (spec L4b 5.6). Only requests whose key
+ * is the armed key use the trial layout; every other key keeps the layout of
+ * the SoC data.
+ */
+static const struct blk_crypto_key *exynos8895_fmp_kat_key;
+static u8 exynos8895_fmp_kat_layout;
+
+void exynos8895_ufs_fmp_kat_arm(const struct blk_crypto_key *key, u8 layout)
+{
+	BUILD_BUG_ON(GREATLTE_L4B_KAT_HALVES != FMP_KEY_LAYOUT_HALVES);
+	BUILD_BUG_ON(GREATLTE_L4B_KAT_WHOLE_REVERSED !=
+		     FMP_KEY_LAYOUT_WHOLE_REVERSED);
+
+	if (WARN_ON(layout != FMP_KEY_LAYOUT_HALVES &&
+		    layout != FMP_KEY_LAYOUT_WHOLE_REVERSED))
+		return;
+
+	WRITE_ONCE(exynos8895_fmp_kat_layout, layout);
+	WRITE_ONCE(exynos8895_fmp_kat_key, key);
+}
+EXPORT_SYMBOL_GPL(exynos8895_ufs_fmp_kat_arm);
+
+void exynos8895_ufs_fmp_kat_disarm(void)
+{
+	WRITE_ONCE(exynos8895_fmp_kat_key, NULL);
+}
+EXPORT_SYMBOL_GPL(exynos8895_ufs_fmp_kat_disarm);
+#endif /* CONFIG_SCSI_UFS_EXYNOS8895_FMP_KAT */
+
 static inline __be64 fmp_key_word(const u8 *key, int j)
 {
 	return cpu_to_be64(get_unaligned_le64(
@@ -1468,6 +1500,12 @@ static int exynos_ufs_fmp_fill_prdt(struct ufs_hba *hba,
 	/* If FMP wasn't enabled, we shouldn't get any encrypted requests. */
 	if (WARN_ON_ONCE(!(hba->caps & UFSHCD_CAP_CRYPTO)))
 		return -EIO;
+
+#ifdef CONFIG_SCSI_UFS_EXYNOS8895_FMP_KAT
+	/* DEBUG: the known-answer test's own key only (spec L4b 5.6) */
+	if (READ_ONCE(exynos8895_fmp_kat_key) == crypt_ctx->bc_key)
+		layout = READ_ONCE(exynos8895_fmp_kat_layout);
+#endif
 
 	/* A key order not known for this SoC: fail before touching the PRDT. */
 	if (layout != FMP_KEY_LAYOUT_HALVES &&
@@ -2287,10 +2325,13 @@ static int exynos8895_ufs_sys_init(struct exynos_ufs *ufs, bool log)
 	arm_smccc_smc(EXYNOS8895_SMC_FMP_DUMP, 0, 0, UFSPRSECURITY, 0, 0, 0, 0, &res);
 	post = res.a0;
 
-	if (log)
+	if (log) {
 		dev_info(hba->dev, "8895: pmu724=%#x->%#x smc_sec=%ld smc_smu=%ld ufsprsecurity=%#lx->%#lx desctype=%lu\n",
 			 phy_ctrl, (u32)(phy_ctrl | BIT(0)), sec, smu, pre, post,
 			 EXYNOS8895_UFSPR_DESCTYPE(post));
+		/* DEBUG: L4b heartbeat row l4bfmp */
+		greatlte_l4b_fmp_probe(hba->caps & UFSHCD_CAP_CRYPTO, post);
+	}
 
 	/*
 	 * With the FMP in another descriptor mode the controller would walk our

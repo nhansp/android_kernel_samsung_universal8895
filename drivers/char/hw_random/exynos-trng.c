@@ -24,6 +24,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/property.h>
+#include <linux/soc/samsung/greatlte-l4b.h>
 #include <linux/spinlock.h>
 
 #define EXYNOS_TRNG_CLKDIV		0x0
@@ -152,6 +153,7 @@ static int exynos_trng_session_smc(unsigned long op, unsigned long arg,
 				   struct arm_smccc_res *res)
 {
 	arm_smccc_smc(SMC_CMD_RANDOM, op, arg, 0, 0, 0, 0, 0, res);
+	greatlte_l4b_rng_smc(op, (int)res->a0);	/* DEBUG: L4b heartbeat row l4brng */
 
 	/* stock exynos_smc() returns x0 as int (S:include/linux/smc.h:234) */
 	return (int)res->a0;

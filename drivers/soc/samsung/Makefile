@@ -60,3 +60,5 @@ obj-$(CONFIG_EXYNOS8895_PM)		+= exynos8895-pm.o
 obj-$(CONFIG_GREATLTE_HB_L7)		+= greatlte-hb-l7.o
 # L2b bus DVFS heartbeat
 obj-$(CONFIG_GREATLTE_HB_L2B)		+= greatlte-hb-l2b.o
+# greatlte WP-L4b: FMP/TRNG heartbeat rows and FMP known-answer test (DEBUG, spec L4b 5.5-5.6)
+obj-$(CONFIG_GREATLTE_HB_L4B)		+= greatlte-hb-l4b.o

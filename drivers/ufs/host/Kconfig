@@ -173,3 +173,19 @@ config SCSI_UFS_EXYNOS8895_FMP_VERIFIED
 	  a wrong layout writes files that no other kernel can decrypt.
 	  With N the host keeps the 16-byte PRDT and DESCTYPE 0, and fscrypt
 	  uses the software fallback on "inlinecrypt" mounts.
+
+config SCSI_UFS_EXYNOS8895_FMP_KAT
+	bool "DEBUG: Exynos8895 FMP read-only known-answer test"
+	depends on SCSI_UFS_EXYNOS=y && SCSI_UFS_CRYPTO && DEBUG_FS
+	depends on GREATLTE_HB_L4B && CRYPTO_SKCIPHER=y
+	default n
+	help
+	  Debug only (spec L4b 5.6, test T-L4b-2). Switches the Exynos8895
+	  UFS host to 128-byte PRDT entries (FMP DESCTYPE 3) for every
+	  transfer and adds the debugfs file greatlte-l4b/fmp_kat, which
+	  reads one 4 KiB block through FMP with a test key in each
+	  candidate key layout and compares the result with software
+	  xts(aes). Only the test's own key is served natively: every other
+	  key fails with -EIO while the layout is unverified. Never enable
+	  in a release build; the first boot of such a kernel is read-only
+	  (T-L4b-1a).
