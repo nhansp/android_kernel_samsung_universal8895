@@ -36,6 +36,217 @@
  */
 &mipi_phy { samsung,cam0-sysreg = <&syscon_cam>; };
 
+
+/* ==== l6b2 part: S2MPB02 camera PMIC (L6B 4.7, 5.8) ==== */
+
+&pinctrl_fsys1 {
+	/* FDT:1050-1057 sub-pmic-irq (phandle 0x72): gpj1-5 input, no pull, drv 0 */
+	sub_pmic_irq: sub-pmic-irq-pins {
+		samsung,pins = "gpj1-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;	/* FDT:1052 0x00 */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;	/* FDT:1053 0x00 */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;	/* FDT:1054 0x00 */
+	};
+};
+
+/*
+ * USI10: stock usi@10821020 usi_mode = "hsi2c0_hsi2c1" (FDT:5056-5060; the
+ * &usi10 sysreg word is SYSREG_PERIC1 + 0x1020). Written exactly as L6B 4.6.
+ */
+&usi10 { samsung,mode = <USI_MODE_I2C0_1>; status = "okay"; };
+
+&hsi2c_25 {	/* hsi2c@10900000, FDT:5746-5928 */
+	/*
+	 * Stock sets no clock-frequency; its HSI2C driver then ran the bus at
+	 * HSI2C_FS_TX_CLOCK = 400 kHz (S:drivers/i2c/busses/i2c-exynos5.c:212,
+	 * 1573-1574), ACK's default is 100 kHz (A:drivers/i2c/busses/
+	 * i2c-exynos5.c:897). Pins: the tree's hsi2c25_bus (default of the
+	 * soc node) = stock hsi2c25-bus gpe3-5/gpe3-4 func 2 (FDT:2533-2539).
+	 */
+	#address-cells = <1>;			/* FDT:5751 (the ACK node has none) */
+	#size-cells = <0>;			/* FDT:5752 */
+	clock-frequency = <400000>;
+	status = "okay";
+
+	s2mpb02_pmic@59 {				/* FDT:5762-5927 */
+		compatible = "s2mpb02,s2mpb02mfd";	/* FDT:5763, matched by the transplant */
+		reg = <0x59>;
+		s2mpb02,wakeup;
+		pinctrl-names = "default";
+		pinctrl-0 = <&sub_pmic_irq>;		/* FDT:5767 <0x72> */
+		b1_remote_sense_en = <1>;		/* FDT:5768 */
+		/* No interrupts: stock never had an S2MPB02 IRQ (L6B 5.8, D-17). */
+
+		/*
+		 * FDT:5770-5903 verbatim, hex -> decimal. The regulator-name
+		 * strings are the contract: the FIMC-IS2 sensor drivers get
+		 * their rails by name (L6B 5.7).
+		 */
+		regulators {
+			s2mpb02-buck1 {
+				regulator-name = "VDDD_CORE_0.8V_COMP";
+				regulator-min-microvolt = <650000>;
+				regulator-max-microvolt = <850000>;
+			};
+
+			s2mpb02-buck2 {
+				regulator-name = "S2MPB02_BUCK1";
+				regulator-min-microvolt = <1300000>;
+				regulator-max-microvolt = <1300000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			s2mpb02-bb {
+				regulator-name = "S2MPB02_BB";
+				regulator-min-microvolt = <2600000>;
+				/* FDT:5789 prints the cell 0x003d0900 as the string "\0=\t" */
+				regulator-max-microvolt = <4000000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+
+			s2mpb02-ldo1 {
+				regulator-name = "VDDD_NORET_0.9V_COMP";
+				regulator-min-microvolt = <950000>;
+				regulator-max-microvolt = <950000>;
+			};
+
+			s2mpb02-ldo2 {
+				regulator-name = "VDDD_CORE_1.0V_COMP";
+				regulator-min-microvolt = <1000000>;
+				regulator-max-microvolt = <1000000>;
+			};
+
+			s2mpb02-ldo3 {
+				regulator-name = "VDDD_1.2V_CAM";
+				regulator-min-microvolt = <1050000>;
+				regulator-max-microvolt = <1050000>;
+			};
+
+			s2mpb02-ldo4 {
+				regulator-name = "VDDD_RET_1.0V_COMP";
+				regulator-min-microvolt = <700000>;
+				regulator-max-microvolt = <1050000>;
+			};
+
+			s2mpb02-ldo5 {
+				regulator-name = "VDDD_1.2V_VT";
+				regulator-min-microvolt = <1050000>;
+				regulator-max-microvolt = <1050000>;
+			};
+
+			s2mpb02-ldo6 {
+				regulator-name = "VDDIO_1.8V_VT";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
+			s2mpb02-ldo7 {
+				regulator-name = "VDDIO_1.8V_CAM";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
+			s2mpb02-ldo8 {
+				regulator-name = "VDDIO_1.8V_COMP";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
+			s2mpb02-ldo9 {
+				regulator-name = "VDDA_1.8V_COMP";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
+			s2mpb02-ldo10 {
+				regulator-name = "VDDA_1.8V_CAM";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
+			s2mpb02-ldo11 {
+				regulator-name = "VDDA_2.9V_CAM";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2950000>;
+			};
+
+			s2mpb02-ldo12 {
+				regulator-name = "VDDAF_2.8V_CAM";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			s2mpb02-ldo13 {
+				regulator-name = "VDDA_2.9V_VT";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			s2mpb02-ldo14 {
+				regulator-name = "OIS_VM_2.8V";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			s2mpb02-ldo15 {
+				regulator-name = "OIS_VDD_2.8V";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			s2mpb02-ldo16 {
+				regulator-name = "VDD_VTCAM_AF_2.8V";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			s2mpb02-ldo17 {
+				regulator-name = "OIS_VDD_1.8V";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
+			s2mpb02-ldo18 {
+				regulator-name = "S2MPB02_LDO18";
+				regulator-min-microvolt = <600000>;
+				regulator-max-microvolt = <3775000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+		};
+
+		/*
+		 * FDT:5905-5926 verbatim. The GPIO flag cells (1) are stock's;
+		 * the driver reads the numbers with of_get_named_gpio() and
+		 * drives them raw, as stock did.
+		 */
+		torch {
+			torch1-gpio = <&gpc0 2 1>;	/* FDT:5906 <0x73 0x02 0x01>, 0x73 = gpc0 (FDT:2017-2023) */
+			flash1-gpio = <&gpc0 1 1>;	/* FDT:5907 */
+			status = "okay";
+
+			leds1 {
+				ledname = "leds-sec1";
+				id = <0>;
+				brightness = <12>;
+				timeout = <7>;
+				torch_table_enable = <0>;
+			};
+
+			leds2 {
+				ledname = "torch-sec1";
+				id = <1>;
+				brightness = <12>;
+				timeout = <15>;
+				torch_table_enable = <1>;
+				torch_table = <2 4 4 5 6 8 9 10 10 12>;
+			};
+		};
+	};
+};
+
 /* ==== l6b part: FIMC-IS2 camera (L6B 4.2-4.6, 5.6) ==== */
 
 /* camera pin groups (L6B 2.1): stock samsung,pins/pin-function/pin-pud/pin-drv/pin-val of the cited FDT nodes */
