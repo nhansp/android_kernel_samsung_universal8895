@@ -320,3 +320,14 @@ config EXYNOS8895_BTS
 	depends on ARCH_EXYNOS && EXYNOS8895_BTS_BW
 	help
 	  Enable BTS (Bus traffic shaper) support
+# L4b heartbeat rows and FMP known-answer test (DEBUG, spec L4b 5.5-5.6)
+config GREATLTE_HB_L4B
+	bool "greatlte heartbeat: L4b FMP and secure TRNG rows (debug only)"
+	depends on GREATLTE_HB
+	default GREATLTE_HB
+	help
+	  Registers the L4b heartbeat rows "l4bfmp" (UFS crypto capability
+	  and the FMP descriptor type read back at probe) and "l4brng"
+	  (secure TRNG sessions and the last SMC result), and, with
+	  SCSI_UFS_EXYNOS8895_FMP_KAT, the debugfs file greatlte-l4b/fmp_kat.
+	  Never enable in a release build.

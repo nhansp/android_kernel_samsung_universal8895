@@ -62,3 +62,5 @@ obj-$(CONFIG_GREATLTE_HB_L7)		+= greatlte-hb-l7.o
 obj-$(CONFIG_GREATLTE_HB_L2B)		+= greatlte-hb-l2b.o
 # L2b: Exynos8895 bus traffic shaper
 obj-$(CONFIG_EXYNOS8895_BTS_BW)		+= bts/
+# greatlte WP-L4b: FMP/TRNG heartbeat rows and FMP known-answer test (DEBUG, spec L4b 5.5-5.6)
+obj-$(CONFIG_GREATLTE_HB_L4B)		+= greatlte-hb-l4b.o

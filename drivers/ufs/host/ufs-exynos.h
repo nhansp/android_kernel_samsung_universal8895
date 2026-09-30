@@ -205,6 +205,14 @@ struct exynos_ufs_drv_data {
 	int (*post_hce_enable)(struct exynos_ufs *ufs);
 	int (*suspend)(struct exynos_ufs *ufs);
 	int (*resume)(struct exynos_ufs *ufs);
+	/* SoC's own FMP set-up, replacing the generic one (CONFIG_SCSI_UFS_CRYPTO) */
+	void (*fmp_init)(struct ufs_hba *hba, struct exynos_ufs *ufs);
+	void (*fmp_resume)(struct exynos_ufs *ufs);
+	u8 fmp_key_layout;
+/* FMP key-slot order in the PRDT; 0 is the layout of every other SoC's data */
+#define FMP_KEY_LAYOUT_HALVES		0	/* each 32-byte key half reversed */
+#define FMP_KEY_LAYOUT_WHOLE_REVERSED	1	/* the whole 64-byte key reversed */
+#define FMP_KEY_LAYOUT_UNVERIFIED	2	/* unknown: fail every key */
 };
 
 struct ufs_phy_time_cfg {
@@ -247,6 +255,7 @@ struct exynos_ufs {
 	u32 iocc_offset;
 	u32 iocc_mask;
 	u32 iocc_val;
+	unsigned long ufspr_security;	/* 8895: UFSPRSECURITY read back at probe */
 
 	u32 opts;
 #define EXYNOS_UFS_OPT_HAS_APB_CLK_CTRL		BIT(0)
