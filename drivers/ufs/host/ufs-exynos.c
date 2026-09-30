@@ -1470,7 +1470,8 @@ static int exynos_ufs_fmp_fill_prdt(struct ufs_hba *hba,
 		return -EIO;
 
 	/* A key order not known for this SoC: fail before touching the PRDT. */
-	if (layout != FMP_KEY_LAYOUT_HALVES)
+	if (layout != FMP_KEY_LAYOUT_HALVES &&
+	    layout != FMP_KEY_LAYOUT_WHOLE_REVERSED)
 		return -EIO;
 
 	/* Configure FMP on each segment of the request. */
@@ -1494,9 +1495,23 @@ static int exynos_ufs_fmp_fill_prdt(struct ufs_hba *hba,
 		prd->file_iv[1] = cpu_to_be64(dun_lo);
 
 		/* Set the key. */
-		for (j = 0; j < AES_KEYSIZE_256 / sizeof(u64); j++) {
-			prd->file_enckey[j] = fmp_key_word(enckey, j);
-			prd->file_twkey[j] = fmp_key_word(twkey, j);
+		if (layout == FMP_KEY_LAYOUT_WHOLE_REVERSED) {
+			/*
+			 * Stock Exynos8895 order: the whole 64-byte key byte-
+			 * reversed across file_enckey and file_twkey, i.e.
+			 * entry byte 32 + n = key byte 63 - n
+			 * (S:drivers/crypto/fmp/fmp_ufs.c:216-218 with a
+			 * 64-byte key): the two reversed halves swapped.
+			 */
+			for (j = 0; j < AES_KEYSIZE_256 / sizeof(u64); j++) {
+				prd->file_enckey[j] = fmp_key_word(twkey, j);
+				prd->file_twkey[j] = fmp_key_word(enckey, j);
+			}
+		} else {
+			for (j = 0; j < AES_KEYSIZE_256 / sizeof(u64); j++) {
+				prd->file_enckey[j] = fmp_key_word(enckey, j);
+				prd->file_twkey[j] = fmp_key_word(twkey, j);
+			}
 		}
 
 		/* Increment the data unit number. */
@@ -2170,9 +2185,13 @@ static struct ufs_hba_variant_ops ufs_hba_exynosauto_vh_ops = {
 						   ARM_SMCCC_OWNER_SIP, 0x1830)	/* 0xC2001830 */
 #define EXYNOS8895_SMC_FMP_DUMP		ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, ARM_SMCCC_SMC_64, \
 						   ARM_SMCCC_OWNER_SIP, 0x1850)	/* 0xC2001850, read-only */
+#define EXYNOS8895_SMC_FMP_RESUME	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, ARM_SMCCC_SMC_64, \
+						   ARM_SMCCC_OWNER_SIP, 0x1840)	/* 0xC2001840, smc.h:78 */
 #define EXYNOS8895_UFSPR_DESCTYPE(v)	(((v) >> 19) & 0x3)	/* UFSPRSECURITY[20:19], sufs.h:296 */
+#define EXYNOS8895_UFSPR_DESCTYPE_MASK	GENMASK(20, 19)		/* sufs.h:296 */
 #define EXYNOS8895_ID_FMP_UFS_MMC	0	/* smc.h:68 */
 #define EXYNOS8895_FMP_DESCTYPE_0	0	/* 16-byte PRDT, no crypto: smc.h:71 */
+#define EXYNOS8895_FMP_DESCTYPE_3	3	/* 128-byte FMP PRDT: smc.h:72 */
 #define EXYNOS8895_FMP_SMU_INIT		0	/* smc.h:119 */
 
 /* SoC revisions before EVT 1.1 (0x11, sufs.c:1417-1418): "0".."f" and "10"
@@ -2184,14 +2203,31 @@ static const struct soc_device_attribute exynos8895_pre_evt11[] = {
 };
 
 /*
+ * The FMP descriptor type must match the PRDT stride in use: 128-byte FMP
+ * entries (set by exynos8895_ufs_fmp_init() together with the crypto
+ * profile) need DESCTYPE 3, the standard 16-byte entries DESCTYPE 0.
+ * The stride is the only input, so the two cannot disagree.
+ */
+static u32 exynos8895_ufs_fmp_desctype(struct ufs_hba *hba)
+{
+#ifdef CONFIG_SCSI_UFS_CRYPTO
+	if (ufshcd_sg_entry_size(hba) == sizeof(struct fmp_sg_entry))
+		return EXYNOS8895_FMP_DESCTYPE_3;
+#endif
+	BUILD_BUG_ON(sizeof(struct ufshcd_sg_entry) != 16);
+	return EXYNOS8895_FMP_DESCTYPE_0;
+}
+
+/*
  * Stock exynos_ufs_init_system() + exynos_ufs_config_smu(), at init and again
  * after every link-off resume (stock __exynos_ufs_resume()).
  */
 static int exynos8895_ufs_sys_init(struct exynos_ufs *ufs, bool log)
 {
 	struct ufs_hba *hba = ufs->hba;
+	u32 desctype = exynos8895_ufs_fmp_desctype(hba);
+	unsigned long pre, post, other;
 	struct arm_smccc_res res;
-	unsigned long ufspr_sec;
 	struct regmap *pmu;
 	u32 phy_ctrl = 0;
 	long sec, smu;
@@ -2229,37 +2265,64 @@ static int exynos8895_ufs_sys_init(struct exynos_ufs *ufs, bool log)
 	 */
 	exynos_ufs_disable_auto_ctrl_hcc(ufs);
 
-	/* FMP/SMU setup: the two stock SMCs (sufs.c:870, 875), with the non-FMP
-	 * descriptor type */
+	/*
+	 * Read UFSPRSECURITY through the secure monitor, as stock's register
+	 * dump does (S:drivers/scsi/ufs/ufs-exynos-dbg.c:955): before the
+	 * SMCs, and again after them for the check below.
+	 */
+	arm_smccc_smc(EXYNOS8895_SMC_FMP_DUMP, 0, 0, UFSPRSECURITY, 0, 0, 0, 0, &res);
+	pre = res.a0;
+
+	/*
+	 * FMP/SMU setup: the two stock SMCs (sufs.c:867-871, 875), with the
+	 * descriptor type of the PRDT stride in use.
+	 */
 	arm_smccc_smc(EXYNOS8895_SMC_FMP_SECURITY, 0, EXYNOS8895_ID_FMP_UFS_MMC,
-		      EXYNOS8895_FMP_DESCTYPE_0, 0, 0, 0, 0, &res);
+		      desctype, 0, 0, 0, 0, &res);
 	sec = res.a0;
 	arm_smccc_smc(EXYNOS8895_SMC_SMU, EXYNOS8895_FMP_SMU_INIT,
 		      EXYNOS8895_ID_FMP_UFS_MMC, 0, 0, 0, 0, 0, &res);
 	smu = res.a0;
 
-	/*
-	 * Read UFSPRSECURITY back through the secure monitor, as stock's
-	 * register dump does (S:drivers/scsi/ufs/ufs-exynos-dbg.c:955): its
-	 * DESCTYPE field must be 0 (16-byte PRDT). An
-	 * unknown SMC returns -1, whose DESCTYPE field reads 3, so it fails too.
-	 */
 	arm_smccc_smc(EXYNOS8895_SMC_FMP_DUMP, 0, 0, UFSPRSECURITY, 0, 0, 0, 0, &res);
-	ufspr_sec = res.a0;
+	post = res.a0;
 
 	if (log)
-		dev_info(hba->dev, "8895: pmu724=%#x->%#x smc_sec=%ld smc_smu=%ld ufsprsecurity=%#lx desctype=%lu\n",
-			 phy_ctrl, (u32)(phy_ctrl | BIT(0)), sec, smu, ufspr_sec,
-			 EXYNOS8895_UFSPR_DESCTYPE(ufspr_sec));
+		dev_info(hba->dev, "8895: pmu724=%#x->%#x smc_sec=%ld smc_smu=%ld ufsprsecurity=%#lx->%#lx desctype=%lu\n",
+			 phy_ctrl, (u32)(phy_ctrl | BIT(0)), sec, smu, pre, post,
+			 EXYNOS8895_UFSPR_DESCTYPE(post));
 
 	/*
 	 * With the FMP in another descriptor mode the controller would walk our
-	 * 16-byte PRDT with the wrong stride: fail before any UTP transfer.
+	 * PRDT with the wrong stride: fail before any UTP transfer. A failed
+	 * read-back (SMCCC_RET_NOT_SUPPORTED, or any of bits 63:32 set) fails
+	 * too, whatever its DESCTYPE field reads. At probe with DESCTYPE 3 the
+	 * SMCs may change nothing but the DESCTYPE field.
 	 */
-	if (sec || smu || EXYNOS8895_UFSPR_DESCTYPE(ufspr_sec)) {
-		dev_err(hba->dev, "8895: FMP not in 16-byte PRDT mode (sec=%ld smu=%ld ufsprsecurity=%#lx)\n",
-			sec, smu, ufspr_sec);
+	other = (pre ^ post) & ~EXYNOS8895_UFSPR_DESCTYPE_MASK;
+	if (sec || smu || (long)post == SMCCC_RET_NOT_SUPPORTED ||
+	    upper_32_bits(post) || EXYNOS8895_UFSPR_DESCTYPE(post) != desctype ||
+	    (log && desctype == EXYNOS8895_FMP_DESCTYPE_3 && other)) {
+		dev_err(hba->dev, "8895: FMP not in %u-byte PRDT mode (sec=%ld smu=%ld ufsprsecurity=%#lx->%#lx)\n",
+			(unsigned int)ufshcd_sg_entry_size(hba), sec, smu, pre,
+			post);
 		return -EIO;
+	}
+
+	if (log) {
+		/*
+		 * DESCTYPE 0 (the path every boot so far has run) only reports
+		 * a change outside the DESCTYPE field: its value before the
+		 * SMCs was never recorded.
+		 */
+		if (other)
+			dev_warn(hba->dev, "8895: UFSPRSECURITY changed outside DESCTYPE (%#lx->%#lx)\n",
+				 pre, post);
+		ufs->ufspr_security = post;
+	} else if ((post ^ ufs->ufspr_security) & ~EXYNOS8895_UFSPR_DESCTYPE_MASK) {
+		/* the reset value after a power loss is not known: report only */
+		dev_warn(hba->dev, "8895: UFSPRSECURITY %#lx differs from probe %#lx outside DESCTYPE\n",
+			 post, ufs->ufspr_security);
 	}
 
 	return 0;
@@ -2300,6 +2363,95 @@ static int exynos8895_ufs_resume(struct exynos_ufs *ufs)
 
 	return exynos8895_ufs_sys_init(ufs, false);
 }
+
+#ifdef CONFIG_SCSI_UFS_CRYPTO
+static const char *const exynos8895_fmp_layout_name[] = {
+	[FMP_KEY_LAYOUT_HALVES]		= "gs101",
+	[FMP_KEY_LAYOUT_WHOLE_REVERSED]	= "stock",
+	[FMP_KEY_LAYOUT_UNVERIFIED]	= "unverified",
+};
+
+/*
+ * FMP inline encryption (stock CONFIG_FMP_UFS=y, IKC:5464) through the
+ * blk-crypto profile, raw AES-256-XTS keys in 128-byte PRDT entries. Runs
+ * before drv_init, whose exynos8895_ufs_sys_init() then programs the
+ * DESCTYPE that matches the stride chosen here; no SMC here. Without
+ * FMP_VERIFIED (key layout measured on hardware) or the DEBUG KAT this
+ * does nothing, and the host keeps the 16-byte PRDT and DESCTYPE 0.
+ */
+static void exynos8895_ufs_fmp_init(struct ufs_hba *hba, struct exynos_ufs *ufs)
+{
+	struct blk_crypto_profile *profile = &hba->crypto_profile;
+	const bool verified = IS_ENABLED(CONFIG_SCSI_UFS_EXYNOS8895_FMP_VERIFIED);
+	u8 layout = ufs->drv_data->fmp_key_layout;
+	u32 cap;
+	int err;
+
+	if (!verified && !IS_ENABLED(CONFIG_SCSI_UFS_EXYNOS8895_FMP_KAT))
+		return;
+	if (verified && layout == FMP_KEY_LAYOUT_UNVERIFIED) {
+		dev_err(hba->dev, "8895: FMP_VERIFIED without a measured key layout\n");
+		return;
+	}
+
+	/* for the log only: stock enabled FMP without checking CAP.CS (sufs.c:867-868) */
+	cap = ufshcd_readl(hba, REG_CONTROLLER_CAPABILITIES);
+
+	err = devm_blk_crypto_profile_init(hba->dev, profile, 0);
+	if (err) {
+		/* Only ENOMEM should be possible here. */
+		dev_err(hba->dev, "Failed to initialize crypto profile: %d\n",
+			err);
+		return;
+	}
+	/* stock wrote only the low IV word, file_iv3 (fmp_ufs.c:182-185) */
+	profile->max_dun_bytes_supported = sizeof(u32);
+	profile->key_types_supported = BLK_CRYPTO_KEY_TYPE_RAW;
+	profile->dev = hba->dev;
+	/* 4096-byte data units: PRDT_SET_SIZE(12), sufs.c:1336-1338 */
+	profile->modes_supported[BLK_ENCRYPTION_MODE_AES_256_XTS] =
+		DATA_UNIT_SIZE;
+
+	hba->quirks |= UFSHCD_QUIRK_CUSTOM_CRYPTO_PROFILE |
+		       UFSHCD_QUIRK_BROKEN_CRYPTO_ENABLE |
+		       UFSHCD_QUIRK_KEYS_IN_PRDT;
+
+	/*
+	 * Last, together and with no exit in between: the 128-byte stride
+	 * (before ufshcd_memory_alloc()) and the crypto capability.
+	 */
+	BUILD_BUG_ON(sizeof(struct fmp_sg_entry) != 128);
+	ufshcd_set_sg_entry_size(hba, sizeof(struct fmp_sg_entry));
+	hba->caps |= UFSHCD_CAP_CRYPTO;
+
+	dev_info(hba->dev, "8895: FMP profile: cap=%#x AES-256-XTS du=4096 dun=4 layout=%s native=%d\n",
+		 cap, exynos8895_fmp_layout_name[layout], verified);
+}
+
+/*
+ * Stock __exynos_ufs_resume(): SMC_CMD_FMP_RESUME after the SMCs of the
+ * system init (sufs.c:1864-1870). Runs after exynos8895_ufs_resume(), with
+ * the HCI auto core-clock control still off as sys_init left it.
+ */
+static void exynos8895_ufs_fmp_resume(struct exynos_ufs *ufs)
+{
+	struct ufs_hba *hba = ufs->hba;
+	struct arm_smccc_res res;
+
+	if (!ufshcd_is_link_off(hba) || !(hba->caps & UFSHCD_CAP_CRYPTO))
+		return;
+
+	arm_smccc_smc(EXYNOS8895_SMC_FMP_RESUME, 0, EXYNOS8895_ID_FMP_UFS_MMC,
+		      0, 0, 0, 0, 0, &res);
+	if (res.a0)
+		dev_warn(hba->dev, "8895: fmp resume smc=%ld\n", (long)res.a0);
+	else
+		dev_info(hba->dev, "8895: fmp resume smc=%ld\n", (long)res.a0);
+}
+#else
+#define exynos8895_ufs_fmp_init		NULL
+#define exynos8895_ufs_fmp_resume	NULL
+#endif /* CONFIG_SCSI_UFS_CRYPTO */
 
 enum exynos8895_uic_kind {
 	K_MIB,		/* one DME_SET of .attr */
@@ -2769,6 +2921,10 @@ static const struct exynos_ufs_drv_data exynos8895_ufs_drvs = {
 	.post_pwr_change	= exynos8895_ufs_post_pwr_change,
 	.suspend		= exynos8895_ufs_suspend,
 	.resume			= exynos8895_ufs_resume,
+	.fmp_init		= exynos8895_ufs_fmp_init,
+	.fmp_resume		= exynos8895_ufs_fmp_resume,
+	/* not measured yet: spec L4b D-4, set from the KAT result (T-L4b-2) */
+	.fmp_key_layout		= FMP_KEY_LAYOUT_UNVERIFIED,
 };
 
 static const struct of_device_id exynos_ufs_of_match[] = {

@@ -155,3 +155,21 @@ config SCSI_UFS_ROCKCHIP
 
 	  Select this if you have UFS controller on Rockchip chipset.
 	  If unsure, say N.
+
+# WP-L4b: Exynos8895 FMP inline encryption (spec L4b_fmp_rng.md 5.3)
+config SCSI_UFS_EXYNOS8895_FMP_VERIFIED
+	bool "Exynos8895 FMP: advertise inline AES-256-XTS (key layout verified on hardware)"
+	depends on SCSI_UFS_EXYNOS && SCSI_UFS_CRYPTO
+	default n
+	help
+	  Switch the Exynos8895 UFS host to 128-byte PRDT entries (FMP
+	  DESCTYPE 3) and advertise AES-256-XTS with 4096-byte data units to
+	  blk-crypto, so that fscrypt can encrypt inline on "inlinecrypt"
+	  mounts.
+
+	  Say Y only in a kernel whose FMP key layout was measured with the
+	  known-answer test (test T-L4b-2) and whose FMP writes were read back
+	  by software fscrypt and by the stock-based kernel (test T-L4b-3b):
+	  a wrong layout writes files that no other kernel can decrypt.
+	  With N the host keeps the 16-byte PRDT and DESCTYPE 0, and fscrypt
+	  uses the software fallback on "inlinecrypt" mounts.
