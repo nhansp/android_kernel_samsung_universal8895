@@ -1,16 +1,18 @@
-/* sound/soc/samsung/abox/abox_gic.h
- *
- * ALSA SoC - Samsung Abox driver
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * sound/soc/samsung/abox/abox_gic.h - Samsung ABOX GIC driver
  *
  * Copyright (c) 2016 Samsung Electronics Co. Ltd.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * Transplanted from S:sound/soc/samsung/abox/abox_gic.h (Samsung
+ * N950NKSU5DZE2 OSRC 4.4.111), spec L6E 5.7.1.
  */
 
 #ifndef __SND_SOC_ABOX_GIC_H
 #define __SND_SOC_ABOX_GIC_H
+
+#include <linux/interrupt.h>
+#include <linux/platform_device.h>
 
 struct abox_gic_irq_handler_t {
 	irq_handler_t irq_handler;
