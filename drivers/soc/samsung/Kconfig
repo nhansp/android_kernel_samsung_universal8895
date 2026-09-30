@@ -297,3 +297,14 @@ config GREATLTE_HB_L7_KG
 	  Adds the "L7kg" printer: the 143 L1-kept CMU gate registers that
 	  differ before and after the last suspend (spec L7 P17, T7-KG).
 	  Only for the T7-KG boot.
+
+# L2b bus DVFS heartbeat rows (DEBUG)
+config GREATLTE_HB_L2B
+	bool "greatlte heartbeat: L2b bus DVFS (debug only)"
+	depends on GREATLTE_HB && ARM_EXYNOS8895_BUS_DEVFREQ
+	default GREATLTE_HB
+	help
+	  Registers the L2b heartbeat rows (bus devices, their ACPM clocks,
+	  the bus driver state, the MIF and DISP CMU read-back), the debugfs
+	  files exynos8895-bus/mif_hw_khz and disp_hw_khz and the
+	  int_test_khz parameter. Never enable in a release build.
