@@ -34,6 +34,7 @@
 #include <drm/drm_modeset_lock.h>
 #include <drm/drm_panel.h>
 #include <drm/drm_probe_helper.h>
+#include <drm/exynos8895_panel.h>
 
 /* the vendor panel framework (CONFIG_DRM_PANEL_SAMSUNG_S6E3HA6_STOCK) */
 #include "s6e3ha6-stock/panel_dpu.h"
@@ -91,6 +92,7 @@ struct s6e3ha6 {
 	struct panel_device *stock;
 	bool stock_probed;
 	bool stock_failed;
+	struct exynos8895_panel_hooks decon_hooks;
 };
 
 static inline struct s6e3ha6 *to_s6e3ha6(struct drm_panel *panel)
@@ -302,6 +304,12 @@ static int s6e3ha6_stock_set_power(struct s6e3ha6 *ctx, int power)
 	return ret;
 }
 
+/* the DECON's frame-done interrupt: PANEL_IOC_EVT_FRAME_DONE */
+static void s6e3ha6_stock_frame_done(void *data)
+{
+	panel_drv_frame_done(data);
+}
+
 /*
  * PANEL_IOC_PANEL_PROBE, which the vendor DSIM probe issues once with the
  * link up (S:.../dpu/dsim_drv.c:1978): panel id, resources, and the lcd,
@@ -321,6 +329,10 @@ static bool s6e3ha6_stock_probe(struct s6e3ha6 *ctx)
 	ret = panel_drv_ioctl(stock, PANEL_IOC_PANEL_PROBE, NULL);
 	if (!ret) {
 		ctx->stock_probed = true;
+		/* the DECON's panel events, once the framework's COPR exists */
+		ctx->decon_hooks.frame_done = s6e3ha6_stock_frame_done;
+		ctx->decon_hooks.data = stock;
+		exynos8895_decon_set_panel_hooks(&ctx->decon_hooks);
 		return true;
 	}
 
@@ -852,6 +864,9 @@ static void s6e3ha6_remove(struct mipi_dsi_device *dsi)
 
 	greatlte_l5_set(GL5_ON, panel, false);
 	greatlte_l5_set(GL5_ON, det, NULL);
+	/* the DECON must not call into this ctx once it is gone */
+	if (ctx->stock_probed)
+		exynos8895_decon_set_panel_hooks(NULL);
 	if (ctx->bright) {
 		s6e3ha6_bright_unregister(ctx->bright);
 		ctx->bright = NULL;

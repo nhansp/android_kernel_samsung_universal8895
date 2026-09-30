@@ -825,6 +825,7 @@ config DRM_PANEL_SAMSUNG_S6E3HA6_STOCK
 	depends on DRM_PANEL_SAMSUNG_S6E3HA6=y
 	depends on BACKLIGHT_CLASS_DEVICE=y
 	depends on SPI=y
+	depends on !DRM_EXYNOS8895_DECON || DRM_EXYNOS=y
 	select LCD_CLASS_DEVICE
 	help
 	  Drive the S6E3HA6 panel through the vendor panel framework of the

@@ -951,6 +951,16 @@ long panel_drv_ioctl(struct panel_device *panel, unsigned int cmd, void *arg)
 }
 
 /*
+ * PANEL_IOC_EVT_FRAME_DONE of panel_core_ioctl() (:1296-1299) for the DECON's
+ * frame-done interrupt: copr_update_start() only raises the update count and
+ * wakes the copr thread, so it is called directly, without io_lock.
+ */
+void panel_drv_frame_done(struct panel_device *panel)
+{
+	copr_update_start(&panel->copr, 3);
+}
+
+/*
  * panel-lookup of the greatlte panel node (panel_parse_panel_lookup(),
  * S:drivers/video/fbdev/exynos/panel/panel_drv.c:1789-1851; FDT:12000-12003):
  * panel-name and the (id, mask, index) triplets of panel-lut.
