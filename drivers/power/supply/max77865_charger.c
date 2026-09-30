@@ -277,6 +277,9 @@ struct max77865_charger {
 	/* reported values (change detection) */
 	int rep_online, rep_status, rep_health, rep_ac, rep_usb, rep_ac_ma, rep_usb_ma;
 	int rep_ac_mv;
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_TTF)
+	int rep_ttf_ma;
+#endif
 
 	/* battery over-voltage stop */
 	int vbat_cnt;
@@ -286,6 +289,8 @@ struct max77865_charger {
 	struct delayed_work aicl_dwork;
 #endif
 	u32 aicl_ma;
+	u32 max_power;
+	u32 ttf_ma;
 
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_SYSOVLO)
 	int sysovlo_irq;
@@ -558,6 +563,8 @@ static void max77865_cable_event(struct max77865_charger *chg, bool attach)
 	chg->vbat_cnt = 0;
 	chg->vbat_ovp_done = false;
 	chg->aicl_ma = 0;
+	chg->max_power = 0;
+	chg->ttf_ma = 0;
 	max77865_reset_budget(chg, EXPIRED_MS);		/* BAT:1262-1263 */
 	if (attach) {
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_SYSOVLO)
@@ -1190,8 +1197,9 @@ static void max77865_pass_work(struct work_struct *work)
 		max77865_read_pd(chg, &s);
 #endif
 
-	if (chg->charge_control) {
-		max77865_read_temps(chg, &s);
+	if (chg->charge_control || IS_ENABLED(CONFIG_CHARGER_MAX77865_TTF)) {
+		if (chg->charge_control)
+			max77865_read_temps(chg, &s);
 		max77865_read_fg(chg, &s);
 	}
 	s.hc = max77865_decode_hc(&s, chg->charge_control ? chg->health : chg->hc);
@@ -1224,6 +1232,8 @@ static void max77865_pass_work(struct work_struct *work)
 	} else {
 		if (chg->input == INPUT_NONE && s.input != INPUT_NONE)
 			chg->cable_tries = 0;
+		if (chg->input != s.input)
+			chg->max_power = 0;		/* attach/detach */
 		chg->input = s.input;
 		if (s.input != INPUT_NONE)
 			max77865_currents(chg, &s, &chg->in_ma, &chg->chg_ma, &topoff);
@@ -1243,6 +1253,38 @@ static void max77865_pass_work(struct work_struct *work)
 		rep_status = online ? max77865_dtls_status(s.dtls1) : POWER_SUPPLY_STATUS_DISCHARGING;
 		rep_health = chg->hc;
 	}
+
+	/*
+	 * stock charge_power / max_charge_power = input voltage x input current,
+	 * reset on attach/detach; the TTF source and chg_high_temp read it
+	 */
+	if (s.input != INPUT_NONE) {
+		u32 power = (u32)max77865_in_mv(&s) * chg->in_ma / 1000;
+
+		if (power > chg->max_power)
+			chg->max_power = power;
+	}
+
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_TTF)
+	/* stock sec_bat_calc_time_to_full() charge current, 0 = none */
+	if (rep_status == POWER_SUPPLY_STATUS_CHARGING ||
+	    (rep_status == POWER_SUPPLY_STATUS_FULL && s.cap >= 0 && s.cap != 100)) {
+		int charge;
+
+		if (s.cable == CABLE_HV9 || chg->max_power >= 2350 * 5)	/* max_charging_current */
+			charge = 2350;		/* ttf_hv_charge_current 0x92e */
+		else if (s.cable == WLS_HV || s.cable == WLS_PREP_HV)	/* OTG: normal mode */
+			charge = chg->otg_on ? 950 : 1200;	/* ttf_hv_wireless 0x4b0 */
+		else if (s.input == INPUT_WCIN)
+			charge = 950;		/* ttf_wireless_charge_current 0x3b6 */
+		else
+			charge = chg->max_power / 5;
+		chg->ttf_ma = charge;
+	} else {
+		chg->ttf_ma = 0;
+	}
+#endif
+
 	ac = s.input == INPUT_WIRED && (chg->cable == CABLE_DCP || chg->cable == CABLE_UNKNOWN ||
 					chg->cable == CABLE_AFC_PREPARE || chg->cable == CABLE_HV9 ||
 					(chg->cable == CABLE_PD && !s.pd_usb));
@@ -1253,6 +1295,12 @@ static void max77865_pass_work(struct work_struct *work)
 	ac_mv = max77865_in_mv(&s);
 	changed_chg = online != chg->rep_online || rep_status != chg->rep_status ||
 		      rep_health != chg->rep_health;
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_TTF)
+	if (chg->ttf_ma != chg->rep_ttf_ma) {
+		changed_chg = true;
+		chg->rep_ttf_ma = chg->ttf_ma;
+	}
+#endif
 	changed_ac = ac != chg->rep_ac || ac_ma != chg->rep_ac_ma || ac_mv != chg->rep_ac_mv;
 	changed_usb = usb != chg->rep_usb || usb_ma != chg->rep_usb_ma;
 	chg->rep_online = online;
@@ -1644,6 +1692,9 @@ static enum power_supply_property max77865_chg_props[] = {
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
 	POWER_SUPPLY_PROP_PRESENT,
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_TTF)
+	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX,
+#endif
 };
 
 static const int max77865_psy_health[] = {
@@ -1666,6 +1717,13 @@ static int max77865_chg_get_property(struct power_supply *psy, enum power_supply
 	int ret;
 
 	switch (psp) {
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_TTF)
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
+		mutex_lock(&chg->lock);
+		val->intval = chg->ttf_ma * 1000;
+		mutex_unlock(&chg->lock);
+		return 0;
+#endif
 	case POWER_SUPPLY_PROP_ONLINE:		/* INT_OK CHGIN_OK | WCIN_OK (charger.h:80-83) */
 		ret = regmap_read(chg->regmap, MAX77865_CHG_REG_INT_OK, &v);
 		if (ret)
@@ -1961,6 +2019,9 @@ static int max77865_debugfs_init(struct max77865_charger *chg)
 	debugfs_create_bool("wdt_kick", 0600, d, &chg->wdt_kick);
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_AICL)
 	debugfs_create_u32("aicl_ma", 0400, d, &chg->aicl_ma);
+#endif
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_TTF)
+	debugfs_create_u32("ttf_ma", 0400, d, &chg->ttf_ma);
 #endif
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_TEST) && IS_ENABLED(CONFIG_CHARGER_MAX77865_HV_GUARD)
 	debugfs_create_u32("override_pd_mv", 0600, d, &chg->override_pd_mv);
