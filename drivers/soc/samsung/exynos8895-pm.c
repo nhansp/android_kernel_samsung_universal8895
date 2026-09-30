@@ -380,9 +380,17 @@ module_param(cp_check, bool, 0644);
 
 /* = A:drivers/firmware/psci/psci.c:502-510, but used for the TYPE-0 Exynos states too:
  * stock always passes cpu_resume (S:arch/arm64/kernel/psci.c:212-255) */
+/* DEBUG: the finisher's own return (psci_to_linux_errno() of the SMC result) of the last
+ * call on this CPU; cpu_suspend() turns a PSCI SUCCESS (0) into -EOPNOTSUPP
+ * (A:arch/arm64/kernel/suspend.c:153-154), so -95 alone does not tell SUCCESS from NOT_SUPPORTED */
+DEFINE_PER_CPU(int, e8895_dbg_fin_ret);
+
 static noinstr int e8895_psci_finisher(unsigned long state)
 {
-	return psci_ops.cpu_suspend(state, __pa_symbol_nodebug((unsigned long)cpu_resume));
+	int ret = psci_ops.cpu_suspend(state, __pa_symbol_nodebug((unsigned long)cpu_resume));
+
+	__this_cpu_write(e8895_dbg_fin_ret, ret);
+	return ret;
 }
 
 int e8895_psci_suspend(u32 state)
