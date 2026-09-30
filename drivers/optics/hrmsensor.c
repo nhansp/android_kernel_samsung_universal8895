@@ -1583,6 +1583,15 @@ int hrm_probe(struct i2c_client *client)
 	data->reg_vdd_1p8 = devm_regulator_get(&client->dev, "vdd-1p8");
 	data->reg_led_3p3 = devm_regulator_get(&client->dev, "led-3p3");
 	data->reg_i2c_1p8 = devm_regulator_get_optional(&client->dev, "i2c-1p8");
+	/*
+	 * LDO39 VDD_NFC_1P8 powers the hsi2c_26 pull-ups (stock: the NFC driver switched it on at
+	 * its probe, S:drivers/nfc/sec_nfc.c:394-400, and sec-nfc is not ported). Its provider (the
+	 * main PMIC) can register after this probe: defer then, only a missing supply means absent.
+	 */
+	if (PTR_ERR_OR_ZERO(data->reg_i2c_1p8) == -EPROBE_DEFER) {
+		err = -EPROBE_DEFER;
+		goto err_parse_dt;
+	}
 	if (IS_ERR(data->reg_i2c_1p8))
 		data->reg_i2c_1p8 = NULL;
 	if (IS_ERR(data->reg_vdd_1p8) || IS_ERR(data->reg_led_3p3)) {
