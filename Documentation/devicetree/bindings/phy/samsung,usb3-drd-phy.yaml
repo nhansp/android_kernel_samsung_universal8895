@@ -234,6 +234,10 @@ allOf:
           contains:
             const: samsung,exynos8895-usbdrd-phy
     then:
+      allOf:
+        - $ref: /schemas/usb/usb-switch.yaml#
+        - $ref: /schemas/usb/usb-switch-ports.yaml#
+
       properties:
         clocks:
           minItems: 2

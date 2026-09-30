@@ -57,6 +57,11 @@
 		pinctrl-0 = <&usbpd_irq>;	/* FDT:6121-6122 */
 		/* FDT:6124 usbpd,usbpd_int = <&gpa1 7 0>; stock IRQF_TRIGGER_FALLING S:drivers/ccic/s2mm005.c:1072-1073 */
 		interrupts-extended = <&gpa1 7 IRQ_TYPE_EDGE_FALLING>;
+		/*
+		 * orientation input USB3.1_COM_SEL, stock "phy,gpio_phy_port"/"dp,usb_con_sel"
+		 * (FDT:7895, :7511); moved from L3's &usbdrd_phy (G3, REQ-L3-G2)
+		 */
+		orientation-gpios = <&gpi1 7 GPIO_ACTIVE_HIGH>;
 		samsung,muic = <&max77865_muic>;
 		wakeup-source;			/* S:drivers/ccic/s2mm005.c:807, :1203-1204 */
 
@@ -76,8 +81,9 @@
 			 */
 			vbus-supply = <&otg_vbus>;
 			/*
-			 * G2: the role switch endpoint (spec L6G 4.3); the S2MM005 driver
-			 * found it on the connector's fwnode.
+			 * G2/G3 endpoints: the role switch and the PHY orientation
+			 * (spec L6G 4.3); the S2MM005 driver looks both up on the
+			 * connector's fwnode.
 			 */
 			ports {
 				#address-cells = <1>;
@@ -87,6 +93,12 @@
 					reg = <0>;
 					typec_hs: endpoint {
 						remote-endpoint = <&dwc3_hs>;
+					};
+				};
+				port@1 {			/* SS: PHY orientation (G3) */
+					reg = <1>;
+					typec_ss: endpoint {
+						remote-endpoint = <&usbdrd_phy_ss>;
 					};
 				};
 			};
@@ -121,6 +133,17 @@
 	port {
 		dwc3_hs: endpoint {
 			remote-endpoint = <&typec_hs>;
+		};
+	};
+};
+
+/* G3: the PHY re-programs its SS lane from the orientation (L6G 5.3.3) */
+&usbdrd_phy {
+	orientation-switch;
+
+	port {
+		usbdrd_phy_ss: endpoint {
+			remote-endpoint = <&typec_ss>;
 		};
 	};
 };

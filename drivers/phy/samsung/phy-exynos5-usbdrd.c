@@ -529,6 +529,8 @@ struct exynos5_usbdrd_phy_drvdata {
 	u32 pmu_offset_usbdrd1_phy;
 	int (*probe_extra)(struct exynos5_usbdrd_phy *phy_drd,
 			   struct platform_device *pdev);
+	int (*orien_sw_set)(struct typec_switch_dev *sw,
+			    enum typec_orientation orientation);
 };
 
 /**
@@ -558,6 +560,8 @@ struct exynos5_usbdrd_phy_drvdata {
  * @cal_probed: Exynos8895 CAL version probed (stock hw_version != 0)
  * @cal_zero: Exynos8895 offset 0 of window 0 read 0 (no shift, stock port -1)
  * @cal_port: Exynos8895 port in use: 0, 1 (flipped) or -1 (stock used_phy_port)
+ * @sw_port: Exynos8895 port from the Type-C orientation switch, used by the next CAL enable
+ * @cal_inited: Exynos8895 PIPE3 .init done and .exit not yet (under @phy_mutex)
  * @muic_adap: Exynos8895 greatlte MUIC I2C bus (samsung,muic-i2c-bus), or NULL
  * @muic_before: Exynos8895 MUIC CONTROL1 read before the last switch write, or -errno
  * @muic_after: Exynos8895 MUIC CONTROL1 read back after it, or -errno
@@ -600,6 +604,8 @@ struct exynos5_usbdrd_phy {
 	bool cal_probed;
 	bool cal_zero;
 	int cal_port;
+	int sw_port;
+	bool cal_inited;
 	struct i2c_adapter *muic_adap;
 	int muic_before;
 	int muic_after;
@@ -2038,9 +2044,13 @@ static void exynos8895_cal_enable(struct exynos5_usbdrd_phy *d)
 	 * the GPIO active-low, so the logical value is the port. Stock reads it at every
 	 * attach; here .init runs once per dwc3_core_init (probe and system resume).
 	 */
-	d->cal_port = d->port_gpio ? gpiod_get_value(d->port_gpio) : 0;
-	if (d->cal_port < 0)
-		d->cal_port = 0;
+	if (d->sw) {
+		d->cal_port = d->sw_port;	/* orientation from the Type-C controller (L6G 5.3.3) */
+	} else {
+		d->cal_port = d->port_gpio ? gpiod_get_value(d->port_gpio) : 0;
+		if (d->cal_port < 0)
+			d->cal_port = 0;
+	}
 	d->init_count++;
 	dev_info(d->dev, "8895: init #%u port=%d gpio=%d\n", d->init_count, d->cal_port,
 		 d->port_gpio ? gpiod_get_raw_value(d->port_gpio) : -1);
@@ -2406,9 +2416,12 @@ static int exynos8895_usbdrd_phy_init(struct phy *phy)
 		goto err_core;
 	}
 	inst->phy_cfg->phy_isol(inst, false);			/* stock power_on, usbdrd.c:966 */
-	exynos8895_cal_enable(d);
-	/* D+/D- to the AP before the gadget can pull up, as stock's MUIC attach_usb */
-	exynos8895_muic_switch(d, EXYNOS8895_MUIC_COM_USB_AP);
+	scoped_guard(mutex, &d->phy_mutex) {			/* vs the orientation switch */
+		exynos8895_cal_enable(d);
+		/* D+/D- to the AP before the gadget can pull up, as stock's MUIC attach_usb */
+		exynos8895_muic_switch(d, EXYNOS8895_MUIC_COM_USB_AP);
+		d->cal_inited = true;
+	}
 	regmap_read(inst->reg_pmu, inst->pmu_offset, &pmu);
 	dev_info(d->dev, "8895: pmu704=0x%08x\n", pmu);
 	return 0;
@@ -2432,6 +2445,7 @@ static int exynos8895_usbdrd_phy_power_on(struct phy *phy)
 		return 0;
 	d = to_usbdrd_phy(inst);
 	/* after the dwc3_core_init CSFTRST (A:drivers/usb/dwc3/core.c:1385 -> 1411) */
+	guard(mutex)(&d->phy_mutex);
 	exynos8895_cal_tune_dev(d);
 	WRITE_ONCE(d->tune_armed, true);	/* later CSFTRSTs re-tune from the dwc3 hook */
 	return 0;
@@ -2444,14 +2458,73 @@ static int exynos8895_usbdrd_phy_exit(struct phy *phy)
 
 	if (inst->phy_cfg->id != EXYNOS5_DRDPHY_PIPE3)
 		return 0;
-	WRITE_ONCE(d->tune_armed, false);	/* no re-tune of a PHY that goes down */
-	exynos8895_cal_disable(d);
-	exynos8895_muic_switch(d, EXYNOS8895_MUIC_COM_OPEN);	/* stock detach_usb, shutdown */
+	scoped_guard(mutex, &d->phy_mutex) {
+		WRITE_ONCE(d->tune_armed, false);	/* no re-tune of a PHY that goes down */
+		d->cal_inited = false;
+		exynos8895_cal_disable(d);
+		exynos8895_muic_switch(d, EXYNOS8895_MUIC_COM_OPEN);	/* stock detach_usb, shutdown */
+	}
 	inst->phy_cfg->phy_isol(inst, true);			/* usbdrd.c:989 */
 	clk_bulk_disable_unprepare(d->drv_data->n_core_clks, d->core_clks);
 	clk_bulk_disable_unprepare(d->drv_data->n_clks, d->clks);
 	if (d->vdd_dp)
 		regulator_disable(d->vdd_dp);
+	return 0;
+}
+
+/*
+ * Type-C orientation switch (spec L6G 5.3.3, D-6; closes L3 O22). Stock re-read gpi1-7 in
+ * pipe3_init at every attach (S:drivers/phy/phy-exynos-usbdrd.c:767-770, called per attach
+ * from S:drivers/usb/dwc3/otg.c:310-316), used_phy_port = !level: NORMAL (level 0) -> port 1,
+ * REVERSE (level 1) -> port 0. The S2MM005 driver owns the pin and calls this before it sets
+ * the USB role. Not initialised: the next .init uses the port. Initialised on the other
+ * port: stock's per-attach exit + init pair on the CAL (clocks and rails stay on), then the
+ * device tune if .power_on had tuned, or the host tune and config_host_mode
+ * when dwc3 has the controller in host mode (L6G 5.3.2).
+ */
+static int exynos8895_orien_sw_set(struct typec_switch_dev *sw,
+				   enum typec_orientation orientation)
+{
+	struct exynos5_usbdrd_phy *d = typec_switch_get_drvdata(sw);
+	bool armed;
+	int port;
+
+	guard(mutex)(&d->phy_mutex);
+	d->orientation = orientation;
+	if (orientation == TYPEC_ORIENTATION_NONE)
+		return 0;			/* the last port stays until the next attach */
+
+	port = orientation == TYPEC_ORIENTATION_NORMAL ? 1 : 0;
+	d->sw_port = port;
+	if (!d->cal_inited)
+		return 0;
+
+	/*
+	 * The dwc3 CSFTRST re-tune runs from a tracepoint with preemption disabled, cannot
+	 * take phy_mutex and briefly rewrites cal_port: disarm it and wait until a re-tune
+	 * already past its check has finished before cal_port is read.
+	 */
+	armed = READ_ONCE(d->tune_armed);
+	WRITE_ONCE(d->tune_armed, false);
+	synchronize_rcu();
+	if (port != d->cal_port) {
+		dev_info(d->dev, "8895: orientation %s, re-init on port %d\n",
+			 orientation == TYPEC_ORIENTATION_NORMAL ? "normal" : "reverse", port);
+		exynos8895_cal_disable(d);
+		exynos8895_muic_switch(d, EXYNOS8895_MUIC_COM_OPEN);	/* as .exit */
+		exynos8895_cal_enable(d);
+		exynos8895_muic_switch(d, EXYNOS8895_MUIC_COM_USB_AP);	/* as .init */
+		if (armed) {
+			if (READ_ONCE(d->host_mode)) {
+				exynos8895_cal_tune_host(d);
+				exynos8895_cal_host_mode(d);
+			} else {
+				exynos8895_cal_tune_dev(d);
+			}
+		}
+	}
+	if (armed)
+		WRITE_ONCE(d->tune_armed, true);
 	return 0;
 }
 
@@ -2554,9 +2627,12 @@ static int exynos8895_usbdrd_probe_extra(struct exynos5_usbdrd_phy *d,
 	d->cal_base[1] = d->reg_phy2;					/* usbdrd.c:646 */
 	d->cal_port = 0;						/* usbdrd.c:647 */
 
-	d->port_gpio = devm_gpiod_get_optional(d->dev, "samsung,phy-port", GPIOD_IN);
-	if (IS_ERR(d->port_gpio))
-		return dev_err_probe(d->dev, PTR_ERR(d->port_gpio), "phy-port gpio\n");
+	/* with an orientation switch the Type-C controller owns gpi1-7 (L6G 5.3.3) */
+	if (!device_property_present(d->dev, "orientation-switch")) {
+		d->port_gpio = devm_gpiod_get_optional(d->dev, "samsung,phy-port", GPIOD_IN);
+		if (IS_ERR(d->port_gpio))
+			return dev_err_probe(d->dev, PTR_ERR(d->port_gpio), "phy-port gpio\n");
+	}
 
 	d->muic_adap = exynos8895_muic_get(d);
 	if (IS_ERR(d->muic_adap))
@@ -2801,7 +2877,7 @@ static int exynos5_usbdrd_setup_notifiers(struct exynos5_usbdrd_phy *phy_drd)
 
 		sw_desc.drvdata = phy_drd;
 		sw_desc.fwnode = dev_fwnode(phy_drd->dev);
-		sw_desc.set = exynos5_usbdrd_orien_sw_set;
+		sw_desc.set = phy_drd->drv_data->orien_sw_set ?: exynos5_usbdrd_orien_sw_set;
 
 		phy_drd->sw = typec_switch_register(phy_drd->dev, &sw_desc);
 		if (IS_ERR(phy_drd->sw))
@@ -3000,6 +3076,7 @@ static const struct exynos5_usbdrd_phy_drvdata exynos8895_usbdrd_phy = {
 	.core_clk_names		= exynos5_core_clk_names,	/* "ref" */
 	.n_core_clks		= ARRAY_SIZE(exynos5_core_clk_names),
 	.probe_extra		= exynos8895_usbdrd_probe_extra,
+	.orien_sw_set		= exynos8895_orien_sw_set,
 	/* no regulator_names: this PHY switches no VBUS (no VBUS pad, FDT:7886) */
 };
 
