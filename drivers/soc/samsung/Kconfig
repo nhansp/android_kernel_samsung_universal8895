@@ -318,3 +318,13 @@ config EXYNOS8895_MCINFO
 	  controller channels (sysfs ref_rate/ref_rate) and panics on a DMC
 	  over-temperature interrupt, as the stock exynos-mcinfo driver
 	  (CONFIG_EXYNOS_MCINFO and CONFIG_MCINFO_SYSFS).
+
+# L6K heartbeat rows (WP l6ki, DEBUG, spec L6K 5.3)
+config GREATLTE_HB_L6K
+	bool "greatlte heartbeat: L6K certify hall, mcinfo, thermistors (debug only)"
+	depends on GREATLTE_HB
+	default GREATLTE_HB
+	help
+	  Registers the L6K heartbeat rows: the certify-hall gpio-keys and
+	  mcinfo drivers, the four DMC over-temperature interrupt counts and
+	  the AP/WF/PA thermistor zones. Never enable in a release build.
