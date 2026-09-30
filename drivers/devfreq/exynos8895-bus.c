@@ -78,6 +78,20 @@ MODULE_PARM_DESC(ch5_resend, "resend the AP MIF level after an APM MIF request")
  * 0x1f at stage 4, else 0. cpu_mif starts as Y.
  */
 #define E8895_BUS_ALL_FLOORS	(BIT(EXYNOS_BUS_QOS_NR) - 1)
+
+/*
+ * Stated addition (A/B switches of the stage-3 protocol, integrator image
+ * 0109): each part can be switched off at run time; all default Y (stock).
+ */
+static bool release_msg = true;
+module_param(release_msg, bool, 0644);
+MODULE_PARM_DESC(release_msg, "stage 3: send the APM RELEASE pair at suspend/resume (MIF, INT)");
+static bool suspend_pin = true;
+module_param(suspend_pin, bool, 0644);
+MODULE_PARM_DESC(suspend_pin, "stage 3: pin MIF/INT at their suspend level between suspend_late and resume_early");
+static bool reboot_pin = true;
+module_param(reboot_pin, bool, 0644);
+MODULE_PARM_DESC(reboot_pin, "stage 3: pin the bus levels in the reboot notifier");
 static unsigned int stock_floors;
 static bool cpu_mif = true;
 static DEFINE_MUTEX(e8895_floor_lock);	/* stock_floors writes vs. probe */
@@ -321,6 +335,8 @@ struct e8895_bus {
 	struct notifier_block pm_nb;
 	struct delayed_work boot_work;
 	struct notifier_block reboot_nb;
+	bool released;			/* RELEASE running=0 sent in this suspend cycle */
+	bool pinned;			/* suspend pin applied in this suspend cycle */
 
 	unsigned long cur_khz;		/* last requested level; 0 = unknown; written under df->lock */
 	unsigned int nreq;		/* FREQ_REQs sent (heartbeat); written under df->lock */
@@ -1081,10 +1097,15 @@ static int e8895_bus_suspend_late(struct device *dev)
 	if (!e8895_bus_has_protocol(priv))
 		return 0;
 
-	e8895_bus_release(priv, false);
-	khz = priv->suspend_khz ? priv->suspend_khz : priv->desc->suspend_khz;
-	dev_pm_qos_update_request(&priv->susp_max_req, khz);
-	dev_pm_qos_update_request(&priv->susp_min_req, khz);
+	priv->released = READ_ONCE(release_msg);
+	if (priv->released)
+		e8895_bus_release(priv, false);
+	priv->pinned = READ_ONCE(suspend_pin);
+	if (priv->pinned) {
+		khz = priv->suspend_khz ? priv->suspend_khz : priv->desc->suspend_khz;
+		dev_pm_qos_update_request(&priv->susp_max_req, khz);
+		dev_pm_qos_update_request(&priv->susp_min_req, khz);
+	}
 
 	return 0;
 }
@@ -1096,9 +1117,16 @@ static int e8895_bus_resume_early(struct device *dev)
 	if (!e8895_bus_has_protocol(priv))
 		return 0;
 
-	e8895_bus_release(priv, true);
-	dev_pm_qos_update_request(&priv->susp_min_req, 0);
-	dev_pm_qos_update_request(&priv->susp_max_req, PM_QOS_MAX_FREQUENCY_DEFAULT_VALUE);
+	/* undo what this cycle's suspend_late did, whatever the switches say now */
+	if (priv->released)
+		e8895_bus_release(priv, true);
+	if (priv->pinned) {
+		dev_pm_qos_update_request(&priv->susp_min_req, 0);
+		dev_pm_qos_update_request(&priv->susp_max_req,
+					  PM_QOS_MAX_FREQUENCY_DEFAULT_VALUE);
+	}
+	priv->released = false;
+	priv->pinned = false;
 
 	return 0;
 }
@@ -1120,6 +1148,9 @@ static int e8895_bus_reboot(struct notifier_block *nb, unsigned long action, voi
 {
 	struct e8895_bus *priv = container_of(nb, struct e8895_bus, reboot_nb);
 	const struct e8895_bus_desc *desc = priv->desc;
+
+	if (!READ_ONCE(reboot_pin))
+		return NOTIFY_DONE;
 
 	if (desc->reboot_max_khz)
 		dev_pm_qos_update_request(&priv->ceil_req, desc->reboot_max_khz);
