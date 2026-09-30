@@ -165,6 +165,7 @@ static const struct exynos8895_pmu_seq exynos8895_lpm_init[] = {
 #define E8895_CPU_PWR		0xf			/* (0xf << 0), CAL:pmucal_cpu_exynos8895.h:3; S:drivers/soc/samsung/exynos-pmu.c:61 CPU_LOCAL_PWR_CFG */
 #define E8895_NONCPU_STAT(cl)	(0x2404 + (cl) * 0x20)	/* S:drivers/soc/samsung/exynos-pmu.c:84,86 */
 #define E8895_L2_STAT(cl)	(0x2604 + (cl) * 0x20)	/* S:drivers/soc/samsung/exynos-pmu.c:84,87 */
+#define E8895_CPUSEQ_OPT(cl)	(0x2488 + (cl) * 0x20)	/* S:drivers/soc/samsung/exynos-pmu.c:84-85; CAL:pmucal_cpu_exynos8895.h:88,103 */
 /* Mongoose droop-detector block: DD0..DD3 per core, DD4 for the cluster */
 #define E8895_DD_PHYS		0x16840000		/* CAL:pmucal_cpu_exynos8895.h:4; CAL:pmucal_p2vmap_exynos8895.h:73 */
 #define E8895_DD_SIZE		0x2000
@@ -383,9 +384,40 @@ static int e8895_pmu_cpu_hooks_init(void)
 {
 	int ret;
 
+	unsigned int c, done = 0;
+
 	e8895_dd = ioremap(E8895_DD_PHYS, E8895_DD_SIZE);
 	if (!e8895_dd)
 		return -ENOMEM;
+	/*
+	 * Stock ran the cluster power-on sequence at the CPU_STARTING of every
+	 * secondary CPU during smp_init(): its hotplug notifier is registered at
+	 * early_initcall (S:drivers/soc/samsung/exynos-powermode.c:877-881) and
+	 * calls cluster_enable() when cpu_coregroup_mask(cpu) & cpu_online_mask is
+	 * empty (:697-699). The shipped DT has no cpu-map, so each CPU's
+	 * core_sibling is only { cpu } (S:arch/arm64/kernel/topology.c:578-590,
+	 * 604-613, 242-244) until smp_store_cpu_info() runs, which is after
+	 * notify_cpu_starting() (S:arch/arm64/kernel/smp.c:191,193): cpu1-3 ran the
+	 * cluster1 sequence and cpu4-7 the cluster0 sequence. Its last write,
+	 * CLUSTERx_CPUSEQUENCER_OPTION bit 0 = 0, is the one cluster_disable() sets
+	 * to 1 for a cluster power-down (CAL:pmucal_cpu_exynos8895.h:88,96,103,108).
+	 * Our hooks are registered after the secondaries are up, so the STARTING
+	 * callback below never finds an empty cluster: run the sequence once here
+	 * for every cluster with an online secondary CPU, as stock did. Without it
+	 * the whole Mongoose cluster hung once its four cores were in C2 at the
+	 * same time with CPD off (image 0084), while one core alone worked (0082).
+	 * No hotplug callback exists yet and the cpuidle driver is not registered.
+	 */
+	for_each_online_cpu(c) {
+		unsigned int cl = e8895_phycluster(c);
+
+		if (!c || (done & BIT(cl)))
+			continue;
+		done |= BIT(cl);
+		pr_info("exynos8895-pmu: cluster%u on at init, CPUSEQUENCER_OPTION was 0x%08x\n",
+			cl, readl_relaxed(pmu_base_addr + E8895_CPUSEQ_OPT(cl)));
+		e8895_pmu_cluster_up(c);
+	}
 	/*
 	 * Runs the STARTING callback once on every online CPU, in its hotplug
 	 * thread with IRQs off (A:kernel/cpu.c:2345-2372 -> :1061-1100), which
