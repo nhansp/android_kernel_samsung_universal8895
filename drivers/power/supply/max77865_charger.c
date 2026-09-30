@@ -86,6 +86,15 @@ static inline int max77865_mix_input_ma(int in_mv)
 		   (int)(FLOAT_MV * (TOPOFF_1ST + 50) / (v * 90) / 10));
 }
 
+/* chg_high_temp limits (stock sec_bat_check_afc_temp()) */
+#define CHG_HIGH_TEMP		490	/* battery,chg_high_temp 0x1ea */
+#define CHG_HIGH_TEMP_REC	470	/* battery,chg_high_temp_recovery 0x1d6 */
+#define CHG_HIGH_TEMP_HV_IN	1000	/* battery,chg_input_limit_current 0x3e8 */
+#define CHG_HIGH_TEMP_HV_CC	1500	/* battery,chg_charging_limit_current 0x5dc */
+#define CHG_HIGH_TEMP_DEFAULT_IN 1800	/* battery,default_input_current 0x708 */
+#define CHG_HIGH_TEMP_DEFAULT_CC 2100	/* battery,default_charging_current 0x834 */
+#define CHG_HIGH_TEMP_PWR_THR	14500	/* battery,pd_charging_charge_power 15000 - 500 mW */
+
 /* full / recharge, mV and % */
 #define FULL_COND_VCELL		4250	/* full_condition_vcell 0x109a FDT:12270 */
 #define FULL_COND_SOC		93	/* full_condition_soc 0x5d FDT:12269 */
@@ -332,6 +341,11 @@ struct max77865_charger {
 	int full_condition_vcell;
 	int full_condition_soc;
 	bool age_inited;
+#endif
+
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC) || IS_ENABLED(CONFIG_CHARGER_MAX77865_QC) || \
+    IS_ENABLED(CONFIG_CHARGER_MAX77865_TYPEC_RP) || IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
+	bool chg_high_temp_limit;
 #endif
 
 	/* debugfs (L6F 5.3.5) */
@@ -662,6 +676,10 @@ static void max77865_cable_event(struct max77865_charger *chg, bool attach)
 	chg->aicl_ma = 0;
 	chg->max_power = 0;
 	chg->ttf_ma = 0;
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC) || IS_ENABLED(CONFIG_CHARGER_MAX77865_QC) || \
+    IS_ENABLED(CONFIG_CHARGER_MAX77865_TYPEC_RP) || IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
+	chg->chg_high_temp_limit = false;
+#endif
 	max77865_reset_budget(chg, EXPIRED_MS);		/* BAT:1262-1263 */
 	if (attach) {
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_SYSOVLO)
@@ -1017,6 +1035,39 @@ static void max77865_currents(struct max77865_charger *chg, const struct max7786
 	}
 	if (s->input == INPUT_WIRED && chg->mix_limit)
 		*in = max77865_mix_input_ma(max77865_in_mv(s));
+
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC) || IS_ENABLED(CONFIG_CHARGER_MAX77865_QC) || \
+    IS_ENABLED(CONFIG_CHARGER_MAX77865_TYPEC_RP) || IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
+	/*
+	 * chg_high_temp: stock sec_bat_check_afc_temp(), CONFIG_MUIC_HV branch with siop 100,
+	 * for wired cables other than PDIC (PD uses its own
+	 * PDO step). Skipped while the mix limit holds, as stock's SKIP_HEATING_CONTROL event
+	 * keeps the mix value. Stock leaves the limit flag as it is when no
+	 * branch matches. While limited, both cases keep chg_input/charging_limit_current
+	 * (for the >= 14.5 W case only the first step uses default 1800/2100).
+	 */
+	if (s->input == INPUT_WIRED && s->cable != CABLE_PD && !chg->mix_limit) {
+		bool hv = s->cable == CABLE_HV9;			/* is_hv_wire_type() */
+		bool pwr = chg->max_power >= CHG_HIGH_TEMP_PWR_THR;
+
+		if (!chg->chg_high_temp_limit && hv && s->tc > CHG_HIGH_TEMP) {
+			*in = CHG_HIGH_TEMP_HV_IN;
+			*cc = CHG_HIGH_TEMP_HV_CC;
+			chg->chg_high_temp_limit = true;
+		} else if (!chg->chg_high_temp_limit && pwr && s->tc > CHG_HIGH_TEMP) {
+			*in = CHG_HIGH_TEMP_DEFAULT_IN;
+			*cc = CHG_HIGH_TEMP_DEFAULT_CC;
+			chg->chg_high_temp_limit = true;
+		} else if (chg->chg_high_temp_limit && (hv || pwr)) {
+			if (s->tc < CHG_HIGH_TEMP_REC) {
+				chg->chg_high_temp_limit = false;	/* the class values stay */
+			} else {
+				*in = CHG_HIGH_TEMP_HV_IN;
+				*cc = CHG_HIGH_TEMP_HV_CC;
+			}
+		}
+	}
+#endif
 
 	/* top-off (:889, :938-943; full_check_type_2nd 7 = CHGPSY FDT:12240) */
 	*topoff = chg->mode == STAGE_2ND ? TOPOFF_2ND : TOPOFF_1ST;
@@ -2129,6 +2180,10 @@ static int max77865_debugfs_init(struct max77865_charger *chg)
 #endif
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_AGE_FORECAST)
 	debugfs_create_u32("age_step", 0400, d, &chg->age_step);
+#endif
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC) || IS_ENABLED(CONFIG_CHARGER_MAX77865_QC) || \
+    IS_ENABLED(CONFIG_CHARGER_MAX77865_TYPEC_RP) || IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
+	debugfs_create_bool("chg_high_temp", 0400, d, &chg->chg_high_temp_limit);
 #endif
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_TEST) && IS_ENABLED(CONFIG_CHARGER_MAX77865_HV_GUARD)
 	debugfs_create_u32("override_pd_mv", 0600, d, &chg->override_pd_mv);
