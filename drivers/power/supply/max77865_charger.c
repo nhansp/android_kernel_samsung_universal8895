@@ -1177,6 +1177,24 @@ static void max77865_currents(struct max77865_charger *chg, const struct max7786
 		break;
 	}
 
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_TYPEC_RP)
+	/*
+	 * Type-C Rp of a source without a PD contract (stock sec_bat_set_rp_current(),
+	 * for USB and TA cables only; a PDIC cable never takes it): Rp 3.0 A
+	 * input RP_CURRENT_RP3 3000 / charge max_charging_current 2350,
+	 * Rp 1.5 A RP_CURRENT_RP2 1500/1500; default Rp keeps the cable table
+	 */
+	if ((s->cable == CABLE_SDP || s->cable == CABLE_DCP) && !s->pd_mv) {
+		if (s->rp == S2MM005_RP_CURRENT_LEVEL3) {
+			*in = 3000;
+			*cc = 2350;
+		} else if (s->rp == S2MM005_RP_CURRENT_LEVEL2) {
+			*in = 1500;
+			*cc = 1500;
+		}
+	}
+#endif
+
 	/*
 	 * mix-temperature input limit (BAT:565-596), wired only (chg_temp_check 1
 	 * FDT:12180; off otherwise, :592-594); needs T (kept while there is none)
@@ -1494,6 +1512,7 @@ static void max77865_read_pd(struct max77865_charger *chg, struct max77865_sampl
 {
 	unsigned int pos = chg->pd.current_pdo_num;
 
+	s->rp = chg->pd.rp_currentlvl;		/* NONE after a detach */
 	if ((chg->pd_event != S2MM005_PD_EVENT_PD_SINK &&
 	     chg->pd_event != S2MM005_PD_EVENT_PD_SINK_CAP) ||
 	    pos < 1 || pos > S2MM005_MAX_PDO_NUM)
