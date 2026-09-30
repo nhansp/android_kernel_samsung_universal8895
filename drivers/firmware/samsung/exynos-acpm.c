@@ -1704,6 +1704,7 @@ static void acpm_setup_ops(struct acpm_info *acpm)
 	dvfs_ops->get_rate = acpm_dvfs_get_rate;
 	dvfs_ops->set_cold_temp = acpm_dvfs_set_cold_temp;
 	dvfs_ops->sleep_release = acpm_dvfs_sleep_release;
+	dvfs_ops->data_init = acpm_dvfs_data_init;
 
 	pmic_ops->read_reg = acpm_pmic_read_reg;
 	pmic_ops->bulk_read = acpm_pmic_bulk_read;
