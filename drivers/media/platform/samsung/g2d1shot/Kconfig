@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Copyright (c) 2015 Samsung Electronics Co., Ltd.
+#		http://www.samsung.com/
+#
+
+config VIDEO_EXYNOS_G2D1SHOT
+	bool "G2D m2m1shot2 version"
+	depends on EXYNOS_IOMMU && SYNC_FILE && DMA_SHARED_BUFFER && OF
+	select MEDIA_M2M1SHOT2
+	help
+	  This is a driver for the Samsung Exynos 2D blitter hardware (FIMG2D)
+	  using the m2m1shot2 framework.
