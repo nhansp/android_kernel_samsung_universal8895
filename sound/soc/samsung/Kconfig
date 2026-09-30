@@ -150,5 +150,6 @@ config SND_SOC_SAMSUNG_MIDAS_WM1811
 
 # L6E audio
 source "sound/soc/samsung/abox/Kconfig"
+source "sound/soc/samsung/vts/Kconfig"
 
 endif #SND_SOC_SAMSUNG

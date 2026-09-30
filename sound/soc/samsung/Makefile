@@ -45,3 +45,5 @@ obj-$(CONFIG_SND_SOC_SAMSUNG_MIDAS_WM1811) += snd-soc-midas-wm1811.o
 
 # L6E audio
 obj-$(CONFIG_SND_SOC_SAMSUNG_ABOX) += abox/
+obj-$(CONFIG_SND_SOC_SAMSUNG_VTS) += vts/
+

@@ -302,7 +302,8 @@ struct vts_data {
 	u32 amicgain;
 	char *sramlog_baseaddr;
 	u32 running_ipc;
-	struct wake_lock wake_lock;
+	struct wakeup_source *ws;
+	struct regmap *pmu;
 	unsigned int vts_state;
 	struct vts_model_bin_info svoice_info;
 	struct vts_model_bin_info google_info;

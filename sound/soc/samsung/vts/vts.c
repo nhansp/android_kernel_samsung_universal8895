@@ -18,12 +18,14 @@
 #include <linux/pm_runtime.h>
 #include <linux/firmware.h>
 #include <linux/dma-mapping.h>
+#include <linux/vmalloc.h>
 #include <linux/proc_fs.h>
 #include <linux/delay.h>
 #include <linux/regmap.h>
-#include <linux/wakelock.h>
-
-#include <asm-generic/delay.h>
+#include <linux/pm_wakeup.h>
+#include <linux/mfd/syscon.h>
+#include <linux/pinctrl/consumer.h>
+#include <linux/sched/clock.h>
 
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
@@ -32,25 +34,8 @@
 
 #include <sound/samsung/mailbox.h>
 #include <sound/samsung/vts.h>
-#include <soc/samsung/exynos-pmu.h>
-#if defined(CONFIG_SEC_ABC)
-#include <linux/sti/abc_common.h>
-#endif
 
 #include "vts.h"
-
-#undef EMULATOR
-#ifdef EMULATOR
-static void __iomem *pmu_alive;
-#define set_mask_value(id, mask, value) do {id = ((id & ~mask) | (value & mask));} while(0);
-static void update_mask_value(volatile void __iomem *sfr,
-		unsigned int mask, unsigned int value)
-{
-	unsigned int sfr_value = readl(sfr);
-	set_mask_value(sfr_value, mask, value);
-	writel(sfr_value, sfr);
-}
-#endif
 
 #define VTS_CPU_CONFIGURATION			(0x24E0)
 #define PAD_RETENTION_VTS_OPTION		(0x3148)
@@ -269,24 +254,15 @@ static void vts_cpu_power(bool on)
 {
 	pr_info("%s(%d)\n", __func__, on);
 
-#ifndef EMULATOR
-	exynos_pmu_update(VTS_CPU_CONFIGURATION, VTS_CPU_LOCAL_PWR_CFG,
-			on ? VTS_CPU_LOCAL_PWR_CFG : 0);
-#else
-	update_mask_value(pmu_alive + VTS_CPU_CONFIGURATION, VTS_CPU_LOCAL_PWR_CFG,
-			on ? VTS_CPU_LOCAL_PWR_CFG : 0);
-#endif
+	if (p_vts_data && p_vts_data->pmu) {
+		regmap_update_bits(p_vts_data->pmu, VTS_CPU_CONFIGURATION, VTS_CPU_LOCAL_PWR_CFG,
+				on ? VTS_CPU_LOCAL_PWR_CFG : 0);
 
-	if (!on) {
-#ifndef EMULATOR
-		exynos_pmu_update(VTS_CPU_OPTION,
-				VTS_CPU_OPTION_USE_STANDBYWFI_MASK,
-				VTS_CPU_OPTION_USE_STANDBYWFI_MASK);
-#else
-		update_mask_value(pmu_alive + VTS_CPU_OPTION,
-				VTS_CPU_OPTION_USE_STANDBYWFI_MASK,
-				VTS_CPU_OPTION_USE_STANDBYWFI_MASK);
-#endif
+		if (!on) {
+			regmap_update_bits(p_vts_data->pmu, VTS_CPU_OPTION,
+					VTS_CPU_OPTION_USE_STANDBYWFI_MASK,
+					VTS_CPU_OPTION_USE_STANDBYWFI_MASK);
+		}
 	}
 }
 
@@ -299,20 +275,15 @@ static int vts_cpu_enable(bool enable)
 
 	pr_info("%s(%d)\n", __func__, enable);
 
-#ifndef EMULATOR
-	exynos_pmu_update(VTS_CPU_OPTION, mask, val);
-#else
-	update_mask_value(pmu_alive + VTS_CPU_OPTION, mask, val);
-#endif
+	if (!p_vts_data || !p_vts_data->pmu)
+		return -ENODEV;
+
+	regmap_update_bits(p_vts_data->pmu, VTS_CPU_OPTION, mask, val);
 	if (enable) {
 		after = jiffies + LIMIT_IN_JIFFIES;
 		do {
 			schedule();
-#ifndef EMULATOR
-			exynos_pmu_read(VTS_CPU_STATUS, &status);
-#else
-			status = readl(pmu_alive + VTS_CPU_STATUS);
-#endif
+			regmap_read(p_vts_data->pmu, VTS_CPU_STATUS, &status);
 		} while (((status & VTS_CPU_STATUS_STATUS_MASK)
 				!= VTS_CPU_STATUS_STATUS_MASK)
 				&& time_is_after_eq_jiffies(after));
@@ -327,12 +298,10 @@ static int vts_cpu_enable(bool enable)
 
 static void vts_reset_cpu(void)
 {
-#ifndef EMULATOR
 	vts_cpu_enable(false);
 	vts_cpu_power(false);
 	vts_cpu_power(true);
 	vts_cpu_enable(true);
-#endif
 }
 
 static int vts_download_firmware(struct platform_device *pdev)
@@ -341,12 +310,35 @@ static int vts_download_firmware(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	dev_info(dev, "%s\n", __func__);
 
+	/*
+	 * Stock requested vts.bin with request_firmware_nowait() at probe and
+	 * read the versions in its callback (S:sound/soc/samsung/vts/vts.c:
+	 * 1912-1931, :2219-2230). Before /vendor is mounted the 6.18 loader has
+	 * no fallback, so the request moves here and a miss is retried at the
+	 * next runtime resume (spec L6E 5.8, F-52).
+	 */
+	if (!data->firmware &&
+			!firmware_request_nowarn(&data->firmware, "vts.bin", dev)) {
+		const struct firmware *fw = data->firmware;
+		unsigned int *pversion;
+
+		if (fw->size >= VTSFW_VERSION_OFFSET + sizeof(*pversion)) {
+			pversion = (unsigned int *)(fw->data + VTSFW_VERSION_OFFSET);
+			data->vtsfw_version = *pversion;
+			pversion = (unsigned int *)(fw->data + DETLIB_VERSION_OFFSET);
+			data->vtsdetectlib_version = *pversion;
+		}
+		dev_info(dev, "Firmware loaded at %p (%zu)\n", fw->data, fw->size);
+		dev_info(dev, "Firmware version: 0x%x Detection library version: 0x%x\n", data->vtsfw_version, data->vtsdetectlib_version);
+	}
+
 	if (!data->firmware) {
 		dev_err(dev, "firmware is not loaded\n");
 		return -EAGAIN;
 	}
 
-	memcpy(data->sram_base, data->firmware->data, data->firmware->size);
+	/* SRAM is device memory: no unaligned stores (stock memcpy) */
+	memcpy_toio(data->sram_base, data->firmware->data, data->firmware->size);
 	dev_info(dev, "firmware is downloaded to %p (size=%zu)\n", data->sram_base, data->firmware->size);
 
 	return 0;
@@ -371,8 +363,8 @@ static int vts_wait_for_fw_ready(struct device *dev)
 
 static void vts_pad_retention(bool retention)
 {
-	if (!retention) {
-		exynos_pmu_update(PAD_RETENTION_VTS_OPTION, 0x10000000, 0x10000000);
+	if (!retention && p_vts_data && p_vts_data->pmu) {
+		regmap_update_bits(p_vts_data->pmu, PAD_RETENTION_VTS_OPTION, 0x10000000, 0x10000000);
 	}
 }
 
@@ -445,21 +437,21 @@ static int vts_clk_set_rate(struct device *dev, unsigned long combination)
 
 
 	result = clk_set_rate(data->clk_dmic_if, dmic_if);
-	if (IS_ERR_VALUE(result)) {
+	if (result < 0) {
 		dev_err(dev, "Failed to set rate of the clock %s\n", "dmic_if");
 		goto out;
 	}
 	dev_info(dev, "DMIC IF clock rate: %lu\n", clk_get_rate(data->clk_dmic_if));
 
 	result = clk_set_rate(data->clk_dmic_sync, dmic_sync);
-	if (IS_ERR_VALUE(result)) {
+	if (result < 0) {
 		dev_err(dev, "Failed to set rate of the clock %s\n", "dmic_sync");
 		goto out;
 	}
 	dev_info(dev, "DMIC SYNC clock rate: %lu\n", clk_get_rate(data->clk_dmic_sync));
 
 	result = clk_set_rate(data->clk_dmic, dmic_rate);
-	if (IS_ERR_VALUE(result)) {
+	if (result < 0) {
 		dev_err(dev, "Failed to set rate of the clock %s\n", "dmic");
 		goto out;
 	}
@@ -480,7 +472,8 @@ int vts_acquire_sram(struct platform_device *pdev, int vts)
 	if (!vts) {
 		while(pm_runtime_active(&pdev->dev)) {
 			dev_warn(&pdev->dev, "%s Clear existing active states\n", __func__);
-			pm_runtime_put_sync(&pdev->dev);
+			if (pm_runtime_put_sync(&pdev->dev) == -EINVAL)
+				break;
 		}
 	}
 	previous = test_and_set_bit(0, &data->sram_acquired);
@@ -541,13 +534,13 @@ int vts_clear_sram(struct platform_device *pdev)
 }
 EXPORT_SYMBOL(vts_clear_sram);
 
-volatile bool vts_is_on(void)
+bool vts_is_on(void)
 {
 	return p_vts_data && p_vts_data->enabled;
 }
 EXPORT_SYMBOL(vts_is_on);
 
-volatile bool vts_is_recognitionrunning(void)
+bool vts_is_recognitionrunning(void)
 {
 	return p_vts_data && p_vts_data->running;
 }
@@ -591,7 +584,7 @@ static SOC_ENUM_SINGLE_DECL(vts_sys_sel, VTS_DMIC_CONTROL_DMIC_IF, VTS_DMIC_SYS_
 
 static int vts_sys_sel_put_enum(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
+	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct device *dev = codec->dev;
 	unsigned int *item = ucontrol->value.enumerated.item;
 	struct vts_data *data = p_vts_data;
@@ -689,10 +682,6 @@ static int vts_start_recognization(struct device *dev, int start)
 						data->google_info.actual_sz);
 			} else {
 				dev_err(dev, "%s Model Binary File not Loaded\n", __func__);
-#if defined(CONFIG_SEC_ABC)
-				dev_err(dev, "Notify sec abc driver of vts_request_firmware_fail\n");
-				sec_abc_send_event("MODULE=sound@ERROR=vts_request_firmware_fail");
-#endif
 				return -EINVAL;
 			}
 		}
@@ -701,7 +690,7 @@ static int vts_start_recognization(struct device *dev, int start)
 				((active_trigger == TRIGGER_SVOICE) ?
 				VTS_MICCONF_FOR_TRIGGER
 				: VTS_MICCONF_FOR_GOOGLE), true);
-		if (IS_ERR_VALUE(result)) {
+		if (result < 0) {
 			dev_err(dev, "%s: MIC control failed\n",
 						 __func__);
 			return result;
@@ -725,7 +714,7 @@ static int vts_start_recognization(struct device *dev, int start)
 		result = vts_start_ipc_transaction(dev, data,
 				VTS_IRQ_AP_START_RECOGNITION,
 				&values, 0, 1);
-		if (IS_ERR_VALUE(result)) {
+		if (result < 0) {
 			dev_err(dev, "vts ipc VTS_IRQ_AP_START_RECOGNITION failed: %d\n", result);
 			return result;
 		}
@@ -740,7 +729,7 @@ static int vts_start_recognization(struct device *dev, int start)
 		result = vts_start_ipc_transaction(dev, data,
 				VTS_IRQ_AP_STOP_RECOGNITION,
 				&values, 0, 1);
-		if (IS_ERR_VALUE(result)) {
+		if (result < 0) {
 			dev_err(dev, "vts ipc VTS_IRQ_AP_STOP_RECOGNITION failed: %d\n", result);
 			return result;
 		}
@@ -752,7 +741,7 @@ static int vts_start_recognization(struct device *dev, int start)
 				((active_trigger == TRIGGER_SVOICE) ?
 				VTS_MICCONF_FOR_TRIGGER
 				: VTS_MICCONF_FOR_GOOGLE), false);
-		if (IS_ERR_VALUE(result)) {
+		if (result < 0) {
 			dev_err(dev, "%s: MIC control failed\n",
 						 __func__);
 			return result;
@@ -766,7 +755,7 @@ static int vts_start_recognization(struct device *dev, int start)
 static int get_vtsvoicerecognize_mode(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
+	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct vts_data *data = p_vts_data;
 
 	ucontrol->value.integer.value[0] = data->exec_mode;
@@ -780,7 +769,7 @@ static int get_vtsvoicerecognize_mode(struct snd_kcontrol *kcontrol,
 static int set_vtsvoicerecognize_mode(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
+	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct vts_data *data = p_vts_data;
 	struct device *dev = codec->dev;
 	u32 values[3];
@@ -858,7 +847,7 @@ static int set_vtsvoicerecognize_mode(struct snd_kcontrol *kcontrol,
 		result = vts_start_ipc_transaction(dev,
 				 data, VTS_IRQ_AP_SET_MODE,
 				 &values, 0, 1);
-		if (IS_ERR_VALUE(result)) {
+		if (result < 0) {
 			dev_err(dev, "%s IPC transaction Failed\n",
 				vtsvcrecog_mode_text[vcrecognize_mode]);
 			goto err_ipcmode;
@@ -873,7 +862,7 @@ static int set_vtsvoicerecognize_mode(struct snd_kcontrol *kcontrol,
 		/* Start/stop the request Voice recognization mode */
 		result = vts_start_recognization(dev,
 						vcrecognize_start);
-		if (IS_ERR_VALUE(result)) {
+		if (result < 0) {
 			dev_err(dev, "Start Recognization Failed: %d\n",
 				 result);
 			goto err_ipcmode;
@@ -915,7 +904,7 @@ err_ipcmode:
 static int get_vtsactive_phrase(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
+	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct vts_data *data = p_vts_data;
 
 	ucontrol->value.integer.value[0] = data->active_trigger;
@@ -929,7 +918,7 @@ static int get_vtsactive_phrase(struct snd_kcontrol *kcontrol,
 static int set_vtsactive_phrase(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
+	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct vts_data *data = p_vts_data;
 	int vtsactive_phrase;
 
@@ -951,7 +940,7 @@ static int set_vtsactive_phrase(struct snd_kcontrol *kcontrol,
 static int get_voicetrigger_value(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
+	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct vts_data *data = p_vts_data;
 
 	ucontrol->value.integer.value[0] = data->target_size;
@@ -965,7 +954,7 @@ static int get_voicetrigger_value(struct snd_kcontrol *kcontrol,
 static int set_voicetrigger_value(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
+	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct vts_data *data = p_vts_data;
 	int active_trigger = data->active_trigger;
 	u32 values[3];
@@ -1002,7 +991,7 @@ static int set_voicetrigger_value(struct snd_kcontrol *kcontrol,
 		values[1] = 1 << active_trigger;
 		values[2] = 0;
 		result = vts_start_ipc_transaction(codec->dev, data, VTS_IRQ_AP_TARGET_SIZE, &values, 0, 1);
-		if (IS_ERR_VALUE(result)) {
+		if (result < 0) {
 			dev_err(codec->dev, "Voice Trigger Value setting IPC Transaction Failed: %d\n", result);
 			return result;
 		}
@@ -1018,7 +1007,7 @@ static int set_voicetrigger_value(struct snd_kcontrol *kcontrol,
 static int get_vtsforce_reset(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
+	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct vts_data *data = p_vts_data;
 
 	ucontrol->value.integer.value[0] = data->running;
@@ -1033,7 +1022,7 @@ static int get_vtsforce_reset(struct snd_kcontrol *kcontrol,
 static int set_vtsforce_reset(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
+	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct device *dev = codec->dev;
 	struct vts_data *data = p_vts_data;
 
@@ -1099,31 +1088,24 @@ static const struct snd_soc_dapm_route vts_dapm_routes[] = {
 };
 
 
-static struct regmap * vts_codec_get_regmap(struct device *dev)
+static int vts_component_probe(struct snd_soc_component *component)
 {
-	struct vts_data *data = dev_get_drvdata(dev);
-	return data->regmap_dmic;
-}
-
-static int vts_codec_probe(struct snd_soc_codec *codec)
-{
-	vts_clk_set_rate(codec->dev, 0);
+	vts_clk_set_rate(component->dev, 0);
 
 	return 0;
 }
 
-static const struct snd_soc_codec_driver vts_codec = {
-	.probe = vts_codec_probe,
-	.ignore_pmdown_time = true,
-	.idle_bias_off = true,
-	.suspend_bias_off = true,
+static const struct snd_soc_component_driver vts_component = {
+	.probe = vts_component_probe,
+	.idle_bias_on = 0,
+	.suspend_bias_off = 1,
+	.use_pmdown_time = 0,
 	.controls = vts_controls,
 	.num_controls = ARRAY_SIZE(vts_controls),
 	.dapm_widgets = vts_dapm_widgets,
 	.num_dapm_widgets = ARRAY_SIZE(vts_dapm_widgets),
 	.dapm_routes = vts_dapm_routes,
 	.num_dapm_routes = ARRAY_SIZE(vts_dapm_routes),
-	.get_regmap = vts_codec_get_regmap,
 };
 
 int vts_set_dmicctrl(struct platform_device *pdev, int micconf_type, bool enable)
@@ -1327,8 +1309,7 @@ static irqreturn_t vts_voice_triggered_handler(int irq, void *dev_id)
 		}
 
 		kobject_uevent_env(&dev->kobj, KOBJ_CHANGE, envp);
-		wake_lock_timeout(&data->wake_lock,
-				VTS_TRIGGERED_TIMEOUT_MS);
+		__pm_wakeup_event(data->ws, VTS_TRIGGERED_TIMEOUT_MS);
 		data->vts_state = VTS_STATE_RECOG_TRIGGERED;
 	}
 
@@ -1418,7 +1399,7 @@ static int vts_suspend(struct device *dev)
 			result = vts_start_ipc_transaction(dev, data,
 					VTS_IRQ_AP_RESTART_RECOGNITION,
 					&values, 0, 1);
-			if (IS_ERR_VALUE(result)) {
+			if (result < 0) {
 				dev_err(dev, "%s restarted trigger failed\n",
 					__func__);
 				goto error_ipc;
@@ -1429,6 +1410,7 @@ static int vts_suspend(struct device *dev)
 		/* enable vts wakeup source interrupts */
 		enable_irq_wake(data->irq[VTS_IRQ_VTS_VOICE_TRIGGERED]);
 		enable_irq_wake(data->irq[VTS_IRQ_VTS_ERROR]);
+		device_set_awake_path(dev);
 		dev_info(dev, "%s: Enable VTS Wakeup source irqs\n", __func__);
 	}
 
@@ -1538,42 +1520,6 @@ void vts_dbg_dump_log_gpr(
 	p_dump->gpr[i++] = readl(data->gpr_base + VTS_CM4_PC);
 }
 
-static void exynos_vts_panic_handler(void)
-{
-	static bool has_run;
-	struct vts_data *data = p_vts_data;
-	struct device *dev = data ? (data->pdev ? &data->pdev->dev : NULL) : NULL;
-
-	dev_dbg(dev, "%s\n", __func__);
-
-	if (vts_is_on() && dev) {
-		if (has_run) {
-			dev_info(dev, "already dumped\n");
-			return;
-		}
-		has_run = true;
-
-		/* Dump VTS GPR register & Log messages */
-		vts_dbg_dump_log_gpr(dev, data, KERNEL_PANIC_DUMP,
-						"panic");
-	} else {
-		dev_info(dev, "%s: dump is skipped due to no power\n", __func__);
-	}
-}
-
-static int vts_panic_handler(struct notifier_block *nb,
-			       unsigned long action, void *data)
-{
-	exynos_vts_panic_handler();
-	return NOTIFY_OK;
-}
-
-static struct notifier_block vts_panic_notifier = {
-	.notifier_call	= vts_panic_handler,
-	.next		= NULL,
-	.priority	= 0	/* priority: INT_MAX >= x >= 0 */
-};
-
 static int vts_runtime_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
@@ -1594,7 +1540,7 @@ static int vts_runtime_suspend(struct device *dev)
 
 	if (data->running) {
 		result = vts_start_ipc_transaction(dev, data, VTS_IRQ_AP_POWER_DOWN, &values, 0, 1);
-		if (IS_ERR_VALUE(result)) {
+		if (result < 0) {
 			dev_warn(dev, "POWER_DOWN IPC transaction Failed\n");
 		}
 
@@ -1605,7 +1551,7 @@ static int vts_runtime_suspend(struct device *dev)
 
 		/* wait for VTS STANDBYWFI in STATUS SFR */
 		do {
-			exynos_pmu_read(VTS_CPU_STATUS, &status);
+			regmap_read(data->pmu, VTS_CPU_STATUS, &status);
 			dev_dbg(dev, "%s Read VTS_CPU_STATUS for STANDBYWFI status\n", __func__);
 		} while (i-- && !(status & VTS_CPU_STATUS_STANDBYWFI_MASK));
 
@@ -1618,7 +1564,8 @@ static int vts_runtime_suspend(struct device *dev)
 			data->irq_state = false;
 		}
 		vts_release_sram(pdev, 1);
-		clk_disable(data->clk_dmic);
+		clk_disable_unprepare(data->clk_dmic);
+		clk_disable_unprepare(data->clk_rco);
 
 		spin_lock_irqsave(&data->state_spinlock, flag);
 		data->vts_state = VTS_STATE_RUNTIME_SUSPENDED;
@@ -1655,6 +1602,8 @@ static int vts_runtime_resume(struct device *dev)
 
 	dev_info(dev, "%s \n", __func__);
 
+	clk_prepare_enable(data->clk_rco);
+
 	data->vts_state = VTS_STATE_RUNTIME_RESUMING;
 	data->enabled = true;
 
@@ -1670,13 +1619,13 @@ static int vts_runtime_resume(struct device *dev)
 	}
 
 	result = vts_acquire_sram(pdev, 1);
-	if (IS_ERR_VALUE(result)) {
+	if (result < 0) {
 		dev_warn(dev, "Failed to acquire sram\n");
 		goto error_sram;
 	}
 
-	result = clk_enable(data->clk_dmic);
-	if (IS_ERR_VALUE(result)) {
+	result = clk_prepare_enable(data->clk_dmic);
+	if (result < 0) {
 		dev_err(dev, "Failed to enable the clock\n");
 		goto error_clk;
 	}
@@ -1685,7 +1634,7 @@ static int vts_runtime_resume(struct device *dev)
 	vts_cpu_power(true);
 
 	result = vts_download_firmware(pdev);
-	if (IS_ERR_VALUE(result)) {
+	if (result < 0) {
 		dev_err(dev, "Failed to download firmware\n");
 		goto error_firmware;
 	}
@@ -1697,13 +1646,13 @@ static int vts_runtime_resume(struct device *dev)
 	/* Configure select sys clock rate */
 	vts_clk_set_rate(dev, data->syssel_rate);
 
-	data->dma_area_vts= vts_set_baaw(data->sfr_base,
+	data->dma_area_vts = vts_set_baaw(data->sfr_base,
 			data->dmab.addr, BUFFER_BYTES_MAX);
 	values[0] = data->dma_area_vts;
 	values[1] = 0x140;
 	values[2] = 0x800;
 	result = vts_start_ipc_transaction(dev, data, VTS_IRQ_AP_SET_DRAM_BUFFER, &values, 0, 1);
-	if (IS_ERR_VALUE(result)) {
+	if (result < 0) {
 		dev_err(dev, "DRAM_BUFFER Setting IPC transaction Failed\n");
 		goto error_firmware;
 	}
@@ -1712,7 +1661,7 @@ static int vts_runtime_resume(struct device *dev)
 	values[1] = 0;
 	values[2] = 0;
 	result = vts_start_ipc_transaction(dev, data, VTS_IRQ_AP_SET_MODE, &values, 0, 1);
-	if (IS_ERR_VALUE(result)) {
+	if (result < 0) {
 		dev_err(dev, "SET_MODE to OFF IPC transaction Failed\n");
 		goto error_firmware;
 	}
@@ -1722,7 +1671,7 @@ static int vts_runtime_resume(struct device *dev)
 	values[1] = 0;
 	values[2] = 0;
 	result = vts_start_ipc_transaction(dev, data, VTS_IRQ_AP_TEST_COMMAND, &values, 0, 1);
-	if (IS_ERR_VALUE(result)) {
+	if (result < 0) {
 		dev_err(dev, "Enable_SRAM_log ipc transaction failed\n");
 		goto error_firmware;
 	}
@@ -1739,10 +1688,11 @@ static int vts_runtime_resume(struct device *dev)
 
 error_firmware:
 	vts_cpu_power(false);
-	clk_disable(data->clk_dmic);
+	clk_disable_unprepare(data->clk_dmic);
 error_clk:
 	vts_release_sram(pdev, 1);
 error_sram:
+	clk_disable_unprepare(data->clk_rco);
 	if (data->irq_state) {
 		vts_irq_enable(pdev, false);
 		data->irq_state = false;
@@ -1758,14 +1708,14 @@ static const struct dev_pm_ops samsung_vts_pm = {
 
 static const struct of_device_id exynos_vts_of_match[] = {
 	{
-		.compatible = "samsung,vts",
+		.compatible = "samsung,exynos8895-vts",
 	},
 	{},
 };
 MODULE_DEVICE_TABLE(of, exynos_vts_of_match);
 
 static ssize_t vts_google_model_read(struct file *file, struct kobject *kobj,
-		struct bin_attribute *bin_attr, char *buffer,
+		const struct bin_attribute *bin_attr, char *buffer,
 		loff_t ppos, size_t count)
 {
 	dev_info(kobj_to_dev(kobj), "%s\n", __func__);
@@ -1774,7 +1724,7 @@ static ssize_t vts_google_model_read(struct file *file, struct kobject *kobj,
 }
 
 static ssize_t vts_google_model_write(struct file *file, struct kobject *kobj,
-		struct bin_attribute *bin_attr, char *buffer, loff_t ppos, size_t count)
+		const struct bin_attribute *bin_attr, char *buffer, loff_t ppos, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj);
 	struct vts_data *data = dev_get_drvdata(dev);
@@ -1817,7 +1767,7 @@ static ssize_t vts_google_model_write(struct file *file, struct kobject *kobj,
 }
 
 static ssize_t vts_svoice_model_read(struct file *file, struct kobject *kobj,
-		struct bin_attribute *bin_attr, char *buffer,
+		const struct bin_attribute *bin_attr, char *buffer,
 		loff_t ppos, size_t count)
 {
 	dev_info(kobj_to_dev(kobj), "%s\n", __func__);
@@ -1826,7 +1776,7 @@ static ssize_t vts_svoice_model_read(struct file *file, struct kobject *kobj,
 }
 
 static ssize_t vts_svoice_model_write(struct file *file, struct kobject *kobj,
-		struct bin_attribute *bin_attr, char *buffer, loff_t ppos, size_t count)
+		const struct bin_attribute *bin_attr, char *buffer, loff_t ppos, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj);
 	struct vts_data *data = dev_get_drvdata(dev);
@@ -1868,8 +1818,8 @@ static ssize_t vts_svoice_model_write(struct file *file, struct kobject *kobj,
 	return count;
 }
 
-static const BIN_ATTR_RW(vts_google_model, VTS_MODEL_GOOGLE_BIN_MAXSZ);
-static const BIN_ATTR_RW(vts_svoice_model, VTS_MODEL_SVOICE_BIN_MAXSZ);
+static BIN_ATTR_RW(vts_google_model, VTS_MODEL_GOOGLE_BIN_MAXSZ);
+static BIN_ATTR_RW(vts_svoice_model, VTS_MODEL_SVOICE_BIN_MAXSZ);
 
 static ssize_t vtsfw_version_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -1909,61 +1859,6 @@ static ssize_t vtsdetectlib_version_show(struct device *dev,
 static DEVICE_ATTR_RO(vtsfw_version);
 static DEVICE_ATTR_RO(vtsdetectlib_version);
 
-static void vts_complete_firmware_request(const struct firmware *fw, void *context)
-{
-	struct platform_device *pdev = context;
-	struct device *dev = &pdev->dev;
-	struct vts_data *data = platform_get_drvdata(pdev);
-	unsigned int *pversion = NULL;
-
-	if (!fw) {
-		dev_err(dev, "Failed to request firmware\n");
-		return;
-	}
-
-	data->firmware = fw;
-	pversion = (unsigned int*) (fw->data + VTSFW_VERSION_OFFSET);
-	data->vtsfw_version = *pversion;
-	pversion = (unsigned int*) (fw->data + DETLIB_VERSION_OFFSET);
-	data->vtsdetectlib_version = *pversion;
-
-	dev_info(dev, "Firmware loaded at %p (%zu)\n", fw->data, fw->size);
-	dev_info(dev, "Firmware version: 0x%x Detection library version: 0x%x\n", data->vtsfw_version, data->vtsdetectlib_version);
-}
-
-static void __iomem *samsung_vts_devm_request_and_map(struct platform_device *pdev, const char *name, size_t *size)
-{
-	struct resource *res;
-	void __iomem *result;
-
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, name);
-	if (IS_ERR_OR_NULL(res)) {
-		dev_err(&pdev->dev, "Failed to get %s\n", name);
-		return ERR_PTR(-EINVAL);
-	}
-
-	if (size) {
-		*size = resource_size(res);
-	}
-
-	res = devm_request_mem_region(&pdev->dev, res->start, resource_size(res), name);
-	if (IS_ERR_OR_NULL(res)) {
-		dev_err(&pdev->dev, "Failed to request %s\n", name);
-		return ERR_PTR(-EFAULT);
-	}
-
-	result = devm_ioremap(&pdev->dev, res->start, resource_size(res));
-	if (IS_ERR_OR_NULL(result)) {
-		dev_err(&pdev->dev, "Failed to map %s\n", name);
-		return ERR_PTR(-EFAULT);
-	}
-
-	dev_info(&pdev->dev, "%s: %s(%p) is mapped on %p with size of %zu",
-			__func__, name, (void *)res->start, result, (size_t)resource_size(res));
-
-	return result;
-}
-
 static int samsung_vts_devm_request_threaded_irq(
 		struct platform_device *pdev, const char *irq_name,
 		unsigned int hw_irq, irq_handler_t thread_fn)
@@ -1973,42 +1868,21 @@ static int samsung_vts_devm_request_threaded_irq(
 	int result;
 
 	data->irq[hw_irq] = platform_get_irq_byname(pdev, irq_name);
-	if (IS_ERR_VALUE(data->irq[hw_irq])) {
+	if (data->irq[hw_irq] < 0) {
 		dev_err(dev, "Failed to get irq %s: %d\n", irq_name, data->irq[hw_irq]);
 		return data->irq[hw_irq];
 	}
 
 	result = devm_request_threaded_irq(dev, data->irq[hw_irq],
 			NULL, thread_fn,
-			IRQF_TRIGGER_RISING | IRQF_ONESHOT, dev->init_name,
+			IRQF_TRIGGER_RISING | IRQF_ONESHOT, dev_name(dev),
 			pdev);
 
-	if (IS_ERR_VALUE(result)) {
+	if (result < 0) {
 		dev_err(dev, "Unable to request irq %s: %d\n", irq_name, result);
 	}
 
 	return result;
-}
-
-static struct clk *devm_clk_get_and_prepare(struct device *dev, const char *name)
-{
-	struct clk *clk;
-	int result;
-
-	clk = devm_clk_get(dev, name);
-	if (IS_ERR(clk)) {
-		dev_err(dev, "Failed to get clock %s\n", name);
-		goto error;
-	}
-
-	result = clk_prepare(clk);
-	if (IS_ERR_VALUE(result)) {
-		dev_err(dev, "Failed to prepare clock %s\n", name);
-		goto error;
-	}
-
-error:
-	return clk;
 }
 
 static const struct reg_default vts_dmic_reg_defaults[] = {
@@ -2034,14 +1908,12 @@ static int samsung_vts_probe(struct platform_device *pdev)
 	struct vts_data *data;
 	int result;
 	int dmic_clkctrl = 0;
+	struct resource *res;
 
-	dev_info(dev, "%s \n", __func__);
+	dev_info(dev, "%s\n", __func__);
 	data = devm_kzalloc(dev, sizeof(struct vts_data), GFP_KERNEL);
-	if (!data) {
-		dev_err(dev, "Failed to allocate memory\n");
-		result = -ENOMEM;
-		goto error;
-	}
+	if (!data)
+		return -ENOMEM;
 
 	/* Model binary memory allocation */
 	data->google_info.max_sz = VTS_MODEL_GOOGLE_BIN_MAXSZ;
@@ -2050,8 +1922,7 @@ static int samsung_vts_probe(struct platform_device *pdev)
 	data->google_info.data = vmalloc(VTS_MODEL_GOOGLE_BIN_MAXSZ);
 	if (!data->google_info.data) {
 		dev_err(dev, "%s Failed to allocate Grammar Bin memory\n", __func__);
-		result = -ENOMEM;
-		goto error;
+		return -ENOMEM;
 	}
 
 	data->svoice_info.max_sz = VTS_MODEL_SVOICE_BIN_MAXSZ;
@@ -2060,8 +1931,8 @@ static int samsung_vts_probe(struct platform_device *pdev)
 	data->svoice_info.data = vmalloc(VTS_MODEL_SVOICE_BIN_MAXSZ);
 	if (!data->svoice_info.data) {
 		dev_err(dev, "%s Failed to allocate Net Bin memory\n", __func__);
-		result = -ENOMEM;
-		goto error;
+		vfree(data->google_info.data);
+		return -ENOMEM;
 	}
 
 	/* initialize device structure members */
@@ -2080,34 +1951,50 @@ static int samsung_vts_probe(struct platform_device *pdev)
 	spin_lock_init(&data->ipc_spinlock);
 	spin_lock_init(&data->state_spinlock);
 	mutex_init(&data->ipc_mutex);
-	wake_lock_init(&data->wake_lock, WAKE_LOCK_SUSPEND, "vts");
+	data->ws = wakeup_source_register(dev, "vts");
+
+	data->pmu = syscon_regmap_lookup_by_phandle(np, "samsung,pmu-syscon");
+	if (IS_ERR(data->pmu)) {
+		dev_err(dev, "Failed to get PMU syscon regmap\n");
+		result = PTR_ERR(data->pmu);
+		goto error;
+	}
 
 	data->pinctrl = devm_pinctrl_get(dev);
 	if (IS_ERR(data->pinctrl)) {
 		dev_err(dev, "Couldn't get pins (%li)\n",
 				PTR_ERR(data->pinctrl));
-		return PTR_ERR(data->pinctrl);
-	}
-
-	data->sfr_base = samsung_vts_devm_request_and_map(pdev, "sfr", NULL);
-	if (IS_ERR(data->sfr_base)) {
-		result = PTR_ERR(data->sfr_base);
+		result = PTR_ERR(data->pinctrl);
 		goto error;
 	}
 
-	data->sram_base = samsung_vts_devm_request_and_map(pdev, "sram", &data->sram_size);
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "sfr");
+	if (!res) {
+		dev_err(dev, "Failed to get sfr resource\n");
+		result = -EINVAL;
+		goto error;
+	}
+	data->sfr_base = devm_ioremap(dev, res->start, resource_size(res));
+	if (!data->sfr_base) {
+		dev_err(dev, "Failed to ioremap sfr\n");
+		result = -ENOMEM;
+		goto error;
+	}
+
+	data->sram_base = devm_platform_ioremap_resource_byname(pdev, "sram");
 	if (IS_ERR(data->sram_base)) {
 		result = PTR_ERR(data->sram_base);
 		goto error;
 	}
+	data->sram_size = resource_size(platform_get_resource_byname(pdev, IORESOURCE_MEM, "sram"));
 
-	data->dmic_base = samsung_vts_devm_request_and_map(pdev, "dmic", NULL);
+	data->dmic_base = devm_platform_ioremap_resource_byname(pdev, "dmic");
 	if (IS_ERR(data->dmic_base)) {
 		result = PTR_ERR(data->dmic_base);
 		goto error;
 	}
 
-	data->gpr_base = samsung_vts_devm_request_and_map(pdev, "gpr", NULL);
+	data->gpr_base = devm_platform_ioremap_resource_byname(pdev, "gpr");
 	if (IS_ERR(data->gpr_base)) {
 		result = PTR_ERR(data->gpr_base);
 		goto error;
@@ -2117,12 +2004,12 @@ static int samsung_vts_probe(struct platform_device *pdev)
 	data->dmicgain = 0;
 	data->amicgain = 0;
 
-	/* read tunned VTS gain values */
+	/* read tuned VTS gain values */
 	of_property_read_u32(np, "lpsd-gain", &data->lpsdgain);
 	of_property_read_u32(np, "dmic-gain", &data->dmicgain);
 	of_property_read_u32(np, "amic-gain", &data->amicgain);
 
-	dev_info(dev, "VTS Tunned Gain value LPSD: %d DMIC: %d AMIC: %d\n",
+	dev_info(dev, "VTS Tuned Gain value LPSD: %d DMIC: %d AMIC: %d\n",
 			data->lpsdgain, data->dmicgain, data->amicgain);
 
 	data->dmab.area = dmam_alloc_coherent(dev, BUFFER_BYTES_MAX, &data->dmab.addr, GFP_KERNEL);
@@ -2130,13 +2017,13 @@ static int samsung_vts_probe(struct platform_device *pdev)
 		result = -ENOMEM;
 		goto error;
 	}
-	data->dmab.bytes = BUFFER_BYTES_MAX/2;
+	data->dmab.bytes = BUFFER_BYTES_MAX / 2;
 	data->dmab.dev.dev = dev;
 	data->dmab.dev.type = SNDRV_DMA_TYPE_DEV;
 
-	data->dmab_rec.area = (data->dmab.area + BUFFER_BYTES_MAX/2);
-	data->dmab_rec.addr = (data->dmab.addr + BUFFER_BYTES_MAX/2);
-	data->dmab_rec.bytes = BUFFER_BYTES_MAX/2;
+	data->dmab_rec.area = (data->dmab.area + BUFFER_BYTES_MAX / 2);
+	data->dmab_rec.addr = (data->dmab.addr + BUFFER_BYTES_MAX / 2);
+	data->dmab_rec.bytes = BUFFER_BYTES_MAX / 2;
 	data->dmab_rec.dev.dev = dev;
 	data->dmab_rec.dev.type = SNDRV_DMA_TYPE_DEV;
 
@@ -2146,35 +2033,29 @@ static int samsung_vts_probe(struct platform_device *pdev)
 		result = -ENOMEM;
 		goto error;
 	}
-	data->dmab.bytes = LOG_BUFFER_BYTES_MAX;
-	data->dmab.dev.dev = dev;
-	data->dmab.dev.type = SNDRV_DMA_TYPE_DEV;
+	data->dmab_log.bytes = LOG_BUFFER_BYTES_MAX;
+	data->dmab_log.dev.dev = dev;
+	data->dmab_log.dev.type = SNDRV_DMA_TYPE_DEV;
 
-	data->clk_rco = devm_clk_get_and_prepare(dev, "rco");
+	data->clk_rco = devm_clk_get(dev, "rco");
 	if (IS_ERR(data->clk_rco)) {
 		result = PTR_ERR(data->clk_rco);
 		goto error;
 	}
 
-	result = clk_enable(data->clk_rco);
-	if (IS_ERR_VALUE(result)) {
-		dev_err(dev, "Failed to enable the rco\n");
-		goto error;
-	}
-
-	data->clk_dmic = devm_clk_get_and_prepare(dev, "dmic");
+	data->clk_dmic = devm_clk_get(dev, "dmic");
 	if (IS_ERR(data->clk_dmic)) {
 		result = PTR_ERR(data->clk_dmic);
 		goto error;
 	}
 
-	data->clk_dmic_if= devm_clk_get_and_prepare(dev, "dmic_if");
+	data->clk_dmic_if = devm_clk_get(dev, "dmic_if");
 	if (IS_ERR(data->clk_dmic_if)) {
 		result = PTR_ERR(data->clk_dmic_if);
 		goto error;
 	}
 
-	data->clk_dmic_sync = devm_clk_get_and_prepare(dev, "dmic_sync");
+	data->clk_dmic_sync = devm_clk_get(dev, "dmic_sync");
 	if (IS_ERR(data->clk_dmic_sync)) {
 		result = PTR_ERR(data->clk_dmic_sync);
 		goto error;
@@ -2182,87 +2063,70 @@ static int samsung_vts_probe(struct platform_device *pdev)
 
 	result = samsung_vts_devm_request_threaded_irq(pdev, "error",
 			VTS_IRQ_VTS_ERROR, vts_error_handler);
-	if (IS_ERR_VALUE(result)) {
+	if (result < 0)
 		goto error;
-	}
 
 	result = samsung_vts_devm_request_threaded_irq(pdev, "boot_completed",
 			VTS_IRQ_VTS_BOOT_COMPLETED, vts_boot_completed_handler);
-	if (IS_ERR_VALUE(result)) {
+	if (result < 0)
 		goto error;
-	}
 
 	result = samsung_vts_devm_request_threaded_irq(pdev, "ipc_received",
 			VTS_IRQ_VTS_IPC_RECEIVED, vts_ipc_received_handler);
-	if (IS_ERR_VALUE(result)) {
+	if (result < 0)
 		goto error;
-	}
 
 	result = samsung_vts_devm_request_threaded_irq(pdev, "voice_triggered",
 			VTS_IRQ_VTS_VOICE_TRIGGERED, vts_voice_triggered_handler);
-	if (IS_ERR_VALUE(result)) {
+	if (result < 0)
 		goto error;
-	}
 
 	result = samsung_vts_devm_request_threaded_irq(pdev, "trigger_period_elapsed",
 			VTS_IRQ_VTS_PERIOD_ELAPSED, vts_trigger_period_elapsed_handler);
-	if (IS_ERR_VALUE(result)) {
+	if (result < 0)
 		goto error;
-	}
 
 	result = samsung_vts_devm_request_threaded_irq(pdev, "record_period_elapsed",
 			VTS_IRQ_VTS_REC_PERIOD_ELAPSED, vts_record_period_elapsed_handler);
-	if (IS_ERR_VALUE(result)) {
+	if (result < 0)
 		goto error;
-	}
 
 	data->irq_state = true;
 
-	data->pdev_mailbox = of_find_device_by_node(of_parse_phandle(np, "mailbox", 0));
+	data->pdev_mailbox = of_find_device_by_node(of_parse_phandle(np, "samsung,mailbox", 0));	/* stock "mailbox" (FDT:8189) */
 	if (!data->pdev_mailbox) {
 		dev_err(dev, "Failed to get mailbox\n");
 		result = -EPROBE_DEFER;
 		goto error;
 	}
 
-	result = request_firmware_nowait(THIS_MODULE,
-			FW_ACTION_HOTPLUG,
-			"vts.bin",
-			dev,
-			GFP_KERNEL,
-			pdev,
-			vts_complete_firmware_request);
-	if (IS_ERR_VALUE(result)) {
-		dev_err(dev, "Failed to request firmware\n");
-		goto error;
-	}
-
 	result = device_create_bin_file(dev, &bin_attr_vts_google_model);
-	if (IS_ERR_VALUE(result)) {
+	if (result < 0) {
 		dev_err(dev, "Failed to create attribute %s\n", "vts_google_model");
 		goto error;
 	}
 
 	result = device_create_bin_file(dev, &bin_attr_vts_svoice_model);
-	if (IS_ERR_VALUE(result)) {
+	if (result < 0) {
 		dev_err(dev, "Failed to create attribute %s\n", "vts_svoice_model");
 		goto error;
 	}
 
-	data->regmap_dmic = devm_regmap_init_mmio_clk(dev,
-			NULL,
+	data->regmap_dmic = devm_regmap_init_mmio(dev,
 			data->dmic_base,
 			&vts_codec_regmap_config);
+	if (IS_ERR(data->regmap_dmic)) {
+		result = PTR_ERR(data->regmap_dmic);
+		goto error;
+	}
+	regcache_cache_only(data->regmap_dmic, true);
 
-	result = snd_soc_register_codec(dev, &vts_codec, vts_dai, ARRAY_SIZE(vts_dai));
-	if (IS_ERR_VALUE(result)) {
-		dev_err(dev, "Failed to register ASoC codec\n");
+	result = devm_snd_soc_register_component(dev, &vts_component, vts_dai, ARRAY_SIZE(vts_dai));
+	if (result < 0) {
+		dev_err(dev, "Failed to register ASoC component\n");
 		goto error;
 	}
 
-#ifdef EMULATOR
-	pmu_alive = ioremap(0x16480000, 0x10000);
-#endif
 	pm_runtime_enable(dev);
 	pm_runtime_get_sync(dev);
 
@@ -2280,17 +2144,17 @@ static int samsung_vts_probe(struct platform_device *pdev)
 	dev_dbg(dev, "DMIC_CLK_CTRL: Before 0x%x After 0x%x \n", dmic_clkctrl,
 			readl(data->sfr_base + VTS_DMIC_CLK_CTRL));
 
+	pm_runtime_put_sync(dev);
+
 	result = device_create_file(dev, &dev_attr_vtsfw_version);
-	if (IS_ERR_VALUE(result))
+	if (result < 0)
 		dev_warn(dev, "Failed to create file: %s\n", "vtsfw_version");
 
 	result = device_create_file(dev, &dev_attr_vtsdetectlib_version);
-	if (IS_ERR_VALUE(result))
+	if (result < 0)
 		dev_warn(dev, "Failed to create file: %s\n", "vtsdetectlib_version");
 
 	data->sramlog_baseaddr = (char *)(data->sram_base + VTS_SRAMLOG_MSGS_OFFSET);
-
-	atomic_notifier_chain_register(&panic_notifier_list, &vts_panic_notifier);
 
 	device_init_wakeup(dev, true);
 
@@ -2298,30 +2162,31 @@ static int samsung_vts_probe(struct platform_device *pdev)
 
 	dev_info(dev, "Probed successfully\n");
 
+	return 0;
+
 error:
+	if (data->ws)
+		wakeup_source_unregister(data->ws);
+	if (data->google_info.data)
+		vfree(data->google_info.data);
+	if (data->svoice_info.data)
+		vfree(data->svoice_info.data);
 	return result;
 }
 
-static int samsung_vts_remove(struct platform_device *pdev)
+static void samsung_vts_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct vts_data *data = platform_get_drvdata(pdev);
 
 	pm_runtime_disable(dev);
-	clk_unprepare(data->clk_dmic);
-#ifndef CONFIG_PM
-	vts_runtime_suspend(dev);
-#endif
+	if (data->ws)
+		wakeup_source_unregister(data->ws);
 	release_firmware(data->firmware);
 	if (data->google_info.data)
 		vfree(data->google_info.data);
 	if (data->svoice_info.data)
 		vfree(data->svoice_info.data);
-	snd_soc_unregister_codec(dev);
-#ifdef EMULATOR
-	iounmap(pmu_alive);
-#endif
-	return 0;
 }
 
 static struct platform_driver samsung_vts_driver = {
@@ -2330,25 +2195,12 @@ static struct platform_driver samsung_vts_driver = {
 	.driver = {
 		.name = "samsung-vts",
 		.owner = THIS_MODULE,
-		.of_match_table = of_match_ptr(exynos_vts_of_match),
+		.of_match_table = exynos_vts_of_match,
 		.pm = &samsung_vts_pm,
 	},
 };
 
 module_platform_driver(samsung_vts_driver);
-
-static int __init samsung_vts_late_initcall(void)
-{
-	pr_info("%s\n", __func__);
-
-	if (p_vts_data && p_vts_data->pdev) {
-		pm_runtime_put_sync(&p_vts_data->pdev->dev);
-	} else {
-		pr_err("%s: p_vts_data or p_vts_data->pdev is null", __func__);
-	}
-	return 0;
-}
-late_initcall(samsung_vts_late_initcall);
 
 /* Module information */
 MODULE_AUTHOR("Gyeongtaek Lee, <gt82.lee@samsung.com>");
