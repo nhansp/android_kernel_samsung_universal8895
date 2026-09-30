@@ -10,3 +10,17 @@
  * value, which gl-verify V-DUP reports as an error. L0's reserved-memory stays in
  * the .dts; carveout additions and flag changes are &label edits here (plan X-8).
  */
+
+/*
+ * L7 4.2: the arch counter does not tick in SLEEP. Stock removed
+ * CLOCK_SOURCE_SUSPEND_NONSTOP from the arch counter and takes the sleep time
+ * from rtc0 (S:drivers/clocksource/arm_arch_timer.c:455-461; IK:3889-3890);
+ * 6.18 sets NONSTOP unless this property is present
+ * (A:drivers/clocksource/arm_arch_timer.c:940-941,1177-1178). The node has no
+ * label (A:arch/arm64/boot/dts/exynos/exynos8895.dtsi:1358). always-on is not
+ * added: the arch timer is in the core and stops in C2, C3STOP stays. Spec
+ * O7-3: if P12 shows the counter runs in SLEEP, the property may be dropped.
+ */
+&{/timer} {
+	arm,no-tick-in-suspend;
+};
