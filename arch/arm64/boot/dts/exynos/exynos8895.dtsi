@@ -191,6 +191,11 @@
 	 * stock "min-freq = <741000>;" (S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:518).
 	 * 13 levels = the Mongoose "current" entries (:226). Drop opp-2314000000
 	 * only if the fused ASV version (acpm-clk "asv_ver=") is 1 or 2.
+	 * opp-microvolt feeds only the energy model of the IPA power actor (no
+	 * cpu-supply, so the OPP core never applies it; the APM keeps its own
+	 * voltage): ECT ASV block, dvfs_cpucl0, table version 8, group 0 (the
+	 * highest voltage of each level in that table; Lnn = ECT level), chosen
+	 * because ACK has no static-power term (spec/L2c_thermal.md 4.3).
 	 */
 	cpucl0_opp_table: opp-table-cl0 {
 		compatible = "operating-points-v2";
@@ -198,55 +203,68 @@
 
 		opp-741000000 {
 			opp-hz = /bits/ 64 <741000000>;
+			opp-microvolt = <681250>;	/* L17 */
 			clock-latency-ns = <100000>;
 		};
 		opp-858000000 {
 			opp-hz = /bits/ 64 <858000000>;
+			opp-microvolt = <706250>;	/* L16 */
 			clock-latency-ns = <100000>;
 		};
 		opp-962000000 {
 			opp-hz = /bits/ 64 <962000000>;
+			opp-microvolt = <725000>;	/* L15 */
 			clock-latency-ns = <100000>;
 		};
 		opp-1066000000 {
 			/* ASV boot level L14 */
 			opp-hz = /bits/ 64 <1066000000>;
+			opp-microvolt = <737500>;	/* L14 */
 			clock-latency-ns = <100000>;
 		};
 		opp-1170000000 {
 			opp-hz = /bits/ 64 <1170000000>;
+			opp-microvolt = <756250>;	/* L13 */
 			clock-latency-ns = <100000>;
 		};
 		opp-1261000000 {
 			opp-hz = /bits/ 64 <1261000000>;
+			opp-microvolt = <775000>;	/* L12 */
 			clock-latency-ns = <100000>;
 		};
 		opp-1469000000 {
 			opp-hz = /bits/ 64 <1469000000>;
+			opp-microvolt = <825000>;	/* L11 */
 			clock-latency-ns = <100000>;
 		};
 		opp-1703000000 {
 			opp-hz = /bits/ 64 <1703000000>;
+			opp-microvolt = <893750>;	/* L10 */
 			clock-latency-ns = <100000>;
 		};
 		opp-1807000000 {
 			opp-hz = /bits/ 64 <1807000000>;
+			opp-microvolt = <925000>;	/* L9 */
 			clock-latency-ns = <100000>;
 		};
 		opp-1937000000 {
 			opp-hz = /bits/ 64 <1937000000>;
+			opp-microvolt = <968750>;	/* L8 */
 			clock-latency-ns = <100000>;
 		};
 		opp-2002000000 {
 			opp-hz = /bits/ 64 <2002000000>;
+			opp-microvolt = <987500>;	/* L7 */
 			clock-latency-ns = <100000>;
 		};
 		opp-2158000000 {
 			opp-hz = /bits/ 64 <2158000000>;
+			opp-microvolt = <1050000>;	/* L6 */
 			clock-latency-ns = <100000>;
 		};
 		opp-2314000000 {
 			opp-hz = /bits/ 64 <2314000000>;
+			opp-microvolt = <1118750>;	/* L5 */
 			clock-latency-ns = <100000>;
 		};
 	};
@@ -2625,22 +2643,27 @@
 	clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CPUCL0>;
 	operating-points-v2 = <&cpucl0_opp_table>;
 	#cooling-cells = <2>;
+	/* ECT GEN DTM_PWR_Coeff[0] (MNGS), sboot.bin SB:0x4b288; S:drivers/thermal/samsung/exynos_tmu.c:1380-1393 */
+	dynamic-power-coefficient = <465>;
 };
 
 &cpu5 {
 	clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CPUCL0>;
 	operating-points-v2 = <&cpucl0_opp_table>;
 	#cooling-cells = <2>;
+	dynamic-power-coefficient = <465>;
 };
 
 &cpu6 {
 	clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CPUCL0>;
 	operating-points-v2 = <&cpucl0_opp_table>;
 	#cooling-cells = <2>;
+	dynamic-power-coefficient = <465>;
 };
 
 &cpu7 {
 	clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CPUCL0>;
 	operating-points-v2 = <&cpucl0_opp_table>;
 	#cooling-cells = <2>;
+	dynamic-power-coefficient = <465>;
 };
