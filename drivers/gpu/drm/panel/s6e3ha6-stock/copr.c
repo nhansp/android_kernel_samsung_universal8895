@@ -10,7 +10,8 @@
  * published by the Free Software Foundation.
  */
 
-#include <linux/of_gpio.h>
+#include <linux/gpio/consumer.h>
+#include <linux/of.h>
 #include "panel.h"
 #include "panel_drv.h"
 #include "panel_bl.h"
@@ -86,7 +87,7 @@ static int panel_get_copr(struct copr_info *copr)
 {
 	struct panel_device *panel = to_panel_device(copr);
 	struct panel_info *panel_data;
-	struct timespec cur_ts, last_ts, delta_ts;
+	struct timespec64 cur_ts, last_ts, delta_ts;
 	s64 elapsed_usec;
 	u8 cur_copr = 0;
 	int ret;
@@ -100,7 +101,7 @@ static int panel_get_copr(struct copr_info *copr)
 	if (unlikely(!copr->props.support))
 		return -ENODEV;
 
-	ktime_get_ts(&cur_ts);
+	ktime_get_ts64(&cur_ts);
 	if (copr->props.state != COPR_REG_ON) {
 		panel_warn("%s copr reg is not on state %d\n",
 				__func__, copr->props.state);
@@ -121,16 +122,16 @@ static int panel_get_copr(struct copr_info *copr)
 		ret = -EIO;
 		goto get_copr_error;
 	}
-	ktime_get_ts(&last_ts);
+	ktime_get_ts64(&last_ts);
 
-	delta_ts = timespec_sub(last_ts, cur_ts);
-	elapsed_usec = timespec_to_ns(&delta_ts) / 1000;
+	delta_ts = timespec64_sub(last_ts, cur_ts);
+	elapsed_usec = timespec64_to_ns(&delta_ts) / 1000;
 	pr_debug("%s elapsed_usec %lld usec (%lld.%lld %lld.%lld)\n",
 			__func__, elapsed_usec,
-			timespec_to_ns(&cur_ts) / 1000000000,
-			(timespec_to_ns(&cur_ts) % 1000000000) / 1000,
-			timespec_to_ns(&last_ts) / 1000000000,
-			(timespec_to_ns(&last_ts) % 1000000000) / 1000);
+			timespec64_to_ns(&cur_ts) / 1000000000,
+			(timespec64_to_ns(&cur_ts) % 1000000000) / 1000,
+			timespec64_to_ns(&last_ts) / 1000000000,
+			(timespec64_to_ns(&last_ts) % 1000000000) / 1000);
 
 	return cur_copr;
 
@@ -143,10 +144,10 @@ bool copr_is_enabled(struct copr_info *copr)
 	return (copr->props.support && copr->props.reg.copr_en && copr->props.enable);
 }
 
-static void copr_sum_update(struct copr_info *copr, int cur_copr, int cur_brt, struct timespec cur_ts)
+static void copr_sum_update(struct copr_info *copr, int cur_copr, int cur_brt, struct timespec64 cur_ts)
 {
 	struct copr_properties *props = &copr->props;
-	struct timespec delta_ts;
+	struct timespec64 delta_ts;
 #ifdef DEBUG_PANEL
 	static u64 copr_update_cnt;
 #endif
@@ -166,8 +167,8 @@ static void copr_sum_update(struct copr_info *copr, int cur_copr, int cur_brt, s
 		return;
 	}
 
-	delta_ts = timespec_sub(cur_ts, props->last_ts);
-	elapsed_msec = timespec_to_ns(&delta_ts) / 1000000;
+	delta_ts = timespec64_sub(cur_ts, props->last_ts);
+	elapsed_msec = timespec64_to_ns(&delta_ts) / 1000000;
 
 	if (elapsed_msec == 0) {
 		panel_warn("%s elapsed_msec: 0 msec\n", __func__);
@@ -225,7 +226,7 @@ int copr_update(struct copr_info *copr)
 	struct panel_device *panel = to_panel_device(copr);
 	struct panel_bl_device *panel_bl = &panel->panel_bl;
 	struct copr_properties *props = &copr->props;
-	struct timespec cur_ts;
+	struct timespec64 cur_ts;
 	int cur_copr;
 	int cur_brt;
 
@@ -239,7 +240,7 @@ int copr_update(struct copr_info *copr)
 		return -EIO;
 	}
 
-	ktime_get_ts(&cur_ts);
+	ktime_get_ts64(&cur_ts);
 	if (props->state == COPR_UNINITIALIZED) {
 		panel_set_copr(copr);
 		panel_info("%s copr register updated\n", __func__);
@@ -307,7 +308,7 @@ int copr_get_value(struct copr_info *copr)
 int copr_get_average(struct copr_info *copr, int *c_avg, int *b_avg)
 {
 	struct copr_properties *props = &copr->props;
-	struct timespec cur_ts;
+	struct timespec64 cur_ts;
 	int copr_avg, brt_avg;
 		
 	if (unlikely(!copr->props.support))
@@ -323,7 +324,7 @@ int copr_get_average(struct copr_info *copr, int *c_avg, int *b_avg)
 		return -EIO;
 	}
 
-	ktime_get_ts(&cur_ts);
+	ktime_get_ts64(&cur_ts);
 	copr_sum_update(copr, props->last_copr, props->last_brt, cur_ts);
 	copr_avg = props->copr_avg;
 	brt_avg = props->brt_avg;
@@ -367,35 +368,36 @@ static int set_spi_gpios(struct panel_device *panel, int en)
 
 	panel_info("%s en : %d\n", __func__, en);
 
+	/* a line get_spi_gpios_dt() did not find fails as the vendor's invalid number did */
 	if (en) {
-		if (gpio_direction_output(gpio_info->gpio_sck, 0))
+		if (!gpio_info->gpio_sck || gpiod_direction_output(gpio_info->gpio_sck, 0))
 			goto set_exit;
 		err_num++;
 
-		if (gpio_direction_input(gpio_info->gpio_miso))
+		if (!gpio_info->gpio_miso || gpiod_direction_input(gpio_info->gpio_miso))
 			goto set_exit;
 		err_num++;
 
-		if (gpio_direction_output(gpio_info->gpio_mosi, 0))
+		if (!gpio_info->gpio_mosi || gpiod_direction_output(gpio_info->gpio_mosi, 0))
 			goto set_exit;
 		err_num++;
 
-		if (gpio_direction_output(gpio_info->gpio_cs, 0))
+		if (!gpio_info->gpio_cs || gpiod_direction_output(gpio_info->gpio_cs, 0))
 			goto set_exit;
 	} else {
-		if (gpio_direction_input(gpio_info->gpio_sck))
+		if (!gpio_info->gpio_sck || gpiod_direction_input(gpio_info->gpio_sck))
 			goto set_exit;
 		err_num++;
 
-		if (gpio_direction_input(gpio_info->gpio_miso))
+		if (!gpio_info->gpio_miso || gpiod_direction_input(gpio_info->gpio_miso))
 			goto set_exit;
 		err_num++;
 
-		if (gpio_direction_input(gpio_info->gpio_mosi))
+		if (!gpio_info->gpio_mosi || gpiod_direction_input(gpio_info->gpio_mosi))
 			goto set_exit;
 		err_num++;
 
-		if (gpio_direction_input(gpio_info->gpio_cs))
+		if (!gpio_info->gpio_cs || gpiod_direction_input(gpio_info->gpio_cs))
 			goto set_exit;
 	}
 	return 0;
@@ -405,6 +407,23 @@ set_exit:
 	return -EIO;
 }
 
+/*
+ * The vendor read the legacy GPIO numbers of the spi-gpio master node
+ * (gpio-sck, gpio-miso, gpio-mosi, cs-gpios) and switched their direction
+ * without requesting them. Here the lines of the 6.18 spi-gpio binding
+ * (sck-gpios, miso-gpios, mosi-gpios, cs-gpios) are already requested by
+ * spi-gpio and the SPI core, so they are looked up non-exclusively (the only
+ * way to share a requested line) and never put, as the vendor never freed
+ * them. The values the vendor gpio_direction_*() calls drive are unchanged.
+ */
+static struct gpio_desc *get_spi_gpio(struct device_node *np, const char *con_id)
+{
+	struct gpio_desc *desc;
+
+	desc = fwnode_gpiod_get_index(of_fwnode_handle(np), con_id, 0,
+				      GPIOD_ASIS | GPIOD_FLAGS_BIT_NONEXCLUSIVE, "copr-spi");
+	return IS_ERR(desc) ? NULL : desc;
+}
 
 static int get_spi_gpios_dt(struct panel_device *panel)
 {
@@ -412,38 +431,38 @@ static int get_spi_gpios_dt(struct panel_device *panel)
 	struct device_node *np;
 	struct spi_device *spi = panel->spi;
 	struct copr_spi_gpios *gpio_info = &panel->spi_gpio;
-	
+
 	if (!spi || !gpio_info) {
 		panel_err("%s:spi or gpio_info is null\n", __func__);
 		goto error_dt;
 	}
 
-	np = spi->master->dev.of_node;
+	np = spi->controller->dev.of_node;
 	if (!np) {
 		panel_err("%s:dev_of_node is null\n", __func__);
 		goto error_dt;
 	}
 
-	gpio_info->gpio_sck = of_get_named_gpio(np, "gpio-sck", 0);
-	if (gpio_info->gpio_sck < 0) {
+	gpio_info->gpio_sck = get_spi_gpio(np, "sck");
+	if (!gpio_info->gpio_sck) {
 		panel_err("%s failed to get gpio_sck from dt\n", __func__);
 		goto error_dt;
 	}
 
-	gpio_info->gpio_miso = of_get_named_gpio(np, "gpio-miso", 0);
-	if (gpio_info->gpio_miso < 0) {
+	gpio_info->gpio_miso = get_spi_gpio(np, "miso");
+	if (!gpio_info->gpio_miso) {
 		panel_err("%s failed to get miso from dt\n", __func__);
 		goto error_dt;
 	}
 
-	gpio_info->gpio_mosi = of_get_named_gpio(np, "gpio-mosi", 0);
-	if (gpio_info->gpio_mosi < 0) {
+	gpio_info->gpio_mosi = get_spi_gpio(np, "mosi");
+	if (!gpio_info->gpio_mosi) {
 		panel_err("%s failed to get mosi from dt\n", __func__);
 		goto error_dt;
 	}
-	
-	gpio_info->gpio_cs = of_get_named_gpio(np, "cs-gpios", 0);
-	if (gpio_info->gpio_cs < 0) {
+
+	gpio_info->gpio_cs = get_spi_gpio(np, "cs");
+	if (!gpio_info->gpio_cs) {
 		panel_err("%s failed to get cs from dt\n", __func__);
 		goto error_dt;
 	}
@@ -560,46 +579,6 @@ static int copr_create_thread(struct copr_info *copr)
 	return 0;
 }
 
-static int copr_fb_notifier_callback(struct notifier_block *self,
-				 unsigned long event, void *data)
-{
-	struct copr_info *copr;
-	struct fb_event *evdata = data;
-	int fb_blank;
-	int early_blank;
-
-	switch (event) {
-	case FB_EVENT_BLANK:
-		early_blank = 0;
-		break;
-	case FB_EARLY_EVENT_BLANK:
-		early_blank = 1;
-		break;
-	default:
-		return 0;
-	}
-
-	copr = container_of(self, struct copr_info, fb_notif);
-
-	fb_blank = *(int *)evdata->data;
-	pr_debug("%s: %d\n", __func__, fb_blank);
-
-	if (evdata->info->node != 0)
-		return 0;
-	if (unlikely(!copr->props.support))
-		return 0;
-
-
-	return 0;
-}
-
-static int copr_register_fb(struct copr_info *copr)
-{
-	memset(&copr->fb_notif, 0, sizeof(copr->fb_notif));
-	copr->fb_notif.notifier_call = copr_fb_notifier_callback;
-	return fb_register_client(&copr->fb_notif);
-}
-
 int copr_probe(struct panel_device *panel, struct panel_copr_data *copr_data)
 {
 	struct copr_info *copr;
@@ -625,7 +604,6 @@ int copr_probe(struct panel_device *panel, struct panel_copr_data *copr_data)
 
 	init_waitqueue_head(&copr->wq.wait);
 	copr->props.support = true;
-	copr_register_fb(copr);
 	get_spi_gpios_dt(panel);
 
 	for (i = 0; i < copr->nr_maptbl; i++)

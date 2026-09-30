@@ -14,17 +14,17 @@
 #define __PANEL_DRV_H__
 
 #include <linux/device.h>
-#include <linux/fb.h>
+#include <linux/gpio/consumer.h>
+#include <drm/drm_mipi_dsi.h>
 #include <linux/notifier.h>
 #include <linux/kernel.h>
 #include <linux/regulator/consumer.h>
 #include <linux/delay.h>
 #include <linux/io.h>
-#include <media/v4l2-subdev.h>
 #include <linux/workqueue.h>
 #include <linux/miscdevice.h>
 
-#include "../dpu/decon_lcd.h"
+#include "decon_lcd.h"
 #include "panel.h"
 #include "mdnie.h"
 #include "copr.h"
@@ -66,43 +66,31 @@ enum {
 	REGULATOR_MAX
 };
 
-enum panel_gpio_lists {
-	PANEL_GPIO_RESET = 0,
-	PANEL_GPIO_DISP_DET,
-	PANEL_GPIO_PCD,
-	PANEL_GPIO_ERR_FG,
-	PANEL_GPIO_MAX,
-};
-
-#define GPIO_NAME_RESET 	"gpio,lcd-reset"
-#define GPIO_NAME_DISP_DET 	"gpio,disp-det"
-#define GPIO_NAME_PCD		"gpio,pcd"
-#define GPIO_NAME_ERR_FG	"gpio,err_fg"
-
-#define REGULATOR_3p0_NAME "regulator,3p0"
-#define REGULATOR_1p8_NAME "regulator,1p8"
-#define REGULATOR_1p6_NAME "regulator,1p6"
+/*
+ * The pads come from the DRM panel (panel-samsung-s6e3ha6.c), which owns them:
+ * reset and disp-det as descriptors (the stock "gpio,pcd"/"gpio,err_fg" are
+ * absent on greatlte, FDT:11984-12004), the rails in the stock order.
+ */
+struct panel_device;
 
 struct panel_pad {
-	int gpio_reset;
-	int gpio_disp_det;
-	int gpio_pcd;
-	int gpio_err_fg;
+	struct gpio_desc *gpio_reset;
+	struct gpio_desc *gpio_disp_det;
 
-	int irq_disp_det;
-	int irq_pcd;
-	int irq_err_fg;
+	/*
+	 * the vendor clear_disp_det_pend() + enable_irq() / disable_irq() of
+	 * irq_disp_det (S:.../panel/panel_drv.c:222-225, :244)
+	 */
+	void (*disp_det_irq)(struct panel_device *panel, bool on);
 
 	struct regulator *regulator[REGULATOR_MAX];
-
-	void __iomem *pend_reg_disp_det;
-	int pend_bit_disp_det;
 };
 
+/* the DSIM's command path (panel_dsi.c, the port of dsim_drv.c's mipi_*_cmd) */
 struct mipi_drv_ops {
 	int (*read)(u32 id, u8 addr, u8 *buf, int size);
 	int (*write)(u32 id, u8 cmd_id, const u8 *cmd, int size);
-	enum dsim_state(*get_state)(u32 id);
+	enum dsim_state (*get_state)(u32 id);
 };
 
 #define PANEL_INIT_KERNEL 		0
@@ -191,14 +179,10 @@ struct act_clock_dev {
 
 
 struct copr_spi_gpios {
-	int gpio_sck;
-	int gpio_miso;
-	int gpio_mosi;
-	int gpio_cs;
-};
-struct host_cb {
-	int (*cb)(void *data, int (*check_cond)(void));
-	void *data;
+	struct gpio_desc *gpio_sck;
+	struct gpio_desc *gpio_miso;
+	struct gpio_desc *gpio_mosi;
+	struct gpio_desc *gpio_cs;
 };
 struct panel_device {
 	int id;
@@ -223,7 +207,8 @@ struct panel_device {
 
 	unsigned char panel_id[3];
 
-	struct v4l2_subdev sd;
+	struct mipi_dsi_device *dsi;
+	bool link_on;		/* the DSIM is on: the vendor dsim->state == DSIM_STATE_ON */
 
 	struct panel_pad pad;
 
@@ -233,13 +218,9 @@ struct panel_device {
 
 	struct panel_state state;
 
-	struct workqueue_struct *disp_det_workqueue;
-	struct work_struct disp_det_work;
-	struct notifier_block fb_notif;
 	struct panel_info panel_data;
 
 	struct act_clock_dev act_clk_dev;
-	struct host_cb reset_cb;
 
 	struct panel_poc_device poc_dev;
 
@@ -248,14 +229,15 @@ struct panel_device {
 };
 
 
-#define PANEL_DRV_NAME "panel-drv"
-
+/*
+ * The calls the vendor DSIM and DECON made through the panel's v4l2 subdev
+ * (S:drivers/video/fbdev/exynos/panel/panel_drv.h:268-295), numbers kept; the
+ * DRM panel makes them with panel_drv_ioctl(). Not ported: DSIM_PROBE,
+ * DECON_PROBE, GET_PANEL_STATE, DSIM_PUT_MIPI_OPS, REG_RESET_CB (the DRM panel
+ * fills panel_device itself and owns ESD) and SET_DSU (one resolution).
+ */
 #define PANEL_IOC_BASE	'P'
 
-#define PANEL_IOC_DSIM_PROBE			_IOW(PANEL_IOC_BASE, 1, struct decon_lcd *)
-#define PANEL_IOC_DECON_PROBE			_IOW(PANEL_IOC_BASE, 2, struct decon_lcd *)
-#define PANEL_IOC_GET_PANEL_STATE		_IOW(PANEL_IOC_BASE, 3, struct panel_state *)
-#define PANEL_IOC_DSIM_PUT_MIPI_OPS		_IOR(PANEL_IOC_BASE, 4, struct mipi_ops *)
 #define PANEL_IOC_PANEL_PROBE			_IO(PANEL_IOC_BASE, 5)
 
 #define PANEL_IOC_SET_POWER				_IO(PANEL_IOC_BASE, 6)
@@ -267,11 +249,13 @@ struct panel_device {
 
 #define PANEL_IOC_PANEL_DUMP			_IO(PANEL_IOC_BASE, 10)
 
-#define PANEL_IOC_EVT_FRAME_DONE		_IOW(PANEL_IOC_BASE, 11, struct timespec *)
-#define PANEL_IOC_EVT_VSYNC				_IOW(PANEL_IOC_BASE, 12, struct timespec *)
+#define PANEL_IOC_EVT_FRAME_DONE		_IOW(PANEL_IOC_BASE, 11, struct timespec64 *)
+#define PANEL_IOC_EVT_VSYNC				_IOW(PANEL_IOC_BASE, 12, struct timespec64 *)
 
 #define PANEL_IOC_DOZE					_IO(PANEL_IOC_BASE, 13)
 
-#define PANEL_IOC_SET_DSU				_IOW(PANEL_IOC_BASE, 14, struct dsu_info *)
-#define PANEL_IOC_REG_RESET_CB			_IOR(PANEL_IOC_BASE, 15, struct host_cb *)
+int panel_drv_init(struct panel_device *panel, struct device *dev,
+		   bool init_at_boot, bool connected);
+long panel_drv_ioctl(struct panel_device *panel, unsigned int cmd, void *arg);
+void panel_dsi_init(struct panel_device *panel, struct mipi_dsi_device *dsi);
 #endif //__PANEL_DRV_H__

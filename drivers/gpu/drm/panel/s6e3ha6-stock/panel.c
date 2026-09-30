@@ -17,8 +17,7 @@
 #include <video/mipi_display.h>
 #include <linux/lcd.h>
 #include <linux/spi/spi.h>
-#include "../dpu/dsim.h"
-//#include "../dpu/mipi_panel_drv.h"
+#include "panel_dpu.h"
 #include "panel_drv.h"
 #include "panel.h"
 #include "panel_bl.h"
@@ -146,7 +145,7 @@ void print_panel_lut(struct panel_lut_info *lut_info)
 				lut_info->lut[i].index, lut_info->names[lut_info->lut[i].index]);
 }
 
-int find_panel_lut(struct panel_device *panel, u32 id)
+static int find_panel_lut(struct panel_device *panel, u32 id)
 {
 	struct panel_lut_info *lut_info = &panel->panel_data.lut_info;
 	int i;
@@ -393,34 +392,14 @@ void maptbl_copy(struct maptbl *tbl, u8 *dst)
 		tbl->ops.copy(tbl, dst);
 }
 
-struct maptbl *maptbl_find(struct panel_info *panel, char *name)
-{
-	int i;
-
-	if (unlikely(!panel || !name)) {
-		pr_err("%s, invalid parameter\n", __func__);
-		return NULL;
-	}
-
-	if (unlikely(!panel->maptbl)) {
-		pr_err("%s, maptbl not exist\n", __func__);
-		return NULL;
-	}
-
-	for (i = 0; i < panel->nr_maptbl; i++)
-		if (!strcmp(name, panel->maptbl[i].name))
-			return &panel->maptbl[i];
-	return NULL;
-}
-
-int pktui_maptbl_getidx(struct pkt_update_info *pktui)
+static int pktui_maptbl_getidx(struct pkt_update_info *pktui)
 {
 	if (pktui && pktui->getidx)
 		return pktui->getidx(pktui);
 	return -EINVAL;
 }
 
-void panel_update_packet_data(struct panel_device *panel, struct pktinfo *info)
+static void panel_update_packet_data(struct panel_device *panel, struct pktinfo *info)
 {
 	struct pkt_update_info *pktui;
 	struct maptbl *maptbl;
@@ -768,7 +747,7 @@ static int panel_do_setkey(struct panel_device *panel, struct keyinfo *info)
 	return 0;
 }
 
-int panel_do_init_maptbl(struct panel_device *panel, struct maptbl *maptbl)
+static int panel_do_init_maptbl(struct panel_device *panel, struct maptbl *maptbl)
 {
 	int ret;
 
@@ -790,7 +769,7 @@ int panel_do_init_maptbl(struct panel_device *panel, struct maptbl *maptbl)
 
 int panel_do_seqtbl(struct panel_device *panel, struct seqinfo *seqtbl)
 {
-	int i, ret;
+	int i;
 	u32 type;
 	void **cmdtbl;
 
@@ -825,31 +804,31 @@ int panel_do_seqtbl(struct panel_device *panel, struct seqinfo *seqtbl)
 #endif
 		switch (type) {
 			case CMD_TYPE_KEY:
-				ret = panel_do_setkey(panel, (struct keyinfo *)cmdtbl[i]);
+				panel_do_setkey(panel, (struct keyinfo *)cmdtbl[i]);
 				break;
 			case CMD_TYPE_DELAY:
-				ret = panel_do_delay(panel , (struct delayinfo *)cmdtbl[i]);
+				panel_do_delay(panel , (struct delayinfo *)cmdtbl[i]);
 				break;
 			case CMD_TYPE_DELAY_NO_SLEEP:
-				ret = panel_do_delay_no_sleep(panel , (struct delayinfo *)cmdtbl[i]);
+				panel_do_delay_no_sleep(panel , (struct delayinfo *)cmdtbl[i]);
 				break;
 			case CMD_TYPE_PINCTL:
-				ret = panel_do_pinctl(panel, (struct pininfo *)cmdtbl[i]);
+				panel_do_pinctl(panel, (struct pininfo *)cmdtbl[i]);
 				break;
 			case CMD_TYPE_TX_PKT_START ... CMD_TYPE_TX_PKT_END:
-				ret = panel_do_tx_packet(panel, (struct pktinfo *)cmdtbl[i]);
+				panel_do_tx_packet(panel, (struct pktinfo *)cmdtbl[i]);
 				break;
 			case CMD_TYPE_RES:
-				ret = panel_resource_update(panel, (struct resinfo *)cmdtbl[i]);
+				panel_resource_update(panel, (struct resinfo *)cmdtbl[i]);
 				break;
 			case CMD_TYPE_SEQ:
-				ret = panel_do_seqtbl(panel, (struct seqinfo *)cmdtbl[i]);
+				panel_do_seqtbl(panel, (struct seqinfo *)cmdtbl[i]);
 				break;
 			case CMD_TYPE_MAP:
-				ret = panel_do_init_maptbl(panel, (struct maptbl *)cmdtbl[i]);
+				panel_do_init_maptbl(panel, (struct maptbl *)cmdtbl[i]);
 				break;
 			case CMD_TYPE_DMP:
-				ret = panel_dumpinfo_update(panel, (struct dumpinfo *)cmdtbl[i]);
+				panel_dumpinfo_update(panel, (struct dumpinfo *)cmdtbl[i]);
 				break;
 			case CMD_TYPE_NONE:
 			default:
@@ -874,7 +853,7 @@ int panel_do_seqtbl_by_index(struct panel_device *panel, int index)
 	int ret;
 	struct seqinfo *tbl;
 	struct panel_info *panel_data;
-	struct timespec cur_ts, last_ts, delta_ts;
+	struct timespec64 cur_ts, last_ts, delta_ts;
 	s64 elapsed_usec;
 
 	if (panel == NULL) {
@@ -888,10 +867,10 @@ int panel_do_seqtbl_by_index(struct panel_device *panel, int index)
 
 	panel_data = &panel->panel_data;
 	tbl = panel_data->seqtbl;
-	ktime_get_ts(&cur_ts);
+	ktime_get_ts64(&cur_ts);
 
 	mutex_lock(&panel->op_lock);
-	ktime_get_ts(&last_ts);
+	ktime_get_ts64(&last_ts);
 
 	if (unlikely(index < 0 || index >= MAX_PANEL_SEQ)) {
 		panel_err("%s, invalid paramter (panel %p, index %d)\n",
@@ -900,8 +879,8 @@ int panel_do_seqtbl_by_index(struct panel_device *panel, int index)
 		goto do_exit;
 	}
 
-	delta_ts = timespec_sub(last_ts, cur_ts);
-	elapsed_usec = timespec_to_ns(&delta_ts) / 1000;
+	delta_ts = timespec64_sub(last_ts, cur_ts);
+	elapsed_usec = timespec64_to_ns(&delta_ts) / 1000;
 	if (elapsed_usec > 34000)
 		pr_debug("seq:%s warn:elapsed %lld.%03lld msec to acquire lock\n",
 				tbl[index].name, elapsed_usec / 1000, elapsed_usec % 1000);
@@ -952,9 +931,9 @@ do_exit:
 
 	mutex_unlock(&panel->op_lock);
 
-	ktime_get_ts(&last_ts);
-	delta_ts = timespec_sub(last_ts, cur_ts);
-	elapsed_usec = timespec_to_ns(&delta_ts) / 1000;
+	ktime_get_ts64(&last_ts);
+	delta_ts = timespec64_sub(last_ts, cur_ts);
+	elapsed_usec = timespec64_to_ns(&delta_ts) / 1000;
 	pr_debug("seq:%s done (elapsed %2lld.%03lld msec)\n",
 			tbl[index].name, elapsed_usec / 1000, elapsed_usec % 1000);
 
@@ -1198,18 +1177,7 @@ read_err:
 	return ret;
 }
 
-static struct rdinfo *find_panel_rdinfo(struct panel_info *panel_data, char *name)
-{
-	int i;
-
-	for (i = 0; i < panel_data->nr_rditbl; i++)
-		if (!strcmp(name, panel_data->rditbl[i].name))
-			return &panel_data->rditbl[i];
-
-	return NULL;
-}
-
-int panel_rdinfo_update(struct panel_device *panel, struct rdinfo *rdi)
+static int panel_rdinfo_update(struct panel_device *panel, struct rdinfo *rdi)
 {
 	int ret;
 
@@ -1222,33 +1190,6 @@ int panel_rdinfo_update(struct panel_device *panel, struct rdinfo *rdi)
 	if (unlikely(ret != rdi->len)) {
 		pr_err("%s, read failed\n", __func__);
 		return -EIO;
-	}
-
-	return 0;
-}
-
-int panel_rdinfo_update_by_name(struct panel_device *panel, char *name)
-{
-	int ret;
-	struct rdinfo *rdi;
-	struct panel_info *panel_data;
-
-	if (unlikely(!panel || !name)) {
-		pr_err("%s, invalid parameter\n", __func__);
-		return -EINVAL;
-	}
-	panel_data = &panel->panel_data;
-
-	rdi = find_panel_rdinfo(panel_data, name);
-	if (unlikely(!rdi)) {
-		pr_err("%s, read info %s not found\n", __func__, name);
-		return -ENODEV;
-	}
-
-	ret = panel_rdinfo_update(panel, rdi);
-	if (ret) {
-		pr_err("%s, failed to update read info\n", __func__);
-		return -EINVAL;
 	}
 
 	return 0;

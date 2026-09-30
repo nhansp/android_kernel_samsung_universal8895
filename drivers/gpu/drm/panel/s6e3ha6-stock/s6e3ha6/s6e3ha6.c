@@ -13,8 +13,7 @@
 #include <linux/of_gpio.h>
 #include <video/mipi_display.h>
 /* TODO : remove dsim dependent code */
-#include "../../dpu/decon.h"
-#include "../../dpu/dsim.h"
+#include "../panel_dpu.h"
 #include "../panel.h"
 #include "s6e3ha6.h"
 #include "s6e3ha6_panel.h"
@@ -71,7 +70,7 @@ static int init_dimming(struct panel_info *panel_data, int id,
 	char strbuf[1024];
 	struct dimming_info *dim_info;
 	struct maptbl *gamma_maptbl = NULL;
-	u32 luminance, nr_luminance, nr_hbm_luminance, nr_extend_hbm_luminance;
+	u32 luminance, nr_luminance, nr_hbm_luminance;
 	struct panel_device *panel = to_panel_device(panel_data);
 	struct panel_bl_device *panel_bl;
 	struct brightness_table *brt_tbl;
@@ -115,7 +114,6 @@ static int init_dimming(struct panel_info *panel_data, int id,
 	memcpy(brt_tbl, panel_dim_info->brt_tbl, sizeof(struct brightness_table));
 	nr_luminance = panel_dim_info->nr_luminance;
 	nr_hbm_luminance = panel_dim_info->nr_hbm_luminance;
-	nr_extend_hbm_luminance = panel_dim_info->nr_extend_hbm_luminance;
 
 	if (id == PANEL_BL_SUBDEV_TYPE_HMD) {
 		gamma_maptbl = find_panel_maptbl_by_index(panel_data, HMD_GAMMA_MAPTBL);

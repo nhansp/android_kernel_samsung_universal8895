@@ -20,6 +20,9 @@
 #include "panel.h"
 #include "panel_drv.h"
 #include "panel_poc.h"
+/* the vendor misc minor of /dev/poc (S:include/linux/miscdevice.h:53) */
+#define MISC_PANEL_POC_MINOR	254
+
 #define POC_IMG_SIZE	(546008)
 #define POC_IMG_ADDR	(0x000000)
 #define POC_PAGE		(4096)

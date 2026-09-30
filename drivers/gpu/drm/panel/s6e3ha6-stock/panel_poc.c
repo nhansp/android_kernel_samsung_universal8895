@@ -18,8 +18,9 @@
 #include <linux/delay.h>
 #include <linux/highmem.h>
 #include <linux/bug.h>
+#include <linux/fs.h>
 
-#include "../dpu/dsim.h"
+#include "panel_dpu.h"
 #include "panel.h"
 #include "panel_bl.h"
 #include "panel_poc.h"
@@ -101,7 +102,7 @@ int sprintf_hex_to_str(u8 *dst, u8 *src, int size)
 }
 #endif
 
-int poc_erase_do_seqtbl(struct panel_device *panel)
+static int poc_erase_do_seqtbl(struct panel_device *panel)
 {
 	struct panel_poc_device *poc_dev = &panel->poc_dev;
 	static u8 POC_ERASE[] = { 0xC1, 0x00, 0xC7, 0x00, 0x10, 0x00 };
@@ -174,7 +175,7 @@ out_poc_erase:
 	return ret;
 }
 
-int poc_read_data(struct panel_device *panel,
+static int poc_read_data(struct panel_device *panel,
 		u8 *buf, u32 addr, u32 len)
 {
 	struct panel_poc_device *poc_dev = &panel->poc_dev;
@@ -266,7 +267,7 @@ out_poc_read:
 	return ret;
 }
 
-int poc_write_data(struct panel_device *panel, u8 *data, u32 addr, u32 size)
+static int poc_write_data(struct panel_device *panel, u8 *data, u32 addr, u32 size)
 {
 	struct panel_poc_device *poc_dev = &panel->poc_dev;
 	static u8 POC_IMG_DATA[] = { 0xC1, 0x99 };
@@ -475,109 +476,50 @@ static int poc_get_poc_ctrl(struct panel_device *panel)
 	return 0;
 }
 
-int poc_test_pattern(u8 *buf, int size, int pattern)
-{
-	int i;
-
-	if (pattern == 0) {
-		for (i = 0; i < size; i++)
-			buf[i] = (i % 256);
-	} else {
-		for (i = 0; i < size; i++)
-			buf[i] = ((i % 2) == 0) ? 0x5A : 0xA5;
-	}
-
-	return 0;
-}
-
-int poc_test_verification(u8 *buf, int size, int pattern)
-{
-	int i, val, error_count = 0;
-
-	for (i = 0; i < size; i++) {
-		if (pattern == 0)
-			val = (i % 256);
-		else
-			val = ((i % 2) == 0) ? 0x5A : 0xA5;
-
-		if (buf[i] != val) {
-			pr_warn("buf[%d] 0x%02x 0x%02x\n", i, buf[i], val);
-			error_count++;
-		}
-	}
-
-	pr_info("%s %s (error %d detected)\n", __func__,
-			error_count ? "FAILED" : "SUCCESS", error_count);
-
-	return 0;
-}
-
-int poc_verification(u8 *buf1, u8 *buf2, int size)
-{
-	int i, error_count = 0;
-
-	for (i = 0; i < size; i++) {
-		if (buf1[i] != buf2[i]) {
-			pr_warn("buf[%d] 0x%02x 0x%02x\n", i, buf1[i], buf2[i]);
-			error_count++;
-		}
-	}
-
-	pr_info("%s %s (error %d detected)\n", __func__,
-			error_count ? "FAILED" : "SUCCESS", error_count);
-
-	return 0;
-}
-
-int poc_img_backup(struct panel_device *panel, int size)
+static int poc_img_backup(struct panel_device *panel, int size)
 {
 	struct file *fp;
-	mm_segment_t old_fs;
-	int len = 0, pos = 0;
+	loff_t pos = 0;
+	int len = 0;
 	ssize_t res;
 	struct panel_poc_device *poc_dev = &panel->poc_dev;
 	struct panel_poc_info *poc_info = &poc_dev->poc_info;
-
-	old_fs = get_fs();
-	set_fs(KERNEL_DS);
 
 	pr_info("%s start\n", __func__);
 	fp = filp_open(POC_IMG_PATH, O_CREAT | O_TRUNC | O_WRONLY | O_SYNC, 0660);
 	if (IS_ERR(fp)) {
 		pr_err("%s, fail to open log file\n", __func__);
-		goto open_err;
+		return -1;
 	}
 
 	poc_info->rbuf = poc_rd_img;
 	while (pos < size) {
 		len = ((size - pos) < POC_IMG_WR_SIZE) ?
-			(size - pos) : POC_IMG_WR_SIZE ;
-		poc_info->rpos = pos;
+			(size - pos) : POC_IMG_WR_SIZE;
+		poc_info->rpos = (int)pos;
 		poc_info->rsize = len;
 		res = poc_read_data(panel, &poc_info->rbuf[poc_info->rpos],
 				POC_IMG_ADDR + poc_info->rpos, poc_info->rsize);
 		if (res) {
 			panel_err("%s failed to read poc\n", __func__);
-			filp_close(fp, current->files);
-			set_fs(old_fs);
+			filp_close(fp, NULL);
 			return -1;
 		}
-		vfs_write(fp, (u8 __user *)&poc_info->rbuf[pos], len, &fp->f_pos);
-		pos += len;
+		res = kernel_write(fp, &poc_info->rbuf[pos], len, &pos);
+		if (res < 0) {
+			panel_err("%s failed to write poc file: %zd\n", __func__, res);
+			filp_close(fp, NULL);
+			return -1;
+		}
 
 		pr_info("%s write %d bytes\n", __func__, len);
 	}
 
 	pr_info("%s write %d bytes done!!\n", __func__, size);
 
-	filp_close(fp, current->files);
-	set_fs(old_fs);
+	filp_close(fp, NULL);
 
 	return 0;
-
- open_err:
-	set_fs(old_fs);
-	return -1;
 }
 
 int set_panel_poc(struct panel_poc_device *poc_dev, u32 cmd)
@@ -585,7 +527,7 @@ int set_panel_poc(struct panel_poc_device *poc_dev, u32 cmd)
 	struct panel_poc_info *poc_info = &poc_dev->poc_info;
 	struct panel_device *panel = to_panel_device(poc_dev);
 	int ret = 0;
-	struct timespec cur_ts, last_ts, delta_ts;
+	struct timespec64 cur_ts, last_ts, delta_ts;
 	s64 elapsed_msec;
 
 	if (cmd >= MAX_POC_OP) {
@@ -594,7 +536,7 @@ int set_panel_poc(struct panel_poc_device *poc_dev, u32 cmd)
 	}
 
 	panel_info("%s %s +\n", __func__, poc_op[cmd]);
-	ktime_get_ts(&last_ts);
+	ktime_get_ts64(&last_ts);
 
 	switch (cmd) {
 	case POC_OP_ERASE:
@@ -646,6 +588,7 @@ int set_panel_poc(struct panel_poc_device *poc_dev, u32 cmd)
 			pr_err("%s, failed to backup poc-image\n", __func__);
 			return ret;
 		}
+		fallthrough;
 	case POC_OP_READ_TEST:
 #ifdef POC_TEST_PATTERN_DEBUG
 		pr_info("%s read pattern (%d bytes)\n", __func__, POC_IMG_SIZE);
@@ -732,9 +675,9 @@ int set_panel_poc(struct panel_poc_device *poc_dev, u32 cmd)
 		break;
 	}
 
-	ktime_get_ts(&cur_ts);
-	delta_ts = timespec_sub(cur_ts, last_ts);
-	elapsed_msec = timespec_to_ns(&delta_ts) / 1000000;
+	ktime_get_ts64(&cur_ts);
+	delta_ts = timespec64_sub(cur_ts, last_ts);
+	elapsed_msec = timespec64_to_ns(&delta_ts) / 1000000;
 	panel_info("%s %s (elapsed %lld.%03lld sec) -\n", __func__, poc_op[cmd],
 			elapsed_msec / 1000, elapsed_msec % 1000);
 

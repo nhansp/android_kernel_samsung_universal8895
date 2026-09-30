@@ -464,7 +464,6 @@ struct mdnie_info {
 	struct class *class;
 	struct mutex lock;
 	struct mdnie_properties props;
-	struct notifier_block fb_notif;
 	struct maptbl *maptbl;
 	u32 nr_maptbl;
 	struct maptbl *scr_white_maptbl;
@@ -480,6 +479,7 @@ extern int mdnie_probe(struct panel_device *panel, struct mdnie_tune *mdnie_tune
 extern int mdnie_enable(struct mdnie_info *mdnie);
 extern int mdnie_disable(struct mdnie_info *mdnie);
 extern int mdnie_update(struct mdnie_info *mdnie);
+extern void mdnie_unblank(struct mdnie_info *mdnie);
 extern struct maptbl *mdnie_find_maptbl(struct mdnie_info *);
 extern struct maptbl *mdnie_find_etc_maptbl(struct mdnie_info *, int);
 extern int mdnie_get_maptbl_index(struct mdnie_info *);

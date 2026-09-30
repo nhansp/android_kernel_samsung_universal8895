@@ -19,7 +19,7 @@
 #include <linux/bug.h>
 
 
-#include "../dpu/dsim.h"
+#include "panel_dpu.h"
 #include "panel.h"
 #include "panel_bl.h"
 #include "active_clock.h"

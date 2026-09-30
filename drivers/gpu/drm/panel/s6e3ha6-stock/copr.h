@@ -56,7 +56,7 @@ struct copr_properties {
 	u32 enable;
 	struct copr_reg reg;
 	u32 state;
-	struct timespec last_ts;
+	struct timespec64 last_ts;
 
 	int last_copr;
 	int last_brt;
@@ -86,7 +86,6 @@ struct copr_info {
 	struct mutex lock;
 	struct copr_wq wq;
 	struct copr_properties props;
-	struct notifier_block fb_notif;
 	struct maptbl *maptbl;
 	u32 nr_maptbl;
 	struct seqinfo *seqtbl;

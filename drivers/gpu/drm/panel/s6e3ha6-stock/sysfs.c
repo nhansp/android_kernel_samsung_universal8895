@@ -14,11 +14,10 @@
 #include <linux/ctype.h>
 #include <linux/lcd.h>
 
-#include "../dpu/dsim.h"
+#include "panel_dpu.h"
 #include "panel.h"
 #include "panel_drv.h"
 #include "panel_bl.h"
-#include "../dpu/decon.h"
 #include "copr.h"
 #include "mdnie.h"
 #include "dimming.h"
@@ -631,7 +630,6 @@ static ssize_t poc_store(struct device *dev,
 	struct panel_device *panel = dev_get_drvdata(dev);
 	struct panel_info *panel_data;
 	struct panel_poc_device *poc_dev;
-	struct panel_poc_info *poc_info;
 	int rc, ret;
 	unsigned int value;
 
@@ -641,7 +639,6 @@ static ssize_t poc_store(struct device *dev,
 	}
 	panel_data = &panel->panel_data;
 	poc_dev = &panel->poc_dev;
-	poc_info = &poc_dev->poc_info;
 
 	rc = kstrtouint(buf, (unsigned int)0, &value);
 	if (rc < 0)
@@ -821,7 +818,6 @@ static ssize_t hmt_on_store(struct device *dev,
 {
 	int ret;
 	int value, rc;
-	struct backlight_device *bd;
 	struct panel_state *state;
 	struct panel_device *panel = dev_get_drvdata(dev);
 	struct panel_bl_device *panel_bl;
@@ -832,7 +828,6 @@ static ssize_t hmt_on_store(struct device *dev,
 	}
 
 	panel_bl = &panel->panel_bl;
-	bd = panel_bl->bd;
 	state = &panel->state;
 
 	rc = kstrtoint(buf, 0, &value);
