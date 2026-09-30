@@ -181,7 +181,7 @@ config ARM_EXYNOS8895_BUS_DEVFREQ
 
 config ARM_EXYNOS8895_BUS_DEVFREQ_STAGE
 	int "Exynos8895 bus DVFS default stage"
-	range 0 2
+	range 0 3
 	default 2
 	depends on ARM_EXYNOS8895_BUS_DEVFREQ
 	help

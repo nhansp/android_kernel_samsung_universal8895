@@ -14,8 +14,10 @@
  * Stages (module parameter "stage", read once at probe; spec L2b 1.3, 5.3.8):
  * 0 = check the ECT and bind, no devfreq; 1 = devfreq pinned at the ECT boot
  * level, no IPC; 2 = the AP casts its boot-level vote once per domain at probe,
- * floors stay at the boot level and votes may only raise. Every stage above 0
- * needs the ECT identity check to pass.
+ * floors stay at the boot level and votes may only raise; 3 = 2 plus the stock
+ * APM protocol (MIF DATA_INIT at probe, MIF/INT RELEASE and suspend level at
+ * suspend) and the reboot pins. Every stage above 0 needs the ECT identity
+ * check to pass.
  */
 
 #include <linux/clk.h>
@@ -34,6 +36,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_opp.h>
 #include <linux/pm_qos.h>
+#include <linux/reboot.h>
 #include <linux/unaligned.h>
 #include <linux/units.h>
 #include <linux/workqueue.h>
@@ -42,7 +45,7 @@
 #include <soc/samsung/exynos8895-bus-qos.h>
 
 /* The stages this tree implements (M1; spec L2b 5.0: the range grows with K-4c/K-4b/K-4d). */
-#define E8895_BUS_STAGE_MAX	2
+#define E8895_BUS_STAGE_MAX	3
 
 static unsigned int stage = CONFIG_ARM_EXYNOS8895_BUS_DEVFREQ_STAGE;
 module_param(stage, uint, 0444);
@@ -69,6 +72,25 @@ MODULE_PARM_DESC(ch5_resend, "resend the AP MIF level after an APM MIF request")
 #define E8895_ACPM_NOTIFY_CHAN	5
 /* channel of the ACPM DVFS clocks' FREQ_REQ (WT:drivers/clk/samsung/clk-acpm.c:311) */
 #define E8895_ACPM_DVFS_CHAN	0
+/* channel of the MIF/INT devfreq messages: acpm-ipc-channel = <0x01> (FDT:6729,6749) */
+#define E8895_ACPM_DEVFREQ_CHAN	1
+/* last DATA_INIT word: S:include/soc/samsung/exynos-devfreq.h:23 "#define SET_CONST 1" */
+#define E8895_DATA_INIT_SET_CONST	1
+
+/*
+ * ECT MINLOCK dvfs_mif, {MIF kHz, INT minimum kHz} (sboot.bin SB:0x50ac0, rows 0-11;
+ * rewrite/work/full/spec-usbc/tmp/L2b/ect_minlock.txt, spec L2b 5.3.5). The first
+ * column is also the ECT dvfs_mif level list (ECT-DVFS:53-64) that DATA_INIT walks.
+ */
+static const struct {
+	u32 mif_khz;
+	u32 int_khz;
+} e8895_mif_int[] = {
+	{ 2093000, 400000 }, { 2002000, 400000 }, { 1794000, 400000 },
+	{ 1540000, 267000 }, { 1352000, 267000 }, { 1014000, 107000 },
+	{ 845000, 107000 }, { 676000, 107000 }, { 546000, 107000 },
+	{ 421000, 107000 }, { 286000, 107000 }, { 208000, 107000 },
+};
 
 enum e8895_qos_state {
 	E8895_QOS_UNKNOWN,	/* bus node enabled, probe not finished */
@@ -119,6 +141,11 @@ struct e8895_bus_desc {
 	u32 max_opp_khz;
 	bool acpm;			/* stock use_acpm "true" + acpm-ipc-channel <1> */
 	bool apm_notify;		/* the APM's ch5 MIF requests (stock acpm_dvfs) */
+	int release_type;		/* stock devfreq_type of the RELEASE message, -1 = no protocol */
+	u32 suspend_khz;		/* use_acpm domains: ASV resume level, pinned while suspended */
+	u32 reboot_min_khz;		/* stock freq_info[5] */
+	u32 reboot_max_khz;		/* MIF only: stock reboot hook also pins the maximum; 0 = none */
+	bool data_init;			/* MIF: the DATA_INIT table at probe */
 };
 
 /*
@@ -139,6 +166,14 @@ static const struct e8895_bus_desc e8895_bus_mif = {
 	.max_opp_khz = 1794000,
 	.acpm = true,
 	.apm_notify = true,
+	/* DEVFREQ_MIF (S:include/soc/samsung/exynos-devfreq.h:26) */
+	.release_type = 0,
+	/* ASV resume idx 9 (ECT-ASV:467) */
+	.suspend_khz = 421000,
+	/* freq_info[5] (FDT:6719); max too, S:drivers/devfreq/exynos/exynos8895_bus_mif.c:195-202 */
+	.reboot_min_khz = 421000,
+	.reboot_max_khz = 421000,
+	.data_init = true,
 };
 
 /*
@@ -157,6 +192,12 @@ static const struct e8895_bus_desc e8895_bus_int = {
 	.min_opp_khz = 107000,
 	.max_opp_khz = 667000,
 	.acpm = true,
+	/* DEVFREQ_INT (S:include/soc/samsung/exynos-devfreq.h:27) */
+	.release_type = 1,
+	/* ASV resume idx 6 (ECT-ASV:574) */
+	.suspend_khz = 107000,
+	/* freq_info[5] (FDT:6739) */
+	.reboot_min_khz = 667000,
 };
 
 /*
@@ -173,6 +214,9 @@ static const struct e8895_bus_desc e8895_bus_intcam = {
 	.nr_opps = 4,
 	.min_opp_khz = 640000,
 	.max_opp_khz = 690000,
+	.release_type = -1,
+	/* freq_info[5] (FDT:6759) */
+	.reboot_min_khz = 690000,
 };
 
 /*
@@ -189,6 +233,9 @@ static const struct e8895_bus_desc e8895_bus_cam = {
 	.nr_opps = 7,
 	.min_opp_khz = 630000,
 	.max_opp_khz = 690000,
+	.release_type = -1,
+	/* freq_info[5] (FDT:6795) */
+	.reboot_min_khz = 690000,
 };
 
 /*
@@ -206,6 +253,9 @@ static const struct e8895_bus_desc e8895_bus_disp = {
 	.nr_opps = 3,
 	.min_opp_khz = 214000,
 	.max_opp_khz = 533000,
+	.release_type = -1,
+	/* freq_info[5] (FDT:6777), clamped to 533000 by the OPP maximum as stock's DM did */
+	.reboot_min_khz = 630000,
 };
 
 static const struct e8895_bus_desc * const e8895_bus_descs[EXYNOS_BUS_QOS_NR] = {
@@ -230,7 +280,10 @@ struct e8895_bus {
 	struct dev_pm_qos_request floor_req;
 	struct dev_pm_qos_request ceil_req;
 	struct dev_pm_qos_request boot_req;
+	struct dev_pm_qos_request susp_min_req;	/* stage >= 3, MIF/INT: the suspend pin */
+	struct dev_pm_qos_request susp_max_req;
 	struct delayed_work boot_work;
+	struct notifier_block reboot_nb;
 
 	unsigned long cur_khz;		/* last requested level; 0 = unknown; written under df->lock */
 	unsigned int nreq;		/* FREQ_REQs sent (heartbeat); written under df->lock */
@@ -568,6 +621,10 @@ static void e8895_bus_remove_qos(void *data)
 {
 	struct e8895_bus *priv = data;
 
+	if (dev_pm_qos_request_active(&priv->susp_max_req))
+		dev_pm_qos_remove_request(&priv->susp_max_req);
+	if (dev_pm_qos_request_active(&priv->susp_min_req))
+		dev_pm_qos_remove_request(&priv->susp_min_req);
 	if (dev_pm_qos_request_active(&priv->boot_req))
 		dev_pm_qos_remove_request(&priv->boot_req);
 	if (dev_pm_qos_request_active(&priv->ceil_req))
@@ -600,11 +657,148 @@ static int e8895_bus_add_qos(struct e8895_bus *priv, s32 floor_khz, s32 ceil_khz
 			goto err;
 	}
 
+	if (priv->stage >= 3 && priv->desc->release_type >= 0) {
+		ret = dev_pm_qos_add_request(dev, &priv->susp_min_req,
+					     DEV_PM_QOS_MIN_FREQUENCY, 0);
+		if (ret < 0)
+			goto err;
+		ret = dev_pm_qos_add_request(dev, &priv->susp_max_req,
+					     DEV_PM_QOS_MAX_FREQUENCY,
+					     PM_QOS_MAX_FREQUENCY_DEFAULT_VALUE);
+		if (ret < 0)
+			goto err;
+	}
+
 	return devm_add_action_or_reset(dev, e8895_bus_remove_qos, priv);
 
 err:
 	e8895_bus_remove_qos(priv);
 	return ret;
+}
+
+/*
+ * Step 8 (stage >= 3, MIF): the stock DATA_INIT table (spec L2b 5.3.6 item 1;
+ * S:drivers/devfreq/exynos/exynos8895_bus_mif.c:125-161): per ECT dvfs_mif
+ * level inside the ASV range [286000, 1794000] kHz (the CAL min/max passed at
+ * :308), {level, kHz, DATA_INIT, INT constraint of that level}, then {count,
+ * initial kHz, DATA_INIT, SET_CONST}, initial = the CAL boot level (:305). A
+ * send error fails the probe as stock (:142-146,156-160).
+ */
+static int e8895_bus_data_init(struct e8895_bus *priv)
+{
+	const struct e8895_bus_desc *desc = priv->desc;
+	struct acpm_handle *acpm = priv->acpm;
+	unsigned int i, level = 0;
+	int ret;
+
+	for (i = 0; i < ARRAY_SIZE(e8895_mif_int); i++) {
+		if (e8895_mif_int[i].mif_khz > desc->max_opp_khz ||
+		    e8895_mif_int[i].mif_khz < desc->min_opp_khz)
+			continue;
+		ret = acpm->ops.dvfs_ops.data_init(acpm, E8895_ACPM_DEVFREQ_CHAN, level,
+						   e8895_mif_int[i].mif_khz,
+						   e8895_mif_int[i].int_khz);
+		if (ret)
+			goto out;
+		level++;
+	}
+
+	ret = acpm->ops.dvfs_ops.data_init(acpm, E8895_ACPM_DEVFREQ_CHAN, level,
+					   desc->boot_khz, E8895_DATA_INIT_SET_CONST);
+out:
+	dev_info(priv->dev, "DATA_INIT %u levels, init %u kHz: %d\n", level,
+		 desc->boot_khz, ret);
+
+	return ret ? -EINVAL : 0;
+}
+
+/*
+ * Stage >= 3, MIF and INT (stock use_acpm): the APM sleep handshake and the
+ * suspend level, stock .suspend_late/.resume_early
+ * (S:drivers/devfreq/exynos/exynos-devfreq.c:1866-2016, pm ops :2426-2429).
+ * Suspend: RELEASE running=0, then policy min = max = the suspend level (stock
+ * str_freq, S:drivers/devfreq/devfreq.c:267-269). Resume: RELEASE running=1,
+ * then the pin is released (stock :1988-2010). Stated deviation: a RELEASE send
+ * error is logged, not returned (stock :1909-1914 aborts the suspend).
+ */
+static bool e8895_bus_has_protocol(struct e8895_bus *priv)
+{
+	return priv && priv->df && priv->stage >= 3 && priv->desc->release_type >= 0;
+}
+
+static void e8895_bus_release(struct e8895_bus *priv, bool running)
+{
+	int ret;
+
+	/* under df->lock like stock (:1885-1914): no FREQ_REQ in between */
+	mutex_lock(&priv->df->lock);
+	ret = priv->acpm->ops.dvfs_ops.sleep_release(priv->acpm, E8895_ACPM_DEVFREQ_CHAN,
+						     priv->desc->release_type, running);
+	mutex_unlock(&priv->df->lock);
+	dev_info(priv->dev, "release running=%d: %d\n", running, ret);
+}
+
+static int e8895_bus_suspend_late(struct device *dev)
+{
+	struct e8895_bus *priv = dev_get_drvdata(dev);
+	s32 khz;
+
+	if (!e8895_bus_has_protocol(priv))
+		return 0;
+
+	e8895_bus_release(priv, false);
+	khz = priv->desc->suspend_khz;
+	dev_pm_qos_update_request(&priv->susp_max_req, khz);
+	dev_pm_qos_update_request(&priv->susp_min_req, khz);
+
+	return 0;
+}
+
+static int e8895_bus_resume_early(struct device *dev)
+{
+	struct e8895_bus *priv = dev_get_drvdata(dev);
+
+	if (!e8895_bus_has_protocol(priv))
+		return 0;
+
+	e8895_bus_release(priv, true);
+	dev_pm_qos_update_request(&priv->susp_min_req, 0);
+	dev_pm_qos_update_request(&priv->susp_max_req, PM_QOS_MAX_FREQUENCY_DEFAULT_VALUE);
+
+	return 0;
+}
+
+/* explicit members only: the _PM_OPS helpers would also fill freeze/thaw/poweroff/restore */
+static const struct dev_pm_ops e8895_bus_pm_ops = {
+	.suspend_late = e8895_bus_suspend_late,
+	.resume_early = e8895_bus_resume_early,
+};
+
+/*
+ * Stage >= 3: stock reboot notifier (S:drivers/devfreq/exynos/exynos-devfreq.c:1490-1515):
+ * floor := freq_info[5]; MIF also caps its maximum there
+ * (S:drivers/devfreq/exynos/exynos8895_bus_mif.c:195-202), the others raise their
+ * maximum to it (exynos8895_bus_int.c:40-50, exynos8895_bus_disp.c:36-46), which
+ * the floor already does here.
+ */
+static int e8895_bus_reboot(struct notifier_block *nb, unsigned long action, void *data)
+{
+	struct e8895_bus *priv = container_of(nb, struct e8895_bus, reboot_nb);
+	const struct e8895_bus_desc *desc = priv->desc;
+
+	if (desc->reboot_max_khz)
+		dev_pm_qos_update_request(&priv->ceil_req, desc->reboot_max_khz);
+	dev_pm_qos_update_request(&priv->floor_req, desc->reboot_min_khz);
+	dev_info(priv->dev, "reboot pin %d kHz\n", desc->reboot_min_khz);
+
+	return NOTIFY_OK;
+}
+
+static void e8895_bus_unregister_reboot(void *data)
+{
+	struct e8895_bus *priv = data;
+
+	unregister_reboot_notifier(&priv->reboot_nb);
 }
 
 /*
@@ -809,6 +1003,13 @@ static int e8895_bus_probe(struct platform_device *pdev)
 		goto err;
 	}
 
+	/* Step 8: before the devfreq device, as stock (exynos-devfreq.c:2075,2154) */
+	if (priv->stage >= 3 && desc->data_init) {
+		ret = e8895_bus_data_init(priv);
+		if (ret)
+			goto err;
+	}
+
 	/* Step 9 */
 	priv->gov.delay_ms = desc->delay_ms;
 	if (priv->stage >= 2)
@@ -853,6 +1054,16 @@ static int e8895_bus_probe(struct platform_device *pdev)
 		}
 	} else {
 		e8895_bus_set_state(priv, c, E8895_QOS_DEAD);
+	}
+
+	/* Step 11 */
+	if (priv->stage >= 3) {
+		priv->reboot_nb.notifier_call = e8895_bus_reboot;
+		ret = register_reboot_notifier(&priv->reboot_nb);
+		if (!ret)
+			ret = devm_add_action_or_reset(dev, e8895_bus_unregister_reboot, priv);
+		if (ret)
+			goto err;
 	}
 
 	/* Step 12; the ceiling printed is the effective one */
@@ -920,6 +1131,7 @@ static struct platform_driver e8895_bus_driver = {
 	.driver = {
 		.name = "exynos8895-bus",
 		.of_match_table = e8895_bus_of_match,
+		.pm = pm_sleep_ptr(&e8895_bus_pm_ops),
 		/*
 		 * Built in, never unbound: consumers hold the class registry's df
 		 * pointer and the heartbeat reads the probed devices lock-free.
