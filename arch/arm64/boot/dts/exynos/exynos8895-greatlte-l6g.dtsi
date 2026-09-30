@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Galaxy Note 8 (greatlte, SM-N950N) board DT, part "l6g":
+ * L6G Type-C: S2MM005 port controller, MAX77865 MUIC (L6G 4).
+ *
+ * Included at the end of exynos8895-greatlte.dts, after L0's nodes, in the merge
+ * order of FULL_IMAGE_PLAN.md 2.2. Owner: WP-6G; no other work package edits this
+ * file (plan 2.3 rule D1). A node that two parts both configure (&usi12 with L6H)
+ * is written identically in both files: dtc lets the later file win on a differing
+ * value, which gl-verify V-DUP reports as an error.
+ */
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/soc/samsung,exynos-usi.h>
+
+&pinctrl_alive {
+	/* S2MM005 INT, gpa1-7: EINT, pull-up, drive LV1 (FDT:389-396 "usbpd-irq" fn 0xf pud 3 drv 0) */
+	usbpd_irq: usbpd-irq-pins {
+		samsung,pins = "gpa1-7";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+};
+
+&pinctrl_peric1 {
+	/* S2MM005 hard reset: SCL/SDA output low (FDT:3271-3279 "scl_sda_low", S:drivers/ccic/s2mm005.c:337-357) */
+	hsi2c30_reset: hsi2c30-reset-pins {
+		samsung,pins = "gpe4-7", "gpe4-6";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-val = <0>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+};
+
+/* identical text in L6H's part: the USI is shared with the IDT receiver on hsi2c_29 */
+&usi12 {
+	samsung,mode = <USI_MODE_I2C0_1>;	/* stock usi@10821028 usi_mode = "hsi2c0_hsi2c1" FDT:5070-5075 */
+	status = "okay";
+};
+
+&hsi2c_30 {					/* stock hsi2c@10950000 FDT:6097-6117 (SPI 0x1a7 = 423) */
+	#address-cells = <1>;			/* FDT:6102; the parent usi12 has <1>/<1> */
+	#size-cells = <0>;			/* FDT:6103 */
+	clock-frequency = <400000>;		/* FDT:6115 <0x61a80> */
+	pinctrl-names = "default", "hard_reset";	/* FDT:6104 (om_high/om_input: firmware flash only) */
+	pinctrl-0 = <&hsi2c30_bus>;		/* FDT:6105 -> 0x85 hsi2c30-bus */
+	pinctrl-1 = <&hsi2c30_reset>;		/* FDT:6112 -> 0x86 scl_sda_low */
+	status = "okay";
+
+	typec: typec@33 {
+		compatible = "samsung,s2mm005";	/* stock "sec-s2mm005,i2c" FDT:6119 */
+		reg = <0x33>;			/* FDT:6120 */
+		pinctrl-names = "default";
+		pinctrl-0 = <&usbpd_irq>;	/* FDT:6121-6122 */
+		/* FDT:6124 usbpd,usbpd_int = <&gpa1 7 0>; stock IRQF_TRIGGER_FALLING S:drivers/ccic/s2mm005.c:1072-1073 */
+		interrupts-extended = <&gpa1 7 IRQ_TYPE_EDGE_FALLING>;
+		samsung,muic = <&max77865_muic>;
+		wakeup-source;			/* S:drivers/ccic/s2mm005.c:807, :1203-1204 */
+
+		connector {
+			compatible = "usb-c-connector";
+			label = "USB-C";
+			power-role = "dual";		/* TYPEC_PORT_DRP S:drivers/ccic/s2mm005.c:1027 */
+			data-role = "dual";
+			try-power-role = "sink";	/* informational; the firmware toggles */
+			typec-power-opmode = "default";
+		};
+	};
+};
+
+&hsi2c_32 {
+	max77865_muic: muic@25 {
+		compatible = "maxim,max77865-muic";
+		reg = <0x25>;			/* S:drivers/mfd/max77865.c:45 I2C_ADDR_MUIC (0x4A >> 1) */
+		/*
+		 * FDT:6171 muic-universal,irq-gpio = <&gpa0 0 1>; stock IRQF_TRIGGER_LOW | IRQF_ONESHOT
+		 * (S:drivers/muic/universal/muic_task_max77865.c:339-341). The gpa0-0 pin group
+		 * (muic_irq) is applied by L6F's pmic@66 node.
+		 */
+		interrupts-extended = <&gpa0 0 IRQ_TYPE_LEVEL_LOW>;
+		wakeup-source;			/* stock enable_irq_wake, muic_task_max77865.c:349 */
+	};
+};
