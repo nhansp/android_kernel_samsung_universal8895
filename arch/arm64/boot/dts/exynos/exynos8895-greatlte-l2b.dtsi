@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Galaxy Note 8 (greatlte, SM-N950N) board DT, part "l2b":
+ * L2b: bus DVFS domains (spec L2b 4.2).
+ *
+ * Included at the end of exynos8895-greatlte.dts after the L2 part
+ * (spec L2b REQ-PLAN-L2B-1). Owner: WP-L2b; no other work package edits this
+ * file (plan 2.3 rule D1).
+ *
+ * Stock enables all five devfreq nodes on greatlte (FDT:6712-6805, no status).
+ * memory-region = the ECT copy the driver checks before using any ECT-derived
+ * table (spec L2b 5.3.2); ect_mem is L0's node (exynos8895-greatlte.dts).
+ * INTCAM and CAM stay disabled until the camera votes through the bus API
+ * (spec L2b 0.5 M3, REQ-2B-L6B-1): at stage >= 2 the bus driver would be the
+ * only writer of those clocks while the camera still sets them directly.
+ */
+&bus_mif { memory-region = <&ect_mem>; status = "okay"; };
+&bus_int { memory-region = <&ect_mem>; status = "okay"; };
+&bus_intcam { memory-region = <&ect_mem>; };
+&bus_cam { memory-region = <&ect_mem>; };
+&bus_disp { memory-region = <&ect_mem>; status = "okay"; };
