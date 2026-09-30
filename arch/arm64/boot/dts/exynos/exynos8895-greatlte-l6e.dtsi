@@ -300,6 +300,10 @@
 &pd_abox {
 	samsung,pmu-syscon = <&pmu_system_controller>;
 	samsung,sysreg = <&syscon_abox>;
+	/* CLKCMU_ABOX_CPUABOX, the ABOX bus clock that CMU_ABOX gates in runtime suspend:
+	 * on around the SYSREG_ABOX save/restore (CAL:cmucal-node.c:1118) */
+	clocks = <&cmu_top CLK_DOUT_CMU_ABOX_CPUABOX>;
+	clock-names = "bus";
 	status = "okay";
 };
 
