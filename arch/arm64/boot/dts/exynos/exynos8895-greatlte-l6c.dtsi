@@ -428,3 +428,125 @@
 		gpios = <&gpf0 3 GPIO_ACTIVE_HIGH>;		/* FDT:12537 <0x84 0x03 0x00>, 0x84 = gpf0 */
 	};
 };
+
+/* L6C 4.3 (6I-G grip, 6I-H HRM) */
+
+/* Grip. Bus hsi2c_9 (usi2 i2c@0, 0x10480000, SPI 372) = stock hsi2c@10480000 FDT:5304-5319; usi2 mode I2C0_1 is set by
+ * L6F (2.7). The sx9320,* register values are kept under their stock names (D-16 rule: the transplanted parser
+ * S:drivers/sensorhub/brcm/sx9320.c:1544-1586 reads them; names S:.../sx9320_reg.h:121-138). */
+&hsi2c_9 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	clock-frequency = <400000>;	/* FDT:5304-5319 has none: stock default fs_clock 400 kHz
+					   (S:drivers/i2c/busses/i2c-exynos5.c:212, :1573-1574); 6.18 would use 100 kHz
+					   (A:drivers/i2c/busses/i2c-exynos5.c:897-898) */
+	status = "okay";
+
+	grip@28 {
+		compatible = "semtech,sx9320-grip";	/* new; stock "sx9320" FDT:5321 (node sx9320-i2c@22 FDT:5320) */
+		reg = <0x28>;				/* FDT:5322 */
+		pinctrl-names = "default";		/* FDT:5324 */
+		pinctrl-0 = <&grip_irq>;		/* FDT:5325 <0x4b> = grip-irq FDT:336-343 */
+		sx9320,nirq-gpio = <&gpa3 0 GPIO_ACTIVE_HIGH>;	/* FDT:5329 <0x4c 0x00 0x00>, 0x4c = gpa3 (FDT:126-133);
+							   gpiod con_id "sx9320,nirq" + suffix "gpio" (A:drivers/gpio/gpiolib.c:107) */
+		/* FDT:5326-5327 interrupt-parent/interrupts <0 0 0> dropped: the driver takes the IRQ from the GPIO */
+		sx9320,phen = <0x03>;			/* FDT:5328 */
+		sx9320,gain = <0x01>;			/* FDT:5330 */
+		sx9320,again = <0x08>;			/* FDT:5331 */
+		sx9320,scan_period = <0x16>;		/* FDT:5332 */
+		sx9320,range = <0x00>;			/* FDT:5333 */
+		sx9320,sampling_freq = <0x05>;		/* FDT:5334 */
+		sx9320,resolution = <0x07>;		/* FDT:5335 */
+		sx9320,rawfilt = <0x01>;		/* FDT:5336 */
+		sx9320,hyst = <0x01>;			/* FDT:5337 */
+		sx9320,avgposfilt = <0x04>;		/* FDT:5338 */
+		sx9320,avgnegfilt = <0x01>;		/* FDT:5339 */
+		sx9320,avgthresh = <0x20>;		/* FDT:5340 */
+		sx9320,debouncer = <0x01>;		/* FDT:5341 */
+		sx9320,normal_thd = <0x1b>;		/* FDT:5342 */
+		sx9320,afeph0 = <0x00>;			/* FDT:5343 */
+		sx9320,afeph1 = <0x00>;			/* FDT:5344 */
+		sx9320,afeph2 = <0x00>;			/* FDT:5345 */
+		sx9320,afeph3 = <0x04>;			/* FDT:5346 */
+	};
+};
+
+&pinctrl_alive {
+	grip_irq: grip-irq-pins {
+		samsung,pins = "gpa3-0";			/* FDT:337 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;	/* FDT:338 <0x0f> */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;	/* FDT:339 <0x00> */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:340 <0x03> */
+	};
+};
+
+/* HRM. Bus hsi2c_26 (usi10 i2c@10000, 0x10910000, SPI 415) = stock hsi2c@10910000 FDT:5930-5944. */
+&usi10 {
+	samsung,mode = <USI_MODE_I2C0_1>;	/* stock usi@10821020 usi_mode = "hsi2c0_hsi2c1" FDT:5056-5061; identical statement in L6B */
+	status = "okay";
+};
+
+&hsi2c_26 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	clock-frequency = <400000>;	/* as hsi2c_9 */
+	status = "okay";
+
+	hrm@57 {
+		compatible = "maxim,max86902-hrm";	/* new; stock "hrmsensor" FDT:5966 (node hrmsensor@57 FDT:5965) */
+		reg = <0x57>;				/* FDT:5967 */
+		pinctrl-names = "default", "sleep", "idle";	/* FDT:5971 */
+		pinctrl-0 = <&hrm_irq>;			/* FDT:5972 <0x78> = hrm-irq FDT:3148-3155 */
+		pinctrl-1 = <&hrm_irqsleep>;		/* FDT:5973 <0x79> = hrm-irqsleep FDT:3157-3164 */
+		pinctrl-2 = <&hrm_irqidle>;		/* FDT:5974 <0x7a> = hrm-irqidle FDT:3166-3173 */
+		hrmsensor,hrm_int-gpio = <&gpe6 6 GPIO_ACTIVE_HIGH>;	/* FDT:5970 <0x68 0x06 0x00>, 0x68 = gpe6 (FDT:2071-2078);
+							   gpiod con_id "hrmsensor,hrm_int" */
+		/* FDT:5968-5969 interrupt-parent/interrupts <6 0 0> dropped: the driver takes the IRQ from the GPIO */
+		hrmsensor,vdd_1p8 = "HRM_1.8V_AP";	/* FDT:5975; kept (parsed, logged) */
+		hrmsensor,led_3p3 = "HRM_3.3V_AP";	/* FDT:5976 */
+		hrmsensor,i2c_1p8 = "VDD_NFC_1P8";	/* FDT:5977 */
+		vdd-1p8-supply = <&s2dos03_ldo2>;	/* new, G-24: the rail named "HRM_1.8V_AP" */
+		led-3p3-supply = <&s2dos03_ldo4>;	/* new, G-24: "HRM_3.3V_AP" */
+		i2c-1p8-supply = <&ldo39_reg>;		/* new, G-24: "VDD_NFC_1P8" (L2) */
+	};
+};
+
+&pinctrl_peric1 {
+	hrm_irq: hrm-irq-pins {
+		samsung,pins = "gpe6-6";			/* FDT:3149 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;	/* FDT:3150 <0x00> */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;	/* FDT:3151 */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:3152 <0x03> */
+	};
+	hrm_irqsleep: hrm-irqsleep-pins {
+		samsung,pins = "gpe6-6";			/* FDT:3158 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;	/* FDT:3159 <0x0f> */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;	/* FDT:3160 */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:3161 */
+	};
+	hrm_irqidle: hrm-irqidle-pins {
+		samsung,pins = "gpe6-6";			/* FDT:3167 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;	/* FDT:3168 */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;	/* FDT:3169 */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:3170 */
+	};
+};
+
+/* HRM rails on the S2DOS03 panel PMIC (L5 4.8 node, L5 5.8 driver: ldo1..ldo4 described, L5_display.md:908);
+ * L5 declares only buck1/ldo1/ldo3 (L5_display.md:474) and leaves ldo2/ldo4 to this layer through &s2dos03. */
+&s2dos03 {
+	regulators {
+	s2dos03_ldo2: ldo2 {
+		regulator-name = "HRM_1.8V_AP";		/* FDT:5550 */
+		regulator-min-microvolt = <1800000>;	/* FDT:5551 0x1b7740 */
+		regulator-max-microvolt = <1800000>;	/* FDT:5552; min == max -> apply_uV at registration
+							   (A:drivers/regulator/of_regulator.c:110-111), so the driver's
+							   regulator_set_voltage(1.8 V) passes (A:drivers/regulator/core.c:3839-3841) */
+	};
+	s2dos03_ldo4: ldo4 {
+		regulator-name = "HRM_3.3V_AP";		/* FDT:5556 */
+		regulator-min-microvolt = <3300000>;	/* FDT:5557 0x325aa0 */
+		regulator-max-microvolt = <3300000>;	/* FDT:5558 */
+	};
+	};
+};
