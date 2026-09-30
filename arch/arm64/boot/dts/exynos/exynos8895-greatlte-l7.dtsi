@@ -837,3 +837,53 @@
 		};
 	};
 };
+
+/*
+ * L7 4.1: C2 on both clusters. CPD and SICD have no DT state: they are driver
+ * upgrades of C2 (drivers/cpuidle/cpuidle-exynos8895.c). Stock compatible
+ * "exynos,idle-state" (FDT:4362) has no binding and no 6.18 user; the values
+ * are unchanged. local-timer-stop is a deliberate deviation from stock: the
+ * 6.18 tick is the in-core arch timer, not the MCT (spec F-10, F-28), so the
+ * cpuidle core must hand the next event to the MCT broadcast before C2
+ * (A:drivers/cpuidle/dt_idle_states.c:80-81, A:drivers/cpuidle/cpuidle.c:237-246).
+ * Node names per the binding pattern ^(cpu|cluster)-; the node name becomes the
+ * cpuidle state name, idle-state-name its desc.
+ */
+/ {
+	cpus {
+		idle-states {
+			entry-method = "psci";		/* stock "arm,psci" FDT:4358 */
+
+			/* A53 = boot cluster (logical cpu0-3). S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:259-267, FDT:4360-4370 */
+			BOOTCL_CPU_SLEEP: cpu-sleep-bootcl {
+				compatible = "arm,idle-state";
+				idle-state-name = "c2";			/* FDT:4361 */
+				arm,psci-suspend-param = <0x10000>;	/* FDT:4363 */
+				local-timer-stop;
+				entry-latency-us = <35>;		/* FDT:4364 <0x23> */
+				exit-latency-us = <90>;			/* FDT:4365 <0x5a> */
+				min-residency-us = <750>;		/* FDT:4366 <0x2ee> */
+			};
+
+			/* Mongoose M2 = non-boot cluster (logical cpu4-7). S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:269-277, FDT:4372-4382 */
+			NONBOOTCL_CPU_SLEEP: cpu-sleep-nonbootcl {
+				compatible = "arm,idle-state";
+				idle-state-name = "c2";			/* FDT:4373 */
+				arm,psci-suspend-param = <0x10000>;	/* FDT:4375 */
+				local-timer-stop;
+				entry-latency-us = <30>;		/* FDT:4376 <0x1e> */
+				exit-latency-us = <75>;			/* FDT:4377 <0x4b> */
+				min-residency-us = <2000>;		/* FDT:4378 <0x7d0> */
+			};
+		};
+	};
+};
+
+&cpu0 { cpu-idle-states = <&BOOTCL_CPU_SLEEP>; };	/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:187; FDT:4277 */
+&cpu1 { cpu-idle-states = <&BOOTCL_CPU_SLEEP>; };	/* S:...:197; FDT:4290 */
+&cpu2 { cpu-idle-states = <&BOOTCL_CPU_SLEEP>; };	/* S:...:206; FDT:4300 */
+&cpu3 { cpu-idle-states = <&BOOTCL_CPU_SLEEP>; };	/* S:...:215; FDT:4310 */
+&cpu4 { cpu-idle-states = <&NONBOOTCL_CPU_SLEEP>; };	/* S:...:224; FDT:4320 */
+&cpu5 { cpu-idle-states = <&NONBOOTCL_CPU_SLEEP>; };	/* S:...:234; FDT:4333 */
+&cpu6 { cpu-idle-states = <&NONBOOTCL_CPU_SLEEP>; };	/* S:...:243; FDT:4343 */
+&cpu7 { cpu-idle-states = <&NONBOOTCL_CPU_SLEEP>; };	/* S:...:252; FDT:4353 */
