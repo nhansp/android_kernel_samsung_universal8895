@@ -22,3 +22,4 @@ obj-$(CONFIG_PM_DEVFREQ_EVENT)		+= event/
 
 # L2b: Exynos8895 bus DVFS
 obj-$(CONFIG_DEVFREQ_GOV_SIMPLE_INTERACTIVE)	+= governor_simpleinteractive.o
+obj-$(CONFIG_ARM_EXYNOS8895_BUS_DEVFREQ)	+= exynos8895-bus.o

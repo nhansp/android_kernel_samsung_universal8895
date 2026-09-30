@@ -170,4 +170,24 @@ config DEVFREQ_GOV_SIMPLE_INTERACTIVE
 	  Chooses frequency based on the requested PM QoS from target device.
 	  And This governor uses timer when change frequency.
 
+config ARM_EXYNOS8895_BUS_DEVFREQ
+	bool "ARM Exynos8895 Memory Bus DEVFREQ Driver"
+	depends on ARCH_EXYNOS || COMPILE_TEST
+	depends on EXYNOS_ACPM_PROTOCOL=y && EXYNOS_ACPM_CLK=y && PM_OPP
+	select DEVFREQ_GOV_SIMPLE_INTERACTIVE
+	select CRC32
+	help
+	  This adds the DEVFREQ driver for Exynos8895 memory and int.
+
+config ARM_EXYNOS8895_BUS_DEVFREQ_STAGE
+	int "Exynos8895 bus DVFS default stage"
+	range 0 2
+	default 2
+	depends on ARM_EXYNOS8895_BUS_DEVFREQ
+	help
+	  Default of the exynos8895_bus.stage parameter (spec L2b 1.3):
+	  0 checks the ECT and binds without devfreq, 1 pins every domain
+	  at its ECT boot level without IPC, 2 sends the AP's boot-level
+	  vote once per domain at probe and lets votes raise it.
+
 endif # PM_DEVFREQ
