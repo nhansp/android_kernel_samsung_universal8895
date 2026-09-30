@@ -240,3 +240,15 @@ config GREATLTE_HB_L6D_BT
 	default GREATLTE_HB
 	help
 	  Registers the L6D Bluetooth heartbeat rows.
+
+# L7 (power management): system suspend (SLEEP), SICD, PM-DVS; the PMU CPU hooks in exynos8895-pmu.c
+config EXYNOS8895_PM
+	bool "Exynos 8895 system suspend (SLEEP), PM-DVS and SICD support"
+	depends on SOC_SAMSUNG
+	depends on ARCH_EXYNOS && ARM64 && EXYNOS_PMU && SUSPEND && ARM_PSCI_FW
+	depends on EXYNOS_ACPM_PROTOCOL=y
+	help
+	  System suspend to the stock SLEEP mode with the PMUCAL sequences,
+	  the SICD entry/exit and veto used by the Exynos 8895 cpuidle
+	  driver, the BUCK8-11 suspend voltages and the PMU CPU/cluster
+	  power hooks for deep idle and CPU hotplug (spec L7 5.3, 5.5).
