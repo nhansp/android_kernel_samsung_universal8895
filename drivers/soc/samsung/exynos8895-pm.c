@@ -15,7 +15,6 @@
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/delay.h>
-#include <linux/firmware/samsung/exynos-acpm-protocol.h>
 #include <linux/i2c.h>
 #include <linux/io.h>
 #include <linux/module.h>
@@ -591,61 +590,12 @@ static int e8895_dvs_resume_early(struct device *dev)
 }
 
 /*
- * APM sleep handshake of the MIF and INT DVFS domains (stock devfreq
- * .suspend/.resume, S:drivers/devfreq/exynos/exynos-devfreq.c:1866-2016).
- * Off by default: L2 does not port the boot-time DATA_INIT half of the
- * protocol (spec L7 O7-12).
- */
-static bool apm_release;
-module_param(apm_release, bool, 0644);
-
-#define E8895_DVFS_ACPM_CH	1	/* FDT:6729,6749 acpm-ipc-channel = <0x01> */
-
-/* DEVFREQ_MIF, DEVFREQ_INT: S:include/soc/samsung/exynos-devfreq.h:25-27; use_acpm FDT:6730,6750 */
-static const u8 e8895_dvfs_types[] = { 0, 1 };
-static struct acpm_handle *e8895_acpm;
-static bool e8895_apm_sent;		/* the "AP sleeping" message went out in this cycle */
-
-static void e8895_apm_release(bool running)
-{
-	unsigned int i;
-	int ret;
-
-	for (i = 0; i < ARRAY_SIZE(e8895_dvfs_types); i++) {
-		ret = e8895_acpm->ops.dvfs_ops.sleep_release(e8895_acpm, E8895_DVFS_ACPM_CH,
-							     e8895_dvfs_types[i], running);
-		pr_info("exynos8895-pm: apm release type=%u running=%d: %d\n",
-			e8895_dvfs_types[i], running, ret);
-	}
-}
-
-static int e8895_pm_suspend(struct device *dev)
-{
-	if (pm_suspend_target_state == PM_SUSPEND_MEM && READ_ONCE(apm_release) && e8895_acpm) {
-		e8895_apm_release(false);
-		e8895_apm_sent = true;
-	}
-	return 0;
-}
-
-static int e8895_pm_resume(struct device *dev)
-{
-	if (e8895_apm_sent) {
-		e8895_apm_sent = false;
-		e8895_apm_release(true);
-	}
-	return 0;
-}
-
-/*
  * Explicit members only: SYSTEM_SLEEP_PM_OPS/LATE_SYSTEM_SLEEP_PM_OPS would
  * also fill freeze/thaw/poweroff/restore (A:include/linux/pm.h:316-330), i.e.
- * run PM-DVS and the APM message during hibernation. Stock set only
+ * run PM-DVS during hibernation. Stock set only
  * .suspend_late/.resume_early (S:drivers/soc/samsung/exynos-pm-dvs.c:129-132).
  */
 static const struct dev_pm_ops e8895_pm_dev_ops = {
-	.suspend      = e8895_pm_suspend,
-	.resume       = e8895_pm_resume,
 	.suspend_late = e8895_dvs_suspend_late,
 	.resume_early = e8895_dvs_resume_early,
 	.complete     = e8895_pm_complete,
@@ -678,7 +628,6 @@ static struct notifier_block e8895_pm_bus_nb = {
 static int e8895_pm_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct device_node *np;
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(e8895_pm_bases); i++) {
@@ -697,16 +646,6 @@ static int e8895_pm_probe(struct platform_device *pdev)
 			r = NULL;
 		}
 		e8895_dvs_reg[i] = r;
-	}
-	np = of_parse_phandle(dev->of_node, "samsung,acpm", 0);
-	if (np) {
-		e8895_acpm = devm_acpm_get_by_node(dev, np);
-		of_node_put(np);
-		if (IS_ERR(e8895_acpm)) {
-			if (PTR_ERR(e8895_acpm) == -EPROBE_DEFER)
-				return -EPROBE_DEFER;
-			e8895_acpm = NULL;
-		}
 	}
 	/* SLEEP offlines CPUs 1-7 through the PMU CPU hooks' DYING callback */
 	if (!e8895_pmu_cpu_hooks_ready()) {
