@@ -1,16 +1,20 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /* sound/soc/samsung/abox/abox_ipc.h
  *
  * ALSA SoC - Samsung Abox driver
  *
  * Copyright (c) 2016 Samsung Electronics Co. Ltd.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * Transplanted from S:include/sound/samsung/abox_ipc.h (Samsung
+ * N950NKSU5DZE2 OSRC 4.4.111), spec L6E 5.7: the Calliope IPC ABI, layout
+ * unchanged (sizeof(ABOX_IPC_MSG) == 0x2FC, F-39). The two zero-length
+ * arrays are flexible arrays of the same layout (FORTIFY strict flex arrays).
  */
 
 #ifndef __SND_SOC_ABOX_IPC_H
 #define __SND_SOC_ABOX_IPC_H
+
+#include <linux/stddef.h>
 
 /******** IPC signal ID *********************/
 enum SIGNAL_ID {
@@ -246,7 +250,7 @@ struct IPC_SYSTEM_MSG {
 	int param2;
 	int param3;
 	union {
-		int param_s32[0];
+		DECLARE_FLEX_ARRAY(int, param_s32);
 		char param_bundle[740];
 	} bundle;
 };
@@ -255,7 +259,7 @@ struct ABOX_LOG_BUFFER {
 	unsigned int index_writer;
 	unsigned int index_reader;
 	unsigned int size;
-	char buffer[0];
+	char buffer[];
 };
 
 struct ABOX_COMPONENT_CONTROL {

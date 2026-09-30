@@ -1,11 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * ALSA SoC - Samsung Mailbox driver
  *
  * Copyright (c) 2016 Samsung Electronics Co. Ltd.
-  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ *
+ * Transplanted from S:include/sound/samsung/mailbox.h (Samsung
+ * N950NKSU5DZE2 OSRC 4.4.111), spec L6E 5.8, unchanged.
  */
 
 #ifndef __VTS_MAILBOX_H
