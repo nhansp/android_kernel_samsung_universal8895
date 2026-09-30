@@ -1843,3 +1843,22 @@
 	};
 };
 
+/* ==== l6b2 part: MFC v11 codec hook-up (L6B 4.1, 5.5) ==== */
+
+/ {
+	aliases {
+		/*
+		 * Stock mfc0 = "/mfc0@13CE0000" (FDT:4234). Required: the driver
+		 * takes its id from this alias and fails probe without it; the id
+		 * builds the node numbers (/dev/video6..9) and names
+		 * (S:drivers/media/platform/exynos/mfc/s5p_mfc.c:981-990).
+		 */
+		mfc0 = &mfc;
+	};
+};
+
+/* CMU_MFC: the codec and its SysMMUs take their gates from it (L6B 4.0, 4.1) */
+&cmu_mfc { status = "okay"; };
+&sysmmu_mfc0 { status = "okay"; };
+&sysmmu_mfc1 { status = "okay"; };
+&mfc { status = "okay"; };
