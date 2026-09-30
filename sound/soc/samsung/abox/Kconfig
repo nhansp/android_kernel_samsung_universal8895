@@ -1,16 +1,10 @@
 config SND_SOC_SAMSUNG_ABOX
 	tristate "ASoC support for Samsung ABOX Audio"
+	depends on SND_SOC_SAMSUNG && EXYNOS_IOMMU && MFD_SYSCON
 	select REGMAP_MMIO
 	select SND_SOC_COMPRESS
+	select EXYNOS8895_SMC
 	help
 	  Say Y or M if you want to add support for codecs attached to
-	  the Samsung SoC ABOX interface. You will also need to
-	  select the audio interfaces to support below.
-
-config SEC_SND_ADAPTATION
-	tristate "Samsung ABOX Adaptation for Audio"
-	depends on SND_SOC_SAMSUNG_ABOX
-	help
-	  Say Y or M if you want to add support for external devices attached to
 	  the Samsung SoC ABOX interface. You will also need to
 	  select the audio interfaces to support below.
