@@ -779,6 +779,15 @@ static int exynos_sysmmu_probe(struct platform_device *pdev)
 	if (IS_ERR(data->clk_master))
 		return PTR_ERR(data->clk_master);
 
+	/*
+	 * Stock "sysmmu,no-suspend" (S:drivers/iommu/exynos-iommu.c:710-711):
+	 * the master keeps running through system sleep (ABOX voice call), so
+	 * the PM core must not switch translation off; runtime PM through the
+	 * master's device link is unaffected (spec L6E 5.12, F-45).
+	 */
+	if (of_property_read_bool(dev->of_node, "samsung,no-suspend"))
+		dev_pm_syscore_device(dev, true);
+
 	data->sysmmu = dev;
 	spin_lock_init(&data->lock);
 
