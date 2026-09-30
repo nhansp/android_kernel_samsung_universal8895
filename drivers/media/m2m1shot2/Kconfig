@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config MEDIA_M2M1SHOT2
+	bool "The extended non-streaming m2m media processing (m2m1shot2) API"
+	help
+	  Enables support for the extended non-streaming m2m media processing API
+	  for some device drivers like FIMG2D.
