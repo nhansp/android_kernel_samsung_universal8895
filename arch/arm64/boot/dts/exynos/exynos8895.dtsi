@@ -251,6 +251,107 @@
 		};
 	};
 
+	/*
+	 * Bus DVFS domains (spec L2b 4.1): stock devfreq_{mif,int,intcam,disp,cam}
+	 * (FDT:6712-6805). Levels = ECT DVFS levels inside the ASV-enabled range,
+	 * the same for ASV tables 1-8 (sboot.bin ECT, spec L2b 0.4). The rate is
+	 * set through the ACPM DVFS clock (FREQ_REQ on ACPM channel 0).
+	 */
+	bus_mif: bus-mif {
+		compatible = "samsung,exynos8895-bus-mif";
+		clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_MIF>;	/* dfs_id 0xb040000, FDT:6728 */
+		operating-points-v2 = <&bus_mif_opp_table>;
+		status = "disabled";
+	};
+
+	bus_mif_opp_table: opp-table-bus-mif {
+		compatible = "operating-points-v2";
+
+		/* ECT dvfs_mif L10..L2 (SB:0x46508); ASV level_en L2-L10 in tables 1-8 */
+		opp-286000000 { opp-hz = /bits/ 64 <286000000>; };
+		opp-421000000 { opp-hz = /bits/ 64 <421000000>; };
+		opp-546000000 { opp-hz = /bits/ 64 <546000000>; };
+		opp-676000000 { opp-hz = /bits/ 64 <676000000>; };
+		opp-845000000 { opp-hz = /bits/ 64 <845000000>; };
+		opp-1014000000 { opp-hz = /bits/ 64 <1014000000>; };
+		opp-1352000000 { opp-hz = /bits/ 64 <1352000000>; };
+		opp-1540000000 { opp-hz = /bits/ 64 <1540000000>; };
+		opp-1794000000 { opp-hz = /bits/ 64 <1794000000>; };
+	};
+
+	bus_int: bus-int {
+		compatible = "samsung,exynos8895-bus-int";
+		clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_INT>;	/* dfs_id 0xb040001, FDT:6748 */
+		operating-points-v2 = <&bus_int_opp_table>;
+		status = "disabled";
+	};
+
+	bus_int_opp_table: opp-table-bus-int {
+		compatible = "operating-points-v2";
+
+		/* ECT dvfs_int L6..L0 (SB:0x46654); all enabled in ASV tables 1-8 */
+		opp-107000000 { opp-hz = /bits/ 64 <107000000>; };
+		opp-178000000 { opp-hz = /bits/ 64 <178000000>; };
+		opp-267000000 { opp-hz = /bits/ 64 <267000000>; };
+		opp-333000000 { opp-hz = /bits/ 64 <333000000>; };
+		opp-400000000 { opp-hz = /bits/ 64 <400000000>; };
+		opp-533000000 { opp-hz = /bits/ 64 <533000000>; };
+		opp-667000000 { opp-hz = /bits/ 64 <667000000>; };
+	};
+
+	bus_intcam: bus-intcam {
+		compatible = "samsung,exynos8895-bus-intcam";
+		clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_INTCAM>;	/* dfs_id 0xb040005, FDT:6768 */
+		operating-points-v2 = <&bus_intcam_opp_table>;
+		status = "disabled";
+	};
+
+	bus_intcam_opp_table: opp-table-bus-intcam {
+		compatible = "operating-points-v2";
+
+		/* ECT dvfs_intcam L3..L0 (SB:0x468a8); all enabled */
+		opp-640000000 { opp-hz = /bits/ 64 <640000000>; };
+		opp-670000000 { opp-hz = /bits/ 64 <670000000>; };
+		opp-680000000 { opp-hz = /bits/ 64 <680000000>; };
+		opp-690000000 { opp-hz = /bits/ 64 <690000000>; };
+	};
+
+	bus_cam: bus-cam {
+		compatible = "samsung,exynos8895-bus-cam";
+		clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CAM>;	/* dfs_id 0xb040006, FDT:6804 */
+		operating-points-v2 = <&bus_cam_opp_table>;
+		status = "disabled";
+	};
+
+	bus_cam_opp_table: opp-table-bus-cam {
+		compatible = "operating-points-v2";
+
+		/* ECT dvfs_cam L6..L0 (SB:0x46934); all enabled */
+		opp-630000000 { opp-hz = /bits/ 64 <630000000>; };
+		opp-640000000 { opp-hz = /bits/ 64 <640000000>; };
+		opp-650000000 { opp-hz = /bits/ 64 <650000000>; };
+		opp-660000000 { opp-hz = /bits/ 64 <660000000>; };
+		opp-670000000 { opp-hz = /bits/ 64 <670000000>; };
+		opp-680000000 { opp-hz = /bits/ 64 <680000000>; };
+		opp-690000000 { opp-hz = /bits/ 64 <690000000>; };
+	};
+
+	bus_disp: bus-disp {
+		compatible = "samsung,exynos8895-bus-disp";
+		clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_DISP>;	/* dfs_id 0xb040007, FDT:6786 */
+		operating-points-v2 = <&bus_disp_opp_table>;
+		status = "disabled";
+	};
+
+	bus_disp_opp_table: opp-table-bus-disp {
+		compatible = "operating-points-v2";
+
+		/* ECT dvfs_disp L3..L1 (SB:0x46c48); ASV level_en L1-L3 in tables 1-8 */
+		opp-214000000 { opp-hz = /bits/ 64 <214000000>; };
+		opp-356000000 { opp-hz = /bits/ 64 <356000000>; };
+		opp-533000000 { opp-hz = /bits/ 64 <533000000>; };
+	};
+
 	oscclk: osc-clock {
 		compatible = "fixed-clock";
 		#clock-cells = <0>;
