@@ -42,6 +42,7 @@
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_panic.h>
 #include <drm/drm_vblank.h>
+#include <drm/exynos8895_panel.h>
 
 #include "exynos_drm_crtc.h"
 #include "exynos_drm_drv.h"
@@ -2047,6 +2048,35 @@ static int d8895_plane_init(struct decon8895_ctx *ctx, unsigned int ch)
 
 /* ---- IRQs ---------------------------------------------------------------- */
 
+/* the panel's DECON event hooks (include/drm/exynos8895_panel.h); one DECON0 */
+static DEFINE_SPINLOCK(d8895_panel_hooks_lock);
+static const struct exynos8895_panel_hooks *d8895_panel_hooks;
+
+void exynos8895_decon_set_panel_hooks(const struct exynos8895_panel_hooks *hooks)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&d8895_panel_hooks_lock, flags);
+	d8895_panel_hooks = hooks;
+	spin_unlock_irqrestore(&d8895_panel_hooks_lock, flags);
+}
+EXPORT_SYMBOL_GPL(exynos8895_decon_set_panel_hooks);
+
+/*
+ * The vendor frame-done path: decon_irq_handler() stamps the frame done and
+ * wakes the decon0-fsync thread (S:.../dpu/decon_dsi.c:60-68), which sends
+ * V4L2_EVENT_DECON_FRAME_DONE (:1252-1272) and decon_notify() turns into
+ * the panel's PANEL_IOC_EVT_FRAME_DONE (decon_core.c:3475-3481). Here the
+ * panel's hook is called from the interrupt; it only counts and wakes.
+ */
+static void d8895_panel_frame_done(void)
+{
+	spin_lock(&d8895_panel_hooks_lock);
+	if (d8895_panel_hooks && d8895_panel_hooks->frame_done)
+		d8895_panel_hooks->frame_done(d8895_panel_hooks->data);
+	spin_unlock(&d8895_panel_hooks_lock);
+}
+
 /* decon_reg_get_interrupt_and_clear() (decon_reg.c:2504-2564) */
 static irqreturn_t d8895_irq(int irq, void *dev_id)
 {
@@ -2081,6 +2111,7 @@ static irqreturn_t d8895_irq(int irq, void *dev_id)
 			drm_crtc_handle_vblank(&ctx->crtc->base);
 			spin_unlock(&ctx->vblank_lock);
 		}
+		d8895_panel_frame_done();
 	}
 	if (pend & D8895_DPU_DQE_DIMMING_START_INT_PEND)
 		d_write(ctx, D8895_INTERRUPT_PENDING, D8895_DPU_DQE_DIMMING_START_INT_PEND);
