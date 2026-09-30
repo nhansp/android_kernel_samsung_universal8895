@@ -24,6 +24,7 @@
 #include "../fimc-is-device-ischain.h"
 #include "fimc-is-vender.h"
 #include "fimc-is-companion.h"
+#include <linux/soc/samsung/greatlte-hb-l6b.h>
 #include "fimc-is-device-sensor-peri.h"
 
 #ifdef CONFIG_RKP
@@ -2201,6 +2202,7 @@ static int __nocfi fimc_is_load_ddk_bin(int loadType)
 	}
 #endif
 #endif
+	greatlte_hb_l6b_set_fimcl(GREATLTE_HB_L6B_FIMCL_DDK);	/* DEBUG heartbeat, spec L6B 1.2/5.10 */
 
 	set_os_system_funcs(os_system_funcs);
 	/* call start_up function for DDK binary */
@@ -2211,6 +2213,7 @@ static int __nocfi fimc_is_load_ddk_bin(int loadType)
 #else
 	((start_up_func_t)lib_isp)((void **)os_system_funcs);
 #endif
+	greatlte_hb_l6b_set_fimcl(GREATLTE_HB_L6B_FIMCL_DDK_UP);
 	return 0;
 
 fail:
@@ -2370,6 +2373,7 @@ static int __nocfi fimc_is_load_rta_bin(int loadType)
 		return ret;
 	}
 #endif
+	greatlte_hb_l6b_set_fimcl(GREATLTE_HB_L6B_FIMCL_RTA);	/* DEBUG heartbeat */
 
 	set_os_system_funcs_for_rta(os_system_funcs);
 	/* call start_up function for RTA binary */
@@ -2380,6 +2384,7 @@ static int __nocfi fimc_is_load_rta_bin(int loadType)
 #else
 	((rta_start_up_func_t)lib_rta)(NULL, (void **)os_system_funcs);
 #endif
+	greatlte_hb_l6b_set_fimcl(GREATLTE_HB_L6B_FIMCL_RTA_UP);
 #endif
 
 	return ret;

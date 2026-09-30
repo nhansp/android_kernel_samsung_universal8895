@@ -10,6 +10,7 @@
  * published by the Free Software Foundation.
  */
 
+#include <linux/soc/samsung/greatlte-hb-l6b.h>
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/kernel.h>
@@ -175,6 +176,7 @@ static int fimc_is_lib_mem_map(void)
 		LIB_START, LIB_START + LIB_SIZE + PAGE_SIZE, nr_pages);
 
 	fimc_is_lib_mapped = true;
+	greatlte_hb_l6b_set_fimcl(GREATLTE_HB_L6B_FIMCL_WINDOW);	/* DEBUG heartbeat, spec L6B 5.10 */
 	kfree(pages);
 	return 0;
 
