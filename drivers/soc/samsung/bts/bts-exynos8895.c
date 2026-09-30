@@ -1,22 +1,32 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
+ * Exynos8895 bus traffic shaper (BTS), port of the stock driver
+ * (S:drivers/bts/bts-exynos8895.c; spec L2b D8, 5.5.2):
+ * - CONFIG_EXYNOS8895_BTS_BW: the bandwidth arithmetic, bts_calc_bw() and
+ *   bts_update_bw() -> MIF/INT floors through the bus class API;
+ * - CONFIG_EXYNOS8895_BTS: the register programming (QoS tables, scenarios,
+ *   qmax/tq, PM re-init, read-only debugfs). Stated addition: it also needs
+ *   the boot parameter bts_exynos8895.program=1 (default off), so one image
+ *   can run with and without it.
+ *
  * Copyright (c) 2015 Samsung Electronics Co., Ltd.
  *		http://www.samsung.com
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
+#include <linux/debugfs.h>
+#include <linux/init.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
-#include <linux/init.h>
-#include <linux/dma-mapping.h>
-#include <linux/pm_qos.h>
+#include <linux/moduleparam.h>
+#include <linux/mutex.h>
+#include <linux/of.h>
+#include <linux/seq_file.h>
+#include <linux/sizes.h>
+#include <linux/spinlock.h>
 #include <linux/suspend.h>
-#include <linux/debugfs.h>
-#include <linux/slab.h>
 
 #include <soc/samsung/bts.h>
+#include <soc/samsung/exynos8895-bus-qos.h>
 #include "cal_bts8895.h"
 
 #define BTS_DBG(x...)		if (exynos_bts_log) pr_info(x)
@@ -24,6 +34,23 @@
 #define NUM_CHANNEL		4
 #define MIF_UTIL		65
 #define INT_UTIL		70
+
+/* debugfs "log" (programming part); the bandwidth path logs with it too */
+static u32 exynos_bts_log;
+/* not writable here (spec L2b 5.5.2: 0 would divide by zero) */
+static const unsigned int exynos_mif_util = MIF_UTIL;
+static const unsigned int exynos_int_util = INT_UTIL;
+
+static struct exynos_bus_qos_request exynos_mif_bts_qos;
+static struct exynos_bus_qos_request exynos_int_bts_qos;
+static DEFINE_MUTEX(media_mutex);
+
+#if IS_ENABLED(CONFIG_EXYNOS8895_BTS)
+static bool program;
+module_param(program, bool, 0444);
+MODULE_PARM_DESC(program, "program the BTS registers at boot and after resume");
+static bool bts_programmed;	/* set once the registers were initialised */
+
 #define INITIAL_MIF_FREQ	2093000
 
 #define QBUSY_DEFAULT          4
@@ -33,10 +60,6 @@ static unsigned int exynos_qbusy = QBUSY_DEFAULT;
 static unsigned int exynos_qfull_low = QFULL_LOW_DEFAULT;
 static unsigned int exynos_qfull_high = QFULL_HIGH_DEFAULT;
 
-
-static int exynos_bts_log;
-static unsigned int exynos_mif_util = MIF_UTIL;
-static unsigned int exynos_int_util = INT_UTIL;
 static unsigned int default_exynos_qmax_r[] = {0x18};
 static unsigned int default_exynos_qmax_w[] = {0x6};
 static unsigned int default_exynos_tq[] = {0};
@@ -57,10 +80,8 @@ enum bts_index {
 	BTS_IDX_CAM1,
 	BTS_IDX_ISPLP,
 	BTS_IDX_SRDZ,
-#ifndef CONFIG_SOC_EMULATOR8895
 	BTS_IDX_IVA,
 	BTS_IDX_DSP,
-#endif
 	BTS_IDX_VPU,
 	BTS_IDX_MFC0,
 	BTS_IDX_MFC1,
@@ -107,9 +128,6 @@ struct bts_scenario {
 	struct bts_info *head;
 };
 
-static struct pm_qos_request exynos_mif_bts_qos;
-static struct pm_qos_request exynos_int_bts_qos;
-static DEFINE_MUTEX(media_mutex);
 
 struct trex_info {
 	unsigned int pa_base;
@@ -264,7 +282,6 @@ static struct bts_info exynos_bts[] = {
 		.table[BS_DEFAULT].stat.max_rmo = 0x1,
 		.table[BS_DEFAULT].stat.max_wmo = 0x1,
 	},
-#ifndef CONFIG_SOC_EMULATOR8895
 	[BTS_IDX_IVA] = {
 		.name ="iva",
 		.pa_base = EXYNOS8895_PA_IVA,
@@ -289,7 +306,6 @@ static struct bts_info exynos_bts[] = {
 		.table[BS_DEFAULT].stat.max_rmo = 0x1,
 		.table[BS_DEFAULT].stat.max_wmo = 0x1,
 	},
-#endif
 	[BTS_IDX_VPU] = {
 		.name ="vpu",
 		.pa_base = EXYNOS8895_PA_VPU,
@@ -754,12 +770,20 @@ static void find_qmax(unsigned int freq, unsigned int *read_mo,
 	spin_unlock_irqrestore(&qmax_lock, flags);
 }
 
+/*
+ * Stated addition: the MIF target, the PM notifier and init all write the same
+ * snode/SCI registers (stock had no lock).
+ */
+static DEFINE_MUTEX(bts_mif_lock);
+
 static void exynos_bts_mif_update(unsigned int freq)
 {
 	int i;
 	unsigned int read_mo;
 	unsigned int write_mo;
 	unsigned int tq;
+
+	guard(mutex)(&bts_mif_lock);
 	find_qmax(freq, &read_mo, &write_mo);
 	for (i = 0; i < ARRAY_SIZE(trex_snode); i++)
 		if (trex_snode[i].read != read_mo ||
@@ -782,6 +806,8 @@ void bts_update_scen(enum bts_scen_type scen, unsigned int val)
 {
 	bool on = val ? 1 : 0;
 
+	if (!READ_ONCE(bts_programmed))
+		return;
 	if (scen <= BS_DEFAULT || scen >= BS_MAX)
 		return;
 
@@ -824,56 +850,6 @@ static void scen_chaining(enum bts_scen_type scen)
 		prev->table[scen].next_bts = first;
 
 	bts_scen[scen].head = first;
-}
-
-static unsigned int *get_tokenized_data(const char *buf, int *num_tokens)
-{
-	const char *cp;
-	int i;
-	int ntokens = 1;
-	unsigned int *tokenized_data;
-	int err = -EINVAL;
-
-	cp = buf;
-	while ((cp = strpbrk(cp + 1, " :")))
-		ntokens++;
-
-	if (!(ntokens & 0x1))
-		goto err;
-
-	tokenized_data = kmalloc(ntokens * sizeof(unsigned int), GFP_KERNEL);
-	if (!tokenized_data) {
-		err = -ENOMEM;
-		goto err;
-	}
-
-	cp = buf;
-	i = 0;
-	while (i < ntokens) {
-		if (*cp == '0' && (*(cp + 1) == 'x' || *(cp + 1) == 'X')) {
-			if (sscanf(cp, "%x", &tokenized_data[i++]) != 1)
-				goto err_kfree;
-		} else {
-			if (sscanf(cp, "%u", &tokenized_data[i++]) != 1)
-				goto err_kfree;
-		}
-
-		cp = strpbrk(cp, " :");
-		if (!cp)
-			break;
-		cp++;
-	}
-
-	if (i != ntokens)
-		goto err_kfree;
-
-	*num_tokens = ntokens;
-	return tokenized_data;
-
-err_kfree:
-	kfree(tokenized_data);
-err:
-	return ERR_PTR(err);
 }
 
 static int exynos_qos_status_open_show(struct seq_file *buf, void *d)
@@ -935,31 +911,8 @@ static int exynos_tq_open(struct inode *inode, struct file *file)
 	return single_open(file, exynos_tq_status_open_show, inode->i_private);
 }
 
-static ssize_t exynos_tq_write(struct file *file, const char __user *buf, size_t count,
-			 loff_t *f_pos)
-{
-	int ntokens;
-	unsigned int *new_tq = NULL;
-	unsigned long flags;
-
-	new_tq = get_tokenized_data(buf, &ntokens);
-	if (IS_ERR(new_tq))
-		return PTR_RET(new_tq);
-
-	spin_lock_irqsave(&tq_lock, flags);
-	if (exynos_tq != default_exynos_tq)
-		kfree(exynos_tq);
-	exynos_tq = new_tq;
-	exynos_ntq = ntokens;
-	spin_unlock_irqrestore(&tq_lock, flags);
-
-	exynos_bts_mif_update(exynos_mif_freq);
-	return count;
-}
-
 static const struct file_operations debug_tq_status_fops = {
 	.open		= exynos_tq_open,
-	.write		= exynos_tq_write,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= single_release,
@@ -990,31 +943,8 @@ static int exynos_qmax_r_open(struct inode *inode, struct file *file)
 	return single_open(file, exynos_qmax_r_status_open_show, inode->i_private);
 }
 
-static ssize_t exynos_qmax_r_write(struct file *file, const char __user *buf, size_t count,
-			 loff_t *f_pos)
-{
-	int ntokens;
-	unsigned int *new_qmax = NULL;
-	unsigned long flags;
-
-	new_qmax = get_tokenized_data(buf, &ntokens);
-	if (IS_ERR(new_qmax))
-		return PTR_RET(new_qmax);
-
-	spin_lock_irqsave(&qmax_lock, flags);
-	if (exynos_qmax_r != default_exynos_qmax_r)
-		kfree(exynos_qmax_r);
-	exynos_qmax_r = new_qmax;
-	exynos_nqmax_r = ntokens;
-	spin_unlock_irqrestore(&qmax_lock, flags);
-
-	exynos_bts_mif_update(exynos_mif_freq);
-	return count;
-}
-
 static const struct file_operations debug_qmax_read_status_fops = {
 	.open		= exynos_qmax_r_open,
-	.write		= exynos_qmax_r_write,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= single_release,
@@ -1045,31 +975,8 @@ static int exynos_qmax_w_open(struct inode *inode, struct file *file)
 	return single_open(file, exynos_qmax_w_status_open_show, inode->i_private);
 }
 
-static ssize_t exynos_qmax_w_write(struct file *file, const char __user *buf, size_t count,
-			 loff_t *f_pos)
-{
-	int ntokens;
-	unsigned int *new_qmax = NULL;
-	unsigned long flags;
-
-	new_qmax = get_tokenized_data(buf, &ntokens);
-	if (IS_ERR(new_qmax))
-		return PTR_RET(new_qmax);
-
-	spin_lock_irqsave(&qmax_lock, flags);
-	if (exynos_qmax_w != default_exynos_qmax_w)
-		kfree(exynos_qmax_w);
-	exynos_qmax_w = new_qmax;
-	exynos_nqmax_w = ntokens;
-	spin_unlock_irqrestore(&qmax_lock, flags);
-
-	exynos_bts_mif_update(exynos_mif_freq);
-	return count;
-}
-
 static const struct file_operations debug_qmax_write_status_fops = {
 	.open		= exynos_qmax_w_open,
-	.write		= exynos_qmax_w_write,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= single_release,
@@ -1086,21 +993,8 @@ static int exynos_qbusy_open(struct inode *inode, struct file *file)
 	return single_open(file, exynos_qbusy_status_open_show, inode->i_private);
 }
 
-static ssize_t exynos_qbusy_write(struct file *file, const char __user *buf, size_t count,
-				  loff_t *f_pos)
-{
-	int i;
-	if (sscanf(buf, "%u", &exynos_qbusy) != 1)
-		return count;
-
-	for (i = 0; i < ARRAY_SIZE(smc_config); i++)
-		bts_set_qbusy(smc_config[i].va_base, exynos_qbusy);
-	return count;
-}
-
 static const struct file_operations debug_qbusy_status_fops = {
 	.open		= exynos_qbusy_open,
-	.write		= exynos_qbusy_write,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= single_release,
@@ -1124,15 +1018,7 @@ static int bts_debugfs(void)
 	debugfs_create_file("qbusy", 0440, den, NULL,
 			    &debug_qbusy_status_fops);
 	debugfs_create_file("tq", 0440, den, NULL, &debug_tq_status_fops);
-	if (!debugfs_create_u32("log", 0644, den, &exynos_bts_log)) {
-		pr_err("[BTS]: could't create debugfs bts log\n");
-	}
-	if (!debugfs_create_u32("mif_util", 0644, den, &exynos_mif_util)) {
-		pr_err("[BTS]: could't create debugfs mif util\n");
-	}
-	if (!debugfs_create_u32("int_util", 0644, den, &exynos_int_util)) {
-		pr_err("[BTS]: could't create debugfs int util\n");
-	}
+	debugfs_create_u32("log", 0644, den, &exynos_bts_log);
 
 	return 0;
 }
@@ -1179,6 +1065,8 @@ static int exynos_bts_notifier_event(struct notifier_block *this,
 static struct notifier_block exynos_bts_notifier = {
 	.notifier_call = exynos_bts_notifier_event,
 };
+
+#endif /* CONFIG_EXYNOS8895_BTS */
 
 #define BIT_PER_BYTE		8
 
@@ -1305,8 +1193,8 @@ void bts_update_bw(enum bts_bw_type type, struct bts_bw bw)
 	mif_freq = total_bw * 100 / BUS_WIDTH / exynos_mif_util;
 	int_freq = int_bw * 100 / BUS_WIDTH / exynos_int_util;
 
-	pm_qos_update_request(&exynos_mif_bts_qos, mif_freq);
-	pm_qos_update_request(&exynos_int_bts_qos, int_freq);
+	exynos_bus_qos_update_request(&exynos_mif_bts_qos, mif_freq);
+	exynos_bus_qos_update_request(&exynos_int_bts_qos, int_freq);
 
 	BTS_DBG("[BTS] BW(KB/s): type%i bw %up %ur %uw, "
 		"int %u total %u, read %u, write %u, "
@@ -1317,7 +1205,8 @@ void bts_update_bw(enum bts_bw_type type, struct bts_bw bw)
 	mutex_unlock(&media_mutex);
 }
 
-static int __init exynos_bts_init(void)
+#if IS_ENABLED(CONFIG_EXYNOS8895_BTS)
+static int __init exynos_bts_program_init(void)
 {
 	int i, ret;
 	struct bts_info *bts;
@@ -1375,12 +1264,37 @@ static int __init exynos_bts_init(void)
 	exynos_nqmax_w = ARRAY_SIZE(default_exynos_qmax_w);
 
 	bts_initialize_domains();
+	WRITE_ONCE(bts_programmed, true);
 
-	pm_qos_add_request(&exynos_mif_bts_qos, PM_QOS_BUS_THROUGHPUT, 0);
-	pm_qos_add_request(&exynos_int_bts_qos, PM_QOS_DEVICE_THROUGHPUT, 0);
+	return 0;
+}
+#endif
 
-	register_pm_notifier(&exynos_bts_notifier);
-	pr_info("BTS: driver is initialized\n");
+static int __init exynos_bts_init(void)
+{
+	/* stated addition (spec L2b 5.5.2): fixed physical addresses, 8895 only */
+	if (!of_machine_is_compatible("samsung,exynos8895"))
+		return 0;
+
+#if IS_ENABLED(CONFIG_EXYNOS8895_BTS)
+	if (program) {
+		int ret = exynos_bts_program_init();
+
+		if (ret)
+			return ret;
+	}
+#endif
+
+	/* held by the bus class registry until the bus devices reach stage 2 */
+	exynos_bus_qos_add_request(&exynos_mif_bts_qos, EXYNOS_BUS_QOS_MIF, 0);
+	exynos_bus_qos_add_request(&exynos_int_bts_qos, EXYNOS_BUS_QOS_INT, 0);
+
+#if IS_ENABLED(CONFIG_EXYNOS8895_BTS)
+	if (READ_ONCE(bts_programmed)) {
+		register_pm_notifier(&exynos_bts_notifier);
+		pr_info("BTS: driver is initialized\n");
+	}
+#endif
 	return 0;
 }
 arch_initcall(exynos_bts_init);

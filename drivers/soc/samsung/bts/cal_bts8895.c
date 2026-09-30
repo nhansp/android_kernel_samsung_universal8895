@@ -1,17 +1,13 @@
-/* arch/arm/mach-exynos/cal_bts.c
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Exynos8895 BTS register sequences (stock S:drivers/bts/cal_bts8895.c,
+ * spec L2b 5.5; built with CONFIG_EXYNOS8895_BTS).
  *
  * Copyright (c) 2015 Samsung Electronics Co., Ltd.
  *              http://www.samsung.com/
- *
- * EXYNOS - BTS CAL code.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include "cal_bts8895.h"
-#include <linux/soc/samsung/exynos-soc.h>
 
 #define LOG(x, ...)					\
 ({							\
@@ -233,6 +229,10 @@ void bts_trex_init(void __iomem *base)
 
 void bts_set_qmax(void __iomem *base, unsigned int rmo, unsigned int wmo)
 {
+
+	/* stated addition: stock checks only in setqos/showqos/trex_init */
+	if (!base)
+		return;
 	__raw_writel(set_mo(rmo), base + QMAX_THRESHOLD_R);
 	__raw_writel(set_mo(wmo), base + QMAX_THRESHOLD_W);
 
@@ -241,6 +241,10 @@ void bts_set_qmax(void __iomem *base, unsigned int rmo, unsigned int wmo)
 void bts_set_tq(void __iomem *base, unsigned int tq)
 {
 	unsigned int tmp_reg = 0;
+
+	/* stated addition: stock checks only in setqos/showqos/trex_init */
+	if (!base)
+		return;
 	if (tq > 3)
 		tq = 0;
 	tmp_reg = __raw_readl(base + SCI_CRP0_CON);
@@ -260,6 +264,10 @@ void bts_set_tq(void __iomem *base, unsigned int tq)
 void bts_set_qbusy(void __iomem *base, unsigned int qbusy)
 {
 	unsigned int tmp_reg = 0;
+
+	/* stated addition: stock checks only in setqos/showqos/trex_init */
+	if (!base)
+		return;
 	if (qbusy > 0x3f)
 		qbusy = 0x3f;
 	tmp_reg = __raw_readl(base + SMC_SCHEDCTL_BUNDLE_CTRL4);
@@ -274,6 +282,10 @@ void bts_set_qfull(void __iomem *base, unsigned int qfull_low,
 		   unsigned int qfull_high)
 {
 	unsigned int tmp_reg = 0;
+
+	/* stated addition: stock checks only in setqos/showqos/trex_init */
+	if (!base)
+		return;
 	if (qfull_low > 0x3f)
 		qfull_low = 0x3f;
 	if (qfull_high < qfull_low)

@@ -1,20 +1,17 @@
-/* arch/arm/mach-exynos/cal_bts.h
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Exynos8895 BTS register addresses and CAL prototypes (stock
+ * S:drivers/bts/cal_bts8895.h, spec L2b 5.5).
  *
  * Copyright (c) 2015 Samsung Electronics Co., Ltd.
  *              http://www.samsung.com/
- *
- * EXYNOS - BTS CAL code.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef __BTSCAL_H__
 #define __BTSCAL_H__
 
 #include <linux/io.h>
-#include <linux/debugfs.h>
+#include <linux/seq_file.h>
 
 /* for BTS Through SYSTEM Register */
 #define EXYNOS8895_PA_CP			0x14A80000
