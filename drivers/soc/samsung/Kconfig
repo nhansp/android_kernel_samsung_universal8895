@@ -244,7 +244,7 @@ config GREATLTE_HB_L6D_BT
 # DEBUG: CoreSight PC sampling at panic
 config GREATLTE_CSPC
 	bool "greatlte: sample the other CPUs' PCs at panic (debug only)"
-	depends on ARCH_EXYNOS && OF && ARM64
+	depends on GREATLTE_HB && ARCH_EXYNOS && OF && ARM64
 	default GREATLTE_HB
 	help
 	  At panic, reads the program counter of every other online CPU
