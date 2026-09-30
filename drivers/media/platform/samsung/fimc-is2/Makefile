@@ -1,4 +1,5 @@
-fimc-is-objs	:= fimc-is-core.o \
+fimc-is-objs	:= fimc-is-fpsimd.o \
+		fimc-is-core.o \
 		fimc-is-spi.o \
 		fimc-is-i2c.o \
 		fimc-is-debug.o \
