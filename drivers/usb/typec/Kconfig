@@ -114,4 +114,18 @@ source "drivers/usb/typec/mux/Kconfig"
 
 source "drivers/usb/typec/altmodes/Kconfig"
 
+# L6G: Samsung Galaxy Note 8 (greatlte) MUIC and Type-C port controller (spec L6G 6.2)
+config TYPEC_MAX77865_MUIC
+	bool "Maxim MAX77865 MUIC (D+/D- switch) base driver"
+	depends on I2C && OF && TYPEC=y
+	select REGMAP_I2C
+	select AUXILIARY_BUS
+	help
+	  The MUIC of the Maxim MAX77865 PMIC (I2C 0x25) as used on the Samsung
+	  Galaxy Note 8: routes D+/D- to the application processor's USB or UART
+	  and switches BC1.2 charger detection on and off for the S2MM005 port
+	  controller driver. Creates the auxiliary device of the AFC/QC module.
+	  It writes no high-voltage register. Built in only: it reads the
+	  pmic_info= boot parameter from the saved command line.
+
 endif # TYPEC

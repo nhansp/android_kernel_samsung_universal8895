@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/usb/maxim,max77865-muic.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Maxim MAX77865 MUIC (USB D+/D- switch and BC1.2 detection)
+
+maintainers:
+  - nhansp <nhan.094.vn@gmail.com>
+
+description:
+  The micro-USB interface controller block of the Maxim MAX77865 PMIC, a
+  separate I2C client of the PMIC package. It routes the connector's D+/D-
+  lines to the application processor's USB PHY or UART, runs the BC1.2
+  charger detection and carries the AFC/QC high-voltage signalling. On the
+  Samsung Galaxy Note 8 it works under the S2MM005 USB Type-C port
+  controller, which references it with samsung,muic.
+
+properties:
+  compatible:
+    const: maxim,max77865-muic
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+    description: MUIC interrupt line, level low
+
+  wakeup-source: true
+
+required:
+  - compatible
+  - reg
+  - interrupts
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        muic@25 {
+            compatible = "maxim,max77865-muic";
+            reg = <0x25>;
+            interrupts-extended = <&gpa0 0 IRQ_TYPE_LEVEL_LOW>;
+            wakeup-source;
+        };
+    };
