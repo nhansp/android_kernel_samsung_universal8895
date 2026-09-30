@@ -98,7 +98,21 @@
 
 enum max77865_input { INPUT_NONE, INPUT_WIRED, INPUT_WCIN };
 
-enum max77865_cable { CABLE_NONE, CABLE_SDP, CABLE_CDP, CABLE_DCP, CABLE_UNKNOWN };
+enum max77865_cable {
+	CABLE_NONE,
+	CABLE_SDP,
+	CABLE_CDP,
+	CABLE_DCP,
+	CABLE_UNKNOWN,
+	/* charging-extras cable classes */
+	CABLE_AFC_PREPARE,
+	CABLE_HV9,
+	CABLE_PD,
+	WLS_NV,
+	WLS_PACK,
+	WLS_HV,
+	WLS_PREP_HV,
+};
 
 /* stock sec_battery_charging_mode, S:drivers/battery_v2/include/sec_charging_common.h:300-309 */
 enum max77865_chg_stage { STAGE_NONE, STAGE_1ST, STAGE_2ND };
@@ -109,6 +123,7 @@ enum max77865_mode { MODE_CHARGING, MODE_CHARGING_OFF, MODE_BUCK_OFF };
 /* the single health H of L6F 5.3.3 (debugfs values of 5.3.5) */
 enum max77865_health {
 	H_GOOD, H_OVERHEAT, H_COLD, H_OVERHEATLIMIT, H_OVERVOLTAGE, H_UNDERVOLTAGE, H_SAFETY_TIMER,
+	H_VSYS_OVP, H_VBAT_OVP,
 };
 
 /* stock swelling_mode, S:drivers/battery_v2/include/sec_battery.h:142-144 */
@@ -128,6 +143,7 @@ static const char * const health_name[] = {
 	[H_GOOD] = "good", [H_OVERHEAT] = "overheat", [H_COLD] = "cold",
 	[H_OVERHEATLIMIT] = "overheatlimit", [H_OVERVOLTAGE] = "overvoltage",
 	[H_UNDERVOLTAGE] = "undervoltage", [H_SAFETY_TIMER] = "safety-timer-expire",
+	[H_VSYS_OVP] = "vsys-ovp", [H_VBAT_OVP] = "vbat-ovp",
 };
 
 static const char * const mode_name[] = {
@@ -138,6 +154,13 @@ static const char * const mode_name[] = {
 static const char * const cable_name[] = {
 	[CABLE_NONE] = "none", [CABLE_SDP] = "sdp", [CABLE_CDP] = "cdp",
 	[CABLE_DCP] = "dcp", [CABLE_UNKNOWN] = "unknown",
+	[CABLE_AFC_PREPARE] = "afc-prepare",
+	[CABLE_HV9] = "hv9",
+	[CABLE_PD] = "pd",
+	[WLS_NV] = "wls-nv",
+	[WLS_PACK] = "wls-pack",
+	[WLS_HV] = "wls-hv",
+	[WLS_PREP_HV] = "wls-prep-hv",
 };
 
 /* one pass's readings (L6F 5.3.3 step (2)) */
@@ -151,6 +174,17 @@ struct max77865_sample {
 	bool iavg_valid;
 	int iavg;			/* uA */
 	int hc;
+	/* charging-extras sample fields */
+	struct {
+		bool online;
+		enum max77865_cable class;
+		int vout_mv;
+	} wls;
+	int hv_mv;			/* AFC/QC voltage in mV, 0 = none */
+	int pd_mv, pd_ma;		/* USB-PD contract voltage and current */
+	bool pd_usb;			/* USB data partner present during PD */
+	int rp;				/* Type-C Rp level */
+	bool aicl_ok;			/* CHG_INT_OK bit 7 */
 };
 
 struct max77865_charger {
@@ -210,6 +244,7 @@ struct max77865_charger {
 
 	/* reported values (change detection) */
 	int rep_online, rep_status, rep_health, rep_ac, rep_usb, rep_ac_ma, rep_usb_ma;
+	int rep_ac_mv;
 
 	/* debugfs (L6F 5.3.5) */
 	u32 override_usb_mc, override_chg_mc, override_t_mc, override_hc;
@@ -712,6 +747,34 @@ static void max77865_currents(struct max77865_charger *chg, const struct max7786
 		*in = 1500;
 		*cc = 1500;
 		break;
+	case CABLE_AFC_PREPARE:	/* cable 2 PREPARE_TA */
+		*in = 1000;
+		*cc = 1000;
+		break;
+	case CABLE_HV9:		/* cable 6 9V_TA, current_group_4 */
+		*in = 1650;
+		*cc = 2350;
+		break;
+	case CABLE_PD:		/* cable 19 PDIC: the contract's PDO */
+		*in = s->pd_ma;
+		*cc = min(s->pd_mv * s->pd_ma / FLOAT_MV, 2350);
+		break;
+	case WLS_NV:		/* cable 10,12,15,27 */
+		*in = 900;
+		*cc = 1300;
+		break;
+	case WLS_PACK:		/* cable 13 WIRELESS_PACK */
+		*in = 700;
+		*cc = 1400;
+		break;
+	case WLS_HV:		/* cable 11,14,16,28, current_group_10 */
+		*in = 650;
+		*cc = 1300;
+		break;
+	case WLS_PREP_HV:	/* cable 29 PREPARE_WIRELESS_HV, current_group_11 */
+		*in = 500;
+		*cc = 1300;
+		break;
 	default:		/* cable 4 USB (and unknown), current_group_1 FDT:12367-12368 */
 		*in = 500;
 		*cc = 500;
@@ -746,6 +809,25 @@ static void max77865_currents(struct max77865_charger *chg, const struct max7786
 		*topoff = min(*topoff, SW_HIGH_TOPOFF);
 	} else if (chg->events & EV_LOW_TEMP) {
 		*cc = min(*cc, SW_LOW_CURRENT);
+	}
+
+	/* max_charging_current 2350 is applied as the last CC cap for every class */
+	*cc = min(*cc, 2350);
+}
+
+/* stock sec_bat_check_input_voltage() */
+static int max77865_in_mv(const struct max77865_sample *s)
+{
+	switch (s->cable) {
+	case CABLE_HV9:
+		return 9000;
+	case CABLE_PD:
+		return s->pd_mv ? s->pd_mv : 5000;
+	case WLS_HV:
+	case WLS_PREP_HV:
+		return 10000;
+	default:
+		return 5000;
 	}
 }
 
@@ -921,7 +1003,7 @@ static void max77865_pass_work(struct work_struct *work)
 	struct max77865_sample s = { .cable = CABLE_NONE };
 	bool pending = false, requeued, plugged, read_ok = false;
 	bool changed_chg = false, changed_ac = false, changed_usb = false;
-	int rep_status, rep_health, ac, usb, ac_ma, usb_ma, online, topoff;
+	int rep_status, rep_health, ac, usb, ac_ma, usb_ma, ac_mv, online, topoff;
 	unsigned int wd;
 
 	mutex_lock(&chg->lock);
@@ -1010,13 +1092,17 @@ static void max77865_pass_work(struct work_struct *work)
 		rep_status = online ? max77865_dtls_status(s.dtls1) : POWER_SUPPLY_STATUS_DISCHARGING;
 		rep_health = chg->hc;
 	}
-	ac = s.input == INPUT_WIRED && (chg->cable == CABLE_DCP || chg->cable == CABLE_UNKNOWN);
-	usb = s.input == INPUT_WIRED && (chg->cable == CABLE_SDP || chg->cable == CABLE_CDP);
+	ac = s.input == INPUT_WIRED && (chg->cable == CABLE_DCP || chg->cable == CABLE_UNKNOWN ||
+					chg->cable == CABLE_AFC_PREPARE || chg->cable == CABLE_HV9 ||
+					(chg->cable == CABLE_PD && !s.pd_usb));
+	usb = s.input == INPUT_WIRED && (chg->cable == CABLE_SDP || chg->cable == CABLE_CDP ||
+					 (chg->cable == CABLE_PD && s.pd_usb));
 	ac_ma = ac ? chg->in_ma : 0;
 	usb_ma = usb ? chg->in_ma : 0;
+	ac_mv = max77865_in_mv(&s);
 	changed_chg = online != chg->rep_online || rep_status != chg->rep_status ||
 		      rep_health != chg->rep_health;
-	changed_ac = ac != chg->rep_ac || ac_ma != chg->rep_ac_ma;
+	changed_ac = ac != chg->rep_ac || ac_ma != chg->rep_ac_ma || ac_mv != chg->rep_ac_mv;
 	changed_usb = usb != chg->rep_usb || usb_ma != chg->rep_usb_ma;
 	chg->rep_online = online;
 	chg->rep_status = rep_status;
@@ -1025,6 +1111,7 @@ static void max77865_pass_work(struct work_struct *work)
 	chg->rep_usb = usb;
 	chg->rep_ac_ma = ac_ma;
 	chg->rep_usb_ma = usb_ma;
+	chg->rep_ac_mv = ac_mv;
 
 	/* 1-min log while plugged (L6F 5.3.5, 8.3) */
 	if (chg->charge_control && plugged &&
@@ -1310,6 +1397,8 @@ static const int max77865_psy_health[] = {
 	[H_OVERVOLTAGE] = POWER_SUPPLY_HEALTH_OVERVOLTAGE,
 	[H_UNDERVOLTAGE] = POWER_SUPPLY_HEALTH_UNDERVOLTAGE,
 	[H_SAFETY_TIMER] = POWER_SUPPLY_HEALTH_SAFETY_TIMER_EXPIRE,
+	[H_VSYS_OVP] = POWER_SUPPLY_HEALTH_OVERVOLTAGE,
+	[H_VBAT_OVP] = POWER_SUPPLY_HEALTH_OVERVOLTAGE,
 };
 
 static int max77865_chg_get_property(struct power_supply *psy, enum power_supply_property psp,
@@ -1377,9 +1466,19 @@ static int max77865_chg_get_property(struct power_supply *psy, enum power_supply
 	}
 }
 
-static enum power_supply_property max77865_in_props[] = {
+static enum power_supply_property max77865_usb_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_CURRENT_MAX,
+};
+
+static enum power_supply_property max77865_ac_props[] = {
+	POWER_SUPPLY_PROP_ONLINE,
+	POWER_SUPPLY_PROP_CURRENT_MAX,
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC) || \
+    IS_ENABLED(CONFIG_CHARGER_MAX77865_QC) || \
+    IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
+	POWER_SUPPLY_PROP_VOLTAGE_MAX,
+#endif
 };
 
 static int max77865_in_get_property(struct power_supply *psy, enum power_supply_property psp,
@@ -1395,6 +1494,9 @@ static int max77865_in_get_property(struct power_supply *psy, enum power_supply_
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
 		val->intval = (ac ? chg->rep_ac_ma : chg->rep_usb_ma) * 1000;
+		break;
+	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
+		val->intval = (ac && chg->rep_ac ? chg->rep_ac_mv : 5000) * 1000;
 		break;
 	default:
 		mutex_unlock(&chg->lock);
@@ -1417,16 +1519,16 @@ static const struct power_supply_desc max77865_chg_desc = {
 static const struct power_supply_desc max77865_ac_desc = {
 	.name = "ac",
 	.type = POWER_SUPPLY_TYPE_MAINS,
-	.properties = max77865_in_props,
-	.num_properties = ARRAY_SIZE(max77865_in_props),
+	.properties = max77865_ac_props,
+	.num_properties = ARRAY_SIZE(max77865_ac_props),
 	.get_property = max77865_in_get_property,
 };
 
 static const struct power_supply_desc max77865_usb_desc = {
 	.name = "usb",
 	.type = POWER_SUPPLY_TYPE_USB,
-	.properties = max77865_in_props,
-	.num_properties = ARRAY_SIZE(max77865_in_props),
+	.properties = max77865_usb_props,
+	.num_properties = ARRAY_SIZE(max77865_usb_props),
 	.get_property = max77865_in_get_property,
 };
 
@@ -1671,6 +1773,7 @@ static int max77865_charger_probe(struct i2c_client *client)
 	chg->cv_want = CV_CODE_NORMAL;
 	chg->status = POWER_SUPPLY_STATUS_DISCHARGING;
 	chg->rep_status = POWER_SUPPLY_STATUS_DISCHARGING;
+	chg->rep_ac_mv = 5000;
 	chg->mode = STAGE_NONE;
 	chg->chg_mode = MODE_CHARGING_OFF;
 	chg->chg_block = true;
