@@ -1225,6 +1225,70 @@ static void d8895_panic_free(struct decon8895_ctx *ctx)
 		dma_free_attrs(to_dma_dev(ctx->drm), size, vaddr, dma, DMA_ATTR_WRITE_COMBINE);
 }
 
+/* ---- panel hooks (include/drm/exynos8895_panel.h) ---------------------- */
+
+/* the panel's DECON event hooks (include/drm/exynos8895_panel.h); one DECON0 */
+static DEFINE_SPINLOCK(d8895_panel_hooks_lock);
+static const struct exynos8895_panel_hooks *d8895_panel_hooks;
+
+void exynos8895_decon_set_panel_hooks(const struct exynos8895_panel_hooks *hooks)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&d8895_panel_hooks_lock, flags);
+	d8895_panel_hooks = hooks;
+	spin_unlock_irqrestore(&d8895_panel_hooks_lock, flags);
+}
+EXPORT_SYMBOL_GPL(exynos8895_decon_set_panel_hooks);
+
+/*
+ * A power request of the S3CFB front-end to the panel (the vendor DECON's
+ * DSIM/panel subdev calls, include/drm/exynos8895_panel.h); 0 without hook.
+ * The hooks, once set, are never cleared.
+ */
+int exynos8895_decon_panel_power(enum exynos8895_panel_power req, bool active)
+{
+	const struct exynos8895_panel_hooks *hooks;
+	unsigned long flags;
+
+	spin_lock_irqsave(&d8895_panel_hooks_lock, flags);
+	hooks = d8895_panel_hooks;
+	spin_unlock_irqrestore(&d8895_panel_hooks_lock, flags);
+
+	if (!hooks || !hooks->power)
+		return 0;
+	return hooks->power(hooks->data, req, active);
+}
+
+/* the panel is in HMD mode (include/drm/exynos8895_panel.h) */
+static bool d8895_panel_hmd_on(void)
+{
+	unsigned long flags;
+	bool on = false;
+
+	spin_lock_irqsave(&d8895_panel_hooks_lock, flags);
+	if (d8895_panel_hooks && d8895_panel_hooks->hmd_on)
+		on = d8895_panel_hooks->hmd_on(d8895_panel_hooks->data);
+	spin_unlock_irqrestore(&d8895_panel_hooks_lock, flags);
+
+	return on;
+}
+
+/*
+ * The vendor frame-done path: decon_irq_handler() stamps the frame done and
+ * wakes the decon0-fsync thread (S:.../dpu/decon_dsi.c:60-68), which sends
+ * V4L2_EVENT_DECON_FRAME_DONE (:1252-1272) and decon_notify() turns into
+ * the panel's PANEL_IOC_EVT_FRAME_DONE (decon_core.c:3475-3481). Here the
+ * panel's hook is called from the interrupt; it only counts and wakes.
+ */
+static void d8895_panel_frame_done(void)
+{
+	spin_lock(&d8895_panel_hooks_lock);
+	if (d8895_panel_hooks && d8895_panel_hooks->frame_done)
+		d8895_panel_hooks->frame_done(d8895_panel_hooks->data);
+	spin_unlock(&d8895_panel_hooks_lock);
+}
+
 /* ---- BTS / DISP DVFS (S:.../dpu/bts.c, DECON0) ---------------------------- */
 
 #define D8895_BTS_DISP_FACTOR		100UL	/* bts.c:17-20 */
@@ -1923,8 +1987,13 @@ static void d8895_atomic_flush(struct exynos_drm_crtc *crtc)
 
 	/* decon_reg_all_win_shadow_update_req() (decon_reg.c:825-838) */
 	d_mask(ctx, D8895_SHADOW_REG_UPDATE_REQ, ~0, D8895_SHADOW_REG_UPDATE_REQ_FOR_DECON0);
+	/*
+	 * One-shot unless the panel is in HMD mode: the vendor then keeps the
+	 * trigger running ("video_emul", S:.../dpu/decon_core.c:2224-2228,
+	 * 2320-2323).
+	 */
 	if (!d8895_start(ctx)) {
-		if (READ_ONCE(ctx->oneshot))
+		if (READ_ONCE(ctx->oneshot) && !d8895_panel_hmd_on())
 			atomic_set(&ctx->oneshot_state, 1);
 		atomic_set(&ctx->bts_after, 1);
 	}
@@ -2278,54 +2347,6 @@ static int d8895_plane_init(struct decon8895_ctx *ctx, unsigned int ch)
 }
 
 /* ---- IRQs ---------------------------------------------------------------- */
-
-/* the panel's DECON event hooks (include/drm/exynos8895_panel.h); one DECON0 */
-static DEFINE_SPINLOCK(d8895_panel_hooks_lock);
-static const struct exynos8895_panel_hooks *d8895_panel_hooks;
-
-void exynos8895_decon_set_panel_hooks(const struct exynos8895_panel_hooks *hooks)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&d8895_panel_hooks_lock, flags);
-	d8895_panel_hooks = hooks;
-	spin_unlock_irqrestore(&d8895_panel_hooks_lock, flags);
-}
-EXPORT_SYMBOL_GPL(exynos8895_decon_set_panel_hooks);
-
-/*
- * A power request of the S3CFB front-end to the panel (the vendor DECON's
- * DSIM/panel subdev calls, include/drm/exynos8895_panel.h); 0 without hook.
- * The hooks, once set, are never cleared.
- */
-int exynos8895_decon_panel_power(enum exynos8895_panel_power req, bool active)
-{
-	const struct exynos8895_panel_hooks *hooks;
-	unsigned long flags;
-
-	spin_lock_irqsave(&d8895_panel_hooks_lock, flags);
-	hooks = d8895_panel_hooks;
-	spin_unlock_irqrestore(&d8895_panel_hooks_lock, flags);
-
-	if (!hooks || !hooks->power)
-		return 0;
-	return hooks->power(hooks->data, req, active);
-}
-
-/*
- * The vendor frame-done path: decon_irq_handler() stamps the frame done and
- * wakes the decon0-fsync thread (S:.../dpu/decon_dsi.c:60-68), which sends
- * V4L2_EVENT_DECON_FRAME_DONE (:1252-1272) and decon_notify() turns into
- * the panel's PANEL_IOC_EVT_FRAME_DONE (decon_core.c:3475-3481). Here the
- * panel's hook is called from the interrupt; it only counts and wakes.
- */
-static void d8895_panel_frame_done(void)
-{
-	spin_lock(&d8895_panel_hooks_lock);
-	if (d8895_panel_hooks && d8895_panel_hooks->frame_done)
-		d8895_panel_hooks->frame_done(d8895_panel_hooks->data);
-	spin_unlock(&d8895_panel_hooks_lock);
-}
 
 /* decon_reg_get_interrupt_and_clear() (decon_reg.c:2504-2564) */
 static irqreturn_t d8895_irq(int irq, void *dev_id)

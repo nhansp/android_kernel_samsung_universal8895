@@ -31,6 +31,12 @@ struct exynos8895_panel_hooks {
 	 * is active. Process context.
 	 */
 	int (*power)(void *data, enum exynos8895_panel_power req, bool active);
+	/*
+	 * The panel is in HMD mode (panel_state.hmd_on): the DECON leaves its
+	 * HW trigger running after an update (decon_core.c:2224-2228,
+	 * 2320-2323). Called with a spinlock held, must not sleep.
+	 */
+	bool (*hmd_on)(void *data);
 	void *data;
 };
 

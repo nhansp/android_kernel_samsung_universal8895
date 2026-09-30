@@ -320,6 +320,14 @@ static void s6e3ha6_stock_frame_done(void *data)
 	panel_drv_frame_done(ctx->stock);
 }
 
+/* the DECON's HMD check: the vendor DECON read panel_state.hmd_on (decon_core.c:2226) */
+static bool s6e3ha6_stock_hmd_on(void *data)
+{
+	struct s6e3ha6 *ctx = data;
+
+	return READ_ONCE(ctx->stock->state.hmd_on) == PANEL_HMD_ON;
+}
+
 /*
  * The S3CFB power requests, as the vendor DSIM passed them to the panel:
  * - UNBLANK with the display on: decon_enable() -> dsim_enable() with the
@@ -391,6 +399,7 @@ static bool s6e3ha6_stock_probe(struct s6e3ha6 *ctx)
 		/* the DECON's panel events, once the framework's COPR exists */
 		ctx->decon_hooks.frame_done = s6e3ha6_stock_frame_done;
 		ctx->decon_hooks.power = s6e3ha6_stock_power;
+		ctx->decon_hooks.hmd_on = s6e3ha6_stock_hmd_on;
 		ctx->decon_hooks.data = ctx;
 		exynos8895_decon_set_panel_hooks(&ctx->decon_hooks);
 		return true;
