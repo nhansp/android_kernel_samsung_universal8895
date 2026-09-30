@@ -3,6 +3,29 @@
 # Near Field Communication (NFC) devices
 #
 
+# greatlte WP l6ki (spec L6I 5.2): the Samsung raw-NCI driver needs no NFC netlink stack
+# (stock "# CONFIG_NFC is not set", IKC:1117), so it sits outside the NFC menu.
+config SAMSUNG_NFC
+	bool "Samsung NFC driver"
+	help
+	  SAMSUNG NFC Driver.
+	  This driver provides support for SAMSUNG NFC products.
+	  You should select your NFC product and interface.
+
+	  Say Y here to compile support for SAMSUNG NFC driver into the
+	  kernel.
+
+config SEC_NFC
+	bool "Samsung NFC driver"
+	depends on SAMSUNG_NFC && I2C && GPIOLIB && OF
+	help
+	  SAMSUNG NFC Driver.
+	  This driver provides support for SAMSUNG NFC products.
+	  You should select your NFC product and interface.
+
+	  Say Y here to compile support for SAMSUNG NFC driver into the
+	  kernel.
+
 menu "Near Field Communication (NFC) devices"
 	depends on NFC
 
