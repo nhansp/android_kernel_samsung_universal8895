@@ -1,0 +1,31 @@
+Samsung sec-nfc NFC controller (S3NRN82, Samsung raw-NCI driver)
+===============================================================
+
+The Samsung NFC controller of the Galaxy Note 8, driven by the transplanted
+stock sec_nfc driver (drivers/nfc/sec_nfc.c). The driver exposes the chip as
+the misc device /dev/sec-nfc for the vendor NFC HAL (raw NCI, firmware
+download in bootloader mode); it does not use the kernel NFC/NCI stack, unlike
+samsung,s3fwrn5. The stock property names are kept (they carry no registered
+vendor prefix, so this is a text binding).
+
+Required properties:
+- compatible: "samsung,sec-nfc"
+- reg: I2C address (0x27)
+- interrupts: the NFC interrupt (IRQ_TYPE_EDGE_RISING), with interrupt-parent
+- sec-nfc,ven-gpio: VEN power enable, output; high = off, low = on
+- sec-nfc,irq-gpio: the interrupt line as a GPIO (its level is checked in the
+  interrupt thread)
+- sec-nfc,firm-gpio: firmware-download / wake pin, output
+
+Optional properties:
+- sec-nfc,nfc_ap_clk: the chip uses the AP reference clock; then required:
+  - sec-nfc,clk_req-gpio: the chip's clock-request line (both edges)
+  - clocks, clock-names = "oscclk_nfc": the reference clock (Exynos8895 PMU
+    CLKOUT1, <&pmu_system_controller 1>)
+- sec-nfc,ldo_control: the driver switches the I/O supply on at probe
+  (except in LPM charging); then required:
+  - nfc-pvdd-supply: the 1.8 V supply
+  - sec-nfc,nfc_pvdd: the stock rail name string (logged only)
+- pinctrl-names: "default"; pinctrl-0: the VEN and FIRM pin states
+
+Example: arch/arm64/boot/dts/exynos/exynos8895-greatlte-l6i.dtsi (nfc@27).
