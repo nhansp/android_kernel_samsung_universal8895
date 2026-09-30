@@ -20,6 +20,7 @@
 #include <linux/kref.h>
 #include <linux/kthread.h>
 #include <linux/platform_device.h>
+#include <linux/pm_wakeup.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/sync_file.h>
@@ -1294,10 +1295,26 @@ static int s3cfb_set_par(struct fb_info *info)
 	return 0;
 }
 
+/* the CRTC state the vendor DECON's power paths branch on (DECON_STATE_ON/OFF) */
+static bool s3cfb_crtc_active(struct s3cfb *s)
+{
+	struct drm_crtc *crtc = s->h.crtc;
+	bool active;
+
+	drm_modeset_lock(&crtc->mutex, NULL);
+	active = crtc->state->active;
+	drm_modeset_unlock(&crtc->mutex);
+
+	return active;
+}
+
 /*
  * decon_blank() (S:.../dpu/decon_core.c:915-963): UNBLANK only sets the power
  * flag (the first buffer frame enables the CRTC), NORMAL and POWERDOWN turn
- * the display off, the suspend modes are -EINVAL.
+ * the display off, the suspend modes are -EINVAL. The panel hears of both
+ * first: UNBLANK of an active CRTC (the panel dozing) is decon_enable() with
+ * the DECON on, which re-enables the DSIM and so wakes the panel
+ * (:640-649); decon_disable() releases the DOZE wakeup hold (:837).
  */
 static int s3cfb_blank(int blank, struct fb_info *info)
 {
@@ -1308,13 +1325,54 @@ static int s3cfb_blank(int blank, struct fb_info *info)
 
 	switch (blank) {
 	case FB_BLANK_UNBLANK:
+		exynos8895_decon_panel_power(EXYNOS8895_PANEL_UNBLANK, s3cfb_crtc_active(s));
 		s3cfb_power_on(s);
 		return 0;
 	case FB_BLANK_NORMAL:
 	case FB_BLANK_POWERDOWN:
+		exynos8895_decon_panel_power(EXYNOS8895_PANEL_POWERDOWN, s3cfb_crtc_active(s));
+		pm_relax(s->h.dev);
 		return s3cfb_power_off(s);
 	default:
 		return -EINVAL;
+	}
+}
+
+/*
+ * decon_set_doze_mode() (S:.../dpu/decon_core.c:2947-2969): DOZE and
+ * DOZE_SUSPEND act, OFF and NORMAL are no-ops.
+ * - DOZE, decon_set_doze() (:2782-2862): with the CRTC active the panel
+ *   enters (or updates) its low-power mode now; otherwise the panel does it
+ *   on the next enable, and, as UNBLANK here, the power flag is set and the
+ *   first buffer frame enables the CRTC (L6A D-6). The DECON holds its
+ *   wakeup source from then on (:2818).
+ * - DOZE_SUSPEND, decon_set_doze_suspend() (:2864-2945): with the CRTC
+ *   active the display pipe goes off with the panel left in its low-power
+ *   mode, powered, and the wakeup source is released (:2922); with the CRTC
+ *   off nothing happens (the vendor DSIM is off too, dsim_drv.c:1336-1337).
+ */
+static int s3cfb_power_mode(struct s3cfb *s, u32 mode)
+{
+	bool active;
+
+	switch (mode) {
+	case DECON_PWR_DOZE:
+		active = s3cfb_crtc_active(s);
+		exynos8895_decon_panel_power(EXYNOS8895_PANEL_DOZE, active);
+		if (!active) {
+			pm_stay_awake(s->h.dev);
+			s3cfb_power_on(s);
+		}
+		return 0;
+	case DECON_PWR_DOZE_SUSPEND:
+		active = s3cfb_crtc_active(s);
+		exynos8895_decon_panel_power(EXYNOS8895_PANEL_DOZE_SUSPEND, active);
+		if (!active)
+			return 0;
+		pm_relax(s->h.dev);
+		return s3cfb_power_off(s);
+	default:
+		return 0;
 	}
 }
 
@@ -1371,10 +1429,7 @@ static int s3cfb_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg
 			return -EFAULT;
 		if (val >= DECON_PWR_MAX)
 			return -EINVAL;
-		/* DOZE powers up like UNBLANK (:2852); the others are no-ops here (L6A 5.3.4) */
-		if (val == DECON_PWR_DOZE)
-			s3cfb_power_on(s);
-		return 0;
+		return s3cfb_power_mode(s, val);
 
 	default:			/* :3262-3263 */
 		return -ENOTTY;
@@ -1481,6 +1536,7 @@ static void s3cfb_teardown(struct s3cfb *s)
 	unlock_fb_info(s->info);
 	unregister_framebuffer(s->info);	/* the fb_info reference goes in s3cfb_fb_destroy() */
 
+	device_init_wakeup(s->h.dev, false);
 	exynos8895_decon_set_vsync_cb(s->h.dev, NULL, NULL);
 	spin_lock_irqsave(&s->vs_lock, flags);
 	s->vsync_on = false;
@@ -1661,12 +1717,15 @@ static int s3cfb_create(struct drm_device *drm)
 	s3cfb_fill_info(s->info);
 
 	exynos8895_decon_set_vsync_cb(s->h.dev, s3cfb_te, s);
+	/* the DECON's wakeup source the DOZE power mode holds (S:.../dpu/decon_core.c:4237) */
+	device_init_wakeup(s->h.dev, true);
 
 	/* A:include/linux/fb.h:609: /dev/fb0 in class "graphics", fbmem.c:668 */
 	kref_get(&s->ref);
 	ret = register_framebuffer(s->info);
 	if (ret) {
 		kref_put(&s->ref, s3cfb_free);
+		device_init_wakeup(s->h.dev, false);
 		exynos8895_decon_set_vsync_cb(s->h.dev, NULL, NULL);
 		framebuffer_release(s->info);
 		goto err_kn;

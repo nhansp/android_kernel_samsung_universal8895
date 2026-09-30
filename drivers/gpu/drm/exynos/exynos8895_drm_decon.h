@@ -10,6 +10,7 @@
 #include <linux/types.h>
 
 #include <drm/drm_rect.h>
+#include <drm/exynos8895_panel.h>
 
 struct device;
 struct device_node;
@@ -48,6 +49,7 @@ int exynos8895_decon_set_color_win(struct device *dev, unsigned int win,
 void exynos8895_decon_set_vsync_cb(struct device *dev,
 				   void (*cb)(void *data, ktime_t ts), void *data);
 void exynos8895_decon_set_oneshot(struct device *dev, bool oneshot);
+int exynos8895_decon_panel_power(enum exynos8895_panel_power req, bool active);
 #endif
 
 #endif /* _EXYNOS8895_DRM_DECON_H_ */

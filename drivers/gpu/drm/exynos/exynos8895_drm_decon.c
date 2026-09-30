@@ -2063,6 +2063,25 @@ void exynos8895_decon_set_panel_hooks(const struct exynos8895_panel_hooks *hooks
 EXPORT_SYMBOL_GPL(exynos8895_decon_set_panel_hooks);
 
 /*
+ * A power request of the S3CFB front-end to the panel (the vendor DECON's
+ * DSIM/panel subdev calls, include/drm/exynos8895_panel.h); 0 without hook.
+ * The hooks, once set, are never cleared.
+ */
+int exynos8895_decon_panel_power(enum exynos8895_panel_power req, bool active)
+{
+	const struct exynos8895_panel_hooks *hooks;
+	unsigned long flags;
+
+	spin_lock_irqsave(&d8895_panel_hooks_lock, flags);
+	hooks = d8895_panel_hooks;
+	spin_unlock_irqrestore(&d8895_panel_hooks_lock, flags);
+
+	if (!hooks || !hooks->power)
+		return 0;
+	return hooks->power(hooks->data, req, active);
+}
+
+/*
  * The vendor frame-done path: decon_irq_handler() stamps the frame done and
  * wakes the decon0-fsync thread (S:.../dpu/decon_dsi.c:60-68), which sends
  * V4L2_EVENT_DECON_FRAME_DONE (:1252-1272) and decon_notify() turns into
