@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Samsung sec_key sysfs device and hall input handler.
- * Spec: L6F 5.14 (lines 2462-2508).
- * Provides /sys/devices/virtual/sec/sec_key/hall_detect and sec_key_hall_closed().
+ * Spec: L6F 5.14 (lines 2462-2508); certify hall: L6K 5.1.
+ * Provides /sys/devices/virtual/sec/sec_key/hall_detect, certify_hall_detect and
+ * sec_key_hall_closed().
  */
 
 #include <linux/device.h>
@@ -20,6 +21,12 @@
  * Seeded from test_bit(SW_LID, dev->sw) when the hall input device connects.
  */
 static int lid;
+/*
+ * Certify cover: 1 = attached, 0 = detached (stock certify_cover, S:drivers/input/certify_hall.c:99;
+ * spec L6K 5.1 item 1). Seeded from test_bit(SW_MACHINE_COVER, dev->sw) when the
+ * certify_hall input device connects.
+ */
+static int certify;
 static struct device *sec_key_dev;
 
 /*
@@ -43,8 +50,21 @@ static ssize_t hall_detect_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(hall_detect);
 
+/*
+ * /sys/devices/virtual/sec/sec_key/certify_hall_detect
+ * Stock S:drivers/input/certify_hall.c:40-51, :267 (0664 without a store; 0444 here as
+ * hall_detect); spec L6K 5.1 item 2.
+ */
+static ssize_t certify_hall_detect_show(struct device *dev,
+					struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, READ_ONCE(certify) ? "CLOSE\n" : "OPEN\n");
+}
+static DEVICE_ATTR_RO(certify_hall_detect);
+
 static struct attribute *sec_key_attrs[] = {
 	&dev_attr_hall_detect.attr,
+	&dev_attr_certify_hall_detect.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(sec_key);
@@ -58,19 +78,30 @@ static void sec_key_event(struct input_handle *handle, unsigned int type,
 {
 	if (type == EV_SW && code == SW_LID)
 		WRITE_ONCE(lid, value);
+	else if (type == EV_SW && code == SW_MACHINE_COVER)	/* spec L6K 5.1 item 5 */
+		WRITE_ONCE(certify, value);
 }
 
 /*
  * Connect to the "hall" input device (A:include/linux/input.h:330, :430, :436;
- * A:drivers/input/keyboard/gpio_keys.c:720-736, :778, :879; spec L6F 5.14 lines 2468-2476).
+ * A:drivers/input/keyboard/gpio_keys.c:720-736, :778, :879; spec L6F 5.14 lines 2468-2476)
+ * or to the "certify_hall" one (stock input name S:drivers/input/certify_hall.c:249;
+ * spec L6K 5.1 item 4). Each connection has its own handle.
  */
 static int sec_key_connect(struct input_handler *handler, struct input_dev *dev,
 			   const struct input_device_id *id)
 {
 	struct input_handle *handle;
+	bool is_certify;
 	int error;
 
-	if (!dev->name || strcmp(dev->name, "hall") != 0)
+	if (!dev->name)
+		return -ENODEV;
+	if (!strcmp(dev->name, "hall"))
+		is_certify = false;
+	else if (!strcmp(dev->name, "certify_hall"))
+		is_certify = true;
+	else
 		return -ENODEV;
 
 	handle = kzalloc(sizeof(*handle), GFP_KERNEL);
@@ -79,7 +110,7 @@ static int sec_key_connect(struct input_handler *handler, struct input_dev *dev,
 
 	handle->dev = dev;
 	handle->handler = handler;
-	handle->name = "sec_key_hall";
+	handle->name = is_certify ? "sec_key_certify" : "sec_key_hall";
 
 	error = input_register_handle(handle);
 	if (error)
@@ -89,8 +120,13 @@ static int sec_key_connect(struct input_handler *handler, struct input_dev *dev,
 	if (error)
 		goto err_unregister_handle;
 
-	WRITE_ONCE(lid, test_bit(SW_LID, dev->sw));
-	pr_info("samsung-sec-key: hall_detect bound to %s\n", dev_name(&dev->dev));
+	if (is_certify) {
+		WRITE_ONCE(certify, test_bit(SW_MACHINE_COVER, dev->sw));
+		pr_info("samsung-sec-key: certify_hall_detect bound to %s\n", dev_name(&dev->dev));
+	} else {
+		WRITE_ONCE(lid, test_bit(SW_LID, dev->sw));
+		pr_info("samsung-sec-key: hall_detect bound to %s\n", dev_name(&dev->dev));
+	}
 
 	return 0;
 
@@ -116,6 +152,11 @@ static const struct input_device_id sec_key_ids[] = {
 		.flags = INPUT_DEVICE_ID_MATCH_EVBIT | INPUT_DEVICE_ID_MATCH_SWBIT,
 		.evbit = { BIT_MASK(EV_SW) },
 		.swbit = { [BIT_WORD(SW_LID)] = BIT_MASK(SW_LID) },
+	},
+	{	/* certify_hall (spec L6K 5.1 item 3) */
+		.flags = INPUT_DEVICE_ID_MATCH_EVBIT | INPUT_DEVICE_ID_MATCH_SWBIT,
+		.evbit = { BIT_MASK(EV_SW) },
+		.swbit = { [BIT_WORD(SW_MACHINE_COVER)] = BIT_MASK(SW_MACHINE_COVER) },
 	},
 	{ },
 };
