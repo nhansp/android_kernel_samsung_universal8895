@@ -12,8 +12,13 @@
 #include <linux/device.h>
 #include <linux/debugfs.h>
 #include <linux/module.h>
-#include <linux/shm_ipc.h>
 #include <linux/io.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
+
+#if IS_ENABLED(CONFIG_SHM_IPC)
+#include <linux/shm_ipc.h>
+#endif
 
 #include "abox.h"
 
@@ -24,25 +29,34 @@
 static int samsung_abox_vss_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	void __iomem *magic_addr = phys_to_virt(shm_get_phys_base() +
-			shm_get_cp_size() + VSS_MAGIC_OFFSET);
+#if IS_ENABLED(CONFIG_SHM_IPC)
+	phys_addr_t pa;
+	u32 *magic;
 
-	dev_dbg(dev, "%s\n", __func__);
-	writel(0, magic_addr);
+	if (!shm_get_vss_size()) {
+		dev_info(dev, "vss: modem shm absent\n");
+		return 0;
+	}
+	pa = shm_get_phys_base() + shm_get_cp_size() + VSS_MAGIC_OFFSET;
+	magic = memremap(pa, sizeof(u32), MEMREMAP_WB);
+	if (!magic)
+		return -ENOMEM;
+	WRITE_ONCE(*magic, 0);
+	memunmap(magic);
 	return 0;
+#else
+	dev_info(dev, "vss: modem shm absent\n");
+	return 0;
+#endif
 }
 
-static int samsung_abox_vss_remove(struct platform_device *pdev)
+static void samsung_abox_vss_remove(struct platform_device *pdev)
 {
-	struct device *dev = &pdev->dev;
-
-	dev_dbg(dev, "%s\n", __func__);
-	return 0;
 }
 
 static const struct of_device_id samsung_abox_vss_match[] = {
 	{
-		.compatible = "samsung,abox-vss",
+		.compatible = "samsung,exynos8895-abox-vss",
 	},
 	{},
 };
