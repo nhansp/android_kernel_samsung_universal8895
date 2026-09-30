@@ -311,6 +311,12 @@ int e8895_pmu_cluster_up(unsigned int cpu)
 	return ret;
 }
 
+/* DEBUG (cpuidle c2_trace=2): core STATUS[3:0], CAL:pmucal_cpu_exynos8895.h:10-12 */
+u32 e8895_pmu_cpu_status(unsigned int cpu)
+{
+	return readl_relaxed(pmu_base_addr + E8895_CPU_CONF(e8895_phycpu(cpu)) + 4) & E8895_CPU_PWR;
+}
+
 /* S:drivers/soc/samsung/exynos-pmu.c:102-124,151-155: L2_STATUS & 0x7 and NONCPU_STATUS & 0xF */
 bool e8895_pmu_cluster_is_on(unsigned int cpu)
 {

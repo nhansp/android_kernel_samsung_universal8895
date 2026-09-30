@@ -26,6 +26,7 @@
 #include <linux/smp.h>
 #include <linux/soc/samsung/exynos8895-pm.h>
 #include <linux/spinlock.h>
+#include <linux/workqueue.h>
 #include <asm/cpuidle.h>
 #include <asm/proc-fns.h>
 
@@ -55,16 +56,21 @@ module_param(sicd_enabled, bool, 0644);
  *   c2_cpus=<mask>  CPUs that run the c2_mode body; the others run a plain WFI
  *   timer_stop=0    drop CPUIDLE_FLAG_TIMER_STOP from state1 (honoured with c2_mode=1 only)
  *   c2_trace=1      print the first state1 entry and return of every CPU
+ *   c2_trace=2      also, every 2 s from an unbound worker: per-CPU entries/returns
+ *                   of the c2_mode body and the PMU CONFIGURATION/STATUS of each
+ *                   core; a CPU that stayed inside for two samples is sent an IPI
+ *                   (SGI) once, to tell "not woken" from "woken but stuck"
  */
 static unsigned int c2_mode;
 static unsigned int c2_cpus = 0xff;
 static bool timer_stop = true;
-static bool c2_trace;
+static unsigned int c2_trace;
 module_param(c2_mode, uint, 0444);
 module_param(c2_cpus, uint, 0444);
 module_param(timer_stop, bool, 0444);
-module_param(c2_trace, bool, 0444);
+module_param(c2_trace, uint, 0444);
 static unsigned long c2_traced_in, c2_traced_out;	/* bit per CPU */
+static atomic_t c2_dbg_in[8], c2_dbg_out[8];
 
 static DEFINE_RAW_SPINLOCK(c2_lock);		/* S:drivers/soc/samsung/exynos-powermode.c:374 */
 static struct cpumask c2_mask;			/* :46, update_c2_state() :376-382 */
@@ -241,12 +247,16 @@ static __cpuidle int __e8895_enter_c2(struct cpuidle_device *dev, int idx, bool 
 	} else {
 		state = e8895_c2_prepare(cpu, upgrades);
 	}
+	if (c2_trace && cpu < 8)
+		atomic_inc(&c2_dbg_in[cpu]);
 	if (c2_trace && !test_and_set_bit(cpu, &c2_traced_in))
 		pr_info("exynos8895_idle: cpu%u mode=%u enter 0x%08x conf_ok=%d\n",
 			cpu, mode, state, e8895_pmu_cpu_conf_ok(cpu));
 	ret = e8895_psci_suspend(state);			/* S:drivers/cpuidle/cpuidle-exynos64.c:136 */
 	if (mode != 2)
 		e8895_c2_finish(cpu, ret != 0);
+	if (c2_trace && cpu < 8)
+		atomic_inc(&c2_dbg_out[cpu]);
 	if (c2_trace && !test_and_set_bit(cpu, &c2_traced_out))
 		pr_info("exynos8895_idle: cpu%u mode=%u return %d conf_ok=%d\n",
 			cpu, mode, ret, e8895_pmu_cpu_conf_ok(cpu));
@@ -276,6 +286,37 @@ static __cpuidle int e8895_enter_c2_s2idle(struct cpuidle_device *dev,
 
 static void e8895_nop(void *info)
 {
+}
+
+/* DEBUG (c2_trace=2): periodic view of the C2 body from a CPU that is awake */
+static void e8895_c2_watch_fn(struct work_struct *w);
+static DECLARE_DELAYED_WORK(e8895_c2_watch, e8895_c2_watch_fn);
+static unsigned int c2_dbg_stuck[8];
+static unsigned long c2_dbg_poked;
+
+static void e8895_c2_watch_fn(struct work_struct *w)
+{
+	char b[256];
+	unsigned int c;
+	int k = 0;
+
+	for_each_possible_cpu(c) {
+		int in, out;
+
+		if (c >= 8)
+			break;
+		in = atomic_read(&c2_dbg_in[c]);
+		out = atomic_read(&c2_dbg_out[c]);
+		k += scnprintf(b + k, sizeof(b) - k, " %u:%d/%d/c%d/s%x", c, in, out,
+			       e8895_pmu_cpu_conf_ok(c), e8895_pmu_cpu_status(c));
+		c2_dbg_stuck[c] = in > out ? c2_dbg_stuck[c] + 1 : 0;
+		if (c2_dbg_stuck[c] == 2 && !test_and_set_bit(c, &c2_dbg_poked)) {
+			k += scnprintf(b + k, sizeof(b) - k, "(poke)");
+			smp_call_function_single(c, e8895_nop, NULL, 0);
+		}
+	}
+	pr_info("exynos8895_idle: watch in/out/conf_ok/status:%s\n", b);
+	queue_delayed_work(system_unbound_wq, &e8895_c2_watch, 2 * HZ);
 }
 
 /* S:drivers/soc/samsung/exynos-powermode.c:737-767: no cluster power-down during a DVFS change */
@@ -386,6 +427,8 @@ static int __init e8895_idle_init(void)
 	cpufreq_register_notifier(&e8895_cpufreq_nb, CPUFREQ_TRANSITION_NOTIFIER);
 	register_reboot_notifier(&e8895_reboot_nb);
 	pr_info("exynos8895_idle: C2 on 8 CPUs, cpd=%d sicd=%d\n", cpd_enabled, sicd_enabled);
+	if (c2_trace >= 2)						/* DEBUG */
+		queue_delayed_work(system_unbound_wq, &e8895_c2_watch, 2 * HZ);
 	if (c2_mode || c2_cpus != 0xff || !timer_stop || c2_trace)	/* DEBUG */
 		pr_info("exynos8895_idle: DEBUG c2_mode=%u c2_cpus=0x%02x timer_stop=%d c2_trace=%d\n",
 			c2_mode, c2_cpus, !(c2_mode == 1 && !timer_stop), c2_trace);
