@@ -19,6 +19,7 @@
 #include <linux/seq_file.h>
 
 #include <dt-bindings/clock/samsung,exynos8895-acpm.h>
+#include <soc/samsung/exynos8895-bus-qos.h>
 
 #include <mali_kbase.h>
 #include <mali_kbase_defs.h>
@@ -38,7 +39,30 @@ struct exynos8895_gpu {
 	struct mutex lock;		/* cur_rate, want_rate */
 	unsigned long cur_rate, want_rate;
 	u32 autosuspend_ms;
+	struct exynos_bus_qos_request mif_req;
 };
+
+/*
+ * Stock gpu_dvfs_table column 4 (mem_freq) per GPU frequency (FDT:4648,
+ * S:drivers/gpu/arm/b_r16p0/platform/exynos/mali_kbase_platform.c:393;
+ * spec L2b 2.2 REQ-2B-L6A-1).
+ */
+static s32 exynos8895_gpu_to_mif_khz(unsigned long gpu_rate_hz)
+{
+	unsigned long khz = gpu_rate_hz / 1000;
+
+	if (khz >= 546000)
+		return 1794000;
+	if (khz >= 455000)
+		return 1540000;
+	if (khz >= 385000)
+		return 1352000;
+	if (khz >= 338000)
+		return 1014000;
+	if (khz >= 260000)
+		return 421000;
+	return 0;
+}
 
 /* Every member NULL: the core tests each one (L6A 5.1.2) */
 static struct kbase_vendor_callbacks exynos8895_vendor_cb;
@@ -54,15 +78,29 @@ static struct kbase_device *exynos8895_kbdev;
 int exynos8895_gpu_set_rate(struct kbase_device *kbdev, unsigned long rate)
 {
 	struct exynos8895_gpu *gpu = kbdev->platform_context;
+	s32 old_mif, new_mif;
+	bool active;
 
 	mutex_lock(&gpu->lock);
+	old_mif = exynos8895_gpu_to_mif_khz(gpu->cur_rate);
+	new_mif = exynos8895_gpu_to_mif_khz(rate);
 	gpu->want_rate = rate;
-	if (pm_runtime_get_if_active(kbdev->dev) > 0) {
+	active = (pm_runtime_get_if_active(kbdev->dev) > 0);
+	mutex_unlock(&gpu->lock);
+
+	if (active) {
+		/* stock S:drivers/gpu/arm/b_r16p0/platform/exynos/gpu_control.c:184-198:
+		 * raise MIF floor before raising clock, lower MIF floor after */
+		if (new_mif > old_mif)
+			exynos_bus_qos_update_request(&gpu->mif_req, new_mif);
+		mutex_lock(&gpu->lock);
 		if (!clk_set_rate(gpu->clk, rate))
 			gpu->cur_rate = rate;
+		mutex_unlock(&gpu->lock);
+		if (new_mif < old_mif)
+			exynos_bus_qos_update_request(&gpu->mif_req, new_mif);
 		pm_runtime_put_autosuspend(kbdev->dev);
 	}
-	mutex_unlock(&gpu->lock);
 
 	return 0;
 }
@@ -111,6 +149,13 @@ static int exynos8895_platform_init(struct kbase_device *kbdev)
 	kbdev->vendor_callbacks = &exynos8895_vendor_cb;
 	exynos8895_kbdev = kbdev;
 
+	/*
+	 * stock S:drivers/gpu/arm/b_r16p0/platform/exynos/gpu_pmqos.c:62 adds the
+	 * request at 0; the first runtime resume or rate change sets the floor
+	 * (spec L2b REQ-2B-L6A-1)
+	 */
+	exynos_bus_qos_add_request(&gpu->mif_req, EXYNOS_BUS_QOS_MIF, 0);
+
 	dev_info(dev, "exynos8895: g3d %lu Hz via ACPM idx %d, %d OPPs, autosuspend %u ms\n",
 		 clk_get_rate(gpu->clk), EXYNOS8895_CLK_ACPM_DVFS_G3D,
 		 dev_pm_opp_get_opp_count(dev), gpu->autosuspend_ms);
@@ -120,6 +165,10 @@ static int exynos8895_platform_init(struct kbase_device *kbdev)
 
 static void exynos8895_platform_term(struct kbase_device *kbdev)
 {
+	struct exynos8895_gpu *gpu = kbdev->platform_context;
+
+	if (gpu)
+		exynos_bus_qos_remove_request(&gpu->mif_req);
 	exynos8895_kbdev = NULL;
 	kbdev->platform_context = NULL;
 }
@@ -186,6 +235,10 @@ static int exynos8895_pm_runtime_on(struct kbase_device *kbdev)
 {
 	struct exynos8895_gpu *gpu = kbdev->platform_context;
 
+	/* stock S:drivers/gpu/arm/b_r16p0/platform/exynos/gpu_control.c:188 */
+	exynos_bus_qos_update_request(&gpu->mif_req,
+				      exynos8895_gpu_to_mif_khz(gpu->want_rate));
+
 	mutex_lock(&gpu->lock);
 	if (gpu->want_rate != gpu->cur_rate &&
 	    !clk_set_rate(gpu->clk, gpu->want_rate))
@@ -198,6 +251,10 @@ static int exynos8895_pm_runtime_on(struct kbase_device *kbdev)
 /* Stock's clock gating and DVFS-timer stop here are Samsung DVFS (:276-300) */
 static void exynos8895_pm_runtime_off(struct kbase_device *kbdev)
 {
+	struct exynos8895_gpu *gpu = kbdev->platform_context;
+
+	/* stock S:drivers/gpu/arm/b_r16p0/platform/exynos/gpu_control.c:274 */
+	exynos_bus_qos_update_request(&gpu->mif_req, 0);
 }
 
 static void exynos8895_pm_resume(struct kbase_device *kbdev)
