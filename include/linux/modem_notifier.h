@@ -23,6 +23,7 @@ enum modem_event {
 };
 
 extern int register_modem_event_notifier(struct notifier_block *nb);
+extern int unregister_modem_event_notifier(struct notifier_block *nb);
 extern void modem_notify_event(enum modem_event evt);
 
 #endif/*__MODEM_NOTIFIER_H__*/
