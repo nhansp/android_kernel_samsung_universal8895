@@ -174,3 +174,31 @@
 		};
 	};
 };
+
+/*
+ * The panel's SPI port, bit-banged on gpe5 (spi_gpio + panel_spi@0,
+ * FDT:10268-10284; L5 9.4 e, l5-ext DESIGN 2.2): the vendor COPR reads go
+ * over it. The vendor gpio-sck/gpio-miso/gpio-mosi properties are the 6.18
+ * spi-gpio binding's sck-/miso-/mosi-gpios; gpe5 = phandle 0x58 (FDT:2062-2069),
+ * flags 0 = active high. hsi2c13/14, the other users of gpe5-0..3, are
+ * disabled (FDT:5468, 5485).
+ */
+/ {
+	spi_gpio: spi {
+		compatible = "spi-gpio";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		sck-gpios = <&gpe5 3 GPIO_ACTIVE_HIGH>;
+		miso-gpios = <&gpe5 0 GPIO_ACTIVE_HIGH>;
+		mosi-gpios = <&gpe5 1 GPIO_ACTIVE_HIGH>;
+		cs-gpios = <&gpe5 2 GPIO_ACTIVE_HIGH>;
+		num-chipselects = <1>;
+
+		panel_spi@0 {
+			compatible = "panel_spi";
+			reg = <0>;
+			spi-max-frequency = <1200000>;	/* FDT:10281 0x124f80 */
+			bits-per-word = <8>;
+		};
+	};
+};
