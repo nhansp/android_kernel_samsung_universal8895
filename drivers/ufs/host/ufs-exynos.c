@@ -24,6 +24,7 @@
 #include <linux/sys_soc.h>
 #include <linux/soc/samsung/greatlte-l4.h>
 #include <linux/soc/samsung/greatlte-l4b.h>
+#include <soc/samsung/exynos8895-bus-qos.h>
 
 #include <ufs/ufshcd.h>
 #include "ufshcd-pltfrm.h"
@@ -1092,7 +1093,11 @@ static int exynos_ufs_setup_clocks(struct ufs_hba *hba, bool on,
 		if (ufs->opts & EXYNOS_UFS_OPT_BROKEN_AUTO_CLK_CTRL)
 			exynos_ufs_disable_auto_ctrl_hcc(ufs);
 		exynos_ufs_ungate_clks(ufs);
+		if (ufs->pm_qos_int_value)
+			exynos_bus_qos_update_request(&ufs->pm_qos_int, ufs->pm_qos_int_value);
 	} else if (!on && status == PRE_CHANGE) {
+		if (ufs->pm_qos_int_value)
+			exynos_bus_qos_update_request(&ufs->pm_qos_int, 0);
 		exynos_ufs_gate_clks(ufs);
 		if (ufs->opts & EXYNOS_UFS_OPT_BROKEN_AUTO_CLK_CTRL)
 			exynos_ufs_enable_auto_ctrl_hcc(ufs);
@@ -1262,6 +1267,9 @@ static int exynos_ufs_parse_dt(struct device *dev, struct exynos_ufs *ufs)
 	attr->pa_granularity = PA_GRANULARITY_VAL;
 	attr->pa_tactivate = PA_TACTIVATE_VAL;
 	attr->pa_hibern8time = PA_HIBERN8TIME_VAL;
+
+	if (of_property_read_u32(np, "ufs-pm-qos-int", &ufs->pm_qos_int_value))
+		ufs->pm_qos_int_value = 0;
 
 out:
 	return ret;
@@ -1612,6 +1620,9 @@ static int exynos_ufs_init(struct ufs_hba *hba)
 		goto out;
 	}
 
+	if (ufs->pm_qos_int_value)
+		exynos_bus_qos_add_request(&ufs->pm_qos_int, EXYNOS_BUS_QOS_INT, 0);
+
 	ufs->phy = devm_phy_get(dev, "ufs-phy");
 	if (IS_ERR(ufs->phy)) {
 		ret = PTR_ERR(ufs->phy);
@@ -1642,6 +1653,8 @@ static int exynos_ufs_init(struct ufs_hba *hba)
 	return 0;
 
 out:
+	if (ufs->pm_qos_int_value)
+		exynos_bus_qos_remove_request(&ufs->pm_qos_int);
 	hba->priv = NULL;
 	return ret;
 }
@@ -1649,6 +1662,15 @@ out:
 static void exynos_ufs_exit(struct ufs_hba *hba)
 {
 	struct exynos_ufs *ufs = ufshcd_get_variant(hba);
+
+	/*
+	 * ufshcd_hba_exit() calls setup_clocks(off) after this: clear the value
+	 * so that it does not update the removed request
+	 */
+	if (ufs->pm_qos_int_value) {
+		exynos_bus_qos_remove_request(&ufs->pm_qos_int);
+		ufs->pm_qos_int_value = 0;
+	}
 
 	phy_power_off(ufs->phy);
 	phy_exit(ufs->phy);
@@ -1850,6 +1872,10 @@ static int exynos_ufs_suspend(struct ufs_hba *hba, enum ufs_pm_op pm_op,
 
 	if (status == PRE_CHANGE)
 		return 0;
+
+	/* stock __exynos_ufs_suspend(), S:drivers/scsi/ufs/ufs-exynos.c:1841 */
+	if (ufs->pm_qos_int_value)
+		exynos_bus_qos_update_request(&ufs->pm_qos_int, 0);
 
 	if (ufs->drv_data->suspend)
 		ufs->drv_data->suspend(ufs);
