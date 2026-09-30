@@ -152,4 +152,15 @@ config SND_SOC_SAMSUNG_MIDAS_WM1811
 source "sound/soc/samsung/abox/Kconfig"
 source "sound/soc/samsung/vts/Kconfig"
 
+config SND_SOC_EXYNOS8895_MADERA
+	tristate "Madera audio card of the Samsung Galaxy Note 8 (Exynos8895)"
+	depends on SND_SOC_SAMSUNG_ABOX && SND_SOC_SAMSUNG_VTS
+	select SND_SOC_CS47L92
+	select EXTCON_MADERA
+	select SND_SOC_MAX98506
+	help
+	  Say Y to enable the "Exynos8895-Madera" sound card of the
+	  SM-N950N: ABOX DMA front ends, the CS47L93 codec, the MAX98506
+	  speaker amplifier and the VTS voice trigger.
+
 endif #SND_SOC_SAMSUNG

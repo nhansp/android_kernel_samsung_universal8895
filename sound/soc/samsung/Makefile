@@ -46,4 +46,6 @@ obj-$(CONFIG_SND_SOC_SAMSUNG_MIDAS_WM1811) += snd-soc-midas-wm1811.o
 # L6E audio
 obj-$(CONFIG_SND_SOC_SAMSUNG_ABOX) += abox/
 obj-$(CONFIG_SND_SOC_SAMSUNG_VTS) += vts/
+snd-soc-exynos8895-madera-y := exynos8895_madera.o
+obj-$(CONFIG_SND_SOC_EXYNOS8895_MADERA) += snd-soc-exynos8895-madera.o
 
