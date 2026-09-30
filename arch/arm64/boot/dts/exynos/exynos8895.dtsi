@@ -2761,7 +2761,7 @@
 
 			trips {
 				isp-crit {
-					temperature = <115000>;	/* FDT:9712 isp-hot */
+					temperature = <110000>;	/* ECT SB:0x509d0 ISP level 4 = 110 C overrides FDT:9712 isp-hot 115 C (spec/L2c_thermal.md:90,108, Q-ISP1: user 2026-09-30) */
 					hysteresis = <5000>;
 					type = "critical";
 				};
