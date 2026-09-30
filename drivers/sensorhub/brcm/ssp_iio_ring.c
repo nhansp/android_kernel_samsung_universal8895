@@ -1,0 +1,70 @@
+/*
+ *  Copyright (C) 2011, Samsung Electronics Co. Ltd. All Rights Reserved.
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
+#include <linux/module.h>
+#include <linux/init.h>
+#include <linux/slab.h>
+#include <linux/i2c.h>
+#include <linux/err.h>
+#include <linux/delay.h>
+#include <linux/sysfs.h>
+#include <linux/jiffies.h>
+#include <linux/irq.h>
+#include <linux/interrupt.h>
+#include <linux/kfifo.h>
+#include <linux/poll.h>
+#include <linux/miscdevice.h>
+
+#include "ssp.h"
+#include <linux/iio/iio.h>
+#include <linux/iio/kfifo_buf.h>
+#include <linux/iio/trigger_consumer.h>
+#include <linux/iio/sysfs.h>
+/*
+ *#include "../../staging/iio/iio.h"
+ *#include "../../staging/iio/kfifo_buf.h"
+ *#include "../../staging/iio/trigger_consumer.h"
+ *#include "../../staging/iio/sysfs.h"
+ */
+
+void ssp_iio_unconfigure_ring(struct iio_dev *indio_dev)
+{
+	/* devm-managed (L6C 5.3.4) */
+}
+
+static int ssp_predisable(struct iio_dev *indio_dev)
+{
+	return 0;
+}
+
+static int ssp_preenable(struct iio_dev *indio_dev)
+{
+	return 0;
+}
+
+
+static const struct iio_buffer_setup_ops ssp_iio_ring_setup_ops = {
+	.preenable = &ssp_preenable,
+	.predisable = &ssp_predisable,
+};
+
+int ssp_iio_configure_ring(struct iio_dev *indio_dev)
+{
+	/* A:include/linux/iio/kfifo_buf.h:14-20; adds INDIO_BUFFER_SOFTWARE */
+	return devm_iio_kfifo_buffer_setup(indio_dev->dev.parent, indio_dev, &ssp_iio_ring_setup_ops);
+}
+

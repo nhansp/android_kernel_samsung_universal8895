@@ -1,0 +1,25 @@
+Maxim MAX8690x heart-rate sensor (Samsung input driver)
+=======================================================
+
+The MAX86900/86902/86907/86909 family driver of Samsung
+(drivers/optics/hrmsensor.c + hrm_max86902.c); the Galaxy Note 8 carries a
+MAX86907. It reports as the input device hrm_sensor with Samsung sysfs nodes,
+unlike the upstream IIO maxim,max30102 binding. The transplanted parser reads
+the stock hrmsensor,* names.
+
+Required properties:
+- compatible: "maxim,max86902-hrm"
+- reg: I2C address (0x57)
+- hrmsensor,hrm_int-gpio: the interrupt line; the driver derives the interrupt
+  from it and requests it falling-edge
+- vdd-1p8-supply: 1.8 V sensor supply
+- led-3p3-supply: 3.3 V LED supply
+- i2c-1p8-supply: 1.8 V I2C pull-up supply (kept on once enabled)
+
+Optional properties:
+- hrmsensor,vdd_1p8, hrmsensor,led_3p3, hrmsensor,i2c_1p8: the stock rail name
+  strings (logged only)
+- pinctrl-names: "default", "sleep", "idle"; pinctrl-0..2: the interrupt pin
+  states
+
+Example: arch/arm64/boot/dts/exynos/exynos8895-greatlte-l6c.dtsi (hrm@57).

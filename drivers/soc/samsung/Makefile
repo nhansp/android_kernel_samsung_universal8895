@@ -49,3 +49,8 @@ obj-$(CONFIG_GREATLTE_HB_L6D_BT)	+= greatlte-hb-l6d-bt.o
 obj-$(CONFIG_GREATLTE_CSPC)		+= greatlte-cspc.o
 # L6F slice fp (WP-6F)
 obj-$(CONFIG_GREATLTE_HB_L6F_FP)	+= greatlte-hb-l6f-fp.o
+# greatlte WP-6C: CP power control (L6C 5.1.4; stock S:drivers/soc/samsung/Makefile:40)
+obj-$(CONFIG_SEC_SIPC_MODEM_IF)	+= exynos8895-pmu-cp.o
+
+# L6C modem + sensor hub heartbeat
+obj-$(CONFIG_GREATLTE_HB_L6C)	+= greatlte-hb-l6c.o

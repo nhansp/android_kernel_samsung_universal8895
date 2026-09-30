@@ -260,3 +260,10 @@ config GREATLTE_HB_L6F_FP
 	default GREATLTE_HB
 	help
 	  Registers the L6F fingerprint heartbeat rows.
+# L6C modem + sensor hub heartbeat
+config GREATLTE_HB_L6C
+	bool "greatlte heartbeat: L6C modem and sensor hub"
+	depends on GREATLTE_HB
+	default GREATLTE_HB
+	help
+	  Registers the L6C heartbeat rows cp, cpmb, hub and l38.

@@ -1,0 +1,23 @@
+Semtech SX9320 capacitive grip sensor (Samsung input driver)
+============================================================
+
+The SX9320 of the Galaxy Note 8 reports grip touch/release as the input device
+grip_sensor (REL_MISC 1 = touch, 2 = release) with Samsung sysfs nodes
+(drivers/sensorhub/brcm/sx9320.c); it is not the IIO sx9310/sx9324/sx9360
+binding. The transplanted parser reads the stock sx9320,* names.
+
+Required properties:
+- compatible: "semtech,sx9320-grip"
+- reg: I2C address (0x28)
+- sx9320,nirq-gpio: the nIRQ line; the driver derives the interrupt from it
+  and requests it falling-edge
+- sx9320,phen, sx9320,gain, sx9320,again, sx9320,scan_period, sx9320,range,
+  sx9320,sampling_freq, sx9320,resolution, sx9320,rawfilt, sx9320,hyst,
+  sx9320,avgposfilt, sx9320,avgnegfilt, sx9320,avgthresh, sx9320,debouncer,
+  sx9320,normal_thd, sx9320,afeph0, sx9320,afeph1, sx9320,afeph2,
+  sx9320,afeph3: register values (u32 cells holding u8 values)
+
+Optional properties:
+- pinctrl-names, pinctrl-0: "default" state of the nIRQ pin
+
+Example: arch/arm64/boot/dts/exynos/exynos8895-greatlte-l6c.dtsi (grip@28).

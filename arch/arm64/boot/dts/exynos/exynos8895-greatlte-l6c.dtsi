@@ -10,3 +10,543 @@
  * value, which gl-verify V-DUP reports as an error. L0's reserved-memory stays in
  * the .dts; carveout additions and flag changes are &label edits here (plan X-8).
  */
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/soc/samsung,exynos-usi.h>	/* USI_MODE_SPI, 4.2 */
+#include "exynos-pinctrl.h"			/* A:arch/arm64/boot/dts/exynos/exynos-pinctrl.h, pin macros of 4.2 */
+
+/* L6C 4.1 (6E modem) */
+
+/* L6.7, plan X-8 (registered flag change): the ported shm_ipc needs the linear map of the CP window
+ * (ZMB phys_to_virt: S:drivers/misc/mcu_ipc/shm_ipc.c:357; ZMB cells dma_map_single'd:
+ * S:drivers/misc/modem_v1/link_device_memory_sbd.c:1033) and of the CP-log window (released page by page with
+ * free_reserved_page() when the S-Boot token is not "on": S:.../shm_ipc.c:434-445, :585-587). Stock kept both mapped. */
+&modem_mem {
+	/delete-property/ no-map;
+};
+
+&cp_ram_logging_mem {
+	/delete-property/ no-map;
+};
+
+&soc {
+	/* AP<->CP mailbox. FDT:10652-10659; S:arch/arm64/boot/dts/exynos/exynos8895-greatlte_common.dtsi:1124-1130 */
+	mcu_ipc_cp: mailbox@15b40000 {
+		compatible = "samsung,exynos8895-mcu-ipc";	/* new; stock "samsung,exynos-shd-ipc-mailbox" FDT:10654 */
+		reg = <0x15b40000 0x180>;			/* FDT:10655 <0x00 0x15b40000 0x180> */
+		interrupts = <GIC_SPI 97 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:10658 <0x00 0x61 0x00> */
+		mcu,name = "mcu_ipc_cp";			/* FDT:10656 */
+		mcu,id = <0>;					/* FDT:10657, MCU_CP (S:drivers/misc/mcu_ipc/mcu_ipc.h:20-24) */
+		/* FDT:10653 mcu,irq_affinity_mask = <3> dropped: used only by ARGOS (D-8) */
+	};
+};
+
+/ {
+	/* CP shared-memory layout. FDT:10642-10650; S:.../modem-ss355ap-pdata.dtsi:370-379 (unit address dropped: no reg) */
+	shmem_cp: shmem-ipc {
+		compatible = "samsung,exynos8895-shm-ipc";	/* new; stock "samsung,exynos-shm_ipc" FDT:10643 */
+		memory-region = <&modem_mem>, <&cp_ram_logging_mem>;	/* L0 4.5 labels; stock RESERVEDMEM_OF_DECLARE shm_ipc.c:459,:472 */
+		memory-region-names = "modem_if", "cp_ram_logging";
+		shmem,cp_size = <0x7a00000>;			/* FDT:10644 "CP 122MB" */
+		shmem,vss_size = <0x600000>;			/* FDT:10645 "VSS 6MB" */
+		shmem,ipc_offset = <0x8000000>;			/* FDT:10646 */
+		shmem,ipc_size = <0x500000>;			/* FDT:10647 "5MB" */
+		shmem,zmb_offset = <0x8500000>;			/* FDT:10648 (dtc prints "\bP\0" = 08 50 00 00); S:...pdata.dtsi:377 */
+		shmem,zmb_size = <0xb00000>;			/* FDT:10649 "11MB" */
+		samsung,acpm-dump = <&apm_sram>;		/* L2 4.2; replaces acpm_ipc dump-base/dump-size FDT:6692-6693 (0x16500000/0xb400) */
+	};
+
+	/* Modem interface. FDT:10286-10640; S:.../modem-ss355ap-pdata.dtsi:14-368 + S:.../exynos8895-greatlte_common.dtsi:1132-1140.
+	 * Must stay at the root with this reg: platform device "10000.mif_pdata" (A:drivers/of/device.c:304-305, cbd path F-15),
+	 * resource start 0x10000 = CP main-binary offset in the boot region (S:.../link_device_shmem.c:2085-2088, :3735);
+	 * zero size is legal (A:drivers/of/address.c:195-196). */
+	mif_pdata {
+		compatible = "samsung,exynos8895-modem";	/* new; stock "sec_modem,modem_pdata" FDT:10288 */
+		reg = <0x0 0x10000 0x0>;			/* FDT:10287 */
+		interrupts = <GIC_SPI 21 IRQ_TYPE_LEVEL_HIGH>,	/* FDT:10290 idx 0 -> "cp_fail" (S:.../modem_ctrl_ss310ap.c:648) */
+			     <GIC_SPI 57 IRQ_TYPE_LEVEL_HIGH>;	/*   idx 1 -> "cp_wdt" (:664); dtsi comment :20 names them ALIVE_CP_ACTIVE / CP2AP_RESET_REQ */
+		samsung,mailbox = <&mcu_ipc_cp>;		/* new: probe ordering (5.1.1) */
+		samsung,shmem = <&shmem_cp>;			/* new: probe ordering */
+		samsung,pmu-syscon = <&pmu_system_controller>;	/* new: D-5 */
+
+		mif,name = "ss355ap";				/* FDT:10291 */
+		mif,modem_net = <0>;				/* FDT:10292 UMTS_NETWORK */
+		mif,modem_type = <10>;				/* FDT:10293 SEC_SS310AP */
+		mif,use_handover = <0>;				/* FDT:10294 */
+		mif,ipc_version = <50>;				/* FDT:10295 0x32 = SIPC 5.0 */
+		mif,link_types = <0x200>;			/* FDT:10296 LINKDEV_SHMEM */
+		mif,link_name = "shmem";			/* FDT:10297 */
+		mif,link_attrs = <0x7c9>;			/* FDT:10298 XMIT_BTDLR|DUMP_ALIGNED|BOOT_ALIGNED|MEM_DUMP|MEM_BOOT|DPRAM_MAGIC|SBD_IPC */
+		mif,num_iodevs = <20>;				/* FDT:10299 0x14 */
+		mif,buff_offset = <0x500000>;			/* FDT:10300 */
+		mif,buff_size = <0x900000>;			/* FDT:10301 */
+		mif,bufpool_2nd_base = <0xe9000000>;		/* FDT:10302 - parsed, never provided to CP (C-2) */
+		mif,bufpool_2nd_size = <0x4000000>;		/* FDT:10303 */
+		mbx_ap2cp_msg = <0>;				/* FDT:10304 */
+		mbx_cp2ap_msg = <1>;				/* FDT:10305 */
+		mbx_ap2cp_united_status = <2>;			/* FDT:10306 */
+		mbx_cp2ap_united_status = <3>;			/* FDT:10307 */
+		mbx_ap2cp_mif_value = <4>;			/* FDT:10308 */
+		mbx_ap2cp_kerneltime = <9>;			/* FDT:10309 */
+		mif,int_ap2cp_msg = <0>;			/* FDT:10310 */
+		mif,int_ap2cp_wakeup = <1>;			/* FDT:10311 */
+		mif,int_ap2cp_status = <2>;			/* FDT:10312 */
+		mif,int_ap2cp_active = <3>;			/* FDT:10313 */
+		mif,irq_cp2ap_msg = <0>;			/* FDT:10314 */
+		mif,irq_cp2ap_status = <2>;			/* FDT:10315 */
+		mif,irq_cp2ap_active = <4>;			/* FDT:10316 */
+		mif,irq_cp2ap_wakelock = <8>;			/* FDT:10317 */
+		mif,irq_cp2ap_ratmode = <9>;			/* FDT:10318 */
+		mbx_cp2ap_dvfsreq_cpu = <5>;			/* FDT:10319 */
+		mbx_cp2ap_dvfsreq_mif = <6>;			/* FDT:10320 */
+		mbx_cp2ap_dvfsreq_int = <7>;			/* FDT:10321 */
+		mif,irq_cp2ap_perf_req_cpu = <5>;		/* FDT:10322 */
+		mif,irq_cp2ap_perf_req_mif = <6>;		/* FDT:10323 */
+		mif,irq_cp2ap_perf_req_int = <7>;		/* FDT:10324 */
+		sbi_cp_rat_mode_mask = <0x3f>;			/* FDT:10325 */
+		sbi_cp_rat_mode_pos = <26>;			/* FDT:10326 0x1a */
+		sbi_cp_evs_mode_mask = <0x1>;			/* FDT:10327 */
+		sbi_cp_evs_mode_pos = <7>;			/* FDT:10328 */
+		sbi_cp_wakelock_mask = <0x1>;			/* FDT:10329 */
+		sbi_cp_wakelock_pos = <6>;			/* FDT:10330 */
+		sbi_lte_active_mask = <0x1>;			/* FDT:10331 */
+		sbi_lte_active_pos = <5>;			/* FDT:10332 */
+		sbi_cp_status_mask = <0xf>;			/* FDT:10333 */
+		sbi_cp_status_pos = <1>;			/* FDT:10334 */
+		sbi_cp2ap_wakelock_mask = <0x1>;		/* FDT:10335 */
+		sbi_cp2ap_wakelock_pos = <6>;			/* FDT:10336 */
+		sbi_pda_active_mask = <0x1>;			/* FDT:10337 */
+		sbi_pda_active_pos = <5>;			/* FDT:10338 */
+		sbi_ap_status_mask = <0xf>;			/* FDT:10339 */
+		sbi_ap_status_pos = <1>;			/* FDT:10340 */
+		sbi_crash_type_mask = <0xf>;			/* FDT:10341 */
+		sbi_crash_type_pos = <23>;			/* FDT:10342 0x17 */
+		sbi_device_type_mask = <0x1f>;			/* FDT:10343 */
+		sbi_device_type_pos = <18>;			/* FDT:10344 0x12 */
+		sbi_ext_backtrace_mask = <0x1>;			/* FDT:10345 */
+		sbi_ext_backtrace_pos = <17>;			/* FDT:10346 0x11 */
+		sbi_ds_det_mask = <0x3>;			/* FDT:10347 */
+		sbi_ds_det_pos = <14>;				/* FDT:10348 0x0e */
+		sbi_sys_rev_mask = <0xff>;			/* FDT:10349 */
+		sbi_sys_rev_pos = <6>;				/* FDT:10350 */
+		sbi_lockval_cp2ap_dvfsreq_endian_mask = <0x1>;	/* FDT:10351 */
+		sbi_lockval_cp2ap_dvfsreq_endian_pos = <31>;	/* FDT:10352 0x1f */
+		sbi_lockval_cp2ap_dvfsreq_index_mask = <0x7fff>;	/* FDT:10353 */
+		sbi_lockval_cp2ap_dvfsreq_index_pos = <0>;	/* FDT:10354 */
+		sbi_ap2cp_kerneltime_sec_mask = <0xfff>;	/* FDT:10355 */
+		sbi_ap2cp_kerneltime_sec_pos = <20>;		/* FDT:10356 0x14 */
+		sbi_ap2cp_kerneltime_usec_mask = <0xfffff>;	/* FDT:10357 */
+		sbi_ap2cp_kerneltime_usec_pos = <0>;		/* FDT:10358 */
+		/* HW revision straps read into mailbox word 2 [13:6], bit n = GPIO n (S:.../modem_ctrl_ss310ap.c:144-167).
+		 * FDT:10359: phandle 0xd7 = gpf1, 0x140 = gpd0 (work/scratch/L6_rest/phandles.txt);
+		 * S:.../exynos8895-greatlte_common.dtsi:1133-1135 "XGPIO32-CP_REV0 ... XGPIO42-AP_REV3" */
+		gpios = <&gpf1 1 GPIO_ACTIVE_HIGH>, <&gpf1 2 GPIO_ACTIVE_HIGH>,
+			<&gpf1 3 GPIO_ACTIVE_HIGH>, <&gpf1 7 GPIO_ACTIVE_HIGH>,
+			<&gpd0 0 GPIO_ACTIVE_HIGH>, <&gpd0 1 GPIO_ACTIVE_HIGH>,
+			<&gpd0 2 GPIO_ACTIVE_HIGH>, <&gpd0 3 GPIO_ACTIVE_HIGH>;
+		/* FDT:10360 pinctrl-names = "default" without pinctrl-0: no effect in stock, dropped */
+
+		iodevs {					/* FDT:10362-10639, verbatim; channel ids per SIPC5 */
+			io_device_0 {				/* FDT:10364-10376 */
+				iod,name = "umts_ipc0"; iod,id = <0xeb>; iod,format = <0>; iod,io_type = <0>;
+				iod,links = <0x200>; iod,attrs = <0x82>; iod,app = "RIL";
+				iod,ul_num_buffers = <16>; iod,ul_buffer_size = <0x1000>;
+				iod,dl_num_buffers = <32>; iod,dl_buffer_size = <0x1000>;
+			};
+			io_device_1 {				/* FDT:10378-10390 */
+				iod,name = "umts_ipc1"; iod,id = <0xec>; iod,format = <0>; iod,io_type = <0>;
+				iod,links = <0x200>; iod,attrs = <0x82>; iod,app = "RIL";
+				iod,ul_num_buffers = <16>; iod,ul_buffer_size = <0x1000>;
+				iod,dl_num_buffers = <32>; iod,dl_buffer_size = <0x1000>;
+			};
+			io_device_2 {				/* FDT:10392-10404 */
+				iod,name = "umts_rfs0"; iod,id = <0xf5>; iod,format = <2>; iod,io_type = <0>;
+				iod,links = <0x200>; iod,attrs = <0x82>; iod,app = "RFS";
+				iod,ul_num_buffers = <16>; iod,ul_buffer_size = <0x800>;
+				iod,dl_num_buffers = <512>; iod,dl_buffer_size = <0x800>;
+			};
+			io_device_3 {				/* FDT:10406-10418 */
+				iod,name = "umts_csd"; iod,id = <0x1>; iod,format = <1>; iod,io_type = <0>;
+				iod,links = <0x200>; iod,attrs = <0x82>; iod,app = "CSVT";
+				iod,ul_num_buffers = <32>; iod,ul_buffer_size = <0x800>;
+				iod,dl_num_buffers = <64>; iod,dl_buffer_size = <0x800>;
+			};
+			io_device_4 {				/* FDT:10420-10432 */
+				iod,name = "umts_router"; iod,id = <0x19>; iod,format = <1>; iod,io_type = <0>;
+				iod,links = <0x200>; iod,attrs = <0x82>; iod,app = "Data Router";
+				iod,ul_num_buffers = <16>; iod,ul_buffer_size = <0x800>;
+				iod,dl_num_buffers = <16>; iod,dl_buffer_size = <0x800>;
+			};
+			io_device_5 {				/* FDT:10434-10446 */
+				iod,name = "umts_dm0"; iod,id = <0x1c>; iod,format = <1>; iod,io_type = <0>;
+				iod,links = <0x200>; iod,attrs = <0x82>; iod,app = "DIAG";
+				iod,ul_num_buffers = <16>; iod,ul_buffer_size = <0x800>;
+				iod,dl_num_buffers = <128>; iod,dl_buffer_size = <0x800>;
+			};
+			/* io_device_6..13: rmnet0..rmnet7, FDT:10448-10562: ids 0x0a..0x11, format 1, io_type 1 (NET),
+			 * links 0x200, attrs 0x180, napi_weight 0x40, ul/dl_num_buffers 0, ul/dl_buffer_size 0x800;
+			 * io_device_6..9 carry iod,app = "NET", 10..13 have no iod,app (FDT:10508-10562) */
+			io_device_6 {
+				iod,name = "rmnet0"; iod,id = <0x0a>; iod,format = <1>; iod,io_type = <1>;
+				iod,links = <0x200>; iod,attrs = <0x180>; iod,app = "NET"; iod,napi_weight = <64>;
+				iod,ul_num_buffers = <0>; iod,ul_buffer_size = <0x800>;
+				iod,dl_num_buffers = <0>; iod,dl_buffer_size = <0x800>;
+			};
+			io_device_7 {				/* FDT:10463-10476 */
+				iod,name = "rmnet1"; iod,id = <0x0b>; iod,format = <1>; iod,io_type = <1>;
+				iod,links = <0x200>; iod,attrs = <0x180>; iod,app = "NET"; iod,napi_weight = <64>;
+				iod,ul_num_buffers = <0>; iod,ul_buffer_size = <0x800>;
+				iod,dl_num_buffers = <0>; iod,dl_buffer_size = <0x800>;
+			};
+			io_device_8 {				/* FDT:10478-10491 */
+				iod,name = "rmnet2"; iod,id = <0x0c>; iod,format = <1>; iod,io_type = <1>;
+				iod,links = <0x200>; iod,attrs = <0x180>; iod,app = "NET"; iod,napi_weight = <64>;
+				iod,ul_num_buffers = <0>; iod,ul_buffer_size = <0x800>;
+				iod,dl_num_buffers = <0>; iod,dl_buffer_size = <0x800>;
+			};
+			io_device_9 {				/* FDT:10493-10506 */
+				iod,name = "rmnet3"; iod,id = <0x0d>; iod,format = <1>; iod,io_type = <1>;
+				iod,links = <0x200>; iod,attrs = <0x180>; iod,app = "NET"; iod,napi_weight = <64>;
+				iod,ul_num_buffers = <0>; iod,ul_buffer_size = <0x800>;
+				iod,dl_num_buffers = <0>; iod,dl_buffer_size = <0x800>;
+			};
+			io_device_10 {				/* FDT:10508-10520 (no iod,app) */
+				iod,name = "rmnet4"; iod,id = <0x0e>; iod,format = <1>; iod,io_type = <1>;
+				iod,links = <0x200>; iod,attrs = <0x180>; iod,napi_weight = <64>;
+				iod,ul_num_buffers = <0>; iod,ul_buffer_size = <0x800>;
+				iod,dl_num_buffers = <0>; iod,dl_buffer_size = <0x800>;
+			};
+			io_device_11 {				/* FDT:10522-10534 (no iod,app) */
+				iod,name = "rmnet5"; iod,id = <0x0f>; iod,format = <1>; iod,io_type = <1>;
+				iod,links = <0x200>; iod,attrs = <0x180>; iod,napi_weight = <64>;
+				iod,ul_num_buffers = <0>; iod,ul_buffer_size = <0x800>;
+				iod,dl_num_buffers = <0>; iod,dl_buffer_size = <0x800>;
+			};
+			io_device_12 {				/* FDT:10536-10548 (no iod,app) */
+				iod,name = "rmnet6"; iod,id = <0x10>; iod,format = <1>; iod,io_type = <1>;
+				iod,links = <0x200>; iod,attrs = <0x180>; iod,napi_weight = <64>;
+				iod,ul_num_buffers = <0>; iod,ul_buffer_size = <0x800>;
+				iod,dl_num_buffers = <0>; iod,dl_buffer_size = <0x800>;
+			};
+			io_device_13 {				/* FDT:10550-10562 (no iod,app) */
+				iod,name = "rmnet7"; iod,id = <0x11>; iod,format = <1>; iod,io_type = <1>;
+				iod,links = <0x200>; iod,attrs = <0x180>; iod,napi_weight = <64>;
+				iod,ul_num_buffers = <0>; iod,ul_buffer_size = <0x800>;
+				iod,dl_num_buffers = <0>; iod,dl_buffer_size = <0x800>;
+			};
+			io_device_14 {				/* FDT:10564-10576 */
+				iod,name = "multipdp_hiprio"; iod,id = <0>; iod,format = <3>; iod,io_type = <2>;
+				iod,links = <0x200>; iod,attrs = <0x180>; iod,app = "RIL";
+				iod,ul_num_buffers = <256>; iod,ul_buffer_size = <0x800>;
+				iod,dl_num_buffers = <256>; iod,dl_buffer_size = <0x800>;
+			};
+			io_device_15 {				/* FDT:10578-10590; attrs bit 12 = ATTR_ZEROCOPY (C-2) */
+				iod,name = "multipdp"; iod,id = <0>; iod,format = <3>; iod,io_type = <2>;
+				iod,links = <0x200>; iod,attrs = <0x1180>; iod,app = "RIL";
+				iod,ul_num_buffers = <512>; iod,ul_buffer_size = <0x800>;
+				iod,dl_num_buffers = <1024>; iod,dl_buffer_size = <0x8>;
+			};
+			io_device_16 {				/* FDT:10592-10600 */
+				iod,name = "umts_boot0"; iod,id = <0xd7>; iod,format = <4>; iod,io_type = <0>;
+				iod,links = <0x200>; iod,attrs = <0x2>; iod,app = "CBD";
+			};
+			io_device_17 {				/* FDT:10602-10610 */
+				iod,name = "umts_ramdump0"; iod,id = <0xe1>; iod,format = <5>; iod,io_type = <0>;
+				iod,links = <0x200>; iod,attrs = <0x202>; iod,app = "CBD";
+			};
+			io_device_18 {				/* FDT:10612-10624 */
+				iod,name = "smd4"; iod,id = <0x21>; iod,format = <1>; iod,io_type = <0>;
+				iod,links = <0x200>; iod,attrs = <0x882>;
+				iod,ul_num_buffers = <16>; iod,ul_buffer_size = <0x800>;
+				iod,dl_num_buffers = <128>; iod,dl_buffer_size = <0x800>;
+				iod,option_region = "kor_single";
+			};
+			io_device_19 {				/* FDT:10626-10638; filtered out (region usa_att) but kept: mif,num_iodevs = 20 */
+				iod,name = "umts_ciq0"; iod,id = <0x1a>; iod,format = <1>; iod,io_type = <0>;
+				iod,links = <0x200>; iod,attrs = <0x882>;
+				iod,ul_num_buffers = <16>; iod,ul_buffer_size = <0x800>;
+				iod,dl_num_buffers = <128>; iod,dl_buffer_size = <0x800>;
+				iod,option_region = "usa_att";
+			};
+		};
+	};
+};
+
+/* L6C 4.2 (6I sensor hub + GNSS) */
+
+/ {
+	/* L6 4.0 bus alias (stock spi10 = "/spi@108C0000", FDT:4214): bus spi10, device spi10.0, the
+	 * sysfs path of the LOS ueventd/sepolicy lines (L6C 7.5). Planned for WP-L6COM, absent in wp/l6f. */
+	aliases {
+		spi10 = &spi_10;
+	};
+};
+
+/* USI8 in SPI mode. Stock FDT:4987-5082 usi@10821018 usi_mode = "spi" (SW_CONF 0x4); ACK usi8
+ * A:arch/arm64/boot/dts/exynos/exynos8895.dtsi:797-806, sysreg <&syscon_peric1 0x1018> (:805) */
+&usi8 {
+	samsung,mode = <USI_MODE_SPI>;			/* A:include/dt-bindings/soc/samsung,exynos-usi.h:14; A:drivers/soc/samsung/exynos-usi.c:252 */
+	status = "okay";
+};
+
+&pinctrl_peric1 {
+	/* stock spi1_mosi_sck_ssn FDT:3184-3190 without gpe2-6 (that pin is the GPIO chip select, see cs-gpios) */
+	ssp_spi_clk_mosi: ssp-spi-clk-mosi-pins {
+		samsung,pins = "gpe2-5", "gpe2-7";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;	/* FDT:3186 <0x02> */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;	/* FDT:3187 <0x00> */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:3188 <0x03>; LV4 = 3 A:arch/arm64/boot/dts/exynos/exynos-pinctrl.h:51 */
+	};
+	ssp_spi_cs: ssp-spi-cs-pins {
+		samsung,pins = "gpe2-6";			/* FDT:3185 third pin, used as GPIO CS FDT:6588 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;	/* stock drove it as a GPIO (S:drivers/spi/spi-s3c64xx.c:1161) */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;	/* FDT:3187 */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:3188 */
+	};
+	ssp_spi_miso: ssp-spi-miso-pins {
+		samsung,pins = "gpe2-4";			/* FDT:3194 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;	/* FDT:3195 */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;	/* FDT:3196 <0x01> (A:.../exynos-pinctrl.h:15) */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:3197 */
+	};
+	ssp_mcu_req: ssp-mcu-req-pins {
+		samsung,pins = "gpe6-1";			/* FDT:3203 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;	/* FDT:3204 <0x01> */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;	/* FDT:3205 */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:3206 */
+	};
+	ssp_gps_pwr_en: ssp-gps-pwr-en-pins {
+		samsung,pins = "gpf0-3";			/* FDT:3212 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;	/* FDT:3213 */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;	/* FDT:3214 <0x01> */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:3215 */
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;	/* FDT:3216 <0x03>; A:.../exynos-pinctrl.h:22; A:drivers/pinctrl/samsung/pinctrl-samsung.c:44 */
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;	/* FDT:3217 <0x00>; pinctrl-samsung.c:45 */
+	};
+};
+
+&pinctrl_alive {
+	ssp_host_req: ssp-host-req-pins {
+		samsung,pins = "gpa3-4";			/* FDT:346 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;	/* FDT:347 <0x0f> */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;	/* FDT:348 <0x01> */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:349 */
+	};
+	ssp_batch_wake_irq: ssp-batch-wake-irq-pins {
+		samsung,pins = "gpa2-5";			/* FDT:364 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;	/* FDT:365 */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;	/* FDT:366 */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:367 */
+	};
+};
+
+&pinctrl_fsys0 {
+	ssp_mcu_resp: ssp-mcu-resp-pins {
+		samsung,pins = "gpi1-5";			/* FDT:733 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;	/* FDT:734 <0x00> */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;		/* FDT:735 <0x03> */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:736 */
+	};
+};
+
+/* spi@108C0000. FDT:6548-6592; ACK spi_10 = usi8 child @0x108c0000, SPI 409 (L6 V1). */
+&spi_10 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&ssp_spi_clk_mosi &ssp_spi_miso &ssp_spi_cs>;	/* replaces ACK <&spi10_bus> (pull/drive differ, 2.2) */
+	cs-gpios = <&gpe2 6 GPIO_ACTIVE_LOW>;		/* stock controller-data cs-gpio FDT:6588 (<0x60 0x06 0x00>, 0x60 = gpe2),
+							   driven active-low by stock S:drivers/spi/spi-s3c64xx.c:600; 6.18 uses
+							   controller cs-gpios A:drivers/spi/spi-s3c64xx.c:1308 */
+	num-cs = <1>;					/* FDT:6562 */
+	/* stock samsung,spi-fifosize = <0x40> (FDT:6551) = fifo_depth 64 of the new exynos8895 port config (5.2.1, final run I-1);
+	   stock swap-mode (FDT:6554) is not implemented by 6.18 s3c64xx and not needed (8-bit words, 5.3.1);
+	   no dmas (stock had dma-names only, FDT:6553) -> polling (A:.../spi-s3c64xx.c:1183) */
+	/* (final run, I-1) SPI source clock = stock value 50 MHz. Stock asks CAL for 2 x 26 MHz on the USI08 vclk
+	 * (S:drivers/spi/spi-s3c64xx.c:782-783 "There is half-multiplier before the SPI" clk_set_rate(src_clk, cur_speed * 2);
+	 * src_clk = "spi_busclk0" = FDT:6557-6558 <0x21 0x101> = USI08 (S:include/dt-bindings/clock/exynos8895.h:98,106)
+	 * = VCLK_SPL_CLK_PERIC1_USI08_BLK_CMU (S:drivers/clk/samsung/clk-exynos8895.c:559)); CAL get_lut picks the first LUT
+	 * row with rate <= request (S:drivers/soc/samsung/cal-if/vclk.c:15-26, :150 rate/1000): 52000 -> {50000, l2}
+	 * (S:.../cal-if/exynos8895/cmucal-vclk.c:2719-2726) = params {7, 2} (S:.../cmucal-vclklut.c:416-418) =
+	 * DIV_CLKCMU_PERIC1_USI08 ratio 7 (/8) + MUX_CLKCMU_PERIC1_USI08 select 2 = DIV_PLL_SHARED2_DIV2
+	 * (vclk list S:.../cmucal-vclk.c:206-209; parents S:.../cmucal-node.c:217-222); 400 MHz / 8 = 50 MHz (the same
+	 * mux 2 gives 200 MHz with ratio 1 in row nm {1, 2} and 100 MHz with ratio 3 in row l1 {3, 2}, so the parent is 400 MHz).
+	 * 6.18 cannot reach that divider from the SPI driver: gout_peric1_usi08_i_sclk_usi and mout_peric1_usi08_user carry
+	 * no CLK_SET_RATE_PARENT (A:drivers/clk/samsung/clk-exynos8895.c:2706-2709, :2540-2542; MUX() adds only
+	 * CLK_SET_RATE_NO_REPARENT A:drivers/clk/samsung/clk.h:144-145), so clk_set_rate() rounds to the current rate
+	 * (A:drivers/clk/clk.c:1742-1765) and returns 0 without a change (:2603-2607). The rate is therefore set here,
+	 * at the controller's probe (of_clk_set_defaults, A:drivers/base/platform.c:1408), register-equivalent to stock:
+	 * ACK TOP mux 0x10dc [1:0] and div 0x18e4 [3:0] (A:.../clk-exynos8895.c:914-916, :1064-1065) = stock SFRs
+	 * S:.../cmucal-sfr.c:546-547 with SELECT [1:0] and DIVRATIO [3:0] (:3583, :3586); ACK parents
+	 * {oscclk, shared0_div4, shared2_div2, shared4_div2} (A:.../clk-exynos8895.c:722-724) = stock order
+	 * {OSCCLK_CMU, DIV_PLL_SHARED0_DIV4, DIV_PLL_SHARED2_DIV2, DIV_PLL_SHARED4_DIV2}; PERIC1 USER mux 0x0220 bit 4
+	 * (A:.../clk-exynos8895.c:2540-2542) = stock PLL_CON0_MUX_CLKCMU_PERIC1_USI08_USER 0x0220 MUX_SEL bit 4
+	 * (S:.../cmucal-sfr.c:1813, :7239), parents {oscclk, dout_cmu_peric1_usi08} (A:.../clk-exynos8895.c:2500-2501)
+	 * = {OSCCLK_PERIC1, CLKCMU_PERIC1_USI08} (S:.../cmucal-node.c:765-768). With the source equal to stock the
+	 * serial clock equals stock's whatever the IP-internal divider is; the port config's clk_div = 2 (5.2.1) only
+	 * makes 6.18's own cur_speed bookkeeping (timeouts, HS_EN test) read the stock value 25 MHz. Check S-P12. */
+	assigned-clocks = <&cmu_top CLK_MOUT_CMU_PERIC1_USI08>,	/* A:include/dt-bindings/clock/samsung,exynos8895.h:79 */
+			  <&cmu_top CLK_DOUT_CMU_PERIC1_USI08>,	/* :144 */
+			  <&cmu_peric1 CLK_MOUT_PERIC1_USI08_USER>;	/* :397; cmu_top/cmu_peric1 A:.../exynos8895.dtsi:1331, :504 */
+	assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_SHARED2_DIV2>,	/* :158; stock mux select 2 */
+				 <0>,
+				 <&cmu_top CLK_DOUT_CMU_PERIC1_USI08>;	/* stock USER mux = CLKCMU_PERIC1_USI08 */
+	assigned-clock-rates = <0>, <50000000>, <0>;		/* stock LUT row {50000, l2} */
+	status = "okay";
+
+	gnss_hub: gnss-hub@0 {
+		compatible = "samsung,bcm4773-ssp";		/* new; stock "ssp,BCM4773" FDT:6565 */
+		reg = <0>;					/* FDT:6566 */
+		spi-max-frequency = <26000000>;			/* FDT:6567 0x18cba80 */
+		spi-cpol;					/* FDT:6568 */
+		spi-cpha;					/* FDT:6569 (SSP forces SPI_MODE_3 too, S:.../ssp_dev.c:703) */
+		pinctrl-names = "default";
+		pinctrl-0 = <&ssp_host_req &ssp_mcu_req &ssp_mcu_resp &ssp_batch_wake_irq>;	/* FDT:6571 <0xb7 0xb8 0xb9 0xba> */
+		host-req-gpios = <&gpa3 4 GPIO_ACTIVE_HIGH>;	/* FDT:6574 ssp-host-req <0x4c 0x04 0x00>, 0x4c = gpa3 */
+		mcu-req-gpios = <&gpe6 1 GPIO_ACTIVE_HIGH>;	/* FDT:6575 ssp-mcu-req <0x68 0x01 0x00>, 0x68 = gpe6 */
+		mcu-resp-gpios = <&gpi1 5 GPIO_ACTIVE_HIGH>;	/* FDT:6576 ssp-mcu-resp <0x8a 0x05 0x00>, 0x8a = gpi1 */
+		batch-wake-gpios = <&gpa2 5 GPIO_ACTIVE_HIGH>;	/* FDT:6577 ssp-batch-wake-irq <0x4f 0x05 0x00>, 0x4f = gpa2 */
+		vdd-mcu-1p8-supply = <&ldo38_reg>;		/* FDT:6585 ssp-vdd-mcu-1p8 = "vdd_mcu_1p8" = FDT:7249 LDO38 */
+		ssp-acc-position = <3>;				/* FDT:6578 */
+		ssp-mag-position = <6>;				/* FDT:6579 */
+		ssp-sns-combination = <0>;			/* FDT:6580 (not read by the built code; kept for fidelity) */
+		ssp-ap-rev = <1>;				/* FDT:6581 */
+		ssp-mag-array = [1b 56 86 0d 25 f0 fe 82 d4 36 ef 55 28 1c 01 e8 f4 68 57 79 ba fe d3 85 0a 4d 95];	/* FDT:6582 (27 bytes, mag_type 1) */
+		ssp-glass-type = <0>;				/* FDT:6583 */
+		ssp-mag-type = <1>;				/* FDT:6584 */
+		controller-data {
+			samsung,spi-feedback-delay = <0>;	/* FDT:6589; read A:drivers/spi/spi-s3c64xx.c:975 */
+		};
+	};
+};
+
+/ {
+	/* GPS standby (nSTDBY) line. FDT:12533-12539. */
+	gps-pwr {
+		compatible = "samsung,exynos8895-gps-pwr";	/* new; stock "samsung,exynos54xx-bcm4753" FDT:12534 */
+		pinctrl-names = "default";			/* stock state name "hub_en" FDT:12535 (selected by hand, S:drivers/gps/sec_gps_bcm47531.c:260-264) */
+		pinctrl-0 = <&ssp_gps_pwr_en>;			/* FDT:12536 <0x164> */
+		gpios = <&gpf0 3 GPIO_ACTIVE_HIGH>;		/* FDT:12537 <0x84 0x03 0x00>, 0x84 = gpf0 */
+	};
+};
+
+/* L6C 4.3 (6I-G grip, 6I-H HRM) */
+
+/* Grip. Bus hsi2c_9 (usi2 i2c@0, 0x10480000, SPI 372) = stock hsi2c@10480000 FDT:5304-5319; usi2 mode I2C0_1 is set by
+ * L6F (2.7). The sx9320,* register values are kept under their stock names (D-16 rule: the transplanted parser
+ * S:drivers/sensorhub/brcm/sx9320.c:1544-1586 reads them; names S:.../sx9320_reg.h:121-138). */
+&hsi2c_9 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	clock-frequency = <400000>;	/* FDT:5304-5319 has none: stock default fs_clock 400 kHz
+					   (S:drivers/i2c/busses/i2c-exynos5.c:212, :1573-1574); 6.18 would use 100 kHz
+					   (A:drivers/i2c/busses/i2c-exynos5.c:897-898) */
+	status = "okay";
+
+	grip@28 {
+		compatible = "semtech,sx9320-grip";	/* new; stock "sx9320" FDT:5321 (node sx9320-i2c@22 FDT:5320) */
+		reg = <0x28>;				/* FDT:5322 */
+		pinctrl-names = "default";		/* FDT:5324 */
+		pinctrl-0 = <&grip_irq>;		/* FDT:5325 <0x4b> = grip-irq FDT:336-343 */
+		sx9320,nirq-gpio = <&gpa3 0 GPIO_ACTIVE_HIGH>;	/* FDT:5329 <0x4c 0x00 0x00>, 0x4c = gpa3 (FDT:126-133);
+							   gpiod con_id "sx9320,nirq" + suffix "gpio" (A:drivers/gpio/gpiolib.c:107) */
+		/* FDT:5326-5327 interrupt-parent/interrupts <0 0 0> dropped: the driver takes the IRQ from the GPIO */
+		sx9320,phen = <0x03>;			/* FDT:5328 */
+		sx9320,gain = <0x01>;			/* FDT:5330 */
+		sx9320,again = <0x08>;			/* FDT:5331 */
+		sx9320,scan_period = <0x16>;		/* FDT:5332 */
+		sx9320,range = <0x00>;			/* FDT:5333 */
+		sx9320,sampling_freq = <0x05>;		/* FDT:5334 */
+		sx9320,resolution = <0x07>;		/* FDT:5335 */
+		sx9320,rawfilt = <0x01>;		/* FDT:5336 */
+		sx9320,hyst = <0x01>;			/* FDT:5337 */
+		sx9320,avgposfilt = <0x04>;		/* FDT:5338 */
+		sx9320,avgnegfilt = <0x01>;		/* FDT:5339 */
+		sx9320,avgthresh = <0x20>;		/* FDT:5340 */
+		sx9320,debouncer = <0x01>;		/* FDT:5341 */
+		sx9320,normal_thd = <0x1b>;		/* FDT:5342 */
+		sx9320,afeph0 = <0x00>;			/* FDT:5343 */
+		sx9320,afeph1 = <0x00>;			/* FDT:5344 */
+		sx9320,afeph2 = <0x00>;			/* FDT:5345 */
+		sx9320,afeph3 = <0x04>;			/* FDT:5346 */
+	};
+};
+
+&pinctrl_alive {
+	grip_irq: grip-irq-pins {
+		samsung,pins = "gpa3-0";			/* FDT:337 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;	/* FDT:338 <0x0f> */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;	/* FDT:339 <0x00> */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:340 <0x03> */
+	};
+};
+
+/* HRM. Bus hsi2c_26 (usi10 i2c@10000, 0x10910000, SPI 415) = stock hsi2c@10910000 FDT:5930-5944. */
+&usi10 {
+	samsung,mode = <USI_MODE_I2C0_1>;	/* stock usi@10821020 usi_mode = "hsi2c0_hsi2c1" FDT:5056-5061; identical statement in L6B */
+	status = "okay";
+};
+
+&hsi2c_26 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	clock-frequency = <400000>;	/* as hsi2c_9 */
+	status = "okay";
+
+	hrm@57 {
+		compatible = "maxim,max86902-hrm";	/* new; stock "hrmsensor" FDT:5966 (node hrmsensor@57 FDT:5965) */
+		reg = <0x57>;				/* FDT:5967 */
+		pinctrl-names = "default", "sleep", "idle";	/* FDT:5971 */
+		pinctrl-0 = <&hrm_irq>;			/* FDT:5972 <0x78> = hrm-irq FDT:3148-3155 */
+		pinctrl-1 = <&hrm_irqsleep>;		/* FDT:5973 <0x79> = hrm-irqsleep FDT:3157-3164 */
+		pinctrl-2 = <&hrm_irqidle>;		/* FDT:5974 <0x7a> = hrm-irqidle FDT:3166-3173 */
+		hrmsensor,hrm_int-gpio = <&gpe6 6 GPIO_ACTIVE_HIGH>;	/* FDT:5970 <0x68 0x06 0x00>, 0x68 = gpe6 (FDT:2071-2078);
+							   gpiod con_id "hrmsensor,hrm_int" */
+		/* FDT:5968-5969 interrupt-parent/interrupts <6 0 0> dropped: the driver takes the IRQ from the GPIO */
+		hrmsensor,vdd_1p8 = "HRM_1.8V_AP";	/* FDT:5975; kept (parsed, logged) */
+		hrmsensor,led_3p3 = "HRM_3.3V_AP";	/* FDT:5976 */
+		hrmsensor,i2c_1p8 = "VDD_NFC_1P8";	/* FDT:5977 */
+		vdd-1p8-supply = <&s2dos03_ldo2>;	/* new, G-24: the rail named "HRM_1.8V_AP" */
+		led-3p3-supply = <&s2dos03_ldo4>;	/* new, G-24: "HRM_3.3V_AP" */
+		i2c-1p8-supply = <&ldo39_reg>;		/* new, G-24: "VDD_NFC_1P8" (L2) */
+	};
+};
+
+&pinctrl_peric1 {
+	hrm_irq: hrm-irq-pins {
+		samsung,pins = "gpe6-6";			/* FDT:3149 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;	/* FDT:3150 <0x00> */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;	/* FDT:3151 */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:3152 <0x03> */
+	};
+	hrm_irqsleep: hrm-irqsleep-pins {
+		samsung,pins = "gpe6-6";			/* FDT:3158 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;	/* FDT:3159 <0x0f> */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;	/* FDT:3160 */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:3161 */
+	};
+	hrm_irqidle: hrm-irqidle-pins {
+		samsung,pins = "gpe6-6";			/* FDT:3167 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;	/* FDT:3168 */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;	/* FDT:3169 */
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;	/* FDT:3170 */
+	};
+};
+
+/* HRM rails on the S2DOS03 panel PMIC (L5 4.8 node, L5 5.8 driver: ldo1..ldo4 described, L5_display.md:908);
+ * L5 declares only buck1/ldo1/ldo3 (L5_display.md:474) and leaves ldo2/ldo4 to this layer through &s2dos03. */
+&s2dos03 {
+	regulators {
+	s2dos03_ldo2: ldo2 {
+		regulator-name = "HRM_1.8V_AP";		/* FDT:5550 */
+		regulator-min-microvolt = <1800000>;	/* FDT:5551 0x1b7740 */
+		regulator-max-microvolt = <1800000>;	/* FDT:5552; min == max -> apply_uV at registration
+							   (A:drivers/regulator/of_regulator.c:110-111), so the driver's
+							   regulator_set_voltage(1.8 V) passes (A:drivers/regulator/core.c:3839-3841) */
+	};
+	s2dos03_ldo4: ldo4 {
+		regulator-name = "HRM_3.3V_AP";		/* FDT:5556 */
+		regulator-min-microvolt = <3300000>;	/* FDT:5557 0x325aa0 */
+		regulator-max-microvolt = <3300000>;	/* FDT:5558 */
+	};
+	};
+};

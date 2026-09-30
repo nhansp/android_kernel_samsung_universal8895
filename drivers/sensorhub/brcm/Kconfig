@@ -1,0 +1,182 @@
+#
+# Samsung SSP sensor hub on the Broadcom BCM4773/4774 (spec L6C 5.3, 6).
+#
+# The entries of S:drivers/sensorhub/brcm/Kconfig (and the three position/factory entries
+# of S:drivers/sensorhub/atmel/Kconfig) that the SM-N950N configuration sets (IKC:4748-4821),
+# built in only (bool instead of the stock tristate). The other boards' sensors are not ported.
+#
+
+config SENSORS_SYSFS
+	bool "Sensors sysfs"
+	help
+	  Support sysfs for sensors.
+	  If you say yes here you get sysfs support for
+	  sensor factory test.
+
+config SENSORS_SSP
+	bool "Sensors ssp"
+	default n
+	depends on SPI && IIO && OF && GPIOLIB
+	# L6C 6: kfifo buffers for the 24 IIO devices (5.3.4), the sec class for sensorhub/mcu_power
+	select IIO_BUFFER
+	select IIO_KFIFO_BUF
+	select SAMSUNG_SEC_CLASS
+	select SENSORS_SYSFS
+	help
+	  ssp driver for sensor hub.
+	  If you say yes here you get ssp support for
+	  sensor hub.
+
+# L6C 5.9: the SX9320 grip sensor is a separate I2C input driver in this directory
+# (S:drivers/sensorhub/brcm/Kconfig:461-477, IKC:4810-4811); it needs only the sensors class.
+config SENSORS_SX9320
+	bool "SX9320 driver"
+	depends on I2C && GPIOLIB && OF
+	depends on SENSORS_SYSFS
+	default n
+	help
+	  Say Y here if you use sx9320.
+	  This option enables grip sensors using
+	  SemTech sx9320 device driver.
+	  Say N here if you do not use sx9320.
+
+config SENSORS_SX9320_NORMAL_TOUCH_THRESHOLD
+	int "SX9320 Grip sensor threshold for normal touch"
+	depends on SENSORS_SX9320
+	default "221"
+	help
+	  This value is the standard of normal touch using
+	  SemTech sx9320 device driver (carried for parity; the
+	  driver takes the threshold from DT sx9320,normal_thd).
+
+if SENSORS_SSP
+
+config SENSORS_SSP_BBD
+	bool "Sensors ssp brcm"
+	default n
+	depends on SPI
+	help
+	  ssp driver for sensor hub.
+	  If you say yes here you get ssp support for
+	  sensor hub.
+
+config SENSORS_SSP_ACCELEROMETER_POSITION
+	int "Accelerometer Sensor Mounting Position on Board"
+	default "0"
+	help
+	  X Y Z axis position (0..7); the DT ssp-acc-position wins.
+
+config SENSORS_SSP_GYROSCOPE_POSITION
+	int "Gyroscope Sensor Mounting Position on Board"
+	default "0"
+	help
+	  X Y Z axis position (0..7).
+
+config SENSORS_SSP_MAGNETOMETER_POSITION
+	int "Geomagnetic Sensor Mounting Position on Board"
+	default "0"
+	help
+	  X Y Z axis position (0..7); the DT ssp-mag-position wins.
+
+config SENSORS_SSP_FACTORY
+	bool "ssp factory"
+	default n
+	help
+	  ssp sensor hub driver for factory test.
+
+config SENSORS_SSP_LSM6DSL
+	bool "Sensors ssp lsm6dsl"
+	default n
+	help
+	  This option enables lsm6dsl 6axis sensor.
+
+config SENSORS_SSP_MAGNETIC_COMMON
+	bool "Sensors ssp magnetic common"
+	default n
+	help
+	  magnetic file for factory test in ssp driver.
+
+config SENSORS_SSP_LPS22H
+	bool "Sensors ssp lps22h"
+	default n
+	help
+	  This option enables lps22h barometer sensor.
+
+config SENSORS_SSP_SENSORHUB
+	bool "Sensors ssp sensorhub"
+	default n
+	help
+	  ssp sensor hub driver for sensor hub.
+
+config SENSORS_SSP_MOBEAM
+	bool "Sensors ssp mobeam"
+	default n
+	help
+	  mobeam file for ssp driver (barcode emulation using TMG399x).
+
+config SENSORS_SSP_TMD4906
+	bool "Sensors ssp tmd4906"
+	default n
+	help
+	  This option enables tmd4906 proxitmity sensor.
+
+config SENSORS_SSP_PROX_AUTOCAL_AMS
+	bool "Sensors ssp proxautocal ams"
+	default n
+	help
+	  prox_autocal_ams file for factory test in ssp driver.
+
+config SENSORS_SSP_LIGHT_REPORT_LUX
+	bool "Sensors ssp light sensor reporting lux"
+	default n
+	help
+	  If you want to report lux, it should be set.
+
+config SENSORS_SSP_LIGHT_COLORID
+	bool "Sensors ssp light sensor change coef by color id"
+	default n
+	help
+	  If you want to change coef by colorid, it should be set.
+
+config SENSORS_SSP_IRDATA_FOR_CAMERA
+	bool "Sensors ssp irdata for camera"
+	default n
+	help
+	  If you want to use irdata, it should be set.
+
+config SENSORS_MULTIPLE_GLASS_TYPE
+	bool "Sensors ssp multiple glass type"
+	default n
+	help
+	  If you want to use multiple glass type, it should be set.
+
+config SENSORS_SSP_INTERRUPT_GYRO_SENSOR
+	bool "Sensors ssp interrpt gyro"
+	default n
+	help
+	  If you want to use interrupt gyro data, it should be set.
+
+config SENSORS_SSP_HIFI_BATCHING
+	bool "Sensors ssp hifi batching"
+	default n
+	help
+	  If you want to use hifi batching, it should be set.
+
+config SENSORS_SSP_GREAT
+	bool "GREAT Project"
+	default n
+	help
+	  Board selection of the ssp driver (Galaxy Note 8).
+
+config SSP_SUPPORT_MAGNETIC_OVERFLOW
+	bool "SensorHub support magnetic overflow"
+	default n
+	help
+	  Magnetic overflow handling of the ssp driver.
+
+# L6C D-14: SSP_MOTOR_CALLBACK (stock y, IKC:4819) is not ported: the 6.18 haptic driver has
+# no setMotorCallback(); SSP_REGISTER_RW (IKC n) is not ported either.
+
+source "drivers/sensorhub/brcm/bbdpl/Kconfig"
+
+endif # SENSORS_SSP
