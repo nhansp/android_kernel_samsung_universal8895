@@ -75,9 +75,16 @@
 #define SW_HIGH_TOPOFF		200	/* swelling_high_temp_topoff 0xc8 FDT:12292 */
 #define TOPOFF_1ST		300	/* full_check_current_1st 0x12c FDT:12362 */
 #define TOPOFF_2ND		200	/* full_check_current_2nd 0xc8 FDT:12363 */
-/* BAT:573-580: 4350 * (TOPOFF_1ST + 50) / (5 * 90) / 10 = 338, capped at TOPOFF_1ST + 50 */
-#define MIX_INPUT_MA		min(TOPOFF_1ST + 50, FLOAT_MV * (TOPOFF_1ST + 50) / (INPUT_V * 90) / 10)
-#define INPUT_V			5	/* SEC_INPUT_VOLTAGE_5V S:drivers/battery_v2/include/sec_battery.h:118 */
+/* stock sec_bat_check_mix_temp() */
+static inline int max77865_mix_input_ma(int in_mv)
+{
+	int v = in_mv / 1000;
+
+	if (v <= 0)
+		v = 5;
+	return min((int)(TOPOFF_1ST + 50),
+		   (int)(FLOAT_MV * (TOPOFF_1ST + 50) / (v * 90) / 10));
+}
 
 /* full / recharge, mV and % */
 #define FULL_COND_VCELL		4250	/* full_condition_vcell 0x109a FDT:12270 */
@@ -194,6 +201,22 @@ struct max77865_sample {
 	int rp;				/* Type-C Rp level */
 	bool aicl_ok;			/* CHG_INT_OK bit 7 */
 };
+
+/* stock sec_bat_check_input_voltage() */
+static int max77865_in_mv(const struct max77865_sample *s)
+{
+	switch (s->cable) {
+	case CABLE_HV9:
+		return 9000;
+	case CABLE_PD:
+		return s->pd_mv ? s->pd_mv : 5000;
+	case WLS_HV:
+	case WLS_PREP_HV:
+		return 10000;
+	default:
+		return 5000;
+	}
+}
 
 struct max77865_charger {
 	struct device *dev;
@@ -452,7 +475,7 @@ static void max77865_safety_time(struct max77865_charger *chg, const struct max7
 	if (in <= 0 || chg->chg_w <= 0)
 		return;
 
-	input_power = (s64)in * INPUT_V * 1000;			/* :3441 */
+	input_power = (s64)in * (max77865_in_mv(s) / 1000) * 1000;
 	charging_power = (s64)chg->chg_w * FLOAT_MV;		/* :3442 */
 	if (input_power > charging_power)
 		curr = chg->chg_w;				/* :3469-3470 */
@@ -889,7 +912,7 @@ static void max77865_currents(struct max77865_charger *chg, const struct max7786
 			chg->mix_limit = false;
 	}
 	if (s->input == INPUT_WIRED && chg->mix_limit)
-		*in = MIX_INPUT_MA;
+		*in = max77865_mix_input_ma(max77865_in_mv(s));
 
 	/* top-off (:889, :938-943; full_check_type_2nd 7 = CHGPSY FDT:12240) */
 	*topoff = chg->mode == STAGE_2ND ? TOPOFF_2ND : TOPOFF_1ST;
@@ -907,22 +930,6 @@ static void max77865_currents(struct max77865_charger *chg, const struct max7786
 
 	/* max_charging_current 2350 is applied as the last CC cap for every class */
 	*cc = min(*cc, 2350);
-}
-
-/* stock sec_bat_check_input_voltage() */
-static int max77865_in_mv(const struct max77865_sample *s)
-{
-	switch (s->cable) {
-	case CABLE_HV9:
-		return 9000;
-	case CABLE_PD:
-		return s->pd_mv ? s->pd_mv : 5000;
-	case WLS_HV:
-	case WLS_PREP_HV:
-		return 10000;
-	default:
-		return 5000;
-	}
 }
 
 /* (11) apply: only changed fields, stock read-modify-write setters (L6F 5.3.3 "apply") */
