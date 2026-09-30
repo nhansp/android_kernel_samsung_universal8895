@@ -259,6 +259,11 @@ struct max77865_charger {
 	int vbat_cnt;
 	bool vbat_ovp_done;
 
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AICL)
+	struct delayed_work aicl_dwork;
+#endif
+	u32 aicl_ma;
+
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_SYSOVLO)
 	int sysovlo_irq;
 	bool sysovlo_armed;
@@ -529,6 +534,7 @@ static void max77865_cable_event(struct max77865_charger *chg, bool attach)
 	chg->hv_guard_logged = false;
 	chg->vbat_cnt = 0;
 	chg->vbat_ovp_done = false;
+	chg->aicl_ma = 0;
 	max77865_reset_budget(chg, EXPIRED_MS);		/* BAT:1262-1263 */
 	if (attach) {
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_SYSOVLO)
@@ -930,6 +936,11 @@ static void max77865_apply(struct max77865_charger *chg, const struct max77865_s
 
 	if (s->input != INPUT_NONE && !chg->otg_on) {
 		max77865_currents(chg, s, &in, &cc, &topoff);
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AICL)
+		/* the AICL result is a cap the pass can only lower */
+		if (chg->aicl_ma)
+			in = min(in, (int)chg->aicl_ma);
+#endif
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_HV_GUARD) && !IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
 		/*
 		 * HV guard, the last cap: a PD contract above 5 V that the S2MM005
@@ -1162,6 +1173,7 @@ static void max77865_pass_work(struct work_struct *work)
 		s.input = INPUT_WIRED;
 	else if (s.int_ok & MAX77865_WCIN_OK)
 		s.input = INPUT_WCIN;
+	s.aicl_ok = !!(s.int_ok & MAX77865_AICL_OK);
 	if (s.input == INPUT_WIRED)
 		s.cable = max77865_read_cable(chg, &pending);
 	if (!pending)
@@ -1360,6 +1372,76 @@ static void max77865_chgin_work(struct work_struct *work)
 	mutex_unlock(&chg->lock);
 }
 
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AICL)
+/* stock aicl_isr_work() */
+static void max77865_aicl_work(struct work_struct *work)
+{
+	struct max77865_charger *chg = container_of(to_delayed_work(work),
+						    struct max77865_charger, aicl_dwork);
+	unsigned int ok, reg, mask, v, orig_lim, lim;
+	int n = 0, initial_ma, final_ma;
+	bool wcin;
+
+	mutex_lock(&chg->lock);
+	if (!chg->charge_control || chg->fault || chg->input == INPUT_NONE)
+		goto out_unmask;
+
+	/* CHGPROT unlock */
+	regmap_update_bits(chg->regmap, MAX77865_CHG_REG_CNFG_06,
+			   MAX77865_CNFG_06_CHGPROT, MAX77865_CNFG_06_CHGPROT);
+
+	wcin = chg->input == INPUT_WCIN;
+	reg = wcin ? MAX77865_CHG_REG_CNFG_10 : MAX77865_CHG_REG_CNFG_09;
+	mask = wcin ? MAX77865_CNFG_10_WCIN_LIM : MAX77865_CNFG_09_CHGIN_LIM;
+
+	if (regmap_read(chg->regmap, reg, &v))
+		goto out_unmask;
+	orig_lim = v & mask;
+	lim = orig_lim;
+	initial_ma = (lim <= 4 ? 100 : lim * 25);
+
+	if (regmap_read(chg->regmap, MAX77865_CHG_REG_INT_OK, &ok))
+		goto out_unmask;
+
+	while (!(ok & MAX77865_AICL_OK) && chg->input != INPUT_NONE) {
+		if (++n >= 2) {
+			/*
+			 * reduce_input_current(REDUCE_CURRENT_STEP 100): stop at
+			 * MINIMUM_INPUT_CURRENT 300 (code 12) or the step (code 4), floor 12
+			 */
+			if (lim <= 12 || lim <= 4)
+				break;
+			lim = (lim > 16) ? lim - 4 : 12;
+			regmap_update_bits(chg->regmap, reg, mask, lim);
+			n = 0;
+		}
+		mutex_unlock(&chg->lock);
+		msleep(50);
+		mutex_lock(&chg->lock);
+		if (chg->fault || chg->input == INPUT_NONE)
+			goto out_unmask;
+		if (regmap_read(chg->regmap, MAX77865_CHG_REG_INT_OK, &ok))
+			goto out_unmask;
+		if (lim <= 12)
+			break;
+	}
+
+	final_ma = (lim <= 4 ? 100 : lim * 25);
+	if (lim != orig_lim) {
+		chg->aicl_ma = final_ma;
+		chg->in_w = final_ma;
+		dev_info(chg->dev, "aicl %d mA (from %d)\n", final_ma, initial_ma);
+		mod_delayed_work(system_freezable_wq, &chg->pass_dwork, 0);
+	}
+
+out_unmask:
+	/* unmask AICL_IM */
+	regmap_update_bits(chg->regmap, MAX77865_CHG_REG_INT_MASK,
+			   MAX77865_CHG_AICL, 0);
+	mutex_unlock(&chg->lock);
+}
+#endif
+
 /* ---- OTG VBUS boost (L6F 5.3.8), stock max77865_set_otg() CHG:623-697 ---- */
 
 /* under lock */
@@ -1522,6 +1604,25 @@ static irqreturn_t max77865_chg_irq(int irq, void *data)
 		}
 	}
 
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AICL)
+	if (v & MAX77865_CHG_AICL) {
+		bool skip_aicl = false;
+
+		mutex_lock(&chg->lock);
+		if (chg->cable == CABLE_HV9 || chg->cable == CABLE_AFC_PREPARE)
+			skip_aicl = true;
+		mutex_unlock(&chg->lock);
+
+		if (!skip_aicl) {
+			/* mask AICL_IM and queue aicl_dwork after 50 ms */
+			regmap_update_bits(chg->regmap, MAX77865_CHG_REG_INT_MASK,
+					   MAX77865_CHG_AICL, MAX77865_CHG_AICL);
+			queue_delayed_work(system_freezable_wq, &chg->aicl_dwork,
+					   msecs_to_jiffies(50));
+		}
+	}
+#endif
+
 	return IRQ_HANDLED;
 }
 
@@ -1574,9 +1675,17 @@ static int max77865_chg_get_property(struct power_supply *psy, enum power_supply
 		ret = ret ?: regmap_read(chg->regmap, MAX77865_CHG_REG_INT_OK, &v2);
 		if (ret)
 			return ret;
-		val->intval = (v & MAX77865_CNFG_00_CHG) &&
-			      (v2 & (MAX77865_CHGIN_OK | MAX77865_WCIN_OK)) ?
-			      POWER_SUPPLY_CHARGE_TYPE_FAST : POWER_SUPPLY_CHARGE_TYPE_NONE;
+		if ((v & MAX77865_CNFG_00_CHG) &&
+		    (v2 & (MAX77865_CHGIN_OK | MAX77865_WCIN_OK))) {
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AICL)
+			if (chg->input == INPUT_WIRED && chg->aicl_ma && chg->aicl_ma <= 400)
+				val->intval = POWER_SUPPLY_CHARGE_TYPE_TRICKLE;
+			else
+#endif
+				val->intval = POWER_SUPPLY_CHARGE_TYPE_FAST;
+		} else {
+			val->intval = POWER_SUPPLY_CHARGE_TYPE_NONE;
+		}
 		return 0;
 	case POWER_SUPPLY_PROP_HEALTH:
 		mutex_lock(&chg->lock);
@@ -1843,6 +1952,9 @@ static int max77865_debugfs_init(struct max77865_charger *chg)
 	debugfs_create_u32("override_t_mc", 0600, d, &chg->override_t_mc);
 	debugfs_create_u32("override_hc", 0600, d, &chg->override_hc);
 	debugfs_create_bool("wdt_kick", 0600, d, &chg->wdt_kick);
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AICL)
+	debugfs_create_u32("aicl_ma", 0400, d, &chg->aicl_ma);
+#endif
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_TEST) && IS_ENABLED(CONFIG_CHARGER_MAX77865_HV_GUARD)
 	debugfs_create_u32("override_pd_mv", 0600, d, &chg->override_pd_mv);
 #endif
@@ -2075,6 +2187,11 @@ static int max77865_charger_probe(struct i2c_client *client)
 	ret = devm_work_autocancel(dev, &chg->chgin_work, max77865_chgin_work);
 	if (ret)
 		return ret;
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AICL)
+	ret = devm_delayed_work_autocancel(dev, &chg->aicl_dwork, max77865_aicl_work);
+	if (ret)
+		return ret;
+#endif
 	ret = devm_add_action_or_reset(dev, max77865_stop, chg);
 	if (ret)
 		return ret;
@@ -2126,8 +2243,13 @@ static int max77865_charger_probe(struct i2c_client *client)
 			 !!(cnfg[0] & MAX77865_CNFG_00_WDTEN));
 	}
 
-	/* only CHGIN_I unmasked (L6F 5.3.1; CHGIN_IM charger.h:66) */
-	ret = regmap_write(chg->regmap, MAX77865_CHG_REG_INT_MASK, 0xBF);
+	/*
+	 * only CHGIN_I unmasked; AICL_I too with CONFIG_CHARGER_MAX77865_AICL in
+	 * charge control (0x3F instead of 0xBF)
+	 */
+	ret = regmap_write(chg->regmap, MAX77865_CHG_REG_INT_MASK,
+			   IS_ENABLED(CONFIG_CHARGER_MAX77865_AICL) && chg->charge_control ?
+			   0x3F : 0xBF);
 	if (ret)
 		return dev_err_probe(dev, ret, "CHG_INT_MASK write failed\n");
 
