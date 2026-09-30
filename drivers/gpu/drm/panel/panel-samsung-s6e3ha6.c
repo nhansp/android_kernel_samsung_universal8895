@@ -93,6 +93,14 @@ struct s6e3ha6 {
 	bool stock_probed;
 	bool stock_failed;
 	struct exynos8895_panel_hooks decon_hooks;
+	/*
+	 * S3CFB DOZE / DOZE_SUSPEND (DESIGN 2.3), under stock_lock: DOZE with
+	 * the display off makes the next enable a PANEL_IOC_DOZE; DOZE_SUSPEND
+	 * of an active display makes the next disable/unprepare leave the panel
+	 * powered in its low-power mode.
+	 */
+	struct mutex stock_lock;
+	enum { S6E3HA6_DOZE_NONE, S6E3HA6_DOZE_ENTER, S6E3HA6_DOZE_SUSPEND } doze;
 };
 
 static inline struct s6e3ha6 *to_s6e3ha6(struct drm_panel *panel)
@@ -307,7 +315,58 @@ static int s6e3ha6_stock_set_power(struct s6e3ha6 *ctx, int power)
 /* the DECON's frame-done interrupt: PANEL_IOC_EVT_FRAME_DONE */
 static void s6e3ha6_stock_frame_done(void *data)
 {
-	panel_drv_frame_done(data);
+	struct s6e3ha6 *ctx = data;
+
+	panel_drv_frame_done(ctx->stock);
+}
+
+/*
+ * The S3CFB power requests, as the vendor DSIM passed them to the panel:
+ * - UNBLANK with the display on: decon_enable() -> dsim_enable() with the
+ *   DSIM on -> PANEL_IOC_SLEEP_OUT, which leaves ALPM (S:.../dpu/
+ *   decon_core.c:640-649, dsim_drv.c:1159-1166), plus the mDNIe unblank;
+ * - DOZE with the display on: dsim_doze() -> PANEL_IOC_DOZE (dsim_drv.c:
+ *   1300-1306); with it off, the next enable does it (dsim_drv.c:1308-1322);
+ * - DOZE_SUSPEND with the display on: the next disable is
+ *   dsim_doze_suspend() (dsim_drv.c:1332-1365: PANEL_IOC_DOZE, no SLEEP_IN,
+ *   no power off);
+ * - POWERDOWN, and UNBLANK or DOZE_SUSPEND with the display off, cancel a
+ *   pending DOZE: the next enable is a normal one.
+ */
+static int s6e3ha6_stock_power(void *data, enum exynos8895_panel_power req, bool active)
+{
+	struct s6e3ha6 *ctx = data;
+	struct panel_device *stock = s6e3ha6_stock(ctx);
+	int ret = 0;
+
+	if (!stock)
+		return 0;
+
+	mutex_lock(&ctx->stock_lock);
+	ctx->doze = S6E3HA6_DOZE_NONE;
+	switch (req) {
+	case EXYNOS8895_PANEL_UNBLANK:
+		if (active) {
+			ret = panel_drv_ioctl(stock, PANEL_IOC_SLEEP_OUT, NULL);
+			mdnie_unblank(&stock->mdnie);
+		}
+		break;
+	case EXYNOS8895_PANEL_DOZE:
+		if (active)
+			ret = panel_drv_ioctl(stock, PANEL_IOC_DOZE, NULL);
+		else
+			ctx->doze = S6E3HA6_DOZE_ENTER;
+		break;
+	case EXYNOS8895_PANEL_DOZE_SUSPEND:
+		if (active)
+			ctx->doze = S6E3HA6_DOZE_SUSPEND;
+		break;
+	case EXYNOS8895_PANEL_POWERDOWN:
+		break;
+	}
+	mutex_unlock(&ctx->stock_lock);
+
+	return ret;
 }
 
 /*
@@ -331,7 +390,8 @@ static bool s6e3ha6_stock_probe(struct s6e3ha6 *ctx)
 		ctx->stock_probed = true;
 		/* the DECON's panel events, once the framework's COPR exists */
 		ctx->decon_hooks.frame_done = s6e3ha6_stock_frame_done;
-		ctx->decon_hooks.data = stock;
+		ctx->decon_hooks.power = s6e3ha6_stock_power;
+		ctx->decon_hooks.data = ctx;
 		exynos8895_decon_set_panel_hooks(&ctx->decon_hooks);
 		return true;
 	}
@@ -353,10 +413,17 @@ static int s6e3ha6_stock_enable(struct s6e3ha6 *ctx)
 {
 	struct panel_device *stock = ctx->stock;
 	int disp_on = 1;
+	bool doze;
 	int ret;
 
+	mutex_lock(&ctx->stock_lock);
+	doze = ctx->doze == S6E3HA6_DOZE_ENTER;
+	ctx->doze = S6E3HA6_DOZE_NONE;
+	mutex_unlock(&ctx->stock_lock);
+
 	s6e3ha6_stock_link(stock, true);
-	ret = panel_drv_ioctl(stock, PANEL_IOC_SLEEP_OUT, NULL);
+	/* dsim_doze() from off: PANEL_IOC_DOZE after the link (S:.../dpu/dsim_drv.c:1308-1322) */
+	ret = panel_drv_ioctl(stock, doze ? PANEL_IOC_DOZE : PANEL_IOC_SLEEP_OUT, NULL);
 	if (ret)
 		return ret;
 
@@ -366,7 +433,9 @@ static int s6e3ha6_stock_enable(struct s6e3ha6 *ctx)
 			return ret;
 	}
 
-	mdnie_unblank(&stock->mdnie);
+	/* the fb0 unblank of the vendor mDNIe notifier; DOZE is no unblank */
+	if (!doze)
+		mdnie_unblank(&stock->mdnie);
 	greatlte_l5_set(GL5_ON, bt, false);
 
 	return 0;
@@ -442,11 +511,23 @@ static int s6e3ha6_disable(struct drm_panel *panel)
 	struct panel_device *stock = s6e3ha6_stock(ctx);
 	int ret;
 
-	/* dsim_disable(): PANEL_IOC_SLEEP_IN, then the DSIM off (S:.../dpu/dsim_drv.c:1262-1270) */
+	/*
+	 * dsim_disable(): PANEL_IOC_SLEEP_IN, then the DSIM off (S:.../dpu/
+	 * dsim_drv.c:1262-1270); after DOZE_SUSPEND dsim_doze_suspend():
+	 * PANEL_IOC_DOZE, then the DSIM off, the panel staying in ALPM
+	 * (:1339-1347).
+	 */
 	if (stock) {
-		ret = panel_drv_ioctl(stock, PANEL_IOC_SLEEP_IN, NULL);
+		bool suspend;
+
+		mutex_lock(&ctx->stock_lock);
+		suspend = ctx->doze == S6E3HA6_DOZE_SUSPEND;
+		mutex_unlock(&ctx->stock_lock);
+
+		ret = panel_drv_ioctl(stock, suspend ? PANEL_IOC_DOZE : PANEL_IOC_SLEEP_IN, NULL);
 		s6e3ha6_stock_link(stock, false);
-		ctx->on = false;
+		if (!suspend)
+			ctx->on = false;
 		return ret;
 	}
 
@@ -481,7 +562,16 @@ static int s6e3ha6_unprepare(struct drm_panel *panel)
 	 * framework's first power off drops the boot references of probe.
 	 */
 	if (s6e3ha6_stock(ctx)) {
+		bool suspend;
+
 		greatlte_l5_set(GL5_ON, bt, false);
+		/* dsim_doze_suspend() does not power the panel off */
+		mutex_lock(&ctx->stock_lock);
+		suspend = ctx->doze == S6E3HA6_DOZE_SUSPEND;
+		ctx->doze = S6E3HA6_DOZE_NONE;
+		mutex_unlock(&ctx->stock_lock);
+		if (suspend)
+			return 0;
 		return s6e3ha6_stock_set_power(ctx, 0);
 	}
 
@@ -672,6 +762,7 @@ static int s6e3ha6_stock_init(struct s6e3ha6 *ctx, bool init_at_boot, bool conne
 
 	panel_drv_init(stock, &ctx->dsi->dev, init_at_boot, connected);
 	panel_dsi_init(stock, ctx->dsi);
+	mutex_init(&ctx->stock_lock);
 	ctx->stock = stock;
 
 	return 0;
