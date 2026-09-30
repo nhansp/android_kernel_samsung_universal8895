@@ -24,3 +24,90 @@
 &{/timer} {
 	arm,no-tick-in-suspend;
 };
+
+#include <dt-bindings/soc/samsung,exynos8895-pm.h>
+
+/*
+ * L7 4.4: system power management node, a child of the PMU (populated by
+ * devm_of_platform_populate() in the PMU probe, A:drivers/soc/samsung/exynos-pmu.c:678).
+ * Never give it pinctrl-0: the pin controllers must not depend on the PMU device.
+ */
+&pmu_system_controller {
+	exynos8895_pm: power-management {
+		compatible = "samsung,exynos8895-pm";
+
+		/* PM-DVS rails (FDT:12134-12164): stock looked them up by regulator name
+		 * (S:drivers/soc/samsung/exynos-pm-dvs.c:72); 6.18 uses phandle supplies */
+		vdd-mldo-supply = <&buck11_reg>;	/* FDT:12137-12142 "vdd_mldo" */
+		vdd-lldo1-supply = <&buck8_reg>;	/* FDT:12144-12149 "vdd_lldo1" */
+		vdd-lldo2-supply = <&buck9_reg>;	/* FDT:12151-12156 "vdd_lldo2" */
+		vdd-lldo3-supply = <&buck10_reg>;	/* FDT:12158-12163 "vdd_lldo3" */
+
+		/* ACPM handle for the optional APM sleep handshake (exynos8895_pm.apm_release) */
+		samsung,acpm = <&acpm_ipc>;
+
+		/*
+		 * SICD veto set: the stock idle-IP devices of FDT:4429 that are in the
+		 * SYS_SICD ref-idle-ip list (FDT:4437), each with its 6.18 busy
+		 * predicate (stock index and device name in the comment). The 13 PDs and
+		 * the APM bit are built into the driver. Entries whose node is disabled
+		 * are skipped at resolve time.
+		 */
+		samsung,sicd-veto =
+			<&pwm E8895_SICD_VETO_PWM>,		/* idx 0x00 "104c0000.pwm" */
+			<&adc E8895_SICD_VETO_CLK>,		/* idx 0x01 "15b70000.adc" */
+			<&hsi2c_1 E8895_SICD_VETO_I2C>,		/* idx 0x03 "10990000.hsi2c" */
+			<&hsi2c_2 E8895_SICD_VETO_I2C>,		/* idx 0x04 "109a0000.hsi2c" */
+			<&hsi2c_3 E8895_SICD_VETO_I2C>,		/* idx 0x05 "109b0000.hsi2c" */
+			<&hsi2c_4 E8895_SICD_VETO_I2C>,		/* idx 0x06 "109c0000.hsi2c" */
+			<&hsi2c_5 E8895_SICD_VETO_I2C>,		/* idx 0x07 "10440000.hsi2c" */
+			<&hsi2c_6 E8895_SICD_VETO_I2C>,		/* idx 0x08 "10450000.hsi2c" */
+			<&hsi2c_7 E8895_SICD_VETO_I2C>,		/* idx 0x09 "10460000.hsi2c" */
+			<&hsi2c_8 E8895_SICD_VETO_I2C>,		/* idx 0x0a "10470000.hsi2c" */
+			<&hsi2c_9 E8895_SICD_VETO_I2C>,		/* idx 0x0b "10480000.hsi2c" */
+			<&hsi2c_10 E8895_SICD_VETO_I2C>,	/* idx 0x0c "10490000.hsi2c" */
+			<&hsi2c_11 E8895_SICD_VETO_I2C>,	/* idx 0x0d "104a0000.hsi2c" */
+			<&hsi2c_12 E8895_SICD_VETO_I2C>,	/* idx 0x0e "104b0000.hsi2c" */
+			<&hsi2c_13 E8895_SICD_VETO_I2C>,	/* idx 0x0f "10840000.hsi2c" */
+			<&hsi2c_14 E8895_SICD_VETO_I2C>,	/* idx 0x10 "10850000.hsi2c" */
+			<&hsi2c_15 E8895_SICD_VETO_I2C>,	/* idx 0x11 "10860000.hsi2c" */
+			<&hsi2c_16 E8895_SICD_VETO_I2C>,	/* idx 0x12 "10870000.hsi2c" */
+			<&hsi2c_17 E8895_SICD_VETO_I2C>,	/* idx 0x13 "10880000.hsi2c" */
+			<&hsi2c_18 E8895_SICD_VETO_I2C>,	/* idx 0x14 "10890000.hsi2c" */
+			<&hsi2c_19 E8895_SICD_VETO_I2C>,	/* idx 0x15 "108a0000.hsi2c" */
+			<&hsi2c_20 E8895_SICD_VETO_I2C>,	/* idx 0x16 "108b0000.hsi2c" */
+			<&hsi2c_21 E8895_SICD_VETO_I2C>,	/* idx 0x17 "108c0000.hsi2c" */
+			<&hsi2c_22 E8895_SICD_VETO_I2C>,	/* idx 0x18 "108d0000.hsi2c" */
+			<&hsi2c_23 E8895_SICD_VETO_I2C>,	/* idx 0x19 "108e0000.hsi2c" */
+			<&hsi2c_24 E8895_SICD_VETO_I2C>,	/* idx 0x1a "108f0000.hsi2c" */
+			<&hsi2c_25 E8895_SICD_VETO_I2C>,	/* idx 0x1b "10900000.hsi2c" */
+			<&hsi2c_26 E8895_SICD_VETO_I2C>,	/* idx 0x1c "10910000.hsi2c" */
+			<&hsi2c_27 E8895_SICD_VETO_I2C>,	/* idx 0x1d "10920000.hsi2c" */
+			<&hsi2c_28 E8895_SICD_VETO_I2C>,	/* idx 0x1e "10930000.hsi2c" */
+			<&hsi2c_29 E8895_SICD_VETO_I2C>,	/* idx 0x1f "10940000.hsi2c" */
+			<&hsi2c_30 E8895_SICD_VETO_I2C>,	/* idx 0x20 "10950000.hsi2c" */
+			<&hsi2c_31 E8895_SICD_VETO_I2C>,	/* idx 0x21 "10960000.hsi2c" */
+			<&hsi2c_32 E8895_SICD_VETO_I2C>,	/* idx 0x22 "10970000.hsi2c" */
+			<&spi_0 E8895_SICD_VETO_RPM>,		/* not in stock's list (it names 109e0000 twice, idx 0x23/0x24); added, conservative */
+			<&spi_1 E8895_SICD_VETO_RPM>,		/* idx 0x23 "109e0000.spi" */
+			<&spi_2 E8895_SICD_VETO_RPM>,		/* idx 0x25 "10440000.spi" */
+			<&spi_3 E8895_SICD_VETO_RPM>,		/* idx 0x26 "10460000.spi" */
+			<&spi_4 E8895_SICD_VETO_RPM>,		/* idx 0x27 "10480000.spi" */
+			<&spi_5 E8895_SICD_VETO_RPM>,		/* idx 0x28 "104a0000.spi" */
+			<&spi_6 E8895_SICD_VETO_RPM>,		/* idx 0x29 "10840000.spi" */
+			<&spi_7 E8895_SICD_VETO_RPM>,		/* idx 0x2a "10860000.spi" */
+			<&spi_8 E8895_SICD_VETO_RPM>,		/* idx 0x2b "10880000.spi" */
+			<&spi_9 E8895_SICD_VETO_RPM>,		/* idx 0x2c "108a0000.spi" */
+			<&spi_10 E8895_SICD_VETO_RPM>,		/* idx 0x2d "108c0000.spi" */
+			<&spi_11 E8895_SICD_VETO_RPM>,		/* idx 0x2e "108e0000.spi" */
+			<&spi_12 E8895_SICD_VETO_RPM>,		/* idx 0x2f "10900000.spi" */
+			<&spi_13 E8895_SICD_VETO_RPM>,		/* idx 0x30 "10920000.spi" */
+			<&spi_14 E8895_SICD_VETO_RPM>,		/* idx 0x31 "10940000.spi" */
+			<&spi_15 E8895_SICD_VETO_RPM>,		/* idx 0x32 "10960000.spi" */
+			<&ufs E8895_SICD_VETO_CLK>,		/* idx 0x33 "11120000.ufs" (first clock core_clk) */
+			<&mmc E8895_SICD_VETO_RPM>,		/* idx 0x34 "11500000.dwmmc2" */
+			<&usbdrd_dwc3 E8895_SICD_VETO_RPM>,	/* idx 0x35 "10c00000.usb" (the dwc3 core) */
+			<&pcie0 E8895_SICD_VETO_RPM>,		/* idx 0x37 stock "116a0000.pcie0"; 6.18 device "11700000.pcie" */
+			<&serial_1 E8895_SICD_VETO_CLK>;	/* idx 0x49 "bluetooth" (UART_BT pclk, held while the BT tty is powered) */
+	};
+};
