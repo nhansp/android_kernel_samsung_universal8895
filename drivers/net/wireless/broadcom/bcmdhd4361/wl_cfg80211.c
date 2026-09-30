@@ -6611,8 +6611,9 @@ wl_cfg80211_connect(struct wiphy *wiphy, struct net_device *dev,
 	}
 #ifdef ESCAN_CHANNEL_CACHE
 	 else {
-			memcpy(ext_join_params->assoc.chanspec_list, chanspec_list,
-				sizeof(chanspec_t) * chan_cnt);
+			unsafe_memcpy(ext_join_params->assoc.chanspec_list, chanspec_list,
+				sizeof(chanspec_t) * chan_cnt,
+				/* firmware ABI chanspec_list[1] tail; buffer sized for chan_cnt above */);
 	}
 #endif /* ESCAN_CHANNEL_CACHE */
 	ext_join_params->assoc.chanspec_num = htod32(ext_join_params->assoc.chanspec_num);
