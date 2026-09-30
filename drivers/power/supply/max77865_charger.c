@@ -255,6 +255,10 @@ struct max77865_charger {
 	int rep_online, rep_status, rep_health, rep_ac, rep_usb, rep_ac_ma, rep_usb_ma;
 	int rep_ac_mv;
 
+	/* battery over-voltage stop */
+	int vbat_cnt;
+	bool vbat_ovp_done;
+
 	/* debugfs (L6F 5.3.5) */
 	u32 override_usb_mc, override_chg_mc, override_t_mc, override_hc;
 
@@ -267,6 +271,9 @@ struct max77865_charger {
 #endif
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_TEST) && IS_ENABLED(CONFIG_CHARGER_MAX77865_HV_GUARD)
 	u32 override_pd_mv;		/* test override: feeds only the HV guard */
+#endif
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_TEST) && IS_ENABLED(CONFIG_CHARGER_MAX77865_VBAT_OVP)
+	u32 override_vcell_mv;		/* test override: only raises the VBAT-OVP input */
 #endif
 };
 
@@ -514,6 +521,8 @@ static void max77865_cable_event(struct max77865_charger *chg, bool attach)
 	chg->health = H_GOOD;
 	chg->dis_cnt = 0;
 	chg->hv_guard_logged = false;
+	chg->vbat_cnt = 0;
+	chg->vbat_ovp_done = false;
 	max77865_reset_budget(chg, EXPIRED_MS);		/* BAT:1262-1263 */
 	if (attach) {
 		/* rewrite everything for the new input, as stock's ONLINE path did (CHG:1057-1061) */
@@ -552,6 +561,34 @@ static void max77865_policy(struct max77865_charger *chg, struct max77865_sample
 	if (s->input == INPUT_WIRED && chg->input != INPUT_WIRED)
 		chg->chginsel_pending = true;
 	chg->input = s->input;
+
+	/* (3a) battery over-voltage stop */
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_VBAT_OVP)
+	if ((chg->status == POWER_SUPPLY_STATUS_CHARGING ||
+	     chg->status == POWER_SUPPLY_STATUS_FULL) && !chg->vbat_ovp_done) {
+		int vcell = s->vcell;
+
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_TEST)
+		vcell = max_t(int, vcell, chg->override_vcell_mv);	/* only raises */
+#endif
+		/* cisd_max_voltage_thr 0x1130 = 4400 mV; a failed read (-1) is not above */
+		if (vcell > 4400)
+			chg->vbat_cnt++;
+		else
+			chg->vbat_cnt = 0;
+
+		if (chg->vbat_cnt >= 2) {		/* ab_vbat_max_count 2 */
+			chg->vbat_ovp_done = true;
+			chg->health = H_VBAT_OVP;
+			chg->recharging = false;
+			chg->mode = STAGE_NONE;
+			chg->status = POWER_SUPPLY_STATUS_NOT_CHARGING;
+			max77865_set_mode(chg, MODE_CHARGING_OFF);
+			dev_info(chg->dev, "vbat ovp %d mV, charging off\n", vcell);
+			return;
+		}
+	}
+#endif
 
 	/* (4) OVP/UVLO on Hc (BAT:1417-1467, _result :1372-1415), not while discharging (:1560-1564) */
 	if (chg->status != POWER_SUPPLY_STATUS_DISCHARGING &&
@@ -1761,6 +1798,9 @@ static int max77865_debugfs_init(struct max77865_charger *chg)
 	debugfs_create_bool("wdt_kick", 0600, d, &chg->wdt_kick);
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_TEST) && IS_ENABLED(CONFIG_CHARGER_MAX77865_HV_GUARD)
 	debugfs_create_u32("override_pd_mv", 0600, d, &chg->override_pd_mv);
+#endif
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_TEST) && IS_ENABLED(CONFIG_CHARGER_MAX77865_VBAT_OVP)
+	debugfs_create_u32("override_vcell_mv", 0600, d, &chg->override_vcell_mv);
 #endif
 
 	return devm_add_action_or_reset(chg->dev, max77865_debugfs_remove, d);
