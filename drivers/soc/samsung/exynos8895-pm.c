@@ -378,6 +378,24 @@ static bool e8895_sleep_armed;		/* syscore suspend programmed the PMU for SLEEP 
 static bool cp_check = true;		/* stock always checks CP; 0 only for boots without a running CP */
 module_param(cp_check, bool, 0644);
 
+/*
+ * DEBUG (stage L7-C, image 0096: no resume, last console line "Calling
+ * samsung_clk_suspend", i.e. the last syscore suspend op before ->enter):
+ *   sleep_trace=1      print the PMU wake/sequencer state right before the SLEEP SMC,
+ *                      the SMC result right after it (the first code that runs after
+ *                      a wake, before any syscore resume op) and the syscore resume entry
+ *   sleep_mode=8|9|10  force SLEEP / SLEEP_VTS_ON / SLEEP_AUD_ON instead of the
+ *                      ABOX/VTS power-domain choice (0 = stock choice)
+ *   sleep_wkmask0=<v>  write <v> to WAKEUP_MASK (0x610) instead of the stock SLEEP word
+ *                      0x500f7e7e (FDT:4444), e.g. 0 to unmask every wake source
+ */
+static bool sleep_trace;
+static unsigned int sleep_mode;
+static int sleep_wkmask0 = -1;
+module_param(sleep_trace, bool, 0644);
+module_param(sleep_mode, uint, 0644);
+module_param(sleep_wkmask0, int, 0644);
+
 /* = A:drivers/firmware/psci/psci.c:502-510, but used for the TYPE-0 Exynos states too:
  * stock always passes cpu_resume (S:arch/arm64/kernel/psci.c:212-255) */
 /* DEBUG: the finisher's own return (psci_to_linux_errno() of the SMC result) of the last
@@ -421,6 +439,8 @@ static int e8895_pm_syscore_suspend(void)
 		e8895_mode = E8895_SYS_SLEEP_VTS_ON;	/* S:drivers/soc/samsung/exynos-pm.c:227 SLEEP_VTS_ON 9 */
 	else
 		e8895_mode = E8895_SYS_SLEEP;		/* FDT:4417 suspend_mode_idx = <0x08> */
+	if (sleep_mode >= E8895_SYS_SLEEP && sleep_mode <= E8895_SYS_SLEEP_AUD_ON)	/* DEBUG */
+		e8895_mode = sleep_mode;
 
 	/* only SYS_SICD has a ref-idle-ip node (FDT:4433-4439): the SLEEP masks are all-ones,
 	 * S:drivers/soc/samsung/exynos-powermode.c:171-182 */
@@ -429,6 +449,8 @@ static int e8895_pm_syscore_suspend(void)
 	pmu_raw_writel(exynos_pinctrl_get_eint_wake_mask(), E8895_EINT_WAKEUP_MASK);	/* :625-631 */
 	for (i = 0; i < 4; i++)
 		pmu_raw_writel(e8895_wkmask_sleep[i], e8895_wkmask_off[i]);		/* :633-635 */
+	if (sleep_wkmask0 >= 0)								/* DEBUG */
+		pmu_raw_writel(sleep_wkmask0, e8895_wkmask_off[0]);
 	t = e8895_tab(e8895_mode);
 	e8895_save(t->t[1], t->n[1]);			/* S:drivers/soc/samsung/cal-if/pmucal_system.c:31 */
 	if (e8895_handle(t->t[0], t->n[0])) {		/* :33-39; only the VTS_ON list has a WAIT */
@@ -461,6 +483,8 @@ static void e8895_pm_syscore_resume(void)
 
 	if (!e8895_sleep_armed)			/* hibernation snapshot, or nothing programmed */
 		return;
+	if (sleep_trace)						/* DEBUG */
+		pr_info("exynos8895-pm: DEBUG syscore resume early=%d mode=%d\n", e8895_early, e8895_mode);
 	e8895_sleep_armed = false;
 	t = e8895_tab(e8895_mode);
 	/* S:drivers/soc/samsung/cal-if/pmucal_system.c:74,123 */
@@ -483,9 +507,31 @@ static struct syscore_ops e8895_pm_syscore_ops = {
 
 /* S:drivers/soc/samsung/exynos-pm.c:295-326; cp_call_psci_idx = suspend_psci_idx = 0x85
  * (FDT:4418,4420), so every mode uses PSCI_SYSTEM_SLEEP */
+/* DEBUG: PMU state that decides SLEEP entry and wake (sleep_trace=1) */
+static void e8895_sleep_dump(void)
+{
+	pr_info("exynos8895-pm: DEBUG pre-SMC mode=%d wk=%08x %08x %08x %08x eint=%08x cp=%08x abox=%x vts=%x\n",
+		e8895_mode, pmu_raw_readl(0x610), pmu_raw_readl(0x614), pmu_raw_readl(0x618),
+		pmu_raw_readl(0x644), pmu_raw_readl(E8895_EINT_WAKEUP_MASK), pmu_raw_readl(E8895_CP_STAT),
+		pmu_raw_readl(E8895_PD_ABOX) & 0xf, pmu_raw_readl(E8895_PD_VTS) & 0xf);
+	/* CENTRAL_SEQ_CONFIGURATION/_OPTION, CENTRAL_SEQ_MIF_CONFIGURATION (CAL:pmucal_system_exynos8895.h
+	 * exit_sleep 0x0200/0x0240, enter 0x0208), IDLE_IP3, CLUSTER1_CPU0 (cpu0) CONFIGURATION/STATUS */
+	pr_info("exynos8895-pm: DEBUG pre-SMC seq=%08x opt=%08x mif=%08x ipi3=%08x cpu0=%x/%x\n",
+		pmu_raw_readl(0x0200), pmu_raw_readl(0x0208), pmu_raw_readl(0x0240),
+		pmu_raw_readl(E8895_IDLE_IP(3)), pmu_raw_readl(0x2200) & 0xf, pmu_raw_readl(0x2204) & 0xf);
+}
+
 static int e8895_pm_enter(suspend_state_t state)
 {
-	e8895_early = e8895_psci_suspend(E8895_PSCI_SLEEP) != 0;
+	int ret;
+
+	if (sleep_trace)					/* DEBUG */
+		e8895_sleep_dump();
+	ret = e8895_psci_suspend(E8895_PSCI_SLEEP);
+	if (sleep_trace)					/* DEBUG: first code after a wake */
+		pr_info("exynos8895-pm: DEBUG back from SLEEP SMC: %d (finisher %d) WAKEUP_STAT=%08x\n",
+			ret, ret ? this_cpu_read(e8895_dbg_fin_ret) : 0, pmu_raw_readl(E8895_WAKEUP_STAT));
+	e8895_early = ret != 0;
 	if (e8895_early)
 		pr_info("exynos8895-pm: return to originator\n");	/* :321-323 */
 	return e8895_early ? -EBUSY : 0;
