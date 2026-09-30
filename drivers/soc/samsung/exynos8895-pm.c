@@ -388,13 +388,30 @@ module_param(cp_check, bool, 0644);
  *                      ABOX/VTS power-domain choice (0 = stock choice)
  *   sleep_wkmask0=<v>  write <v> to WAKEUP_MASK (0x610) instead of the stock SLEEP word
  *                      0x500f7e7e (FDT:4444), e.g. 0 to unmask every wake source
+ * (image 0097, same end; the power key did not wake it either):
+ *   sleep_trace=1      also lists every exynos8895-pd CONFIGURATION/STATUS before the SMC
+ *                      (dpu1 and srdz fail to power off in suspend_noirq) and prints the
+ *                      PMU wake/sequencer registers once at probe (post-mortem after a
+ *                      forced reset, if S-Boot leaves them)
+ *   sleep_psci=<ps>    PSCI power_state for the SLEEP SMC instead of 0x03000000, e.g.
+ *                      0x10000 (C2, core only) with the whole SLEEP PMU programming in place
+ * (image 0098, sleep_mode=8: same hang; ABOX and VTS PDs are on at the SMC, S-Boot leaves
+ * them on and no 6.18 driver turns them off, while stock's ABOX/VTS drivers keep them off):
+ *   sleep_pdoff=1      power ABOX and VTS off in syscore suspend with stock's abox_off/vts_off
+ *                      lists (CAL:pmucal_local_exynos8895.h:61-65,636-641) before the mode
+ *                      choice; a wait timeout aborts the suspend (-EIO). They stay off.
+ * The sleep_trace dumps run at the end of syscore suspend, so pm_test=core prints them too.
  */
 static bool sleep_trace;
 static unsigned int sleep_mode;
 static int sleep_wkmask0 = -1;
+static unsigned int sleep_psci;
 module_param(sleep_trace, bool, 0644);
 module_param(sleep_mode, uint, 0644);
 module_param(sleep_wkmask0, int, 0644);
+module_param(sleep_psci, uint, 0644);
+static bool sleep_pdoff;
+module_param(sleep_pdoff, bool, 0644);
 
 /* = A:drivers/firmware/psci/psci.c:502-510, but used for the TYPE-0 Exynos states too:
  * stock always passes cpu_resume (S:arch/arm64/kernel/psci.c:212-255) */
@@ -417,6 +434,87 @@ int e8895_psci_suspend(u32 state)
 	return cpu_suspend(state, e8895_psci_finisher);
 }
 
+/* DEBUG (sleep_trace=1): CONFIGURATION[3:0]/STATUS[3:0] of every PMU power domain in the DT */
+static void e8895_pd_dump(void)
+{
+	struct device_node *np;
+	struct resource res;
+	char buf[160];
+	int n = 0;
+
+	for_each_compatible_node(np, NULL, "samsung,exynos8895-pd") {
+		u32 off;
+
+		if (of_address_to_resource(np, 0, &res) || res.start < 0x16480000 ||
+		    res.start >= 0x16480000 + 0x6000)
+			continue;
+		off = res.start - 0x16480000;
+		n += scnprintf(buf + n, sizeof(buf) - n, " %x:%x/%x", off,
+			       pmu_raw_readl(off) & 0xf, pmu_raw_readl(off + 4) & 0xf);
+		if (n > 120) {
+			pr_info("exynos8895-pm: DEBUG pre-SMC pd%s\n", buf);
+			n = 0;
+		}
+	}
+	if (n)
+		pr_info("exynos8895-pm: DEBUG pre-SMC pd%s\n", buf);
+}
+
+static void e8895_sleep_dump(void)
+{
+	pr_info("exynos8895-pm: DEBUG pre-SMC mode=%d wk=%08x %08x %08x %08x eint=%08x cp=%08x abox=%x vts=%x\n",
+		e8895_mode, pmu_raw_readl(0x610), pmu_raw_readl(0x614), pmu_raw_readl(0x618),
+		pmu_raw_readl(0x644), pmu_raw_readl(E8895_EINT_WAKEUP_MASK), pmu_raw_readl(E8895_CP_STAT),
+		pmu_raw_readl(E8895_PD_ABOX) & 0xf, pmu_raw_readl(E8895_PD_VTS) & 0xf);
+	/* CENTRAL_SEQ_CONFIGURATION/_OPTION, CENTRAL_SEQ_MIF_CONFIGURATION (CAL:pmucal_system_exynos8895.h
+	 * exit_sleep 0x0200/0x0240, enter 0x0208), IDLE_IP3, CLUSTER1_CPU0 (cpu0) CONFIGURATION/STATUS */
+	pr_info("exynos8895-pm: DEBUG pre-SMC seq=%08x opt=%08x mif=%08x ipi3=%08x cpu0=%x/%x\n",
+		pmu_raw_readl(0x0200), pmu_raw_readl(0x0208), pmu_raw_readl(0x0240),
+		pmu_raw_readl(E8895_IDLE_IP(3)), pmu_raw_readl(0x2200) & 0xf, pmu_raw_readl(0x2204) & 0xf);
+	e8895_pd_dump();
+}
+
+/* DEBUG sleep_pdoff: bounded like e8895_wait() (pmucal_rae_wait(), 1000 x 1 us) */
+static int e8895_dbg_wait(void __iomem *a, u32 mask, u32 val)
+{
+	unsigned int t;
+
+	for (t = 0; (readl_relaxed(a) & mask) != val; t++) {
+		if (t > 1000)
+			return -ETIMEDOUT;
+		udelay(1);
+	}
+	return 0;
+}
+
+#define E8895_VA_VTS	4	/* e8895_pm_bases[4] = 0x14000000, CMU_VTS */
+
+/* stock abox_off (CAL:pmucal_local_exynos8895.h:61-65) and vts_off (:636-641) */
+static int e8895_dbg_pdoff(void)
+{
+	void __iomem *pmu = pmu_base_addr, *vts = e8895_va[E8895_VA_VTS];
+	int ra = 0, rv = 0;
+
+	if (WARN_ON(e8895_pm_bases[E8895_VA_VTS] != 0x14000000))
+		return -EINVAL;
+	if (readl_relaxed(pmu + 0x4004) & 0xf) {
+		writel_relaxed(readl_relaxed(pmu + 0x2528) | BIT(16), pmu + 0x2528);	/* ABOX_CA7_OPTION */
+		writel_relaxed(readl_relaxed(pmu + 0x4000) & ~0xf, pmu + 0x4000);	/* ABOX_CONFIGURATION */
+		ra = e8895_dbg_wait(pmu + 0x4004, 0xf, 0);				/* ABOX_STATUS */
+	}
+	if (readl_relaxed(pmu + 0x41a4) & 0xf) {
+		writel_relaxed(readl_relaxed(vts + 0x1000) & ~BIT(0), vts + 0x1000);	/* MUX_CLK_VTS_CMUREF */
+		rv = e8895_dbg_wait(vts + 0x1000, BIT(16), 0);
+		if (!rv) {
+			writel_relaxed(readl_relaxed(pmu + 0x41a0) & ~0xf, pmu + 0x41a0);	/* VTS_CONFIGURATION */
+			rv = e8895_dbg_wait(pmu + 0x41a4, 0xf, 0);			/* VTS_STATUS */
+		}
+	}
+	pr_info("exynos8895-pm: DEBUG pdoff abox=%d (status %x) vts=%d (status %x)\n",
+		ra, readl_relaxed(pmu + 0x4004) & 0xf, rv, readl_relaxed(pmu + 0x41a4) & 0xf);
+	return ra ? : rv;
+}
+
 /* S:drivers/soc/samsung/exynos-pm.c:231-255 */
 static int e8895_pm_syscore_suspend(void)
 {
@@ -433,6 +531,8 @@ static int e8895_pm_syscore_suspend(void)
 		pr_info("exynos8895-pm: sleep canceled by CP reset\n");
 		return -EINVAL;
 	}
+	if (sleep_pdoff && e8895_dbg_pdoff())			/* DEBUG */
+		return -EIO;
 	if (E8895_PD_ON(E8895_PD_ABOX))			/* abox_is_on(), :239 */
 		e8895_mode = E8895_SYS_SLEEP_AUD_ON;	/* FDT:4419 cp_call_mode_idx = <0x0a> */
 	else if (E8895_PD_ON(E8895_PD_VTS))		/* vts_is_on(), :245 */
@@ -472,6 +572,8 @@ static int e8895_pm_syscore_suspend(void)
 	e8895_early = true;
 	e8895_sleep_armed = true;
 	pr_info("exynos8895-pm: SLEEP mode=%d\n", e8895_mode);
+	if (sleep_trace)					/* DEBUG */
+		e8895_sleep_dump();
 	return 0;
 }
 
@@ -507,27 +609,13 @@ static struct syscore_ops e8895_pm_syscore_ops = {
 
 /* S:drivers/soc/samsung/exynos-pm.c:295-326; cp_call_psci_idx = suspend_psci_idx = 0x85
  * (FDT:4418,4420), so every mode uses PSCI_SYSTEM_SLEEP */
-/* DEBUG: PMU state that decides SLEEP entry and wake (sleep_trace=1) */
-static void e8895_sleep_dump(void)
-{
-	pr_info("exynos8895-pm: DEBUG pre-SMC mode=%d wk=%08x %08x %08x %08x eint=%08x cp=%08x abox=%x vts=%x\n",
-		e8895_mode, pmu_raw_readl(0x610), pmu_raw_readl(0x614), pmu_raw_readl(0x618),
-		pmu_raw_readl(0x644), pmu_raw_readl(E8895_EINT_WAKEUP_MASK), pmu_raw_readl(E8895_CP_STAT),
-		pmu_raw_readl(E8895_PD_ABOX) & 0xf, pmu_raw_readl(E8895_PD_VTS) & 0xf);
-	/* CENTRAL_SEQ_CONFIGURATION/_OPTION, CENTRAL_SEQ_MIF_CONFIGURATION (CAL:pmucal_system_exynos8895.h
-	 * exit_sleep 0x0200/0x0240, enter 0x0208), IDLE_IP3, CLUSTER1_CPU0 (cpu0) CONFIGURATION/STATUS */
-	pr_info("exynos8895-pm: DEBUG pre-SMC seq=%08x opt=%08x mif=%08x ipi3=%08x cpu0=%x/%x\n",
-		pmu_raw_readl(0x0200), pmu_raw_readl(0x0208), pmu_raw_readl(0x0240),
-		pmu_raw_readl(E8895_IDLE_IP(3)), pmu_raw_readl(0x2200) & 0xf, pmu_raw_readl(0x2204) & 0xf);
-}
-
 static int e8895_pm_enter(suspend_state_t state)
 {
 	int ret;
 
 	if (sleep_trace)					/* DEBUG */
-		e8895_sleep_dump();
-	ret = e8895_psci_suspend(E8895_PSCI_SLEEP);
+		pr_info("exynos8895-pm: DEBUG SMC power_state=0x%08x\n", sleep_psci ?: E8895_PSCI_SLEEP);
+	ret = e8895_psci_suspend(sleep_psci ?: E8895_PSCI_SLEEP);	/* DEBUG sleep_psci */
 	if (sleep_trace)					/* DEBUG: first code after a wake */
 		pr_info("exynos8895-pm: DEBUG back from SLEEP SMC: %d (finisher %d) WAKEUP_STAT=%08x\n",
 			ret, ret ? this_cpu_read(e8895_dbg_fin_ret) : 0, pmu_raw_readl(E8895_WAKEUP_STAT));
@@ -759,6 +847,11 @@ static int e8895_pm_probe(struct platform_device *pdev)
 		dev_err(dev, "PMU CPU hooks not ready: no SLEEP, mem falls back to s2idle\n");
 		return -ENODEV;
 	}
+	if (sleep_trace)		/* DEBUG: what a forced reset after a SLEEP attempt left behind */
+		pr_info("exynos8895-pm: DEBUG boot WAKEUP_STAT=%08x 0x640=%08x seq=%08x opt=%08x mif=%08x wk=%08x eint=%08x\n",
+			pmu_raw_readl(E8895_WAKEUP_STAT), pmu_raw_readl(E8895_EXTRA_WAKEUP_STAT),
+			pmu_raw_readl(0x0200), pmu_raw_readl(0x0208), pmu_raw_readl(0x0240),
+			pmu_raw_readl(0x610), pmu_raw_readl(E8895_EINT_WAKEUP_MASK));
 	WRITE_ONCE(e8895_pm_probed, true);
 	register_syscore_ops(&e8895_pm_syscore_ops);
 	suspend_set_ops(&e8895_pm_ops);			/* A:kernel/power/suspend.c:224-241: mem = deep */
