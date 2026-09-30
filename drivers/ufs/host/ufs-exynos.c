@@ -1338,6 +1338,12 @@ static void exynos_ufs_fmp_init(struct ufs_hba *hba, struct exynos_ufs *ufs)
 	struct arm_smccc_res res;
 	int err;
 
+	/* A SoC with its own FMP set-up (other SMC ids) replaces all of this. */
+	if (ufs->drv_data->fmp_init) {
+		ufs->drv_data->fmp_init(hba, ufs);
+		return;
+	}
+
 	/*
 	 * Check for the standard crypto support bit, since it's available even
 	 * though the rest of the interface to FMP is nonstandard.
@@ -1415,7 +1421,13 @@ static void exynos_ufs_fmp_init(struct ufs_hba *hba, struct exynos_ufs *ufs)
 
 static void exynos_ufs_fmp_resume(struct ufs_hba *hba)
 {
+	struct exynos_ufs *ufs = ufshcd_get_variant(hba);
 	struct arm_smccc_res res;
+
+	if (ufs->drv_data->fmp_resume) {
+		ufs->drv_data->fmp_resume(ufs);
+		return;
+	}
 
 	if (!(hba->caps & UFSHCD_CAP_CRYPTO))
 		return;
@@ -1444,15 +1456,21 @@ static int exynos_ufs_fmp_fill_prdt(struct ufs_hba *hba,
 				    const struct bio_crypt_ctx *crypt_ctx,
 				    void *prdt, unsigned int num_segments)
 {
+	struct exynos_ufs *ufs = ufshcd_get_variant(hba);
 	struct fmp_sg_entry *fmp_prdt = prdt;
 	const u8 *enckey = crypt_ctx->bc_key->bytes;
 	const u8 *twkey = enckey + AES_KEYSIZE_256;
 	u64 dun_lo = crypt_ctx->bc_dun[0];
 	u64 dun_hi = crypt_ctx->bc_dun[1];
+	u8 layout = ufs->drv_data->fmp_key_layout;
 	unsigned int i;
 
 	/* If FMP wasn't enabled, we shouldn't get any encrypted requests. */
 	if (WARN_ON_ONCE(!(hba->caps & UFSHCD_CAP_CRYPTO)))
+		return -EIO;
+
+	/* A key order not known for this SoC: fail before touching the PRDT. */
+	if (layout != FMP_KEY_LAYOUT_HALVES)
 		return -EIO;
 
 	/* Configure FMP on each segment of the request. */
