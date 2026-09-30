@@ -137,6 +137,13 @@ struct idt_mfc_wpc {
 #if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
 	bool rx_on;
 #endif
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
+	struct delayed_work afc_vout_work;
+	struct delayed_work vout_step_work;
+	bool hv_grant;			/* the charger's 10 V grant */
+	bool pad_10v;			/* stock pad_vout == PAD_VOUT_10V */
+	bool full;			/* stock is_full_status */
+#endif
 };
 
 /* the receiver; set at the end of probe, never cleared (no unbind: suppress_bind_attrs) */
@@ -269,6 +276,84 @@ static void idt_headroom(struct idt_mfc_wpc *w, int headroom)
 }
 #endif
 
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
+/* stock mfc_send_packet() WPC branch with one data byte */
+static void idt_send_packet(struct idt_mfc_wpc *w, u8 header, u8 com, u8 data)
+{
+	regmap_write(w->regmap, IDT_WPC_PCKT_HEADER, header);
+	regmap_write(w->regmap, IDT_WPC_RX_DATA_COM, com);
+	regmap_write(w->regmap, IDT_WPC_RX_DATA_VALUE0, data);
+	idt_set_cmd_l(w, IDT_CMD_SEND_RX_DATA, IDT_CMD_SEND_RX_DATA);
+}
+
+static bool idt_pad_is_hv(enum idt_mfc_pad pad)
+{
+	return pad == IDT_MFC_PAD_WPC_AFC || pad == IDT_MFC_PAD_WPC_STAND_HV ||
+	       pad == IDT_MFC_PAD_WPC_VEHICLE_HV;
+}
+
+/*
+ * stock mfc_wpc_vout_mode_work() WIRELESS_VOUT_5V_STEP: one step
+ * down per 250 ms, then at <= 5 V and full on an HV pad the "TX 5 V" packet
+ */
+static void idt_vout_step_work(struct work_struct *work)
+{
+	struct idt_mfc_wpc *w = container_of(to_delayed_work(work), struct idt_mfc_wpc,
+					     vout_step_work);
+
+	mutex_lock(&w->lock);
+	if (!w->wc_w_state)
+		goto out;
+	if (w->vout > IDT_MFC_VOUT_5V && w->vout <= IDT_MFC_VOUT_10V) {
+		idt_set_vout(w, w->vout - 1);
+		queue_delayed_work(system_freezable_wq, &w->vout_step_work, msecs_to_jiffies(250));
+		goto out;
+	}
+	if (w->vout == IDT_MFC_VOUT_5_5V)	/* unlike stock: never step "down" from 5.5 V to 10 V */
+		idt_set_vout(w, IDT_MFC_VOUT_5V);
+	if (idt_pad_is_hv(w->pad) && w->full) {
+		idt_send_packet(w, 0x28, 0x06, 0x05);	/* HEADER_AFC_CONF, WPC_COM_AFC_SET, 5 V */
+		dev_info(w->dev, "tx 5 V after cs100\n");
+	}
+out:
+	mutex_unlock(&w->lock);
+}
+
+/*
+ * stock mfc_wpc_afc_vout_work(), queued 8 s after the AFC_CONF_10V request:
+ * HV pad type, three AFC_SET 10 V packets, all CM FETs, then Vout 10 V. Unlike
+ * stock, only while the charger's grant holds (it also covers stock's swelling check).
+ */
+static void idt_afc_vout_work(struct work_struct *work)
+{
+	struct idt_mfc_wpc *w = container_of(to_delayed_work(work), struct idt_mfc_wpc,
+					     afc_vout_work);
+	unsigned int v = 0;
+	int i;
+
+	mutex_lock(&w->lock);
+	if (!w->wc_w_state || !w->online)
+		goto out;
+	if (w->pad != IDT_MFC_PAD_WPC_STAND_HV && w->pad != IDT_MFC_PAD_WPC_VEHICLE_HV)
+		w->pad = IDT_MFC_PAD_WPC_AFC;
+	if (!w->hv_grant) {
+		dev_info(w->dev, "10 V withdrawn before the pad switched\n");
+		goto out;
+	}
+	for (i = 0; i < IDT_CMD_CNT; i++) {
+		idt_send_packet(w, 0x28, 0x06, 0x2c);	/* HEADER_AFC_CONF, WPC_COM_AFC_SET, 10 V */
+		msleep(100);
+	}
+	regmap_write(w->regmap, IDT_RX_COMM_MOD_FET, 0x00);
+	if (!regmap_read(w->regmap, IDT_RX_COMM_MOD_FET, &v))
+		dev_info(w->dev, "cm fet 0x%02x\n", v);
+	if (!w->full)
+		idt_set_vout(w, IDT_MFC_VOUT_10V);
+out:
+	mutex_unlock(&w->lock);
+	power_supply_changed(w->psy);
+}
+#endif
 
 /* stock mfc_wpc_det_work() */
 static void idt_det_work(struct work_struct *work)
@@ -316,7 +401,18 @@ static void idt_det_work(struct work_struct *work)
 		idt_fod_set(w, false);
 		/* a pad already at 10 V: kept only with the charger's grant */
 		if (vrect >= 8500 && vout >= 8500) {
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
+			if (w->hv_grant && w->pad != IDT_MFC_PAD_A4WP) {
+				w->pad_10v = true;
+				w->pad = IDT_MFC_PAD_WPC_AFC;
+				idt_set_vout(w, IDT_MFC_VOUT_10V);
+			} else {
+				idt_set_vout(w, IDT_MFC_VOUT_5V);
+			}
+#endif
+#if !IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
 			idt_set_vout(w, IDT_MFC_VOUT_5V);
+#endif
 		}
 		idt_rpp_set(w);
 #endif
@@ -326,6 +422,12 @@ static void idt_det_work(struct work_struct *work)
 		w->pad = IDT_MFC_PAD_NONE;
 		w->vout = IDT_MFC_VOUT_5V;
 		cancel_delayed_work(&w->isr_work);
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
+		w->pad_10v = false;
+		w->full = false;
+		cancel_delayed_work(&w->afc_vout_work);
+		cancel_delayed_work(&w->vout_step_work);
+#endif
 		dev_info(w->dev, "pad removed\n");
 #if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
 		/* M0 restart if the coil still powers the chip without Vout */
@@ -366,9 +468,29 @@ static void idt_isr_work(struct work_struct *work)
 	if (cmd == WPC_TX_COM_AFC_SET) {
 		switch (val) {
 		case TX_AFC_SET_5V:
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
+			w->pad_10v = false;
+#endif
 			break;
 		case TX_AFC_SET_10V:
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
+			if (gpiod_get_value_cansleep(w->det_gpio) != 1 || idt_pad_is_hv(w->pad) ||
+			    w->pad == IDT_MFC_PAD_PREPARE_HV)
+				break;
+			if (!w->hv_grant) {
+				dev_info(w->dev, "afc set 10 V ignored: no grant\n");
+				break;
+			}
+			/* AFC_CONF_10V: the 10 V work after 8 s */
+			queue_delayed_work(system_freezable_wq, &w->afc_vout_work,
+					   msecs_to_jiffies(8000));
+			msleep(500);
+			w->pad = IDT_MFC_PAD_PREPARE_HV;
+			w->pad_10v = true;
+#endif
+#if !IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
 			dev_info(w->dev, "afc set 10 V ignored (5 V stage)\n");
+#endif
 			break;
 		case TX_ID_VEHICLE_PAD:
 			w->pad = IDT_MFC_PAD_WPC_VEHICLE;
@@ -385,6 +507,9 @@ static void idt_isr_work(struct work_struct *work)
 	} else if (cmd == WPC_TX_COM_TX_ID) {
 		bool hv = false;
 
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
+		hv = w->pad_10v;
+#endif
 		switch (val) {
 		case TX_ID_VEHICLE_PAD:
 			w->pad = hv ? IDT_MFC_PAD_WPC_VEHICLE_HV : IDT_MFC_PAD_WPC_VEHICLE;
@@ -615,6 +740,11 @@ void idt_mfc_wpc_full(void)
 		msleep(250);
 	}
 	dev_info(w->dev, "cs100\n");
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
+	w->full = true;					/* HV pads step down to 5 V */
+	if (idt_pad_is_hv(w->pad))
+		queue_delayed_work(system_freezable_wq, &w->vout_step_work, msecs_to_jiffies(250));
+#endif
 out:
 	mutex_unlock(&w->lock);
 }
@@ -646,6 +776,37 @@ out:
 EXPORT_SYMBOL_GPL(idt_mfc_wpc_send_ept);
 #endif
 
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
+/*
+ * The charger's 10 V grant: a grant sends MFC_REQUEST_AFC_TX
+ * (header 0x28, WPC_COM_REQ_AFC_TX 0x0C, data 0x00); a withdrawal stops a pending
+ * switch and steps Vout down to 5 V.
+ */
+void idt_mfc_wpc_hv_grant(bool grant)
+{
+	struct idt_mfc_wpc *w = READ_ONCE(idt_wpc);
+
+	if (!w)
+		return;
+	mutex_lock(&w->lock);
+	if (w->hv_grant == grant)
+		goto out;
+	w->hv_grant = grant;
+	dev_info(w->dev, "10 V %s\n", grant ? "granted" : "withdrawn");
+	if (grant) {
+		if (w->online && !w->pad_10v && w->pad != IDT_MFC_PAD_A4WP)
+			idt_send_packet(w, 0x28, 0x0C, 0x00);
+	} else {
+		cancel_delayed_work(&w->afc_vout_work);
+		if (w->vout > IDT_MFC_VOUT_5V && w->vout <= IDT_MFC_VOUT_10V)
+			queue_delayed_work(system_freezable_wq, &w->vout_step_work,
+					   msecs_to_jiffies(250));
+	}
+out:
+	mutex_unlock(&w->lock);
+}
+EXPORT_SYMBOL_GPL(idt_mfc_wpc_hv_grant);
+#endif
 
 /* ---- debugfs: read-only register dump instead of the stock raw write sysfs ---- */
 
@@ -680,6 +841,10 @@ static void idt_cancel_works(void *data)
 
 	cancel_delayed_work_sync(&w->det_work);
 	cancel_delayed_work_sync(&w->isr_work);
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
+	cancel_delayed_work_sync(&w->afc_vout_work);
+	cancel_delayed_work_sync(&w->vout_step_work);
+#endif
 }
 
 static int idt_parse_dt(struct idt_mfc_wpc *w)
@@ -759,6 +924,10 @@ static int idt_probe(struct i2c_client *client)
 
 	INIT_DELAYED_WORK(&w->det_work, idt_det_work);
 	INIT_DELAYED_WORK(&w->isr_work, idt_isr_work);
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
+	INIT_DELAYED_WORK(&w->afc_vout_work, idt_afc_vout_work);
+	INIT_DELAYED_WORK(&w->vout_step_work, idt_vout_step_work);
+#endif
 	/* before the IRQs: cancelled only after both IRQs are freed */
 	ret = devm_add_action_or_reset(dev, idt_cancel_works, w);
 	if (ret)

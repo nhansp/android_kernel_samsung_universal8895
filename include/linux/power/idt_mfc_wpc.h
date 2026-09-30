@@ -60,6 +60,10 @@ void idt_mfc_wpc_full(void);
 void idt_mfc_wpc_send_ept(void);
 #endif
 
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
+/* the charger's 10 V grant */
+void idt_mfc_wpc_hv_grant(bool grant);
+#endif
 
 /* exported by max77865_charger.c: charge control on and not in fault mode */
 bool max77865_charger_wpc_allowed(void);

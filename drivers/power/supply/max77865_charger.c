@@ -374,6 +374,10 @@ struct max77865_charger {
 	bool wpc_temp_limit;
 	bool wpc_cv_mode;
 #endif
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
+	bool wpc_hv_granted;		/* the 10 V grant given to the receiver */
+	int wls_vout_mv;		/* last requested Vout seen, for the AICL reset */
+#endif
 
 	/* debugfs (L6F 5.3.5) */
 	u32 override_usb_mc, override_chg_mc, override_t_mc, override_hc;
@@ -788,6 +792,7 @@ static void max77865_cable_event(struct max77865_charger *chg, bool attach)
 		chg->wpc_temp_limit = false;
 		chg->wpc_cv_mode = false;
 #endif
+
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_SYSOVLO)
 		chg->sysovlo = false;		/* stays armed while charging, as stock */
 #endif
@@ -807,6 +812,13 @@ static void max77865_cable_event(struct max77865_charger *chg, bool attach)
 		chg->wc_ramp_pending = false;
 		chg->wpc_temp_limit = false;
 		chg->wpc_cv_mode = false;
+#endif
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
+		if (chg->wpc_hv_granted) {		/* back to 5 V first */
+			chg->wpc_hv_granted = false;
+			idt_mfc_wpc_hv_grant(false);
+		}
+		chg->wls_vout_mv = 0;
 #endif
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_SYSOVLO)
 		/* cleared on detach; unmasked on every removal */
@@ -984,6 +996,7 @@ static void max77865_policy(struct max77865_charger *chg, struct max77865_sample
 			chg->wpc_cv_mode = true;
 			idt_mfc_wpc_set_cv_mode();
 		}
+
 	}
 #endif
 
@@ -1490,6 +1503,38 @@ static void max77865_read_pd(struct max77865_charger *chg, struct max77865_sampl
 }
 #endif
 
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
+/*
+ * (12) the 10 V wireless grant, every pass after the apply step
+ * so that no early return of the policy skips a withdrawal: granted only while the pad is
+ * on and clean, H GOOD, no swelling event, not fault mode, NTC valid, OTG off, not FULL and
+ * the battery temperature limit off (stock sec_bat_check_wpc_temp() and
+ * sec_wireless_set_property());
+ * anything else withdraws it, which steps Vout down to 5 V first. A Vout change
+ * resets the AICL cap.
+ */
+static void max77865_wls_hv_decide(struct max77865_charger *chg, const struct max77865_sample *s)
+{
+	bool grant = s->input == INPUT_WCIN && s->wls.online && !s->wls.fod &&
+		     chg->health == H_GOOD && chg->swelling == SWELLING_NONE &&
+		     !(chg->events & EV_SWELLING_MODE) && !chg->fault && chg->ntc_seen &&
+		     s->ntc_valid && !chg->otg_on && chg->status != POWER_SUPPLY_STATUS_FULL &&
+		     !chg->wpc_temp_limit;
+
+	if (grant != chg->wpc_hv_granted) {
+		chg->wpc_hv_granted = grant;
+		idt_mfc_wpc_hv_grant(grant);
+	}
+	if (s->input == INPUT_WCIN && s->wls.vout_mv != chg->wls_vout_mv) {
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AICL)
+		if (chg->wls_vout_mv)
+			chg->aicl_ma = 0;
+#endif
+		chg->wls_vout_mv = s->wls.vout_mv;
+	}
+}
+#endif
+
 /* ---- the pass (L6F 5.3.3): one delayed work for every trigger ---- */
 
 static void max77865_pass_work(struct work_struct *work)
@@ -1611,6 +1656,10 @@ static void max77865_pass_work(struct work_struct *work)
 			max77865_safety_time(chg, &s);
 		/* (11) */
 		max77865_apply(chg, &s);
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
+		/* (12) */
+		max77865_wls_hv_decide(chg, &s);
+#endif
 	} else {
 		if (chg->input == INPUT_NONE && s.input != INPUT_NONE)
 			chg->cable_tries = 0;
@@ -2456,6 +2505,12 @@ static void max77865_stop(void *data)
 
 #if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
 	WRITE_ONCE(g_max77865_charger, NULL);
+#endif
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
+	if (chg->wpc_hv_granted) {
+		chg->wpc_hv_granted = false;
+		idt_mfc_wpc_hv_grant(false);
+	}
 #endif
 	mutex_lock(&chg->lock);
 	chg->stopping = true;
