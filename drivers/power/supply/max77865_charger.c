@@ -41,6 +41,7 @@
 #include <linux/thermal.h>
 #include <linux/timekeeping.h>
 #include <linux/workqueue.h>
+#include <linux/usb/s2mm005.h>
 
 /* float voltage: CNFG_04 CV = (V[0.1 mV] - 40500) / 125, read reg * 125 + 40500 (CHG:201-228) */
 #define CV_CODE_NORMAL		0x18	/* 43500: battery,chg_float_voltage 0xa9ec FDT:12281 */
@@ -95,6 +96,13 @@
 #define ALARM_PERIOD_S		30		/* polling_time[1] CHARGING 0x1e FDT:12187 */
 #define CABLE_RETRY		HZ
 #define CABLE_RETRIES		5
+
+/*
+ * The S2MM005's PD sink status is read for the HV guard, Type-C Rp and PD (PD
+ * depends on TYPEC_RP).
+ */
+#define MAX77865_CCIC	(IS_ENABLED(CONFIG_CHARGER_MAX77865_HV_GUARD) || \
+			 IS_ENABLED(CONFIG_CHARGER_MAX77865_TYPEC_RP))
 
 enum max77865_input { INPUT_NONE, INPUT_WIRED, INPUT_WCIN };
 
@@ -232,6 +240,7 @@ struct max77865_charger {
 	unsigned int otg_saved_mask;
 	unsigned int otg_saved_cnfg00, otg_saved_cnfg12;
 	bool wdt_kick;
+	bool hv_guard_logged;
 	bool usb_ntc_logged, chg_ntc_logged, no_rtc_logged;
 	bool wake_held;
 	unsigned long last_log;
@@ -248,6 +257,17 @@ struct max77865_charger {
 
 	/* debugfs (L6F 5.3.5) */
 	u32 override_usb_mc, override_chg_mc, override_t_mc, override_hc;
+
+#if MAX77865_CCIC
+	/* the CCIC's last PD sink status, under lock */
+	struct s2mm005 *ccic;
+	struct notifier_block ccic_nb;
+	struct s2mm005_pd_status pd;
+	unsigned long pd_event;		/* enum s2mm005_pd_event of the last notification */
+#endif
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_TEST) && IS_ENABLED(CONFIG_CHARGER_MAX77865_HV_GUARD)
+	u32 override_pd_mv;		/* test override: feeds only the HV guard */
+#endif
 };
 
 static const struct regmap_range max77865_chg_rd_ranges[] = {
@@ -493,6 +513,7 @@ static void max77865_cable_event(struct max77865_charger *chg, bool attach)
 	chg->recharging = false;
 	chg->health = H_GOOD;
 	chg->dis_cnt = 0;
+	chg->hv_guard_logged = false;
 	max77865_reset_budget(chg, EXPIRED_MS);		/* BAT:1262-1263 */
 	if (attach) {
 		/* rewrite everything for the new input, as stock's ONLINE path did (CHG:1057-1061) */
@@ -842,6 +863,28 @@ static void max77865_apply(struct max77865_charger *chg, const struct max77865_s
 
 	if (s->input != INPUT_NONE && !chg->otg_on) {
 		max77865_currents(chg, s, &in, &cc, &topoff);
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_HV_GUARD) && !IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
+		/*
+		 * HV guard, the last cap: a PD contract above 5 V that the S2MM005
+		 * firmware chose by itself caps the input at current_group_1's 500 mA
+		 * unless CONFIG_CHARGER_MAX77865_PD selects the PDO; lowers only.
+		 */
+		if (s->input == INPUT_WIRED) {
+			int pd_mv = s->pd_mv;
+
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_TEST)
+			pd_mv = max_t(int, pd_mv, chg->override_pd_mv);
+#endif
+			if (pd_mv > 5000) {
+				in = min(in, 500);
+				if (!chg->hv_guard_logged)
+					dev_info(chg->dev,
+						 "input above 5 V (%s %d mV) without stage, input capped 500 mA\n",
+						 "pd", pd_mv);
+				chg->hv_guard_logged = true;
+			}
+		}
+#endif
 		chg->in_ma = s->input == INPUT_WIRED ? in : 0;
 		chg->chg_ma = cc;
 	}
@@ -994,6 +1037,24 @@ static enum max77865_cable max77865_read_cable(struct max77865_charger *chg, boo
 	}
 }
 
+#if MAX77865_CCIC
+/*
+ * (2) the PD contract the CCIC reported: the PDO the firmware or the last
+ * select_pdo() made current (stock power_list[current_pdo_num])
+ */
+static void max77865_read_pd(struct max77865_charger *chg, struct max77865_sample *s)
+{
+	unsigned int pos = chg->pd.current_pdo_num;
+
+	if ((chg->pd_event != S2MM005_PD_EVENT_PD_SINK &&
+	     chg->pd_event != S2MM005_PD_EVENT_PD_SINK_CAP) ||
+	    pos < 1 || pos > S2MM005_MAX_PDO_NUM)
+		return;
+	s->pd_mv = chg->pd.power_list[pos].max_voltage;
+	s->pd_ma = chg->pd.power_list[pos].max_current;
+}
+#endif
+
 /* ---- the pass (L6F 5.3.3): one delayed work for every trigger ---- */
 
 static void max77865_pass_work(struct work_struct *work)
@@ -1038,6 +1099,10 @@ static void max77865_pass_work(struct work_struct *work)
 		s.cable = max77865_read_cable(chg, &pending);
 	if (!pending)
 		chg->cable_tries = 0;
+#if MAX77865_CCIC
+	if (s.input == INPUT_WIRED)
+		max77865_read_pd(chg, &s);
+#endif
 
 	if (chg->charge_control) {
 		max77865_read_temps(chg, &s);
@@ -1694,6 +1759,9 @@ static int max77865_debugfs_init(struct max77865_charger *chg)
 	debugfs_create_u32("override_t_mc", 0600, d, &chg->override_t_mc);
 	debugfs_create_u32("override_hc", 0600, d, &chg->override_hc);
 	debugfs_create_bool("wdt_kick", 0600, d, &chg->wdt_kick);
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_TEST) && IS_ENABLED(CONFIG_CHARGER_MAX77865_HV_GUARD)
+	debugfs_create_u32("override_pd_mv", 0600, d, &chg->override_pd_mv);
+#endif
 
 	return devm_add_action_or_reset(chg->dev, max77865_debugfs_remove, d);
 }
@@ -1744,6 +1812,61 @@ static struct regmap *max77865_core_regmap(struct device *dev, struct i2c_client
 	}
 	return max->regmap;
 }
+
+#if MAX77865_CCIC
+/*
+ * CCIC notifications: a copy of the sink status for the pass. The S2MM005
+ * calls the chain after releasing its own lock, so chg->lock -> S2MM005
+ * lock (select_pdo from the pass) is the only nesting.
+ */
+static int max77865_ccic_notify(struct notifier_block *nb, unsigned long action, void *data)
+{
+	struct max77865_charger *chg = container_of(nb, struct max77865_charger, ccic_nb);
+	const struct s2mm005_pd_status *st = data;
+
+	mutex_lock(&chg->lock);
+	if (action == S2MM005_PD_EVENT_DETACH || !st)
+		memset(&chg->pd, 0, sizeof(chg->pd));
+	else
+		chg->pd = *st;
+	chg->pd_event = action;
+	if (!chg->stopping)
+		mod_delayed_work(system_freezable_wq, &chg->pass_dwork, 0);
+	mutex_unlock(&chg->lock);
+	return NOTIFY_OK;
+}
+
+static void max77865_ccic_put(void *data)
+{
+	s2mm005_put(data);
+}
+
+static void max77865_ccic_unregister(void *data)
+{
+	struct max77865_charger *chg = data;
+
+	s2mm005_unregister_notifier(chg->ccic, &chg->ccic_nb);
+}
+
+/* before any charger write: a deferral here has no side effects */
+static int max77865_ccic_get(struct max77865_charger *chg)
+{
+	struct device_node *np = of_find_compatible_node(NULL, NULL, "samsung,s2mm005");
+	struct s2mm005 *ccic;
+
+	if (!np || !of_device_is_available(np)) {
+		of_node_put(np);
+		dev_info(chg->dev, "no S2MM005, no PD sink status\n");
+		return 0;
+	}
+	ccic = s2mm005_get(np);
+	of_node_put(np);
+	if (IS_ERR(ccic))
+		return dev_err_probe(chg->dev, PTR_ERR(ccic), "S2MM005\n");
+	chg->ccic = ccic;
+	return devm_add_action_or_reset(chg->dev, max77865_ccic_put, ccic);
+}
+#endif
 
 static int max77865_charger_probe(struct i2c_client *client)
 {
@@ -1804,6 +1927,12 @@ static int max77865_charger_probe(struct i2c_client *client)
 	if (IS_ERR(chg->jig))
 		return dev_err_probe(dev, PTR_ERR(chg->jig), "jig gpio\n");
 
+#if MAX77865_CCIC
+	ret = max77865_ccic_get(chg);
+	if (ret)
+		return ret;
+#endif
+
 	/* PMIC core regmap for MAINCTRL1 (L6F 5.3.2 step 12) */
 	if (chg->charge_control) {
 		core_map = max77865_core_regmap(dev, &core);
@@ -1853,6 +1982,18 @@ static int max77865_charger_probe(struct i2c_client *client)
 	ret = devm_add_action_or_reset(dev, max77865_stop, chg);
 	if (ret)
 		return ret;
+#if MAX77865_CCIC
+	/* after the pass work exists; unregistered before it is cancelled */
+	if (chg->ccic) {
+		chg->ccic_nb.notifier_call = max77865_ccic_notify;
+		ret = s2mm005_register_notifier(chg->ccic, &chg->ccic_nb);
+		if (ret)
+			return dev_err_probe(dev, ret, "S2MM005 notifier\n");
+		ret = devm_add_action_or_reset(dev, max77865_ccic_unregister, chg);
+		if (ret)
+			return ret;
+	}
+#endif
 
 	reg_cfg.dev = dev;
 	reg_cfg.driver_data = chg;
