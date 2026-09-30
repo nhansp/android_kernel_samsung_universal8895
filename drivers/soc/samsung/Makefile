@@ -44,3 +44,6 @@ obj-$(CONFIG_GREATLTE_HB_L6D_WIFI)	+= greatlte-hb-l6d-wifi.o
 
 # L6D slice bt
 obj-$(CONFIG_GREATLTE_HB_L6D_BT)	+= greatlte-hb-l6d-bt.o
+
+# L6E audio heartbeat
+obj-$(CONFIG_GREATLTE_HB_L6E)	+= greatlte-hb-l6e.o

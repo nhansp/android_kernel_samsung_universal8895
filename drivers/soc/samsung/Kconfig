@@ -240,3 +240,11 @@ config GREATLTE_HB_L6D_BT
 	default GREATLTE_HB
 	help
 	  Registers the L6D Bluetooth heartbeat rows.
+
+# L6E audio heartbeat
+config GREATLTE_HB_L6E
+	bool "greatlte heartbeat: L6E audio"
+	depends on GREATLTE_HB
+	default GREATLTE_HB
+	help
+	  Registers the L6E audio heartbeat rows (codec, amp, ABOX, VTS).
