@@ -506,6 +506,28 @@ config HW_RANDOM_EXYNOS
 
 	  If unsure, say Y.
 
+config HW_RANDOM_EXYNOS8895_FIPS
+	bool "Exynos8895 secure TRNG: FIPS start-up test"
+	depends on HW_RANDOM_EXYNOS && ARCH_EXYNOS
+	default y
+	help
+	  Run the start-up health test of the secure-world TRNG before the
+	  first read and issue HWRNG_RESUME on resume, as the stock
+	  CONFIG_EXYRNG_FIPS_COMPLIANCE=y kernel did.
+
+choice
+	prompt "Exynos8895 secure TRNG: health-test failure policy"
+	depends on HW_RANDOM_EXYNOS8895_FIPS
+	default HW_RANDOM_EXYNOS8895_FAIL_RESET
+
+config HW_RANDOM_EXYNOS8895_FAIL_RESET
+	bool "Panic (stock CONFIG_EXYRNG_FAIL_POLICY_RESET)"
+
+config HW_RANDOM_EXYNOS8895_FAIL_DISABLE
+	bool "Disable the hwrng"
+
+endchoice
+
 config HW_RANDOM_OPTEE
 	tristate "OP-TEE based Random Number Generator support"
 	depends on OPTEE
