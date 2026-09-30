@@ -134,6 +134,9 @@ struct idt_mfc_wpc {
 	u8 fod_hero_5v[IDT_NUM_FOD_REG];
 	bool fod_ok;			/* every FOD table present (stock fod_data_check) */
 	u8 rpp_hv;
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+	bool rx_on;
+#endif
 };
 
 /* the receiver; set at the end of probe, never cleared (no unbind: suppress_bind_attrs) */
@@ -190,6 +193,81 @@ static void idt_clear_int(struct idt_mfc_wpc *w, unsigned int l, unsigned int h)
 	idt_set_cmd_l(w, IDT_CMD_CLEAR_INT, IDT_CMD_CLEAR_INT);
 }
 
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+/* RX output on only while the charger has charge control and no fault */
+static void idt_rx_set(struct idt_mfc_wpc *w)
+{
+	bool on = max77865_charger_wpc_allowed();
+
+	if (on == w->rx_on)
+		return;
+	gpiod_set_value_cansleep(w->en_gpio, !on);
+	w->rx_on = on;
+	dev_info(w->dev, "wpc_en %s (rx %s)\n", on ? "low" : "high", on ? "on" : "off");
+}
+
+/* stock mfc_set_vout(), IDT codes */
+static void idt_set_vout(struct idt_mfc_wpc *w, enum idt_mfc_vout v)
+{
+	regmap_write(w->regmap, IDT_VOUT_SET, idt_vout_val[v]);
+	msleep(100);
+	w->vout = v;
+	dev_info(w->dev, "vout %d mV (adc %d mV)\n", idt_vout_mv[v], idt_adc(w, IDT_ADC_VOUT_L));
+}
+
+static void idt_write_fod(struct idt_mfc_wpc *w, unsigned int base, const u8 *fod)
+{
+	int i;
+
+	for (i = 0; i < IDT_NUM_FOD_REG; i++)
+		regmap_write(w->regmap, base + i, fod[i]);
+}
+
+/* stock mfc_fod_set() without the A4WP table */
+static void idt_fod_set(struct idt_mfc_wpc *w, bool cv)
+{
+	if (!w->fod_ok)
+		return;
+	switch (w->pad) {
+	case IDT_MFC_PAD_PMA:
+		idt_write_fod(w, IDT_PMA_FOD_0A, cv ? w->fod_pma_cv : w->fod_pma);
+		break;
+	case IDT_MFC_PAD_WPC:
+	case IDT_MFC_PAD_WPC_AFC:
+	case IDT_MFC_PAD_WPC_PACK:
+	case IDT_MFC_PAD_WPC_PACK_TA:
+	case IDT_MFC_PAD_WPC_STAND:
+	case IDT_MFC_PAD_WPC_STAND_HV:
+		idt_write_fod(w, IDT_WPC_FOD_0A, cv ? w->fod_wpc_cv : w->fod_wpc);
+		break;
+	default:
+		break;
+	}
+}
+
+/* stock mfc_rpp_set() without the LED cover input */
+static void idt_rpp_set(struct idt_mfc_wpc *w)
+{
+	unsigned int v = 0;
+
+	regmap_write(w->regmap, IDT_RPP_SCALE_COEF, w->rpp_hv);
+	msleep(5);
+	if (!regmap_read(w->regmap, IDT_RPP_SCALE_COEF, &v))
+		dev_info(w->dev, "rpp scaling coefficient 0x%02x\n", v);
+}
+
+/* stock mfc_set_vrect_adjust(): six writes 50 ms apart */
+static void idt_headroom(struct idt_mfc_wpc *w, int headroom)
+{
+	static const u8 adj[] = { 0x00, 0x36, 0x61, 0x7f, 0x06, 0x10 };
+	int i;
+
+	for (i = 0; i < 6; i++) {
+		regmap_write(w->regmap, IDT_VRECT_ADJ, adj[headroom]);
+		msleep(50);
+	}
+}
+#endif
 
 
 /* stock mfc_wpc_det_work() */
@@ -233,6 +311,15 @@ static void idt_det_work(struct work_struct *work)
 		vout = idt_adc(w, IDT_ADC_VOUT_L);
 		dev_info(w->dev, "pad %s (op mode %u) vrect %d mV vout %d mV, chip id 0x%02x vrect_adj 0x%02x\n",
 			 idt_pad_name[w->pad], mode, vrect, vout, id, adj);
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+		idt_rx_set(w);
+		idt_fod_set(w, false);
+		/* a pad already at 10 V: kept only with the charger's grant */
+		if (vrect >= 8500 && vout >= 8500) {
+			idt_set_vout(w, IDT_MFC_VOUT_5V);
+		}
+		idt_rpp_set(w);
+#endif
 	} else if (w->wc_w_state && det == 0) {
 		w->online = false;
 		w->fod = false;
@@ -240,6 +327,14 @@ static void idt_det_work(struct work_struct *work)
 		w->vout = IDT_MFC_VOUT_5V;
 		cancel_delayed_work(&w->isr_work);
 		dev_info(w->dev, "pad removed\n");
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+		/* M0 restart if the coil still powers the chip without Vout */
+		msleep(1000);
+		if (idt_adc(w, IDT_ADC_VRECT_L) >= 3000 && idt_adc(w, IDT_ADC_VOUT_L) <= 2000) {
+			dev_info(w->dev, "restart M0\n");
+			idt_set_cmd_l(w, IDT_CMD_MCU_RESET, IDT_CMD_MCU_RESET);
+		}
+#endif
 	}
 	if (det >= 0)
 		w->wc_w_state = det;
@@ -296,6 +391,10 @@ static void idt_isr_work(struct work_struct *work)
 			break;
 		case TX_ID_STAND_TYPE_START:
 			w->pad = hv ? IDT_MFC_PAD_WPC_STAND_HV : IDT_MFC_PAD_WPC_STAND;
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+			if (!hv && w->fod_ok)		/* mfc_fod_set_hero_5v() */
+				idt_write_fod(w, IDT_WPC_FOD_0A, w->fod_hero_5v);
+#endif
 			break;
 		case TX_ID_BATT_PACK:
 			w->pad = IDT_MFC_PAD_WPC_PACK;
@@ -451,6 +550,101 @@ int idt_mfc_wpc_get_status(struct idt_mfc_wpc_status *st)
 }
 EXPORT_SYMBOL_GPL(idt_mfc_wpc_get_status);
 
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+void idt_mfc_wpc_rx_update(void)
+{
+	struct idt_mfc_wpc *w = READ_ONCE(idt_wpc);
+
+	if (!w)
+		return;
+	mutex_lock(&w->lock);
+	idt_rx_set(w);
+	mutex_unlock(&w->lock);
+}
+EXPORT_SYMBOL_GPL(idt_mfc_wpc_rx_update);
+
+void idt_mfc_wpc_set_headroom(int headroom)
+{
+	struct idt_mfc_wpc *w = READ_ONCE(idt_wpc);
+
+	if (!w || headroom < 0 || headroom > 5)
+		return;
+	mutex_lock(&w->lock);
+	if (w->online)
+		idt_headroom(w, headroom);
+	mutex_unlock(&w->lock);
+}
+EXPORT_SYMBOL_GPL(idt_mfc_wpc_set_headroom);
+
+/* stock sec_bat_wc_cv_mode_check() requests: Vout 5.5 V, headroom 5, CV FOD */
+void idt_mfc_wpc_set_cv_mode(void)
+{
+	struct idt_mfc_wpc *w = READ_ONCE(idt_wpc);
+
+	if (!w)
+		return;
+	mutex_lock(&w->lock);
+	if (w->online && w->vout == IDT_MFC_VOUT_5V) {
+		idt_set_vout(w, IDT_MFC_VOUT_5_5V);
+		idt_headroom(w, 5);
+		idt_fod_set(w, true);			/* mfc_fod_set_cv() */
+	}
+	mutex_unlock(&w->lock);
+}
+EXPORT_SYMBOL_GPL(idt_mfc_wpc_set_cv_mode);
+
+/* stock STATUS_FULL: CS100 (plain WPC pads with the 0x7f FOD first) */
+void idt_mfc_wpc_full(void)
+{
+	struct idt_mfc_wpc *w = READ_ONCE(idt_wpc);
+	static const u8 fod_cs100[IDT_NUM_FOD_REG] = {
+		0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f };
+	int i;
+
+	if (!w)
+		return;
+	mutex_lock(&w->lock);
+	if (!w->online)
+		goto out;
+	if (w->pad == IDT_MFC_PAD_WPC)			/* SEC_WIRELESS_PAD_WPC = 1 */
+		idt_write_fod(w, IDT_WPC_FOD_0A, fod_cs100);	/* mfc_fod_set_cs100() */
+	for (i = 0; i < IDT_CMD_CNT; i++) {		/* mfc_send_cs100() */
+		if (regmap_write(w->regmap, IDT_BATTERY_CHG_STATUS, 100))
+			break;
+		idt_set_cmd_l(w, IDT_CMD_SEND_CHG_STS, IDT_CMD_SEND_CHG_STS);
+		msleep(250);
+	}
+	dev_info(w->dev, "cs100\n");
+out:
+	mutex_unlock(&w->lock);
+}
+EXPORT_SYMBOL_GPL(idt_mfc_wpc_full);
+
+/* stock mfc_send_eop() for OVERHEAT/OVERHEATLIMIT/COLD */
+void idt_mfc_wpc_send_ept(void)
+{
+	struct idt_mfc_wpc *w = READ_ONCE(idt_wpc);
+	unsigned int code;
+	int i;
+
+	if (!w)
+		return;
+	mutex_lock(&w->lock);
+	if (!w->online || w->pad == IDT_MFC_PAD_A4WP)	/* A4WP: log only */
+		goto out;
+	code = w->pad == IDT_MFC_PAD_PMA ? 1 : 3;	/* EPT_END_OF_CHG / OVER_TEMP */
+	for (i = 0; i < IDT_CMD_CNT; i++) {
+		if (regmap_write(w->regmap, IDT_EPT, code))
+			break;
+		idt_set_cmd_l(w, IDT_CMD_SEND_EOP, IDT_CMD_SEND_EOP);
+		msleep(250);
+	}
+	dev_info(w->dev, "ept %u sent\n", code);
+out:
+	mutex_unlock(&w->lock);
+}
+EXPORT_SYMBOL_GPL(idt_mfc_wpc_send_ept);
+#endif
 
 
 /* ---- debugfs: read-only register dump instead of the stock raw write sysfs ---- */
@@ -614,12 +808,26 @@ static int idt_probe(struct i2c_client *client)
 		return ret;
 
 	WRITE_ONCE(idt_wpc, w);
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+	idt_mfc_wpc_rx_update();		/* the charger may have probed first */
+#endif
 	return 0;
 }
 
 /* stock mfc_charger_shutdown(), only with _NV (the read-only level writes no command) */
 static void idt_shutdown(struct i2c_client *client)
 {
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+	struct idt_mfc_wpc *w = i2c_get_clientdata(client);
+
+	mutex_lock(&w->lock);
+	if (w->online) {
+		idt_headroom(w, 1);
+		if (w->vout == IDT_MFC_VOUT_5_5V)
+			idt_set_vout(w, IDT_MFC_VOUT_5V);
+	}
+	mutex_unlock(&w->lock);
+#endif
 }
 
 /* stock suspend/resume: wake arming only; 6.18 disables non-wake IRQs itself */

@@ -42,6 +42,7 @@
 #include <linux/timekeeping.h>
 #include <linux/workqueue.h>
 #include <linux/usb/s2mm005.h>
+#include <linux/power/idt_mfc_wpc.h>
 
 /* float voltage: CNFG_04 CV = (V[0.1 mV] - 40500) / 125, read reg * 125 + 40500 (CHG:201-228) */
 #define CV_CODE_NORMAL		0x18	/* 43500: battery,chg_float_voltage 0xa9ec FDT:12281 */
@@ -57,6 +58,17 @@
 #define T_HIGH_REC		450	/* temp_high_recovery_normal 0x1c2 FDT:12226 */
 #define T_LOW			0	/* temp_low_threshold_normal 0x00 FDT:12227 */
 #define T_LOW_REC		50	/* temp_low_recovery_normal 0x32 FDT:12228 */
+
+/* wireless temperature thresholds, 0.1 degC */
+#define WPC_T_HIGH		450	/* wpc_high_threshold_normal 0x1c2 */
+#define WPC_T_HIGH_REC		400	/* wpc_high_recovery_normal 0x190 */
+#define WPC_T_LOW		0	/* wpc_low_threshold_normal 0x00 */
+#define WPC_T_LOW_REC		50	/* wpc_low_recovery_normal 0x32 */
+#define WPC_BAT_TEMP_LIMIT	380	/* wpc_temp_control_source BAT_THM, 38.0 C */
+#define WPC_BAT_TEMP_REC	360	/* wpc_temp_control_source recovery 36.0 C */
+#define WPC_BAT_TEMP_CURRENT	600	/* wpc_temp_limit_current 600 mA */
+#define WPC_SW_CURRENT		750	/* swelling_wc_high/low_temp_current 750 mA */
+
 #define SW_HIGH_BLOCK		410	/* swelling_high_temp_block 0x19a FDT:12283 */
 #define SW_HIGH_REC		390	/* swelling_high_temp_recov 0x186 FDT:12284 */
 #define SW_LOW_BLOCK_1ST	150	/* swelling_low_temp_block_1st 0x96 FDT:12285 */
@@ -228,6 +240,8 @@ struct max77865_sample {
 	/* charging-extras sample fields */
 	struct {
 		bool online;
+		bool fod;		/* the pad reported a foreign object */
+		int pad;		/* enum idt_mfc_pad */
 		enum max77865_cable class;
 		int vout_mv;
 	} wls;
@@ -248,7 +262,8 @@ static int max77865_in_mv(const struct max77865_sample *s)
 		return s->pd_mv ? s->pd_mv : 5000;
 	case WLS_HV:
 	case WLS_PREP_HV:
-		return 10000;
+		/* is_hv_wireless_type() or PREPARE_WIRELESS_HV; PACK_TA is 5 V */
+		return s->wls.pad == IDT_MFC_PAD_WPC_PACK_TA ? 5000 : 10000;
 	default:
 		return 5000;
 	}
@@ -270,6 +285,7 @@ struct max77865_charger {
 	struct alarm alarm;
 
 	bool charge_control;
+	bool works_ready;
 	bool lpcharge;
 	bool stopping;
 	bool poweroff_restart;
@@ -348,6 +364,17 @@ struct max77865_charger {
 	bool chg_high_temp_limit;
 #endif
 
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+	struct delayed_work wc_current_dwork;
+	int wc_target_ma;
+	int wc_pre_ma;
+	int wc_cap;			/* capacity and pad of the last pass, for the ramp's end */
+	int wc_pad;
+	bool wc_ramp_pending;
+	bool wpc_temp_limit;
+	bool wpc_cv_mode;
+#endif
+
 	/* debugfs (L6F 5.3.5) */
 	u32 override_usb_mc, override_chg_mc, override_t_mc, override_hc;
 
@@ -405,6 +432,19 @@ static const struct regmap_config max77865_chg_regmap_config = {
 	.volatile_table = &max77865_chg_volatile_table,
 	.cache_type = REGCACHE_NONE,
 };
+
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+/* the receiver's RX enable follows this; set after probe's init */
+static struct max77865_charger *g_max77865_charger;
+
+bool max77865_charger_wpc_allowed(void)
+{
+	struct max77865_charger *chg = READ_ONCE(g_max77865_charger);
+
+	return chg && chg->charge_control && !READ_ONCE(chg->fault);
+}
+EXPORT_SYMBOL_GPL(max77865_charger_wpc_allowed);
+#endif
 
 /* ---- register decoders (read only) ---- */
 
@@ -548,21 +588,79 @@ static void max77865_safety_time(struct max77865_charger *chg, const struct max7
 	chg->prev_safety_s = now;
 }
 
-/* new H of the thermal step (BAT:1942-2055), usb_thermal_source set (FDT:12185) */
-static int max77865_thermal_h(int h, int t, int tu)
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+#define WC_CURRENT_STEP		100
+#define WC_CURRENT_START	480
+#define WC_CURRENT_WORK_STEP	1000	/* ms */
+
+/*
+ * stock max77865_wc_current_work(): the WCIN limit CNFG_10 = mA / 25, max
+ * 1575, stepped by 100 mA every second toward the target; at the target the
+ * headroom of the class. Stops when the input leaves WCIN, charge
+ * control is off or fault mode is set.
+ */
+static void max77865_wc_current_work(struct work_struct *work)
 {
+	struct max77865_charger *chg = container_of(to_delayed_work(work), struct max77865_charger,
+						    wc_current_dwork);
+	int headroom, cur;
+
+	mutex_lock(&chg->lock);
+	if (!chg->charge_control || chg->fault || chg->input != INPUT_WCIN || chg->stopping) {
+		chg->wc_ramp_pending = false;
+		mutex_unlock(&chg->lock);
+		return;
+	}
+	cur = chg->wc_pre_ma;
+	if (cur != chg->wc_target_ma) {
+		if (cur > chg->wc_target_ma)
+			cur -= min(cur - chg->wc_target_ma, WC_CURRENT_STEP);
+		else
+			cur += min(chg->wc_target_ma - cur, WC_CURRENT_STEP);
+		if (!regmap_update_bits(chg->regmap, MAX77865_CHG_REG_CNFG_10,
+					MAX77865_CNFG_10_WCIN_LIM, min(cur, 1575) / 25))
+			chg->in_w = cur;
+		chg->wc_pre_ma = cur;
+		queue_delayed_work(system_freezable_wq, &chg->wc_current_dwork,
+				   msecs_to_jiffies(WC_CURRENT_WORK_STEP));
+		mutex_unlock(&chg->lock);
+		return;
+	}
+	chg->wc_ramp_pending = false;
+	/* nv: room 4 below wireless_cc_cv 85 % else 5; hv: 5 */
+	if (chg->cable == WLS_HV && chg->wc_pad != IDT_MFC_PAD_WPC_PACK_TA)
+		headroom = 5;
+	else
+		headroom = chg->wc_cap >= 0 && chg->wc_cap < 85 ? 4 : 5;
+	mutex_unlock(&chg->lock);
+	msleep(500);
+	idt_mfc_wpc_set_headroom(headroom);
+}
+#endif
+
+/*
+ * new H of the thermal step, usb_thermal_source set; the wireless
+ * thresholds only with CONFIG_WIRELESS_CHARGER_IDT_MFC_NV
+ */
+static int max77865_thermal_h(int h, int t, int tu, bool wcin)
+{
+	int t_high = wcin ? WPC_T_HIGH : T_HIGH;
+	int t_high_rec = wcin ? WPC_T_HIGH_REC : T_HIGH_REC;
+	int t_low = wcin ? WPC_T_LOW : T_LOW;
+	int t_low_rec = wcin ? WPC_T_LOW_REC : T_LOW_REC;
+
 	if (tu >= T_HIGHLIMIT)
 		return H_OVERHEATLIMIT;
 	if (h == H_OVERHEATLIMIT && tu > T_HIGHLIMIT_REC)
 		return h;
-	if (t >= T_HIGH)
+	if (t >= t_high)
 		return H_OVERHEAT;
-	if (t <= T_HIGH_REC && t >= T_LOW_REC) {
+	if (t <= t_high_rec && t >= t_low_rec) {
 		if (h == H_OVERHEAT || h == H_OVERHEATLIMIT || h == H_COLD)
-			return (h == H_OVERHEATLIMIT && t > T_HIGH_REC) ? H_OVERHEAT : H_GOOD;
+			return (h == H_OVERHEATLIMIT && t > t_high_rec) ? H_OVERHEAT : H_GOOD;
 		return h;
 	}
-	if (t <= T_LOW)
+	if (t <= t_low)
 		return H_COLD;
 	return h;
 }
@@ -645,6 +743,10 @@ static void max77865_do_full(struct max77865_charger *chg, const struct max77865
 		max77865_set_mode(chg, MODE_CHARGING_OFF);
 		dev_info(chg->dev, "full (2nd), vcell %d mV\n", s->vcell);
 	}
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+	if (s->input == INPUT_WCIN)
+		idt_mfc_wpc_full();		/* CS100 on the FULL transition */
+#endif
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_AGE_FORECAST)
 	max77865_aging_check(chg, s);
 #endif
@@ -682,6 +784,10 @@ static void max77865_cable_event(struct max77865_charger *chg, bool attach)
 #endif
 	max77865_reset_budget(chg, EXPIRED_MS);		/* BAT:1262-1263 */
 	if (attach) {
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+		chg->wpc_temp_limit = false;
+		chg->wpc_cv_mode = false;
+#endif
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_SYSOVLO)
 		chg->sysovlo = false;		/* stays armed while charging, as stock */
 #endif
@@ -694,6 +800,14 @@ static void max77865_cable_event(struct max77865_charger *chg, bool attach)
 		chg->status = POWER_SUPPLY_STATUS_CHARGING;
 		max77865_set_mode(chg, MODE_CHARGING);	/* :4032-4036 */
 	} else {
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+		cancel_delayed_work(&chg->wc_current_dwork);
+		chg->wc_pre_ma = WC_CURRENT_START;
+		chg->wc_target_ma = 0;
+		chg->wc_ramp_pending = false;
+		chg->wpc_temp_limit = false;
+		chg->wpc_cv_mode = false;
+#endif
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_SYSOVLO)
 		/* cleared on detach; unmasked on every removal */
 		chg->sysovlo = false;
@@ -848,16 +962,46 @@ static void max77865_policy(struct max77865_charger *chg, struct max77865_sample
 	if (!s->ntc_valid)
 		return;
 
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+	if (s->input == INPUT_WCIN) {
+		/*
+		 * battery temperature limit, wpc_temp_control_source BAT_THM, siop 100
+		 */
+		if (!chg->wpc_temp_limit && s->t >= WPC_BAT_TEMP_LIMIT)
+			chg->wpc_temp_limit = true;
+		else if (chg->wpc_temp_limit && s->t <= WPC_BAT_TEMP_REC)
+			chg->wpc_temp_limit = false;
+
+		/*
+		 * CV mode (stock sec_bat_wc_cv_mode_check()): WIRELESS (incl. A4WP, reported
+		 * as WPC), STAND, PACK_TA pads after 10 s of charging at capacity >=
+		 * wireless_cc_cv 85: Vout 5.5 V, headroom 5, CV FOD in the receiver
+		 */
+		if (!chg->wpc_cv_mode && chg->chg_start_s && s->cap >= 85 &&
+		    ktime_get_boottime_seconds() - chg->chg_start_s > 10 &&
+		    (s->wls.pad == IDT_MFC_PAD_WPC || s->wls.pad == IDT_MFC_PAD_A4WP ||
+		     s->wls.pad == IDT_MFC_PAD_WPC_STAND || s->wls.pad == IDT_MFC_PAD_WPC_PACK_TA)) {
+			chg->wpc_cv_mode = true;
+			idt_mfc_wpc_set_cv_mode();
+		}
+	}
+#endif
+
 	/* (7) thermal (BAT:1898-2178) */
 	if (chg->status != POWER_SUPPLY_STATUS_DISCHARGING) {
 		if (chg->health != H_GOOD && chg->health != H_OVERHEAT &&
 		    chg->health != H_COLD && chg->health != H_OVERHEATLIMIT)
 			return;					/* :1911-1917 */
 		pre = chg->health;
-		h = max77865_thermal_h(pre, s->t, s->tu);
+		h = max77865_thermal_h(pre, s->t, s->tu, IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV) &&
+				       s->input == INPUT_WCIN);
 		chg->health = h;
 		if (h == H_OVERHEAT || h == H_COLD || h == H_OVERHEATLIMIT) {
 			if (h != pre) {				/* :2066-2104 */
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+				if (s->input == INPUT_WCIN)	/* EPT to the pad */
+					idt_mfc_wpc_send_ept();
+#endif
 				chg->status = POWER_SUPPLY_STATUS_NOT_CHARGING;
 				max77865_set_mode(chg, h == H_COLD ? MODE_CHARGING_OFF : MODE_BUCK_OFF);
 				max77865_log_thermal(chg, pre, s);
@@ -1083,6 +1227,24 @@ static void max77865_currents(struct max77865_charger *chg, const struct max7786
 		*cc = min(*cc, SW_LOW_CURRENT);
 	}
 
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+	/* stock sec_bat_get_wireless_current() with siop 100 */
+	if (s->input == INPUT_WCIN) {
+		if (chg->wpc_temp_limit)
+			*in = min(*in, WPC_BAT_TEMP_CURRENT);
+		if (chg->wpc_cv_mode)
+			*in = min(*in, s->wls.pad == IDT_MFC_PAD_WPC_PACK ?
+				  630 : 820);		/* wc_cv_pack_current / wc_cv_current */
+		if (chg->status == POWER_SUPPLY_STATUS_FULL && chg->mode == STAGE_2ND)
+			*in = min(*in, 600);	/* siop_hv_wireless_input_limit_current */
+		if (chg->status == POWER_SUPPLY_STATUS_FULL && chg->mode == STAGE_NONE)
+			*in = 100;		/* wc_full_input_limit_current */
+		/* wireless swelling caps */
+		if (chg->events & (EV_LOW_TEMP_SWELLING | EV_HIGH_TEMP_SWELLING | EV_LOW_TEMP))
+			*cc = min(*cc, WPC_SW_CURRENT);
+	}
+#endif
+
 	/* max_charging_current 2350 is applied as the last CC cap for every class */
 	*cc = min(*cc, 2350);
 }
@@ -1134,6 +1296,35 @@ static void max77865_apply(struct max77865_charger *chg, const struct max77865_s
 		    !regmap_update_bits(chg->regmap, MAX77865_CHG_REG_CNFG_12,
 					MAX77865_CNFG_12_CHGINSEL, MAX77865_CNFG_12_CHGINSEL))
 			chg->chginsel_pending = false;
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+		if (s->input == INPUT_WCIN && !chg->otg_on) {
+			/* CHGINSEL := 0 for wireless */
+			regmap_update_bits(chg->regmap, MAX77865_CHG_REG_CNFG_12,
+					   MAX77865_CNFG_12_CHGINSEL, 0);
+
+			/* Charge current first */
+			if (cc != chg->chg_w &&
+			    !regmap_update_bits(chg->regmap, MAX77865_CHG_REG_CNFG_02,
+						MAX77865_CNFG_02_CHG_CC, min(cc, 3150) / 50))
+				chg->chg_w = cc;
+
+			/*
+			 * WCIN input through the stock ramp: headroom 1 (270 mV),
+			 * 500 ms, then the ramp work
+			 */
+			chg->wc_cap = s->cap;
+			chg->wc_pad = s->wls.pad;
+			if (in != chg->in_w && in != chg->wc_target_ma) {
+				chg->wc_target_ma = in;
+				if (!chg->wc_ramp_pending) {
+					chg->wc_ramp_pending = true;
+					idt_mfc_wpc_set_headroom(1);
+					queue_delayed_work(system_freezable_wq, &chg->wc_current_dwork,
+							   msecs_to_jiffies(500));
+				}
+			}
+		}
+#endif
 		if (s->input == INPUT_WIRED && !chg->otg_on && in != chg->in_w &&
 		    !regmap_update_bits(chg->regmap, MAX77865_CHG_REG_CNFG_09,	/* CHG:465-501 */
 					MAX77865_CNFG_09_CHGIN_LIM, min(in, 3175) / 25))
@@ -1158,6 +1349,10 @@ static void max77865_apply(struct max77865_charger *chg, const struct max77865_s
 
 	/* overrides (a) fault mode, (b) no valid NTC reading (L6F 5.3.3 "overrides") */
 	eff = chg->chg_mode;
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+	if (s->input == INPUT_WCIN && s->wls.fod)
+		eff = MODE_CHARGING_OFF;		/* unlike stock: the pad reports FOD */
+#endif
 	if (eff == MODE_CHARGING && (chg->fault || !chg->ntc_seen || !s->ntc_valid))
 		eff = MODE_CHARGING_OFF;
 	if (eff != chg->hw_mode)
@@ -1345,6 +1540,38 @@ static void max77865_pass_work(struct work_struct *work)
 		max77865_read_pd(chg, &s);
 #endif
 
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+	/* (2) the receiver's pad and class */
+	if (chg->charge_control && s.input == INPUT_WCIN) {
+		struct idt_mfc_wpc_status ws;
+
+		if (!idt_mfc_wpc_get_status(&ws)) {
+			s.wls.online = ws.online;
+			s.wls.fod = ws.fod;
+			s.wls.pad = ws.pad;
+			s.wls.vout_mv = ws.vout_mv;
+			switch (ws.pad) {
+			case IDT_MFC_PAD_WPC_PACK:		/* WIRELESS_PACK 13 */
+				s.wls.class = WLS_PACK;
+				break;
+			case IDT_MFC_PAD_WPC_AFC:		/* HV_WIRELESS 11 */
+			case IDT_MFC_PAD_WPC_PACK_TA:		/* PACK_TA 14 */
+			case IDT_MFC_PAD_WPC_STAND_HV:		/* HV_STAND 16 */
+			case IDT_MFC_PAD_WPC_VEHICLE_HV:	/* HV_VEHICLE 28 */
+				s.wls.class = WLS_HV;
+				break;
+			case IDT_MFC_PAD_PREPARE_HV:		/* PREPARE_WIRELESS_HV 29 */
+				s.wls.class = WLS_PREP_HV;
+				break;
+			default:				/* WIRELESS, PMA, STAND, VEHICLE */
+				s.wls.class = WLS_NV;
+				break;
+			}
+			s.cable = s.wls.class;
+		}
+	}
+#endif
+
 	if (chg->charge_control || IS_ENABLED(CONFIG_CHARGER_MAX77865_TTF)) {
 		if (chg->charge_control)
 			max77865_read_temps(chg, &s);
@@ -1394,7 +1621,7 @@ static void max77865_pass_work(struct work_struct *work)
 			max77865_currents(chg, &s, &chg->in_ma, &chg->chg_ma, &topoff);
 	}
 	read_ok = true;
-	chg->cable = s.input == INPUT_WIRED ? s.cable : CABLE_NONE;
+	chg->cable = s.input == INPUT_WIRED ? s.cable : (s.input == INPUT_WCIN ? s.cable : CABLE_NONE);
 	plugged = s.input != INPUT_NONE;
 
 	/* reported values (L6F 5.3.1, 5.3.3 "reported") */
@@ -1428,7 +1655,8 @@ static void max77865_pass_work(struct work_struct *work)
 
 		if (s.cable == CABLE_HV9 || chg->max_power >= 2350 * 5)	/* max_charging_current */
 			charge = 2350;		/* ttf_hv_charge_current 0x92e */
-		else if (s.cable == WLS_HV || s.cable == WLS_PREP_HV)	/* OTG: normal mode */
+		else if (s.input == INPUT_WCIN && max77865_in_mv(&s) == 10000)	/* hv wireless or prepare-hv;
+										   OTG: normal mode */
 			charge = chg->otg_on ? 950 : 1200;	/* ttf_hv_wireless 0x4b0 */
 		else if (s.input == INPUT_WCIN)
 			charge = 950;		/* ttf_wireless_charge_current 0x3b6 */
@@ -1984,6 +2212,19 @@ static int max77865_in_get_property(struct power_supply *psy, enum power_supply_
 	return 0;
 }
 
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+/* the wireless supply changed (supplied_to): one pass now */
+static void max77865_ext_changed(struct power_supply *psy)
+{
+	struct max77865_charger *chg = power_supply_get_drvdata(psy);
+
+	mutex_lock(&chg->lock);
+	if (chg->works_ready && !chg->stopping)
+		mod_delayed_work(system_freezable_wq, &chg->pass_dwork, 0);
+	mutex_unlock(&chg->lock);
+}
+#endif
+
 /* stock supply name and type (CHG:1837-1845) */
 static const struct power_supply_desc max77865_chg_desc = {
 	.name = "max77865-charger",
@@ -1991,6 +2232,9 @@ static const struct power_supply_desc max77865_chg_desc = {
 	.properties = max77865_chg_props,
 	.num_properties = ARRAY_SIZE(max77865_chg_props),
 	.get_property = max77865_chg_get_property,
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+	.external_power_changed = max77865_ext_changed,
+#endif
 };
 
 /* stock sec_battery supply names (S:drivers/staging/samsung/sec_reboot.c:107-110) */
@@ -2210,6 +2454,9 @@ static void max77865_stop(void *data)
 {
 	struct max77865_charger *chg = data;
 
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+	WRITE_ONCE(g_max77865_charger, NULL);
+#endif
 	mutex_lock(&chg->lock);
 	chg->stopping = true;
 	mutex_unlock(&chg->lock);
@@ -2429,6 +2676,17 @@ static int max77865_charger_probe(struct i2c_client *client)
 	if (ret)
 		return ret;
 #endif
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+	ret = devm_delayed_work_autocancel(dev, &chg->wc_current_dwork, max77865_wc_current_work);
+	if (ret)
+		return ret;
+#endif
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+	mutex_lock(&chg->lock);
+	chg->wc_pre_ma = WC_CURRENT_START;
+	chg->works_ready = true;	/* external_power_changed may queue the pass from now on */
+	mutex_unlock(&chg->lock);
+#endif
 	ret = devm_add_action_or_reset(dev, max77865_stop, chg);
 	if (ret)
 		return ret;
@@ -2535,6 +2793,11 @@ static int max77865_charger_probe(struct i2c_client *client)
 	}
 #endif
 
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+	/* charge control and fault mode are final now: let the receiver follow them */
+	WRITE_ONCE(g_max77865_charger, chg);
+	idt_mfc_wpc_rx_update();
+#endif
 	queue_delayed_work(system_freezable_wq, &chg->pass_dwork, 0);
 	return 0;
 }
@@ -2550,6 +2813,9 @@ static void max77865_charger_shutdown(struct i2c_client *client)
 	max77865_stop(chg);
 	cancel_work_sync(&chg->chgin_work);
 	cancel_delayed_work_sync(&chg->pass_dwork);
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+	cancel_delayed_work_sync(&chg->wc_current_dwork);
+#endif
 
 	mutex_lock(&chg->lock);
 	if (chg->otg_on)

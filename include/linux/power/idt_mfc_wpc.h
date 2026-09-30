@@ -51,6 +51,14 @@ int idt_mfc_wpc_get_status(struct idt_mfc_wpc_status *st);
 static inline int idt_mfc_wpc_get_status(struct idt_mfc_wpc_status *st) { return -ENODEV; }
 #endif
 
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+/* commands of the 5 V charging policy */
+void idt_mfc_wpc_rx_update(void);
+void idt_mfc_wpc_set_headroom(int headroom);
+void idt_mfc_wpc_set_cv_mode(void);
+void idt_mfc_wpc_full(void);
+void idt_mfc_wpc_send_ept(void);
+#endif
 
 
 /* exported by max77865_charger.c: charge control on and not in fault mode */
