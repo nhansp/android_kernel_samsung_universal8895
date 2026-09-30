@@ -34,6 +34,7 @@ allOf:
         samsung,full-condition-microvolt: false
         samsung,full-condition-percent: false
         samsung,recharge-condition-microvolt: false
+        maxim,ttf-cv-data: false
 
 properties:
   compatible:
@@ -131,6 +132,17 @@ properties:
     description:
       maxim,max77865-battery only. Cell voltage at which the charger restarts
       a full battery; see samsung,full-condition-percent.
+
+  maxim,ttf-cv-data:
+    $ref: /schemas/types.yaml#/definitions/uint32-matrix
+    items:
+      items:
+        - description: charge current in mA
+        - description: state of charge in tenths of a percent
+        - description: time to full in seconds
+    description:
+      maxim,max77865-battery only. The constant-voltage table of the
+      time-to-full estimate, rows in falling charge current.
 
 required:
   - compatible
