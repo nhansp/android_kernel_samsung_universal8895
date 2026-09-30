@@ -60,6 +60,10 @@ module_param(sicd_enabled, bool, 0644);
  *                   of the c2_mode body and the PMU CONFIGURATION/STATUS of each
  *                   core; a CPU that stayed inside for two samples is sent an IPI
  *                   (SGI) once, to tell "not woken" from "woken but stuck"
+ *   c2_recycle=1    before registering, take every non-boot CPU offline and online
+ *                   once (PSCI CPU_OFF/CPU_ON through the PMU hotplug hooks), so each
+ *                   secondary core has been powered up after L1's lpm_init; stock
+ *                   ran lpm_init at time_init, before the secondaries were booted
  */
 static unsigned int c2_mode;
 static unsigned int c2_cpus = 0xff;
@@ -69,6 +73,8 @@ module_param(c2_mode, uint, 0444);
 module_param(c2_cpus, uint, 0444);
 module_param(timer_stop, bool, 0444);
 module_param(c2_trace, uint, 0444);
+static bool c2_recycle;
+module_param(c2_recycle, bool, 0444);
 static unsigned long c2_traced_in, c2_traced_out;	/* bit per CPU */
 static atomic_t c2_dbg_in[8], c2_dbg_out[8];
 
@@ -408,6 +414,20 @@ static int __init e8895_idle_init(void)
 		pr_err("exynos8895_idle: PMU CPU hooks not ready, staying at WFI\n");
 		return -ENODEV;
 	}
+	if (c2_recycle) {						/* DEBUG */
+		unsigned int c;
+
+		for_each_online_cpu(c) {
+			int r1, r2;
+
+			if (!c)
+				continue;
+			r1 = remove_cpu(c);
+			r2 = r1 ? 0 : add_cpu(c);
+			pr_info("exynos8895_idle: DEBUG recycle cpu%u off %d on %d status %x\n",
+				c, r1, r2, e8895_pmu_cpu_status(c));
+		}
+	}
 	/* boot cluster = A53 = PMU cluster 1 first */
 	ret = e8895_idle_init_one(&e8895_drv[0], e8895_phycluster(0));
 	if (!ret) {
@@ -430,9 +450,9 @@ static int __init e8895_idle_init(void)
 	pr_info("exynos8895_idle: C2 on 8 CPUs, cpd=%d sicd=%d\n", cpd_enabled, sicd_enabled);
 	if (c2_trace >= 2)						/* DEBUG */
 		queue_delayed_work(system_unbound_wq, &e8895_c2_watch, 2 * HZ);
-	if (c2_mode || c2_cpus != 0xff || !timer_stop || c2_trace)	/* DEBUG */
-		pr_info("exynos8895_idle: DEBUG c2_mode=%u c2_cpus=0x%02x timer_stop=%d c2_trace=%d\n",
-			c2_mode, c2_cpus, !(c2_mode == 1 && !timer_stop), c2_trace);
+	if (c2_mode || c2_cpus != 0xff || !timer_stop || c2_trace || c2_recycle)	/* DEBUG */
+		pr_info("exynos8895_idle: DEBUG c2_mode=%u c2_cpus=0x%02x timer_stop=%d c2_trace=%u c2_recycle=%d\n",
+			c2_mode, c2_cpus, !(c2_mode == 1 && !timer_stop), c2_trace, c2_recycle);
 	return 0;
 }
 device_initcall(e8895_idle_init);			/* S:drivers/cpuidle/cpuidle-exynos64.c:293 */
