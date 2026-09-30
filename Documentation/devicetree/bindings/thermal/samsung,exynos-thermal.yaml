@@ -86,6 +86,65 @@ properties:
   vtmu-supply:
     description: The regulator node supplying voltage to TMU.
 
+  samsung,ipa-k-po:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      Proportional gain of the power allocator governor above the control
+      temperature, in mW per degree Celsius, for the thermal zone of this
+      instance. With the other four samsung,ipa-* properties it makes the
+      driver run that zone on the power_allocator governor, once every
+      cooling device bound to the zone is a power actor.
+
+  samsung,ipa-k-pu:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      Proportional gain of the power allocator below the control
+      temperature, in mW per degree Celsius.
+
+  samsung,ipa-k-i:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      Integral gain of the power allocator, in mW per degree Celsius and
+      polling period.
+
+  samsung,ipa-integral-max:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      Upper limit of the power allocator's integral term, in mW.
+
+  samsung,ipa-integral-cutoff:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      The error (control temperature minus temperature) is integrated only
+      while it is below this value, in degrees Celsius.
+
+  samsung,hotplug-cpus:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    items:
+      maxItems: 1
+    description:
+      CPUs taken offline while the temperature of this instance is at or
+      above samsung,hotplug-out-temp, until it falls below
+      samsung,hotplug-in-temp.
+
+  samsung,hotplug-out-temp:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Temperature in millicelsius that takes samsung,hotplug-cpus offline.
+
+  samsung,hotplug-in-temp:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Temperature in millicelsius below which samsung,hotplug-cpus come back.
+
+dependencies:
+  samsung,ipa-k-po: [ samsung,ipa-k-pu, samsung,ipa-k-i, samsung,ipa-integral-max, samsung,ipa-integral-cutoff ]
+  samsung,ipa-k-pu: [ samsung,ipa-k-po ]
+  samsung,ipa-k-i: [ samsung,ipa-k-po ]
+  samsung,ipa-integral-max: [ samsung,ipa-k-po ]
+  samsung,ipa-integral-cutoff: [ samsung,ipa-k-po ]
+  samsung,hotplug-cpus: [ samsung,hotplug-out-temp, samsung,hotplug-in-temp ]
+  samsung,hotplug-out-temp: [ samsung,hotplug-cpus ]
+  samsung,hotplug-in-temp: [ samsung,hotplug-cpus ]
+
 required:
   - compatible
   - clocks
@@ -160,6 +219,14 @@ allOf:
       properties:
         samsung,tmu-sensors: false
         samsung,tmu-sensing-mode: false
+        samsung,ipa-k-po: false
+        samsung,ipa-k-pu: false
+        samsung,ipa-k-i: false
+        samsung,ipa-integral-max: false
+        samsung,ipa-integral-cutoff: false
+        samsung,hotplug-cpus: false
+        samsung,hotplug-out-temp: false
+        samsung,hotplug-in-temp: false
 
   - if:
       properties:
