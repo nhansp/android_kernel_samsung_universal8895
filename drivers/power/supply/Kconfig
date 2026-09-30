@@ -1126,4 +1126,129 @@ config FUEL_GAUGE_MM8013
 	  the state of charge, temperature, cycle count, actual and design
 	  capacity, etc.
 
+# MAX77865 charging extras of the Galaxy Note 8: every symbol defaults to n
+config CHARGER_MAX77865_HV_GUARD
+	bool "Maxim MAX77865 high-voltage guard"
+	depends on CHARGER_MAX77865_CHARGE_CONTROL && TYPEC_S2MM005=y
+	default n
+	help
+	  High-voltage guard for MAX77865 charger.
+	  Enable only on a bench image with the user present.
+
+config CHARGER_MAX77865_VBAT_OVP
+	bool "Maxim MAX77865 battery over-voltage protection"
+	depends on CHARGER_MAX77865_CHARGE_CONTROL
+	default n
+	help
+	  Battery over-voltage protection for MAX77865 charger.
+	  Enable only on a bench image with the user present.
+
+config CHARGER_MAX77865_SYSOVLO
+	bool "Maxim MAX77865 system over-voltage lockout interrupt"
+	depends on CHARGER_MAX77865_CHARGE_CONTROL && MFD_MAX77865
+	default n
+	help
+	  SYSOVLO interrupt handling for MAX77865 charger.
+	  Enable only on a bench image with the user present.
+
+config CHARGER_MAX77865_AICL
+	bool "Maxim MAX77865 automatic input current limit (AICL)"
+	depends on CHARGER_MAX77865_CHARGE_CONTROL
+	default n
+	help
+	  Automatic input current limit for MAX77865 charger.
+	  Enable only on a bench image with the user present.
+
+config CHARGER_MAX77865_TTF
+	bool "Maxim MAX77865 time to full calculation"
+	depends on CHARGER_MAX77865 && BATTERY_MAX17042
+	default n
+	help
+	  Time-to-full calculation for MAX77865 charger.
+	  Enable only on a bench image with the user present.
+
+config CHARGER_MAX77865_AGE_FORECAST
+	bool "Maxim MAX77865 battery age forecast"
+	depends on CHARGER_MAX77865_CHARGE_CONTROL && BATTERY_MAX17042
+	default n
+	help
+	  Battery age forecasting for MAX77865 charger.
+	  Enable only on a bench image with the user present.
+
+config CHARGER_MAX77865_TEST
+	bool "Maxim MAX77865 charger test overrides"
+	depends on CHARGER_MAX77865_CHARGE_CONTROL && DEBUG_FS
+	default n
+	help
+	  Debugfs test overrides for MAX77865 charger.
+	  Enable only on a bench image with the user present.
+
+config WIRELESS_CHARGER_IDT_MFC
+	bool "IDT wireless charger receiver (read/report)"
+	depends on I2C && GPIOLIB && CHARGER_MAX77865
+	select REGMAP_I2C
+	default n
+	help
+	  IDT wireless charger receiver driver.
+	  Enable only on a bench image with the user present.
+
+config WIRELESS_CHARGER_IDT_MFC_NV
+	bool "IDT wireless charger 5V charging policy"
+	depends on WIRELESS_CHARGER_IDT_MFC && CHARGER_MAX77865_CHARGE_CONTROL
+	default n
+	help
+	  5V wireless charging policy for IDT receiver.
+	  Enable only on a bench image with the user present.
+
+config WIRELESS_CHARGER_IDT_MFC_HV
+	bool "IDT wireless charger 10V high-voltage charging policy"
+	depends on WIRELESS_CHARGER_IDT_MFC_NV
+	default n
+	help
+	  10V high-voltage wireless charging policy for IDT receiver.
+	  Enable only on a bench image with the user present.
+
+config CHARGER_MAX77865_AFC
+	bool "Maxim MAX77865 Adaptive Fast Charging (AFC)"
+	depends on CHARGER_MAX77865_CHARGE_CONTROL && AUXILIARY_BUS && TYPEC_MAX77865_MUIC && TYPEC_S2MM005=y
+	# the MUIC HV module and the charger's AFC/QC policy are not in the tree yet
+	depends on BROKEN
+	default n
+	help
+	  Adaptive Fast Charging (AFC) support for MAX77865 MUIC.
+	  Not selectable yet: the MUIC HV module is not ported.
+	  Enable only on a bench image with the user present.
+
+config CHARGER_MAX77865_QC
+	bool "Maxim MAX77865 Quick Charge 2.0 (QC 2.0)"
+	depends on CHARGER_MAX77865_AFC
+	default n
+	help
+	  Quick Charge 2.0 support for MAX77865 MUIC.
+	  Enable only on a bench image with the user present.
+
+config CHARGER_MAX77865_TYPEC_RP
+	bool "Maxim MAX77865 Type-C Rp current selection"
+	depends on CHARGER_MAX77865_CHARGE_CONTROL && TYPEC_S2MM005=y
+	default n
+	help
+	  Type-C Rp power selection for MAX77865 charger.
+	  Enable only on a bench image with the user present.
+
+config CHARGER_MAX77865_PD
+	bool "Maxim MAX77865 USB Power Delivery contract policy"
+	depends on CHARGER_MAX77865_TYPEC_RP && TYPEC_S2MM005_PD_SELECT
+	default n
+	help
+	  USB Power Delivery contract selection for MAX77865 charger.
+	  Enable only on a bench image with the user present.
+
+config CHARGER_MAX77865_USB_SS
+	bool "Maxim MAX77865 USB 3.0 900mA input limit"
+	depends on CHARGER_MAX77865_CHARGE_CONTROL && USB_DWC3
+	default n
+	help
+	  USB 3.0 900mA input current limit for MAX77865 charger.
+	  Enable only on a bench image with the user present.
+
 endif # POWER_SUPPLY
