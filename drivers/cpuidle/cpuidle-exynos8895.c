@@ -10,6 +10,7 @@
  * cannot express (spec L7 5.0).
  */
 
+#include <linux/context_tracking.h>
 #include <linux/cpu.h>
 #include <linux/cpu_cooling.h>
 #include <linux/cpu_pm.h>
@@ -42,6 +43,28 @@ static bool sicd_enabled = true;	/* FDT:4428 sicd_enabled = <0x01> */
  */
 module_param(cpd_enabled, bool, 0644);
 module_param(sicd_enabled, bool, 0644);
+
+/*
+ * DEBUG (bring-up of image 0074, which hung ~7 ms after this driver registered):
+ * boot-time switches that isolate one variable of the C2 path per boot.
+ *   c2_mode=0  stock C2: PMU core-down writes + PSCI CPU_SUSPEND 0x10000 (default)
+ *   c2_mode=1  state1 runs a plain WFI: no PMU write, no PSCI; with timer_stop=1
+ *              the cpuidle core still stops the arch timer and arms the MCT
+ *              local timer as the oneshot wakeup device (tests that path alone)
+ *   c2_mode=2  PSCI CPU_SUSPEND 0x10000 without the PMU core-down/up writes
+ *   c2_cpus=<mask>  CPUs that run the c2_mode body; the others run a plain WFI
+ *   timer_stop=0    drop CPUIDLE_FLAG_TIMER_STOP from state1 (honoured with c2_mode=1 only)
+ *   c2_trace=1      print the first state1 entry and return of every CPU
+ */
+static unsigned int c2_mode;
+static unsigned int c2_cpus = 0xff;
+static bool timer_stop = true;
+static bool c2_trace;
+module_param(c2_mode, uint, 0444);
+module_param(c2_cpus, uint, 0444);
+module_param(timer_stop, bool, 0444);
+module_param(c2_trace, bool, 0444);
+static unsigned long c2_traced_in, c2_traced_out;	/* bit per CPU */
 
 static DEFINE_RAW_SPINLOCK(c2_lock);		/* S:drivers/soc/samsung/exynos-powermode.c:374 */
 static struct cpumask c2_mask;			/* :46, update_c2_state() :376-382 */
@@ -186,17 +209,47 @@ static __cpuidle int e8895_enter_wfi(struct cpuidle_device *dev,
  * itself (A:arch/arm64/kernel/suspend.c:97-162), as for cpuidle-psci's
  * context-losing path (A:drivers/firmware/psci/psci.c:525-534).
  */
+/* DEBUG: plain WFI inside the RCU-idle state1 (model: A:drivers/firmware/psci/psci.c:516-523) */
+static __cpuidle void e8895_dbg_wfi(void)
+{
+	struct arm_cpuidle_irq_context context;
+
+	ct_cpuidle_enter();
+	arm_cpuidle_save_irq_context(&context);
+	cpu_do_idle();
+	arm_cpuidle_restore_irq_context(&context);
+	ct_cpuidle_exit();
+}
+
 static __cpuidle int __e8895_enter_c2(struct cpuidle_device *dev, int idx, bool upgrades)
 {
 	unsigned int cpu = dev->cpu;
+	unsigned int mode = READ_ONCE(c2_mode);
 	u32 state;
 	int ret;
 
+	if (!(READ_ONCE(c2_cpus) & BIT(cpu)))
+		mode = 1;
+	if (mode == 1) {
+		e8895_dbg_wfi();
+		return idx;
+	}
 	if (cpu_pm_enter())					/* S:drivers/cpuidle/cpuidle-exynos64.c:105 */
 		return -EBUSY;
-	state = e8895_c2_prepare(cpu, upgrades);
+	if (mode == 2) {
+		state = E8895_PSCI_C2;
+	} else {
+		state = e8895_c2_prepare(cpu, upgrades);
+	}
+	if (c2_trace && !test_and_set_bit(cpu, &c2_traced_in))
+		pr_info("exynos8895_idle: cpu%u mode=%u enter 0x%08x conf_ok=%d\n",
+			cpu, mode, state, e8895_pmu_cpu_conf_ok(cpu));
 	ret = e8895_psci_suspend(state);			/* S:drivers/cpuidle/cpuidle-exynos64.c:136 */
-	e8895_c2_finish(cpu, ret != 0);
+	if (mode != 2)
+		e8895_c2_finish(cpu, ret != 0);
+	if (c2_trace && !test_and_set_bit(cpu, &c2_traced_out))
+		pr_info("exynos8895_idle: cpu%u mode=%u return %d conf_ok=%d\n",
+			cpu, mode, ret, e8895_pmu_cpu_conf_ok(cpu));
 	cpu_pm_exit();
 	if (ret)
 		return -EBUSY;					/* S:drivers/cpuidle/cpuidle-exynos64.c:156-164 */
@@ -290,6 +343,8 @@ static int __init e8895_idle_init_one(struct cpuidle_driver *drv, unsigned int c
 		goto err;
 	}
 	drv->states[1].enter_s2idle = e8895_enter_c2_s2idle;
+	if (!timer_stop && c2_mode == 1)			/* DEBUG */
+		drv->states[1].flags &= ~CPUIDLE_FLAG_TIMER_STOP;
 	ret = cpuidle_register(drv, NULL);
 	if (ret)
 		goto err;
@@ -331,6 +386,9 @@ static int __init e8895_idle_init(void)
 	cpufreq_register_notifier(&e8895_cpufreq_nb, CPUFREQ_TRANSITION_NOTIFIER);
 	register_reboot_notifier(&e8895_reboot_nb);
 	pr_info("exynos8895_idle: C2 on 8 CPUs, cpd=%d sicd=%d\n", cpd_enabled, sicd_enabled);
+	if (c2_mode || c2_cpus != 0xff || !timer_stop || c2_trace)	/* DEBUG */
+		pr_info("exynos8895_idle: DEBUG c2_mode=%u c2_cpus=0x%02x timer_stop=%d c2_trace=%d\n",
+			c2_mode, c2_cpus, !(c2_mode == 1 && !timer_stop), c2_trace);
 	return 0;
 }
 device_initcall(e8895_idle_init);			/* S:drivers/cpuidle/cpuidle-exynos64.c:293 */
