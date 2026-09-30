@@ -21,6 +21,7 @@
 #define DEVFREQ_GOV_POWERSAVE		"powersave"
 #define DEVFREQ_GOV_USERSPACE		"userspace"
 #define DEVFREQ_GOV_PASSIVE		"passive"
+#define DEVFREQ_GOV_SIMPLE_INTERACTIVE	"interactive"	/* S:drivers/devfreq/governor_simpleinteractive.c:412 */
 
 /* DEVFREQ notifier interface */
 #define DEVFREQ_TRANSITION_NOTIFIER	(0)
@@ -340,6 +341,36 @@ struct devfreq_passive_data {
 	struct notifier_block nb;
 	struct list_head cpu_data_list;
 };
+
+#if IS_ENABLED(CONFIG_DEVFREQ_GOV_SIMPLE_INTERACTIVE)
+/* hold before a decrease is a multiple of 10 ms (S:include/linux/devfreq.h:295) */
+#define DELAY_TIME_RANGE		10
+
+/**
+ * struct devfreq_simple_interactive_data - ``void *data`` fed to struct devfreq
+ *	and devfreq_add_device for the "interactive" governor (spec L2b 5.2)
+ * @delay_ms:	hold before a decrease, 0 = none (stock use_delay_time "false")
+ * @qos_khz:	the driver's PM QoS class aggregate in kHz, read lock-free;
+ *		NULL = none
+ * @coupled_hz:	floor imposed by another bus domain, written under df->lock
+ * @prev_freq:	governor private: stock data->prev_freq
+ * @changed_time: governor private: jiffies of the last frequency change
+ * @expires:	governor private: end of the hold, jiffies
+ * @hold_work:	governor private: re-evaluation at the end of the hold
+ * @df:		governor private: the devfreq instance
+ */
+struct devfreq_simple_interactive_data {
+	unsigned int delay_ms;
+	const s32 *qos_khz;
+	unsigned long coupled_hz;
+	/* private */
+	unsigned long prev_freq;
+	unsigned long changed_time;
+	unsigned long expires;
+	struct delayed_work hold_work;
+	struct devfreq *df;
+};
+#endif
 
 #if !defined(CONFIG_PM_DEVFREQ)
 static inline struct devfreq *devfreq_add_device(struct device *dev,

@@ -163,4 +163,11 @@ config ARM_SUN8I_A33_MBUS_DEVFREQ
 
 source "drivers/devfreq/event/Kconfig"
 
+# L2b: Exynos8895 bus DVFS (spec L2b 6.2)
+config DEVFREQ_GOV_SIMPLE_INTERACTIVE
+	tristate "Simple Interactive"
+	help
+	  Chooses frequency based on the requested PM QoS from target device.
+	  And This governor uses timer when change frequency.
+
 endif # PM_DEVFREQ
