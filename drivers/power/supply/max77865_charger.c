@@ -92,6 +92,33 @@ static inline int max77865_mix_input_ma(int in_mv)
 #define RECHG_VCELL		4280	/* recharge_condition_vcell 0x10b8 FDT:12274 */
 #define SW_RECHG_MV		4000	/* swelling_high/low_rechg_voltage 0xfa0 FDT:12296-12297 */
 
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AGE_FORECAST)
+struct max77865_age_data {
+	int cycle;
+	int float_mv_tenth;
+	int recharge_vcell;
+	int full_vcell;
+	int full_soc;
+};
+
+/* stock battery,age_data rows (struct sec_age_data) */
+static const struct max77865_age_data max77865_age_data[] = {
+	{    0, 43500, 4280, 4250, 93 },
+	{  300, 43250, 4255, 4225, 92 },
+	{  400, 43125, 4242, 4212, 91 },
+	{  700, 42875, 4217, 4187, 90 },
+	{ 1000, 42375, 4167, 4137, 89 },
+};
+
+#define MAX77865_RECHG_VCELL(chg)	((chg)->recharge_condition_vcell)
+#define MAX77865_FULL_VCELL(chg)	((chg)->full_condition_vcell)
+#define MAX77865_FULL_SOC(chg)		((chg)->full_condition_soc)
+#else
+#define MAX77865_RECHG_VCELL(chg)	RECHG_VCELL
+#define MAX77865_FULL_VCELL(chg)	FULL_COND_VCELL
+#define MAX77865_FULL_SOC(chg)		FULL_COND_SOC
+#endif
+
 /* safety timer */
 #define EXPIRED_MS		11160000U	/* battery,expired_time 0x2b98 s FDT:12319, x1000 BAT:8010-8019 */
 /* battery,recharging_expired_time 0x1518 s FDT:12320, x1000 BAT:8021-8029 */
@@ -296,6 +323,15 @@ struct max77865_charger {
 	int sysovlo_irq;
 	bool sysovlo_armed;
 	bool sysovlo;
+#endif
+
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AGE_FORECAST)
+	u32 age_step;
+	int cv_normal;			/* CV code of the current age step */
+	int recharge_condition_vcell;
+	int full_condition_vcell;
+	int full_condition_soc;
+	bool age_inited;
 #endif
 
 	/* debugfs (L6F 5.3.5) */
@@ -517,6 +553,64 @@ static int max77865_thermal_h(int h, int t, int tu)
 	return h;
 }
 
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AGE_FORECAST)
+/* stock sec_bat_aging_check() and sec_bat_set_aging_step() */
+static void max77865_aging_check(struct max77865_charger *chg, const struct max77865_sample *s)
+{
+	union power_supply_propval val;
+	int cycle, step;
+	const struct max77865_age_data *row;
+	u8 cv_code;
+
+	if (!chg->fg || s->t < 50)
+		return;
+
+	if (power_supply_get_property(chg->fg, POWER_SUPPLY_PROP_CYCLE_COUNT, &val) ||
+	    val.intval < 0)
+		return;
+
+	cycle = val.intval;
+	for (step = ARRAY_SIZE(max77865_age_data) - 1; step >= 0; step--) {
+		if (max77865_age_data[step].cycle <= cycle)
+			break;
+	}
+	if (step < 0)
+		step = 0;
+
+	if (chg->age_inited && step == chg->age_step)
+		return;
+
+	chg->age_step = step;
+	row = &max77865_age_data[step];
+	chg->recharge_condition_vcell = row->recharge_vcell;
+	chg->full_condition_vcell = row->full_vcell;
+	chg->full_condition_soc = row->full_soc;
+	cv_code = (row->float_mv_tenth - 40500) / 125;
+
+	/*
+	 * swelling_normal_float_voltage := the row's float: every later
+	 * "normal float" (detach, swelling end, thermal recovery) uses it; the CV itself only
+	 * outside swelling, written by the apply step (never in fault mode)
+	 */
+	chg->cv_normal = cv_code;
+	if (chg->swelling == SWELLING_NONE)
+		chg->cv_want = cv_code;
+
+	dev_info(chg->dev, "age step %d (cycle %d) float %d mV\n",
+		 step, cycle, row->float_mv_tenth / 10);
+}
+#endif
+
+/* the normal (non-swelling) float: the age step's with the age forecast, else battery,chg_float_voltage */
+static int max77865_cv_normal(struct max77865_charger *chg)
+{
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AGE_FORECAST)
+	return chg->cv_normal;
+#else
+	return CV_CODE_NORMAL;
+#endif
+}
+
 /* stock sec_bat_do_fullcharged() (BAT:2540-2600) after a full count of 1 (FDT:12241) */
 static void max77865_do_full(struct max77865_charger *chg, const struct max77865_sample *s)
 {
@@ -537,6 +631,9 @@ static void max77865_do_full(struct max77865_charger *chg, const struct max77865
 		max77865_set_mode(chg, MODE_CHARGING_OFF);
 		dev_info(chg->dev, "full (2nd), vcell %d mV\n", s->vcell);
 	}
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AGE_FORECAST)
+	max77865_aging_check(chg, s);
+#endif
 }
 
 static void max77865_log_thermal(struct max77865_charger *chg, int pre,
@@ -590,7 +687,7 @@ static void max77865_cable_event(struct max77865_charger *chg, bool attach)
 		chg->mode = STAGE_NONE;			/* :3928 */
 		chg->status = POWER_SUPPLY_STATUS_DISCHARGING;
 		chg->swelling = SWELLING_NONE;		/* :3887-3896 */
-		chg->cv_want = CV_CODE_NORMAL;		/* swelling_normal_float_voltage :3893 */
+		chg->cv_want = max77865_cv_normal(chg);	/* swelling_normal_float_voltage */
 		max77865_set_events(chg, 0, EV_SWELLING_MODE);
 		chg->mix_limit = false;			/* :3946 */
 		max77865_set_mode(chg, MODE_CHARGING_OFF);	/* :3974 */
@@ -683,8 +780,8 @@ static void max77865_policy(struct max77865_charger *chg, struct max77865_sample
 		/* (5a) FULL -> CHARGING (:1574-1595) */
 		if (chg->status == POWER_SUPPLY_STATUS_FULL &&
 		    (chg->mode == STAGE_2ND || chg->recharging || chg->swelling != SWELLING_NONE) &&
-		    s->cap >= 0 && s->vcell >= 0 && s->cap < FULL_COND_SOC &&
-		    s->vcell < RECHG_VCELL - 50) {
+		    s->cap >= 0 && s->vcell >= 0 && s->cap < MAX77865_FULL_SOC(chg) &&
+		    s->vcell < MAX77865_RECHG_VCELL(chg) - 50) {
 			chg->status = POWER_SUPPLY_STATUS_CHARGING;
 			return;
 		}
@@ -696,7 +793,7 @@ static void max77865_policy(struct max77865_charger *chg, struct max77865_sample
 				rechg = true;			/* NOTIMEFULL, :1479-1487 */
 			} else if (chg->status == POWER_SUPPLY_STATUS_FULL && s->vcell >= 0) {
 				/* float - 150 mV with the low-temp event (:1491-1498) */
-				int vr = (chg->events & EV_LOW_TEMP) ? FLOAT_MV - 150 : RECHG_VCELL;
+				int vr = (chg->events & EV_LOW_TEMP) ? FLOAT_MV - 150 : MAX77865_RECHG_VCELL(chg);
 
 				if (s->vcell <= vr) {		/* :1526-1535 */
 					max77865_reset_budget(chg, RECHG_EXPIRED_MS);
@@ -766,7 +863,7 @@ static void max77865_policy(struct max77865_charger *chg, struct max77865_sample
 					max77865_set_events(chg, EV_LOW_TEMP_SWELLING,
 							    EV_LOW_TEMP_SWELLING);
 			} else {
-				chg->cv_want = CV_CODE_NORMAL;
+				chg->cv_want = max77865_cv_normal(chg);
 				if (chg->status == POWER_SUPPLY_STATUS_FULL && chg->mode == STAGE_NONE)
 					max77865_set_mode(chg, MODE_CHARGING_OFF);
 				else
@@ -814,7 +911,7 @@ static void max77865_policy(struct max77865_charger *chg, struct max77865_sample
 				chg->mode = STAGE_1ST;
 				max77865_set_events(chg, low ? EV_LOW_TEMP : 0, EV_SWELLING_MODE);
 				max77865_set_mode(chg, MODE_CHARGING);
-				chg->cv_want = CV_CODE_NORMAL;
+				chg->cv_want = max77865_cv_normal(chg);
 				max77865_log_swelling(chg, "end", s);
 			} else if (s->vcell < SW_RECHG_MV && chg->chg_block) {	/* :1720-1742 */
 				chg->mode = STAGE_1ST;
@@ -853,7 +950,7 @@ full_check:
 		}
 	} else if (chg->mode != STAGE_NONE && chg->status != POWER_SUPPLY_STATUS_NOT_CHARGING) {
 		/* :2621-2640; condition VCELL (full_condition_type 9, FDT:12268; :2220-2229) */
-		if (s->vcell >= FULL_COND_VCELL && dtls_status == POWER_SUPPLY_STATUS_FULL)
+		if (s->vcell >= MAX77865_FULL_VCELL(chg) && dtls_status == POWER_SUPPLY_STATUS_FULL)
 			max77865_do_full(chg, s);
 	}
 }
@@ -1207,6 +1304,13 @@ static void max77865_pass_work(struct work_struct *work)
 		s.hc = chg->override_hc;
 	chg->hc = s.hc;
 	chg->ntc_valid = s.ntc_valid;
+
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AGE_FORECAST)
+	if (chg->charge_control && !chg->age_inited && chg->fg && s.ntc_valid) {
+		max77865_aging_check(chg, &s);
+		chg->age_inited = true;
+	}
+#endif
 
 	/* stock workaround while charging (CHG:287-292): CHG off, CV again, CHG on */
 	if (chg->charge_control && !chg->fault && chg->hw_mode == MODE_CHARGING &&
@@ -2023,6 +2127,9 @@ static int max77865_debugfs_init(struct max77865_charger *chg)
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_TTF)
 	debugfs_create_u32("ttf_ma", 0400, d, &chg->ttf_ma);
 #endif
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AGE_FORECAST)
+	debugfs_create_u32("age_step", 0400, d, &chg->age_step);
+#endif
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_TEST) && IS_ENABLED(CONFIG_CHARGER_MAX77865_HV_GUARD)
 	debugfs_create_u32("override_pd_mv", 0600, d, &chg->override_pd_mv);
 #endif
@@ -2161,6 +2268,13 @@ static int max77865_charger_probe(struct i2c_client *client)
 	chg->topoff_w = -1;
 	chg->cv_w = -1;
 	chg->cv_want = CV_CODE_NORMAL;
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AGE_FORECAST)
+	chg->recharge_condition_vcell = RECHG_VCELL;
+	chg->full_condition_vcell = FULL_COND_VCELL;
+	chg->full_condition_soc = FULL_COND_SOC;
+	chg->age_step = 0;
+	chg->cv_normal = CV_CODE_NORMAL;
+#endif
 	chg->status = POWER_SUPPLY_STATUS_DISCHARGING;
 	chg->rep_status = POWER_SUPPLY_STATUS_DISCHARGING;
 	chg->rep_ac_mv = 5000;
