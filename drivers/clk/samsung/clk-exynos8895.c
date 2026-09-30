@@ -7362,21 +7362,38 @@ static int exynos8895_cmu_pd_runtime_suspend(struct device *dev)
 }
 
 /*
- * System sleep for the audio CMUs only (L6E 5.3.6 r6): a CMU that is
+ * System sleep for the audio CMUs (L6E 5.3.6 r6) and CMU_DPU0: a CMU that is
  * runtime-active at suspend_noirq is counted as suspended by genpd and would
  * lose its registers if the domain goes off; force_suspend saves them through
  * the runtime callback (the exynos5433 template,
- * A:drivers/clk/samsung/clk-exynos5433.c:5549-5553). The display and
- * multimedia CMUs keep runtime PM only (L1 5.3 item 4).
+ * A:drivers/clk/samsung/clk-exynos5433.c:5549-5553).
+ *
+ * CMU_DPU0 is runtime-active for the whole uptime: the SYSREG_DPU0 syscon of
+ * the DECON and DSIM keeps its PCLK (a CMU_DPU0 gate) prepared
+ * (A:drivers/mfd/syscon.c:126-134, A:drivers/base/regmap/regmap-mmio.c:590-598,
+ * clk_core_prepare() -> clk_pm_runtime_get(), A:drivers/clk/clk.c:1111-1113),
+ * so pd_dpu0 never goes off at run time but does go off in genpd's
+ * suspend_noirq. Without a save, CMU_DPU0 then comes back with its reset
+ * values (PLL_CON0_MUX_CLKCMU_DPU_BUS_USER on OSCCLK among them) while the
+ * clock framework and the DECON keep running as before. Stock restores the
+ * CMU_DPU0 words of dpu0_save after every pd_dpu0 power-on
+ * (CAL:pmucal_local_exynos8895.h:203-232). The other multimedia CMUs keep
+ * runtime PM only (L1 5.3 item 4).
  */
+static bool exynos8895_cmu_pd_sleep_save(struct device *dev)
+{
+	return exynos8895_cmu_pd_is_audio(dev) ||
+	       of_device_is_compatible(dev->of_node, "samsung,exynos8895-cmu-dpu0");
+}
+
 static int exynos8895_cmu_pd_suspend_noirq(struct device *dev)
 {
-	return exynos8895_cmu_pd_is_audio(dev) ? pm_runtime_force_suspend(dev) : 0;
+	return exynos8895_cmu_pd_sleep_save(dev) ? pm_runtime_force_suspend(dev) : 0;
 }
 
 static int exynos8895_cmu_pd_resume_noirq(struct device *dev)
 {
-	return exynos8895_cmu_pd_is_audio(dev) ? pm_runtime_force_resume(dev) : 0;
+	return exynos8895_cmu_pd_sleep_save(dev) ? pm_runtime_force_resume(dev) : 0;
 }
 
 static const struct of_device_id exynos8895_cmu_pd_of_match[] = {
