@@ -48,6 +48,7 @@
 #include <linux/workqueue.h>
 
 #include <dt-bindings/clock/samsung,exynos8895-acpm.h>
+#include <soc/samsung/bts.h>
 #include <soc/samsung/exynos8895-bus-qos.h>
 
 /* The stages this tree implements (M1; spec L2b 5.0: the range grows with K-4c/K-4b/K-4d). */
@@ -792,6 +793,14 @@ static int e8895_bus_target(struct device *dev, unsigned long *freq, u32 flags)
 	if (priv->desc->cls == EXYNOS_BUS_QOS_MIF && up)
 		e8895_bus_couple(new_khz);
 
+	/*
+	 * MIF down: BTS qmax/tq for the new level first (stock set_freq_prepare,
+	 * S:drivers/devfreq/exynos/exynos8895_bus_mif.c:371-376); a no-op without
+	 * programmed BTS registers (spec L2b 5.5.4)
+	 */
+	if (priv->desc->cls == EXYNOS_BUS_QOS_MIF && !up)
+		bts_update_scen(BS_MIF_CHANGE, new_khz);
+
 	/* FREQ_REQ {id, kHz, 0, 0} on ACPM channel 0 (WT:drivers/firmware/samsung/exynos-acpm-dvfs.c:41-61) */
 	ret = clk_set_rate(priv->clk, new_khz * HZ_PER_KHZ);
 	if (ret) {
@@ -802,6 +811,10 @@ static int e8895_bus_target(struct device *dev, unsigned long *freq, u32 flags)
 	/* MIF down: INT minimum after the MIF change */
 	if (priv->desc->cls == EXYNOS_BUS_QOS_MIF && !up)
 		e8895_bus_couple(new_khz);
+
+	/* MIF up: BTS after the change (stock set_freq_post, :378-383) */
+	if (priv->desc->cls == EXYNOS_BUS_QOS_MIF && up)
+		bts_update_scen(BS_MIF_CHANGE, new_khz);
 
 	WRITE_ONCE(priv->cur_khz, new_khz);
 	WRITE_ONCE(priv->nreq, priv->nreq + 1);
