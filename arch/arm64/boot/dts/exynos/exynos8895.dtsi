@@ -191,6 +191,11 @@
 	 * stock "min-freq = <741000>;" (S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:518).
 	 * 13 levels = the Mongoose "current" entries (:226). Drop opp-2314000000
 	 * only if the fused ASV version (acpm-clk "asv_ver=") is 1 or 2.
+	 * opp-microvolt feeds only the energy model of the IPA power actor (no
+	 * cpu-supply, so the OPP core never applies it; the APM keeps its own
+	 * voltage): ECT ASV block, dvfs_cpucl0, table version 8, group 0 (the
+	 * highest voltage of each level in that table; Lnn = ECT level), chosen
+	 * because ACK has no static-power term (spec/L2c_thermal.md 4.3).
 	 */
 	cpucl0_opp_table: opp-table-cl0 {
 		compatible = "operating-points-v2";
@@ -198,55 +203,68 @@
 
 		opp-741000000 {
 			opp-hz = /bits/ 64 <741000000>;
+			opp-microvolt = <681250>;	/* L17 */
 			clock-latency-ns = <100000>;
 		};
 		opp-858000000 {
 			opp-hz = /bits/ 64 <858000000>;
+			opp-microvolt = <706250>;	/* L16 */
 			clock-latency-ns = <100000>;
 		};
 		opp-962000000 {
 			opp-hz = /bits/ 64 <962000000>;
+			opp-microvolt = <725000>;	/* L15 */
 			clock-latency-ns = <100000>;
 		};
 		opp-1066000000 {
 			/* ASV boot level L14 */
 			opp-hz = /bits/ 64 <1066000000>;
+			opp-microvolt = <737500>;	/* L14 */
 			clock-latency-ns = <100000>;
 		};
 		opp-1170000000 {
 			opp-hz = /bits/ 64 <1170000000>;
+			opp-microvolt = <756250>;	/* L13 */
 			clock-latency-ns = <100000>;
 		};
 		opp-1261000000 {
 			opp-hz = /bits/ 64 <1261000000>;
+			opp-microvolt = <775000>;	/* L12 */
 			clock-latency-ns = <100000>;
 		};
 		opp-1469000000 {
 			opp-hz = /bits/ 64 <1469000000>;
+			opp-microvolt = <825000>;	/* L11 */
 			clock-latency-ns = <100000>;
 		};
 		opp-1703000000 {
 			opp-hz = /bits/ 64 <1703000000>;
+			opp-microvolt = <893750>;	/* L10 */
 			clock-latency-ns = <100000>;
 		};
 		opp-1807000000 {
 			opp-hz = /bits/ 64 <1807000000>;
+			opp-microvolt = <925000>;	/* L9 */
 			clock-latency-ns = <100000>;
 		};
 		opp-1937000000 {
 			opp-hz = /bits/ 64 <1937000000>;
+			opp-microvolt = <968750>;	/* L8 */
 			clock-latency-ns = <100000>;
 		};
 		opp-2002000000 {
 			opp-hz = /bits/ 64 <2002000000>;
+			opp-microvolt = <987500>;	/* L7 */
 			clock-latency-ns = <100000>;
 		};
 		opp-2158000000 {
 			opp-hz = /bits/ 64 <2158000000>;
+			opp-microvolt = <1050000>;	/* L6 */
 			clock-latency-ns = <100000>;
 		};
 		opp-2314000000 {
 			opp-hz = /bits/ 64 <2314000000>;
+			opp-microvolt = <1118750>;	/* L5 */
 			clock-latency-ns = <100000>;
 		};
 	};
@@ -462,6 +480,19 @@
 			clock-names = "tmu_apbif";
 			samsung,tmu-sensors = <0x3d>;		/* :4543 "sensors = <61>;" */
 			samsung,tmu-sensing-mode = "balance";	/* :4544 */
+			/* stock mngs-thermal power_allocator gains, FDT:9445-9449 (mW/C, mW, C) */
+			samsung,ipa-k-po = <100>;		/* k_po = <0x64> */
+			samsung,ipa-k-pu = <85>;		/* k_pu = <0x55> */
+			samsung,ipa-k-i = <100>;		/* k_i = <0x64> */
+			samsung,ipa-integral-max = <1500>;	/* i_max = <0x5dc> */
+			samsung,ipa-integral-cutoff = <28>;	/* integral_cutoff = <0x1c> */
+			/*
+			 * FDT:9347-9349 hotplug_enable, in <0x5b>, out <0x60> (C); the CPUs
+			 * above NR_HOTPLUG_CPUS 4 (S:drivers/thermal/samsung/exynos_tmu.h:30)
+			 */
+			samsung,hotplug-cpus = <&cpu4>, <&cpu5>, <&cpu6>, <&cpu7>;
+			samsung,hotplug-out-temp = <96000>;
+			samsung,hotplug-in-temp = <91000>;
 			#thermal-sensor-cells = <0>;
 			status = "disabled";
 		};
@@ -486,6 +517,12 @@
 			clock-names = "tmu_apbif";
 			samsung,tmu-sensors = <0x01>;		/* :4568 "sensors = <1>;" */
 			samsung,tmu-sensing-mode = "max";	/* :4569 */
+			/* stock GPU power_allocator gains, FDT:9620-9624 (mW/C, mW, C) */
+			samsung,ipa-k-po = <60>;		/* k_po = <0x3c> */
+			samsung,ipa-k-pu = <100>;		/* k_pu = <0x64> */
+			samsung,ipa-k-i = <50>;			/* k_i = <0x32> */
+			samsung,ipa-integral-max = <500>;	/* i_max = <0x1f4> */
+			samsung,ipa-integral-cutoff = <10>;	/* integral_cutoff = <0x0a> */
 			#thermal-sensor-cells = <0>;
 			status = "disabled";
 		};
@@ -2473,19 +2510,31 @@
 	};
 
 	/*
-	 * Trips from the factory DT (FDT:9436-9748). Stock "hot" 115 C, its level-7
-	 * threshold with the hardware trip armed, is the critical trip here (the
-	 * driver needs one and programs it at level 7); stock "passive" trips stay
-	 * passive; stock "active" trips drive Samsung-only cooling devices
-	 * (hotplug, exynos cooling) and are not carried (spec/L2_power.md Q9).
+	 * Trips from the factory DT (FDT:9436-9748) and, for little, the ECT
+	 * (spec/L2c_thermal.md 2.3). Stock "hot" 115 C, its level-7 threshold with
+	 * the hardware trip armed, is the critical trip here (the driver needs one
+	 * and programs it at level 7). Stock's power_allocator switch-on trips
+	 * (55 C big, 78 C GPU) were "active"; ACK takes the switch-on from the first
+	 * of two passive trips, walked in DT order, so they are passive and come
+	 * first (A:drivers/thermal/gov_power_allocator.c:500-536). The governor and
+	 * gains are on the TMU nodes (samsung,ipa-*); the driver selects
+	 * power_allocator once the zone's cooling devices are power actors
+	 * (spec/L2c_thermal.md 4.2); until then these zones run step_wise.
 	 */
 	thermal-zones {
 		big-thermal {
 			polling-delay-passive = <50>;	/* FDT:9440 <0x32> */
 			polling-delay = <1000>;		/* FDT:9441 <0x3e8> */
 			thermal-sensors = <&tmu_big>;
+			sustainable-power = <2000>;	/* FDT:9444 <0x7d0> */
 
 			trips {
+				big_switch_on: big-switch-on {
+					temperature = <55000>;	/* FDT:9460 mngs-alert0 <0xd6d8> */
+					hysteresis = <2000>;	/* FDT:9461 <0x7d0> */
+					type = "passive";	/* stock "active", see above */
+				};
+
 				big_passive: big-passive {
 					temperature = <83000>;	/* FDT:9468 mngs-alert1 <0x14438> */
 					hysteresis = <5000>;	/* FDT:9469 <0x1388> */
@@ -2510,16 +2559,105 @@
 			};
 		};
 
+		/*
+		 * Stock APOLLO zone: the ECT THERMAL function "APOLLO" (sboot.bin
+		 * SB:0x508d8) overrides the trip temperatures (its lower bounds, equal
+		 * to FDT:9505-9562) and the upper limit of each map's <&cpu0 0 0>
+		 * (FDT:9573-9608) with the cpufreq level of its max_frequency
+		 * (S:drivers/thermal/of-thermal.c:541-634): 1690000, 1690000, 1456000,
+		 * 1248000, 1053000, 598000, 598000 kHz = states 0, 0, 1, 2, 3, 7, 7 of
+		 * the little table (cpucl1_opp_table, descending). step_wise, as stock
+		 * (no governor property, IKC:2520).
+		 */
 		little-thermal {
 			polling-delay-passive = <0>;	/* FDT:9498 */
 			polling-delay = <0>;		/* FDT:9499 */
 			thermal-sensors = <&tmu_little>;
 
 			trips {
+				little_alert0: little-alert0 {
+					temperature = <20000>;	/* ECT SB:0x508dc; FDT:9505 */
+					hysteresis = <5000>;	/* FDT:9506 */
+					type = "active";
+				};
+
+				little_alert1: little-alert1 {
+					temperature = <76000>;	/* ECT SB:0x508f0; FDT:9513 */
+					hysteresis = <5000>;
+					type = "active";
+				};
+
+				little_alert2: little-alert2 {
+					temperature = <81000>;	/* ECT SB:0x50904; FDT:9521 */
+					hysteresis = <5000>;
+					type = "active";
+				};
+
+				little_alert3: little-alert3 {
+					temperature = <86000>;	/* ECT SB:0x50918; FDT:9529 */
+					hysteresis = <5000>;
+					type = "active";
+				};
+
+				little_alert4: little-alert4 {
+					temperature = <91000>;	/* ECT SB:0x5092c; FDT:9537 */
+					hysteresis = <5000>;
+					type = "active";
+				};
+
+				little_alert5: little-alert5 {
+					temperature = <96000>;	/* ECT SB:0x50940; FDT:9545 */
+					hysteresis = <5000>;
+					type = "active";
+				};
+
+				little_alert6: little-alert6 {
+					temperature = <101000>;	/* ECT SB:0x50954; FDT:9553 */
+					hysteresis = <5000>;
+					type = "active";
+				};
+
 				little-crit {
-					temperature = <115000>;	/* FDT:9561 apo-hot */
+					temperature = <115000>;	/* FDT:9561 apo-hot; ECT SB:0x50968 */
 					hysteresis = <5000>;
 					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&little_alert0>;
+					cooling-device = <&cpu0 0 0>;	/* 1690000 */
+				};
+
+				map1 {
+					trip = <&little_alert1>;
+					cooling-device = <&cpu0 0 0>;	/* 1690000 */
+				};
+
+				map2 {
+					trip = <&little_alert2>;
+					cooling-device = <&cpu0 0 1>;	/* 1456000 */
+				};
+
+				map3 {
+					trip = <&little_alert3>;
+					cooling-device = <&cpu0 0 2>;	/* 1248000 */
+				};
+
+				map4 {
+					trip = <&little_alert4>;
+					cooling-device = <&cpu0 0 3>;	/* 1053000 */
+				};
+
+				map5 {
+					trip = <&little_alert5>;
+					cooling-device = <&cpu0 0 7>;	/* 598000 */
+				};
+
+				map6 {
+					trip = <&little_alert6>;
+					cooling-device = <&cpu0 0 7>;	/* 598000 */
 				};
 			};
 		};
@@ -2528,8 +2666,15 @@
 			polling-delay-passive = <100>;	/* FDT:9615 <0x64> */
 			polling-delay = <0>;		/* FDT:9616 */
 			thermal-sensors = <&tmu_gpu>;
+			sustainable-power = <2000>;	/* FDT:9619 <0x7d0> */
 
 			trips {
+				gpu_switch_on: gpu-switch-on {
+					temperature = <78000>;	/* FDT:9635 gpu-alert0 <0x130b0> */
+					hysteresis = <2000>;	/* FDT:9636 <0x7d0> */
+					type = "passive";	/* stock "active", see above */
+				};
+
 				gpu_passive: gpu-passive {
 					temperature = <88000>;	/* FDT:9643 gpu-alert1 <0x157c0> */
 					hysteresis = <5000>;	/* FDT:9644 */
@@ -2625,22 +2770,27 @@
 	clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CPUCL0>;
 	operating-points-v2 = <&cpucl0_opp_table>;
 	#cooling-cells = <2>;
+	/* ECT GEN DTM_PWR_Coeff[0] (MNGS), sboot.bin SB:0x4b288; S:drivers/thermal/samsung/exynos_tmu.c:1380-1393 */
+	dynamic-power-coefficient = <465>;
 };
 
 &cpu5 {
 	clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CPUCL0>;
 	operating-points-v2 = <&cpucl0_opp_table>;
 	#cooling-cells = <2>;
+	dynamic-power-coefficient = <465>;
 };
 
 &cpu6 {
 	clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CPUCL0>;
 	operating-points-v2 = <&cpucl0_opp_table>;
 	#cooling-cells = <2>;
+	dynamic-power-coefficient = <465>;
 };
 
 &cpu7 {
 	clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CPUCL0>;
 	operating-points-v2 = <&cpucl0_opp_table>;
 	#cooling-cells = <2>;
+	dynamic-power-coefficient = <465>;
 };

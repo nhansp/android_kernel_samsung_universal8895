@@ -259,14 +259,34 @@ static u32 pid_controller(struct thermal_zone_device *tz,
 	 * Calculate the integral term
 	 *
 	 * if the error is less than cut off allow integration (but
-	 * the integral is limited to max power)
+	 * the integral is limited to max power, or to
+	 * [-sustainable_power, integral_max] if integral_max is set)
 	 */
 	i = mul_frac(tz->tzp->k_i, params->err_integral);
 
 	if (err < int_to_frac(tz->tzp->integral_cutoff)) {
 		s64 i_next = i + mul_frac(tz->tzp->k_i, err);
 
-		if (abs(i_next) < max_power_frac) {
+		if (tz->tzp->integral_max && tz->tzp->k_i) {
+			/*
+			 * Clamp the integral term to
+			 * [-sustainable_power, integral_max] and keep the
+			 * accumulated error consistent with the clamped term.
+			 */
+			s64 i_max = int_to_frac((s64)tz->tzp->integral_max);
+			s64 i_windup = int_to_frac(-1 * (s64)sustainable_power);
+
+			if (i_next > i_max) {
+				i = i_max;
+				params->err_integral = div_frac(i, tz->tzp->k_i);
+			} else if (i_next <= i_windup) {
+				i = i_windup;
+				params->err_integral = div_frac(i, tz->tzp->k_i);
+			} else {
+				i = i_next;
+				params->err_integral += err;
+			}
+		} else if (abs(i_next) < max_power_frac) {
 			i = i_next;
 			params->err_integral += err;
 		}
