@@ -10,6 +10,7 @@
 #include <linux/gcd.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
+#include <linux/property.h>
 #include <linux/slab.h>
 #include <linux/string_choices.h>
 #include <sound/pcm.h>
@@ -1624,6 +1625,40 @@ EXPORT_SYMBOL_GPL(madera_ng_tlv);
 const DECLARE_TLV_DB_SCALE(madera_mixer_tlv, -3200, 100, 0);
 EXPORT_SYMBOL_GPL(madera_mixer_tlv);
 
+/* Sample-rate enums of stock S:sound/soc/codecs/madera.c:1824-1869 (L6E 5.2(a)) */
+const char * const madera_sample_rate_text[MADERA_SAMPLE_RATE_ENUM_SIZE] = {
+	"12kHz", "24kHz", "48kHz", "96kHz", "192kHz", "384kHz",
+	"11.025kHz", "22.05kHz", "44.1kHz", "88.2kHz", "176.4kHz", "352.8kHz",
+	"4kHz", "8kHz", "16kHz", "32kHz",
+};
+EXPORT_SYMBOL_GPL(madera_sample_rate_text);
+
+const unsigned int madera_sample_rate_val[MADERA_SAMPLE_RATE_ENUM_SIZE] = {
+	0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+	0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
+	0x10, 0x11, 0x12, 0x13,
+};
+EXPORT_SYMBOL_GPL(madera_sample_rate_val);
+
+const struct soc_enum madera_sample_rate[] = {
+	SOC_VALUE_ENUM_SINGLE(MADERA_SAMPLE_RATE_2,
+			      MADERA_SAMPLE_RATE_2_SHIFT, 0x1f,
+			      MADERA_SAMPLE_RATE_ENUM_SIZE,
+			      madera_sample_rate_text,
+			      madera_sample_rate_val),
+	SOC_VALUE_ENUM_SINGLE(MADERA_SAMPLE_RATE_3,
+			      MADERA_SAMPLE_RATE_3_SHIFT, 0x1f,
+			      MADERA_SAMPLE_RATE_ENUM_SIZE,
+			      madera_sample_rate_text,
+			      madera_sample_rate_val),
+	SOC_VALUE_ENUM_SINGLE(MADERA_ASYNC_SAMPLE_RATE_2,
+			      MADERA_ASYNC_SAMPLE_RATE_2_SHIFT, 0x1f,
+			      MADERA_SAMPLE_RATE_ENUM_SIZE,
+			      madera_sample_rate_text,
+			      madera_sample_rate_val),
+};
+EXPORT_SYMBOL_GPL(madera_sample_rate);
+
 const char * const madera_rate_text[MADERA_RATE_ENUM_SIZE] = {
 	"SYNCCLK rate 1", "SYNCCLK rate 2", "SYNCCLK rate 3",
 	"ASYNCCLK rate 1", "ASYNCCLK rate 2",
@@ -1634,6 +1669,16 @@ const unsigned int madera_rate_val[MADERA_RATE_ENUM_SIZE] = {
 	0x0, 0x1, 0x2, 0x8, 0x9,
 };
 EXPORT_SYMBOL_GPL(madera_rate_val);
+
+/* OUTPUT_RATE_1 [15:11], stock S:sound/soc/codecs/madera.c:1891-1898 (L6E 5.2(b)) */
+const struct soc_enum madera_output_ext_rate =
+	SOC_VALUE_ENUM_SINGLE(MADERA_OUTPUT_RATE_1,
+			      MADERA_OUT_RATE_SHIFT,
+			      MADERA_OUT_RATE_MASK >> MADERA_OUT_RATE_SHIFT,
+			      MADERA_RATE_ENUM_SIZE,
+			      madera_rate_text,
+			      madera_rate_val);
+EXPORT_SYMBOL_GPL(madera_output_ext_rate);
 
 static const char * const madera_dfc_width_text[MADERA_DFC_WIDTH_ENUM_SIZE] = {
 	"8 bit", "16 bit", "20 bit", "24 bit", "32 bit",
@@ -4804,6 +4849,57 @@ int madera_lhpf_coeff_put(struct snd_kcontrol *kcontrol,
 	return snd_soc_bytes_put(kcontrol, ucontrol);
 }
 EXPORT_SYMBOL_GPL(madera_lhpf_coeff_put);
+
+/*
+ * MICBIAS force-bypass for a machine driver that keeps the bias up through
+ * system suspend (VTS voice trigger), the MICBIAS loop of stock
+ * madera_set_force_bypass() (S:sound/soc/codecs/madera.c:5244-5321): setting
+ * bypasses every MICBIAS, clearing restores the regulated mode of each MICBIAS
+ * whose "cirrus,micbiasN" (<mV ext_cap discharge[4] soft_start bypass>,
+ * S:drivers/mfd/madera-core.c:601-624) has a level and no bypass flag. L6E
+ * 5.2(f).
+ */
+static int madera_set_force_bypass(struct snd_soc_component *component,
+				   bool set_bypass)
+{
+	struct madera_priv *priv = snd_soc_component_get_drvdata(component);
+	struct madera *madera = priv->madera;
+	unsigned int i, micbias_bypass = 0;
+	u32 cfg[4 + MADERA_MAX_CHILD_MICBIAS];
+	char prop[20];
+
+	if (set_bypass)
+		micbias_bypass = MADERA_MICB1_BYPASS;
+
+	for (i = 0; i < madera->num_micbias; i++) {
+		memset(cfg, 0, sizeof(cfg));
+		snprintf(prop, sizeof(prop), "cirrus,micbias%u", i + 1);
+		if (device_property_count_u32(madera->dev, prop) >= (int)ARRAY_SIZE(cfg))
+			device_property_read_u32_array(madera->dev, prop, cfg,
+						       ARRAY_SIZE(cfg));
+
+		/* cfg[0] = mV, bit 0 of cfg[7] = bypass (a 1-bit field in stock) */
+		if (set_bypass || (!(cfg[7] & 1) && cfg[0]))
+			regmap_update_bits(madera->regmap,
+					   MADERA_MIC_BIAS_CTRL_1 + i,
+					   MADERA_MICB1_BYPASS,
+					   micbias_bypass);
+	}
+
+	return 0;
+}
+
+int madera_enable_force_bypass(struct snd_soc_component *component)
+{
+	return madera_set_force_bypass(component, true);
+}
+EXPORT_SYMBOL_GPL(madera_enable_force_bypass);
+
+int madera_disable_force_bypass(struct snd_soc_component *component)
+{
+	return madera_set_force_bypass(component, false);
+}
+EXPORT_SYMBOL_GPL(madera_disable_force_bypass);
 
 MODULE_SOFTDEP("pre: madera");
 MODULE_DESCRIPTION("ASoC Cirrus Logic Madera codec support");

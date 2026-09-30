@@ -331,7 +331,10 @@ extern const struct snd_kcontrol_new madera_inmode[];
 extern const char * const madera_rate_text[MADERA_RATE_ENUM_SIZE];
 extern const unsigned int madera_rate_val[MADERA_RATE_ENUM_SIZE];
 
+extern const char * const madera_sample_rate_text[MADERA_SAMPLE_RATE_ENUM_SIZE];
+extern const unsigned int madera_sample_rate_val[MADERA_SAMPLE_RATE_ENUM_SIZE];
 extern const struct soc_enum madera_sample_rate[];
+extern const struct soc_enum madera_output_ext_rate;
 extern const struct soc_enum madera_isrc_fsl[];
 extern const struct soc_enum madera_isrc_fsh[];
 extern const struct soc_enum madera_asrc1_rate[];
@@ -434,6 +437,9 @@ int madera_init_dai(struct madera_priv *priv, int id);
 
 int madera_set_output_mode(struct snd_soc_component *component, int output,
 			   bool differential);
+
+int madera_enable_force_bypass(struct snd_soc_component *component);
+int madera_disable_force_bypass(struct snd_soc_component *component);
 
 /* Following functions are for use by machine drivers */
 static inline int madera_register_notifier(struct snd_soc_component *component,

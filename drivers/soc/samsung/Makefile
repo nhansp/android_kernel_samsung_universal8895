@@ -70,3 +70,5 @@ obj-$(CONFIG_EXYNOS8895_MCINFO)	+= exynos8895-mcinfo.o
 obj-$(CONFIG_GREATLTE_HB_L6K)	+= greatlte-hb-l6k.o
 # L6I heartbeat rows (WP l6ki, DEBUG)
 obj-$(CONFIG_GREATLTE_HB_L6I)	+= greatlte-hb-l6i.o
+# L6E audio heartbeat
+obj-$(CONFIG_GREATLTE_HB_L6E)	+= greatlte-hb-l6e.o
