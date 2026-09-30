@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Galaxy Note 8 (greatlte, SM-N950N) board DT, part "l6i":
+ * L6I secure elements: NFC controller, MST power enable held low (L6I 4).
+ *
+ * Included at the end of exynos8895-greatlte.dts, after L0's nodes, in the merge
+ * order of FULL_IMAGE_PLAN.md 2.2. Owner: WP-6I; no other work package edits this
+ * file (plan 2.3 rule D1). A node that two parts both configure (&usi9, &usi10)
+ * is written identically in both files: dtc lets the later file win on a differing
+ * value, which gl-verify V-DUP reports as an error. L0's reserved-memory stays in
+ * the .dts; carveout additions and flag changes are &label edits here (plan X-8).
+ */
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/soc/samsung,exynos-usi.h>	/* USI_MODE_I2C0_1, 4.1 (as -l6c.dtsi) */
+#include "exynos-pinctrl.h"			/* EXYNOS_PIN_* of 4.2 (A:arch/arm64/boot/dts/exynos/exynos-pinctrl.h:14,70) */
+
+/* L6I 4.1. NFC. Bus hsi2c_26 (usi10 i2c@10000, 0x10910000, SPI 415) = stock hsi2c@10910000 FDT:5930-5944;
+ * shared with L6C's HRM: the &usi10/&hsi2c_26 statements are identical to exynos8895-greatlte-l6c.dtsi. */
+&usi10 {
+	samsung,mode = <USI_MODE_I2C0_1>;	/* stock usi@10821020 usi_mode = "hsi2c0_hsi2c1" FDT:5056-5061; identical statement in L6B */
+	status = "okay";
+};
+
+&hsi2c_26 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	clock-frequency = <400000>;	/* as hsi2c_9 */
+	status = "okay";
+
+	nfc@27 {						/* FDT:5946 sec-nfc@27 */
+		compatible = "samsung,sec-nfc";			/* D-7; stock "sec-nfc" FDT:5947 */
+		reg = <0x27>;					/* FDT:5948 */
+		interrupt-parent = <&gpa1>;			/* FDT:5950 <0x69> = gpa1 (FDT:106-114) */
+		interrupts = <2 IRQ_TYPE_EDGE_RISING>;		/* FDT:5949 pin 2; edge = stock request flags
+								   S:drivers/nfc/sec_nfc.c:385-386 */
+		sec-nfc,ven-gpio = <&gpa4 5 GPIO_ACTIVE_HIGH>;	/* FDT:5951 */
+		sec-nfc,irq-gpio = <&gpa1 2 GPIO_ACTIVE_HIGH>;	/* FDT:5952 */
+		sec-nfc,firm-gpio = <&gpe6 4 GPIO_ACTIVE_HIGH>;	/* FDT:5953 */
+		sec-nfc,clk_req-gpio = <&gpa2 7 GPIO_ACTIVE_HIGH>;	/* FDT:5954 pin; stock flags 0x0f were never read
+								   (of_get_named_gpio, S:drivers/nfc/sec_nfc.c:720)
+								   and the level is read raw (:416) */
+		sec-nfc,nfc_pvdd = "VDD_NFC_1P8";		/* FDT:5956, kept for the state log */
+		nfc-pvdd-supply = <&ldo39_reg>;			/* new: the rail named VDD_NFC_1P8
+								   (exynos8895-greatlte-l2.dtsi ldo39_reg) */
+		clocks = <&pmu_system_controller 1>;		/* FDT:5959 OSCCLK_NFC = VCLK_CLKOUT1 -> clkout index 1 */
+		clock-names = "oscclk_nfc";			/* FDT:5960 */
+		sec-nfc,nfc_ap_clk;				/* FDT:5961 */
+		sec-nfc,ldo_control;				/* FDT:5962 */
+		pinctrl-names = "default";			/* FDT:5957 */
+		pinctrl-0 = <&nfc_en &nfc_firm>;		/* FDT:5958 <0x76 0x77> */
+		/* sec-nfc,clk_use (FDT:5955) dropped: no stock reader */
+	};
+};
+
+/* the clkout provider's parent (identical to L6E_audio.md 4.7; the provider needs one) */
+&pmu_system_controller {
+	clocks = <&oscclk>;
+	clock-names = "clkout1";
+	#clock-cells = <1>;
+};
+
+/* L6I 4.2 pins */
+&pinctrl_alive {
+	nfc_en: nfc-en-pins {					/* FDT:327-333 (phandle 0x76) */
+		samsung,pins = "gpa4-5";			/* FDT:328 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;	/* FDT:329 <0x01>; A:.../exynos-pinctrl.h:70 */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;	/* FDT:330 */
+		samsung,pin-val = <1>;				/* FDT:331: VEN high = off (S:drivers/nfc/sec_nfc.h:73-76);
+								   A:drivers/pinctrl/samsung/pinctrl-samsung.c:46 */
+	};
+};
+
+&pinctrl_peric1 {
+	nfc_firm: nfc-firm-pins {				/* FDT:3175-3181 (phandle 0x77) */
+		samsung,pins = "gpe6-4";			/* FDT:3176 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;	/* FDT:3177 */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;	/* FDT:3178 */
+		samsung,pin-val = <0>;				/* FDT:3179 */
+	};
+};
+
+/* L6I 4.3: MST power enable held low (D-6, UD-4); the MST driver and the eSE are not ported (D-3, D-5) */
+&gpf0 {							/* A:arch/arm64/boot/dts/exynos/exynos8895-pinctrl.dtsi:598 */
+	mst-pwr-en-hog {
+		gpio-hog;					/* A:drivers/gpio/gpiolib-of.c:817-858 */
+		gpios = <0 GPIO_ACTIVE_HIGH>;			/* FDT:12515 sec-mst,mst-pwr-gpio = <gpf0 0 0> */
+		output-low;					/* S:security/mstdrv/mstdrv.c:541-542
+								   gpio_direction_output(mst_pwr_en, 0) */
+		line-name = "mst-pwr-en";
+	};
+};
