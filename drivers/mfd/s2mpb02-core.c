@@ -1,5 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * s2mpb02-core.c - mfd core driver for the Samsung s2mpb02
+ *
+ * greatlte 6.18: transplant of the SM-N950N 4.4 driver (spec L6B 5.8). The
+ * PMIC runs without an interrupt, as on stock (s2mpb02-irq.c not ported).
  *
  * Copyright (C) 2014 Samsung Electronics
  *
@@ -23,18 +27,12 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/i2c.h>
-#include <linux/irq.h>
-#include <linux/interrupt.h>
 #include <linux/mutex.h>
+#include <linux/of.h>
 #include <linux/mfd/core.h>
 #include <linux/mfd/s2mpb02.h>
 #include <linux/mfd/s2mpb02-private.h>
 #include <linux/regulator/machine.h>
-
-#ifdef	CONFIG_OF
-#include <linux/of_device.h>
-#include <linux/of_gpio.h>
-#endif /* CONFIG_OF */
 
 static struct mfd_cell s2mpb02_devs[] = {
 #ifdef	CONFIG_LEDS_S2MPB02
@@ -184,8 +182,7 @@ static int of_s2mpb02_dt(struct device *dev,
 }
 #endif /* CONFIG_OF */
 
-static int s2mpb02_i2c_probe(struct i2c_client *i2c,
-				const struct i2c_device_id *dev_id)
+static int s2mpb02_i2c_probe(struct i2c_client *i2c)
 {
 	struct s2mpb02_dev *s2mpb02;
 	struct s2mpb02_platform_data *pdata = i2c->dev.platform_data;
@@ -223,20 +220,14 @@ static int s2mpb02_i2c_probe(struct i2c_client *i2c,
 
 	s2mpb02->dev = &i2c->dev;
 	s2mpb02->i2c = i2c;
-	s2mpb02->irq = i2c->irq;
+	/*
+	 * Stock also stored i2c->irq and allocated S2MPB02_IRQ_NR irq descs
+	 * here (S:drivers/mfd/s2mpb02-core.c:226-238) for s2mpb02-irq.c, which
+	 * returned early without an irq_gpio (S:drivers/mfd/s2mpb02-irq.c:
+	 * 147-152); the descs had no other user. No IRQ here (L6B 5.8, D-17).
+	 */
 	if (pdata) {
 		s2mpb02->pdata = pdata;
-
-		pdata->irq_base = irq_alloc_descs(-1, 600, S2MPB02_IRQ_NR, 0);
-		if (pdata->irq_base < 0) {
-			pr_err("%s:%s irq_alloc_descs Fail! ret(%d)\n",
-				MFD_DEV_NAME, __func__, pdata->irq_base);
-			ret = -EINVAL;
-			goto err;
-		} else {
-			s2mpb02->irq_base = pdata->irq_base;
-		}
-
 		s2mpb02->wakeup = pdata->wakeup;
 	} else {
 		ret = -EINVAL;
@@ -259,40 +250,36 @@ static int s2mpb02_i2c_probe(struct i2c_client *i2c,
 				__func__, s2mpb02->rev_num);
 	}
 
-	ret = s2mpb02_irq_init(s2mpb02);
-	if (ret < 0)
-		goto err_irq_init;
-
-	ret = mfd_add_devices(s2mpb02->dev, -1, pdata->devs,
+	ret = mfd_add_devices(s2mpb02->dev, PLATFORM_DEVID_NONE, pdata->devs,
 			pdata->devs_num, NULL, 0, NULL);
 	if (ret < 0)
-		goto err_irq_init;
+		goto err_mfd;
 
 	device_init_wakeup(s2mpb02->dev, pdata->wakeup);
 
 	return ret;
 
-err_irq_init:
+err_mfd:
 	mutex_destroy(&s2mpb02->i2c_lock);
 err:
-	kfree(pdata);
-	s2mpb02_irq_exit(s2mpb02);
+	/*
+	 * pdata is devm memory (freed with the device); stock's kfree(pdata)
+	 * here was a double free.
+	 */
 err_pdata:
 	kfree(s2mpb02);
 
 	return ret;
 }
 
-static int s2mpb02_i2c_remove(struct i2c_client *i2c)
+static void s2mpb02_i2c_remove(struct i2c_client *i2c)
 {
 	struct s2mpb02_dev *s2mpb02 = i2c_get_clientdata(i2c);
 
+	device_init_wakeup(s2mpb02->dev, false);
 	mfd_remove_devices(s2mpb02->dev);
-	s2mpb02_irq_exit(s2mpb02);
 	mutex_destroy(&s2mpb02->i2c_lock);
 	kfree(s2mpb02);
-
-	return 0;
 }
 
 static const struct i2c_device_id s2mpb02_i2c_id[] = {
@@ -302,56 +289,22 @@ static const struct i2c_device_id s2mpb02_i2c_id[] = {
 MODULE_DEVICE_TABLE(i2c, s2mpb02_i2c_id);
 
 #if defined(CONFIG_OF)
-static struct of_device_id s2mpb02_i2c_dt_ids[] = {
+static const struct of_device_id s2mpb02_i2c_dt_ids[] = {
 	{ .compatible = "s2mpb02,s2mpb02mfd" },
 	{},
 };
 MODULE_DEVICE_TABLE(of, s2mpb02_i2c_dt_ids);
 #endif /* CONFIG_OF */
 
-#if defined(CONFIG_PM)
-static int s2mpb02_suspend(struct device *dev)
-{
-	struct i2c_client *i2c = container_of(dev, struct i2c_client, dev);
-	struct s2mpb02_dev *s2mpb02 = i2c_get_clientdata(i2c);
-
-	if (device_may_wakeup(dev))
-		enable_irq_wake(s2mpb02->irq);
-
-	disable_irq(s2mpb02->irq);
-
-	return 0;
-}
-
-static int s2mpb02_resume(struct device *dev)
-{
-	struct i2c_client *i2c = container_of(dev, struct i2c_client, dev);
-	struct s2mpb02_dev *s2mpb02 = i2c_get_clientdata(i2c);
-
-	if (device_may_wakeup(dev))
-		disable_irq_wake(s2mpb02->irq);
-
-	enable_irq(s2mpb02->irq);
-
-	return 0;
-}
-#else
-#define s2mpb02_suspend	NULL
-#define s2mpb02_resume	NULL
-#endif /* CONFIG_PM */
-
-const struct dev_pm_ops s2mpb02_pm = {
-	.suspend = s2mpb02_suspend,
-	.resume = s2mpb02_resume,
-};
+/*
+ * Stock's suspend/resume only (un)masked and armed s2mpb02->irq
+ * (S:drivers/mfd/s2mpb02-core.c:312-346); there is no IRQ (L6B 5.8), so
+ * there are no PM ops.
+ */
 
 static struct i2c_driver s2mpb02_i2c_driver = {
 	.driver		= {
 		.name	= MFD_DEV_NAME,
-		.owner	= THIS_MODULE,
-#if defined(CONFIG_PM)
-		.pm	= &s2mpb02_pm,
-#endif /* CONFIG_PM */
 #if defined(CONFIG_OF)
 		.of_match_table	= s2mpb02_i2c_dt_ids,
 #endif /* CONFIG_OF */
