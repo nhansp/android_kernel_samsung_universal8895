@@ -10,13 +10,13 @@
  * (at your option) any later version.
  */
 
+#include <linux/debugfs.h>
+#include <linux/seq_file.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/proc_fs.h>
-#include <video/videonode.h>
 #include <linux/of.h>
-#include <linux/smc.h>
-#include <linux/cpuidle.h>
+#include <media/exynos8895-compat.h>
 
 #include "s5p_mfc_common.h"
 
@@ -50,23 +50,24 @@
 #define S5P_MFC_DEC_DRM_NAME	"s5p-mfc-dec-secure"
 #define S5P_MFC_ENC_DRM_NAME	"s5p-mfc-enc-secure"
 
-int debug;
-module_param(debug, int, S_IRUGO | S_IWUSR);
+/* stock parameter names kept; the globals are prefixed (built-in, -fno-common) */
+int mfc_debug_level;
+module_param_named(debug, mfc_debug_level, int, 0644);
 
-int debug_ts;
-module_param(debug_ts, int, S_IRUGO | S_IWUSR);
+int mfc_debug_ts;
+module_param_named(debug_ts, mfc_debug_ts, int, 0644);
 
-int dbg_enable;
-module_param(dbg_enable, int, S_IRUGO | S_IWUSR);
+int mfc_dbg_enable;
+module_param_named(dbg_enable, mfc_dbg_enable, int, 0644);
 
-int nal_q_dump;
-module_param(nal_q_dump, int, S_IRUGO | S_IWUSR);
+int mfc_nal_q_dump;
+module_param_named(nal_q_dump, mfc_nal_q_dump, int, 0644);
 
-int nal_q_disable;
-module_param(nal_q_disable, int, S_IRUGO | S_IWUSR);
+int mfc_nal_q_disable;
+module_param_named(nal_q_disable, mfc_nal_q_disable, int, 0644);
 
-int nal_q_parallel_enable;
-module_param(nal_q_parallel_enable, int, S_IRUGO | S_IWUSR);
+int mfc_nal_q_parallel_enable;
+module_param_named(nal_q_parallel_enable, mfc_nal_q_parallel_enable, int, 0644);
 
 struct _mfc_trace g_mfc_trace[MFC_TRACE_COUNT_MAX];
 struct _mfc_trace g_mfc_trace_longterm[MFC_TRACE_COUNT_MAX];
@@ -88,7 +89,7 @@ static struct proc_dir_entry *mfc_proc_entry;
 #define DEF_ENC_SRC_FMT	5
 #define DEF_ENC_DST_FMT	13
 
-void s5p_mfc_butler_worker(struct work_struct *work)
+static void s5p_mfc_butler_worker(struct work_struct *work)
 {
 	struct s5p_mfc_dev *dev;
 
@@ -312,7 +313,6 @@ fail_enc_init:
 	return 0;
 }
 
-extern int set_hmp_family_boost(int enable);
 /* Open an MFC node */
 static int s5p_mfc_open(struct file *file)
 {
@@ -341,16 +341,14 @@ static int s5p_mfc_open(struct file *file)
 
 	dev->num_inst++;	/* It is guarded by mfc_mutex in vfd */
 
-	/* for family boost */
+	/*
+	 * for family boost: stock called disable_priv_cpuidle() and
+	 * set_hmp_family_boost(1) on the first encoder; neither exists in 6.18
+	 * (spec L6B 5.3), the count is kept.
+	 */
 	if (node == MFCNODE_ENCODER) {
 		dev->num_enc++;
 		mfc_debug(1, "encoder count: %d\n", dev->num_enc);
-		if (dev->num_enc == 1) {
-			disable_priv_cpuidle();
-			mfc_debug(1, "call cpuidle_pause()\n");
-			set_hmp_family_boost(1);
-			mfc_debug(1, "call set_hmp_family_boost(1)\n");
-		}
 	}
 
 	/* Allocate memory for context */
@@ -383,8 +381,7 @@ static int s5p_mfc_open(struct file *file)
 		goto err_vdev;
 
 	v4l2_fh_init(&ctx->fh, vdev);
-	file->private_data = &ctx->fh;
-	v4l2_fh_add(&ctx->fh);
+	v4l2_fh_add(&ctx->fh, file);	/* sets file->private_data */
 
 	ctx->dev = dev;
 
@@ -491,7 +488,7 @@ static int s5p_mfc_open(struct file *file)
 		if (ret)
 			goto err_context_alloc;
 
-		if (dbg_enable)
+		if (mfc_dbg_enable)
 			s5p_mfc_alloc_dbg_info_buffer(dev);
 
 		ret = s5p_mfc_get_hwlock_dev(dev);
@@ -562,7 +559,7 @@ err_context_alloc:
 
 err_fw_load:
 err_fw_alloc:
-	del_timer_sync(&dev->watchdog_timer);
+	timer_delete_sync(&dev->watchdog_timer);
 #ifdef CONFIG_EXYNOS_CONTENT_PATH_PROTECTION
 	if (ctx->is_drm)
 		dev->num_drm_inst--;
@@ -583,7 +580,7 @@ err_ctx_init:
 	dev->ctx[ctx->num] = 0;
 
 err_ctx_num:
-	v4l2_fh_del(&ctx->fh);
+	v4l2_fh_del(&ctx->fh, file);
 	v4l2_fh_exit(&ctx->fh);
 err_vdev:
 	kfree(ctx);
@@ -592,13 +589,7 @@ err_ctx_alloc:
 	dev->num_inst--;
 	if (node == MFCNODE_ENCODER) {
 		dev->num_enc--;
-		mfc_debug(1, "encoder count: %c\n", dev->num_enc);
-		if (dev->num_enc == 0) {
-			set_hmp_family_boost(0);
-			mfc_debug(1, "call set_hmp_family_boost(0)\n");
-			enable_priv_cpuidle();
-			mfc_debug(1, "call cpuidle_resume()\n");
-		}
+		mfc_debug(1, "encoder count: %d\n", dev->num_enc);
 	}
 
 err_node_type:
@@ -647,7 +638,7 @@ static int s5p_mfc_release(struct file *file)
 	if (call_cop(ctx, cleanup_ctx_ctrls, ctx) < 0)
 		mfc_err_ctx("failed in cleanup_ctx_ctrl\n");
 
-	v4l2_fh_del(&ctx->fh);
+	v4l2_fh_del(&ctx->fh, file);
 	v4l2_fh_exit(&ctx->fh);
 
 	/* Mark context as idle */
@@ -691,25 +682,19 @@ static int s5p_mfc_release(struct file *file)
 	/* for family boost */
 	if (ctx->type == MFCINST_ENCODER && !ctx->is_drm) {
 		dev->num_enc--;
-		mfc_debug(1, "encoder count: %c\n", dev->num_enc);
-		if (dev->num_enc == 0) {
-			set_hmp_family_boost(0);
-			mfc_debug(1, "call set_hmp_family_boost(0)\n");
-			enable_priv_cpuidle();
-			mfc_debug(1, "call cpuidle_resume()\n");
-		}
+		mfc_debug(1, "encoder count: %d\n", dev->num_enc);
 	}
 
 	if (dev->num_inst == 0) {
 		s5p_mfc_deinit_hw(dev);
-		del_timer_sync(&dev->watchdog_timer);
+		timer_delete_sync(&dev->watchdog_timer);
 
 		flush_workqueue(dev->butler_wq);
 
 		mfc_debug(2, "power off\n");
 		s5p_mfc_pm_power_off(dev);
 
-		if (dbg_enable)
+		if (mfc_dbg_enable)
 			s5p_mfc_release_dbg_info_buffer(dev);
 
 		s5p_mfc_release_common_context(dev);
@@ -782,11 +767,11 @@ err_release_try:
 }
 
 /* Poll */
-static unsigned int s5p_mfc_poll(struct file *file,
+static __poll_t s5p_mfc_poll(struct file *file,
 				 struct poll_table_struct *wait)
 {
 	struct s5p_mfc_ctx *ctx = fh_to_mfc_ctx(file->private_data);
-	unsigned int ret = 0;
+	__poll_t ret = 0;
 	enum s5p_mfc_node_type node_type;
 
 	node_type = s5p_mfc_get_node_type(file);
@@ -820,13 +805,60 @@ static int s5p_mfc_mmap(struct file *file, struct vm_area_struct *vma)
 	return ret;
 }
 
+/*
+ * VIDIOC_G_CTRL/S_CTRL. Stock had vidioc_g_ctrl/vidioc_s_ctrl ops; 6.18 routes
+ * both ioctls to the ext-control ops with count 1
+ * (A:drivers/media/v4l2-core/v4l2-ioctl.c:2349-2405), but the stock encoder
+ * sets a control differently through S_CTRL (runtime per-frame controls,
+ * mfc_enc_set_ctrl_val) and S_EXT_CTRLS (encoding parameters,
+ * mfc_enc_set_param), and the ext op cannot tell them apart. Both ioctls are
+ * handled here with the stock handlers, under the node lock as video_ioctl2
+ * would take it; everything else goes to video_ioctl2. struct v4l2_control has
+ * the same layout for 32-bit callers, whose ioctls reach this through
+ * v4l2_compat_ioctl32() (A:drivers/media/v4l2-core/v4l2-compat-ioctl32.c).
+ */
+static long s5p_mfc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+	struct video_device *vdev = video_devdata(file);
+	void __user *uarg = (void __user *)arg;
+	enum s5p_mfc_node_type node;
+	struct v4l2_control ctrl;
+	long ret;
+
+	if (cmd != VIDIOC_G_CTRL && cmd != VIDIOC_S_CTRL)
+		return video_ioctl2(file, cmd, arg);
+
+	if (copy_from_user(&ctrl, uarg, sizeof(ctrl)))
+		return -EFAULT;
+
+	if (mutex_lock_interruptible(vdev->lock))
+		return -ERESTARTSYS;
+
+	node = s5p_mfc_get_node_type(file);
+	if (!video_is_registered(vdev))
+		ret = -ENODEV;
+	else if (s5p_mfc_is_decoder_node(node))
+		ret = cmd == VIDIOC_G_CTRL ? s5p_mfc_dec_g_ctrl(file, &ctrl) :
+					     s5p_mfc_dec_s_ctrl(file, &ctrl);
+	else
+		ret = cmd == VIDIOC_G_CTRL ? s5p_mfc_enc_g_ctrl(file, &ctrl) :
+					     s5p_mfc_enc_s_ctrl(file, &ctrl);
+
+	mutex_unlock(vdev->lock);
+
+	if (!ret && copy_to_user(uarg, &ctrl, sizeof(ctrl)))
+		ret = -EFAULT;
+
+	return ret;
+}
+
 /* v4l2 ops */
 static const struct v4l2_file_operations s5p_mfc_fops = {
 	.owner = THIS_MODULE,
 	.open = s5p_mfc_open,
 	.release = s5p_mfc_release,
 	.poll = s5p_mfc_poll,
-	.unlocked_ioctl = video_ioctl2,
+	.unlocked_ioctl = s5p_mfc_ioctl,
 	.mmap = s5p_mfc_mmap,
 };
 
@@ -866,7 +898,14 @@ static int mfc_parse_mfc_qos_platdata(struct device_node *np, char *node_name,
 	int ret = 0;
 	struct device_node *np_qos;
 
-	np_qos = of_find_node_by_name(np, node_name);
+	/* stock of_find_node_by_name(np, ...) searched the whole tree after np */
+	np_qos = of_get_child_by_name(np, "mfc_qos_table");
+	if (np_qos) {
+		struct device_node *table = np_qos;
+
+		np_qos = of_get_child_by_name(table, node_name);
+		of_node_put(table);
+	}
 	if (!np_qos) {
 		pr_err("%s: could not find mfc_qos_platdata node\n",
 			node_name);
@@ -881,49 +920,11 @@ static int mfc_parse_mfc_qos_platdata(struct device_node *np, char *node_name,
 	of_property_read_u32(np_qos, "mo_value", &qosdata->mo_value);
 	of_property_read_u32(np_qos, "mo_10bit_value", &qosdata->mo_10bit_value);
 	of_property_read_u32(np_qos, "time_fw", &qosdata->time_fw);
+	of_node_put(np_qos);
 
 	return ret;
 }
 #endif
-
-int s5p_mfc_sysmmu_fault_handler(struct iommu_domain *iodmn, struct device *device,
-		unsigned long addr, int id, void *param)
-{
-	struct s5p_mfc_dev *dev;
-	bool mapping;
-
-	dev = platform_get_drvdata(to_platform_device(device));
-	dev->logging_data->mmu_fi = (struct _sysmmu_fi *)param;
-
-	mapping = iovmm_address_verifier(device, addr, dev->logging_data->mmu_fi);
-	if (!mapping)
-		dev->logging_data->cause |= (1 << MFC_CAUSE_NO_MAPPING_AREA);
-	mfc_info_dev("There %s mapping\n", mapping ? "is" : "isn't");
-
-	if (MFC_MMU0_READL(MFC_MMU_INTERRUPT_STATUS)) {
-		if (MFC_MMU0_READL(MFC_MMU_FAULT_TRANS_INFO) & MFC_MMU_FAULT_TRANS_INFO_RW_MASK)
-			dev->logging_data->cause |= (1 << MFC_CAUSE_0WRITE_PAGE_FAULT);
-		else
-			dev->logging_data->cause |= (1 << MFC_CAUSE_0READ_PAGE_FAULT);
-		dev->logging_data->fault_status = MFC_MMU0_READL(MFC_MMU_INTERRUPT_STATUS);
-		dev->logging_data->fault_trans_info = MFC_MMU0_READL(MFC_MMU_FAULT_TRANS_INFO);
-	} else if (MFC_MMU1_READL(MFC_MMU_INTERRUPT_STATUS)) {
-		if (MFC_MMU1_READL(MFC_MMU_FAULT_TRANS_INFO) & MFC_MMU_FAULT_TRANS_INFO_RW_MASK)
-			dev->logging_data->cause |= (1 << MFC_CAUSE_1WRITE_PAGE_FAULT);
-		else
-			dev->logging_data->cause |= (1 << MFC_CAUSE_1READ_PAGE_FAULT);
-		dev->logging_data->fault_status = MFC_MMU1_READL(MFC_MMU_INTERRUPT_STATUS);
-		dev->logging_data->fault_trans_info = MFC_MMU1_READL(MFC_MMU_FAULT_TRANS_INFO);
-	} else {
-		mfc_err_dev("there isn't any fault interrupt of MFC\n");
-	}
-	dev->logging_data->fault_addr = addr;
-
-	s5p_mfc_dump_buffer_info(dev, addr);
-	s5p_mfc_dump_info_and_stop_hw(dev);
-
-	return 0;
-}
 
 static void mfc_parse_dt(struct device_node *np, struct s5p_mfc_dev *mfc)
 {
@@ -943,8 +944,12 @@ static void mfc_parse_dt(struct device_node *np, struct s5p_mfc_dev *mfc)
 	of_property_read_u32(np, "num_qos_steps", &pdata->num_qos_steps);
 	of_property_read_u32(np, "max_mb", &pdata->max_mb);
 
-	pdata->qos_table = devm_kzalloc(mfc->device,
-			sizeof(struct s5p_mfc_qos) * pdata->num_qos_steps, GFP_KERNEL);
+	pdata->qos_table = devm_kcalloc(mfc->device, pdata->num_qos_steps,
+			sizeof(struct s5p_mfc_qos), GFP_KERNEL);
+	if (!pdata->qos_table) {
+		pdata->num_qos_steps = 0;
+		return;
+	}
 
 	for (i = 0; i < pdata->num_qos_steps; i++) {
 		snprintf(node_name, sizeof(node_name), "mfc_qos_variant_%d", i);
@@ -954,6 +959,41 @@ static void mfc_parse_dt(struct device_node *np, struct s5p_mfc_dev *mfc)
 }
 
 static void *mfc_get_drv_data(struct platform_device *pdev);
+
+/*
+ * debugfs s5p-mfc/rsv2 (spec L6B 8.2 32-bit round trip): the v4l2_buffer
+ * reserved2 of the last QBUF as stored and of the last DQBUF as returned.
+ */
+static int mfc_rsv2_show(struct seq_file *s, void *unused)
+{
+	struct s5p_mfc_dev *dev = s->private;
+
+	seq_printf(s, "qbuf 0x%08x dqbuf 0x%08x\n",
+		   READ_ONCE(dev->dbg_qbuf_rsv2), READ_ONCE(dev->dbg_dqbuf_rsv2));
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(mfc_rsv2);
+
+static void mfc_init_vfd(struct s5p_mfc_dev *dev, struct video_device *vfd,
+			 const struct video_device *tmpl,
+			 const struct v4l2_ioctl_ops *ops)
+{
+	*vfd = *tmpl;
+
+	vfd->ioctl_ops = ops;
+	vfd->lock = &dev->mfc_mutex;
+	vfd->v4l2_dev = &dev->v4l2_dev;
+	vfd->vfl_dir = VFL_DIR_M2M;
+	/*
+	 * 6.18 needs device_caps before registration (spec L6B B-V4): the stock
+	 * querycap set (S:drivers/media/platform/exynos/mfc/s5p_mfc_dec.c:78-85,
+	 * s5p_mfc_enc.c:125-132) without V4L2_CAP_DEVICE_CAPS, which the core adds.
+	 */
+	vfd->device_caps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_VIDEO_OUTPUT |
+			   V4L2_CAP_VIDEO_CAPTURE_MPLANE |
+			   V4L2_CAP_VIDEO_OUTPUT_MPLANE | V4L2_CAP_STREAMING;
+	snprintf(vfd->name, sizeof(vfd->name), "%s%d", tmpl->name, dev->id);
+}
 
 /* MFC probe function */
 static int s5p_mfc_probe(struct platform_device *pdev)
@@ -1028,32 +1068,16 @@ static int s5p_mfc_probe(struct platform_device *pdev)
 		ret = -ENOENT;
 		goto err_ioremap;
 	}
-	dev->sysmmu0_base = ioremap(MFC_MMU0_BASE_ADDR, MFC_MMU_SIZE);
-	if (dev->sysmmu0_base == NULL) {
-		dev_err(&pdev->dev, "failed to ioremap sysmmu0 address region\n");
-		ret = -ENOENT;
-		goto err_ioremap_mmu0;
-	}
-	dev->sysmmu1_base = ioremap(MFC_MMU1_BASE_ADDR, MFC_MMU_SIZE);
-	if (dev->sysmmu1_base == NULL) {
-		dev_err(&pdev->dev, "failed to ioremap sysmmu1 address region\n");
-		ret = -ENOENT;
-		goto err_ioremap_mmu1;
-	}
+	/*
+	 * Stock also mapped both SysMMUs here, only to read their fault
+	 * registers in its iovmm fault handler; exynos-iommu owns them now
+	 * (spec L6B B-MFC-3).
+	 */
 
-	res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (res == NULL) {
-		dev_err(&pdev->dev, "failed to get irq resource\n");
-		ret = -ENOENT;
+	ret = platform_get_irq(pdev, 0);
+	if (ret < 0)
 		goto err_res_irq;
-	}
-	dev->irq = res->start;
-	ret = request_threaded_irq(dev->irq, s5p_mfc_top_half_irq, s5p_mfc_irq,
-				IRQF_ONESHOT, pdev->name, dev);
-	if (ret != 0) {
-		dev_err(&pdev->dev, "failed to install irq (%d)\n", ret);
-		goto err_req_irq;
-	}
+	dev->irq = ret;
 
 	mutex_init(&dev->mfc_mutex);
 
@@ -1071,17 +1095,9 @@ static int s5p_mfc_probe(struct platform_device *pdev)
 		ret = -ENOMEM;
 		goto alloc_vdev_dec;
 	}
-	*vfd = s5p_mfc_dec_videodev;
+	mfc_init_vfd(dev, vfd, &s5p_mfc_dec_videodev, s5p_mfc_get_dec_v4l2_ioctl_ops());
 
-	vfd->ioctl_ops = s5p_mfc_get_dec_v4l2_ioctl_ops();
-
-	vfd->lock = &dev->mfc_mutex;
-	vfd->v4l2_dev = &dev->v4l2_dev;
-	vfd->vfl_dir = VFL_DIR_M2M;
-
-	snprintf(vfd->name, sizeof(vfd->name), "%s%d", s5p_mfc_dec_videodev.name, dev->id);
-
-	ret = video_register_device(vfd, VFL_TYPE_GRABBER, EXYNOS_VIDEONODE_MFC_DEC + 60 * dev->id);
+	ret = video_register_device(vfd, VFL_TYPE_VIDEO, EXYNOS_VIDEONODE_MFC_DEC + 60 * dev->id);
 	if (ret) {
 		v4l2_err(&dev->v4l2_dev, "Failed to register video device\n");
 		video_device_release(vfd);
@@ -1100,16 +1116,9 @@ static int s5p_mfc_probe(struct platform_device *pdev)
 		ret = -ENOMEM;
 		goto alloc_vdev_enc;
 	}
-	*vfd = s5p_mfc_enc_videodev;
+	mfc_init_vfd(dev, vfd, &s5p_mfc_enc_videodev, s5p_mfc_get_enc_v4l2_ioctl_ops());
 
-	vfd->ioctl_ops = s5p_mfc_get_enc_v4l2_ioctl_ops();
-
-	vfd->lock = &dev->mfc_mutex;
-	vfd->v4l2_dev = &dev->v4l2_dev;
-	vfd->vfl_dir = VFL_DIR_M2M;
-	snprintf(vfd->name, sizeof(vfd->name), "%s%d", s5p_mfc_enc_videodev.name, dev->id);
-
-	ret = video_register_device(vfd, VFL_TYPE_GRABBER, EXYNOS_VIDEONODE_MFC_ENC + 60 * dev->id);
+	ret = video_register_device(vfd, VFL_TYPE_VIDEO, EXYNOS_VIDEONODE_MFC_ENC + 60 * dev->id);
 	if (ret) {
 		v4l2_err(&dev->v4l2_dev, "Failed to register video device\n");
 		video_device_release(vfd);
@@ -1128,17 +1137,9 @@ static int s5p_mfc_probe(struct platform_device *pdev)
 		ret = -ENOMEM;
 		goto alloc_vdev_dec_drm;
 	}
-	*vfd = s5p_mfc_dec_drm_videodev;
+	mfc_init_vfd(dev, vfd, &s5p_mfc_dec_drm_videodev, s5p_mfc_get_dec_v4l2_ioctl_ops());
 
-	vfd->ioctl_ops = s5p_mfc_get_dec_v4l2_ioctl_ops();
-
-	vfd->lock = &dev->mfc_mutex;
-	vfd->v4l2_dev = &dev->v4l2_dev;
-	vfd->vfl_dir = VFL_DIR_M2M;
-
-	snprintf(vfd->name, sizeof(vfd->name), "%s%d", s5p_mfc_dec_drm_videodev.name, dev->id);
-
-	ret = video_register_device(vfd, VFL_TYPE_GRABBER, EXYNOS_VIDEONODE_MFC_DEC_DRM + 60 * dev->id);
+	ret = video_register_device(vfd, VFL_TYPE_VIDEO, EXYNOS_VIDEONODE_MFC_DEC_DRM + 60 * dev->id);
 	if (ret) {
 		v4l2_err(&dev->v4l2_dev, "Failed to register video device\n");
 		video_device_release(vfd);
@@ -1157,16 +1158,9 @@ static int s5p_mfc_probe(struct platform_device *pdev)
 		ret = -ENOMEM;
 		goto alloc_vdev_enc_drm;
 	}
-	*vfd = s5p_mfc_enc_drm_videodev;
+	mfc_init_vfd(dev, vfd, &s5p_mfc_enc_drm_videodev, s5p_mfc_get_enc_v4l2_ioctl_ops());
 
-	vfd->ioctl_ops = s5p_mfc_get_enc_v4l2_ioctl_ops();
-
-	vfd->lock = &dev->mfc_mutex;
-	vfd->v4l2_dev = &dev->v4l2_dev;
-	vfd->vfl_dir = VFL_DIR_M2M;
-	snprintf(vfd->name, sizeof(vfd->name), "%s%d", s5p_mfc_enc_drm_videodev.name, dev->id);
-
-	ret = video_register_device(vfd, VFL_TYPE_GRABBER, EXYNOS_VIDEONODE_MFC_ENC_DRM + 60 * dev->id);
+	ret = video_register_device(vfd, VFL_TYPE_VIDEO, EXYNOS_VIDEONODE_MFC_ENC_DRM + 60 * dev->id);
 	if (ret) {
 		v4l2_err(&dev->v4l2_dev, "Failed to register video device\n");
 		video_device_release(vfd);
@@ -1188,76 +1182,27 @@ static int s5p_mfc_probe(struct platform_device *pdev)
 		create_singlethread_workqueue("s5p_mfc/watchdog");
 	if (!dev->watchdog_wq) {
 		dev_err(&pdev->dev, "failed to create workqueue for watchdog\n");
+		ret = -ENOMEM;
 		goto err_wq_watchdog;
 	}
 	INIT_WORK(&dev->watchdog_work, s5p_mfc_watchdog_worker);
 	atomic_set(&dev->watchdog_tick_running, 0);
 	atomic_set(&dev->watchdog_tick_cnt, 0);
 	atomic_set(&dev->watchdog_run, 0);
-	init_timer(&dev->watchdog_timer);
-	dev->watchdog_timer.data = (unsigned long)dev;
-	dev->watchdog_timer.function = s5p_mfc_watchdog_tick;
+	timer_setup(&dev->watchdog_timer, s5p_mfc_watchdog_tick, 0);
 
 #ifdef CONFIG_MFC_USE_BUS_DEVFREQ
 	INIT_LIST_HEAD(&dev->qos_queue);
 #endif
 
-	/* default FW alloc is added */
-	dev->alloc_ctx = (struct vb2_alloc_ctx *)
-		vb2_ion_create_context(&pdev->dev, SZ_4K,
-			VB2ION_CTX_VMCONTIG |
-			VB2ION_CTX_IOMMU |
-			VB2ION_CTX_UNCACHED);
-	if (IS_ERR(dev->alloc_ctx)) {
-		mfc_err_dev("Couldn't prepare allocator ctx.\n");
-		ret = PTR_ERR(dev->alloc_ctx);
-		goto alloc_ctx_fail;
-	}
-
 	dev->butler_wq = alloc_workqueue("s5p_mfc/butler", WQ_UNBOUND
 					| WQ_MEM_RECLAIM | WQ_HIGHPRI, 1);
 	if (dev->butler_wq == NULL) {
 		dev_err(&pdev->dev, "failed to create workqueue for butler\n");
+		ret = -ENOMEM;
 		goto err_butler_wq;
 	}
 	INIT_WORK(&dev->butler_work, s5p_mfc_butler_worker);
-
-#ifdef CONFIG_ION_EXYNOS
-	dev->mfc_ion_client = exynos_ion_client_create("mfc");
-	if (IS_ERR(dev->mfc_ion_client)) {
-		dev_err(&pdev->dev, "failed to ion_client_create\n");
-		goto err_ion_client;
-	}
-#endif
-
-	dev->alloc_ctx_fw = (struct vb2_alloc_ctx *)
-		vb2_ion_create_context(&pdev->dev, SZ_4K,
-			VB2ION_CTX_DRM_MFCNFW | VB2ION_CTX_IOMMU);
-	if (IS_ERR(dev->alloc_ctx_fw)) {
-		mfc_err_dev("failed to prepare F/W allocation context\n");
-		ret = PTR_ERR(dev->alloc_ctx_fw);
-		goto alloc_ctx_fw_fail;
-	}
-
-#ifdef CONFIG_EXYNOS_CONTENT_PATH_PROTECTION
-	dev->alloc_ctx_drm_fw = (struct vb2_alloc_ctx *)
-		vb2_ion_create_context(&pdev->dev, SZ_4K,
-			VB2ION_CTX_DRM_MFCFW | VB2ION_CTX_IOMMU);
-	if (IS_ERR(dev->alloc_ctx_drm_fw)) {
-		mfc_err_dev("failed to prepare F/W allocation context\n");
-		ret = PTR_ERR(dev->alloc_ctx_drm_fw);
-		goto alloc_ctx_drm_fw_fail;
-	}
-	dev->alloc_ctx_drm = (struct vb2_alloc_ctx *)
-		vb2_ion_create_context(&pdev->dev,
-			SZ_4K,
-			VB2ION_CTX_UNCACHED | VB2ION_CTX_DRM_VIDEO | VB2ION_CTX_IOMMU);
-	if (IS_ERR(dev->alloc_ctx_drm)) {
-		mfc_err_dev("failed to prepare DRM allocation context\n");
-		ret = PTR_ERR(dev->alloc_ctx_drm);
-		goto alloc_ctx_sh_fail;
-	}
-#endif
 
 #ifdef CONFIG_MFC_USE_BUS_DEVFREQ
 	atomic_set(&dev->qos_req_cur, 0);
@@ -1270,11 +1215,7 @@ static int s5p_mfc_probe(struct platform_device *pdev)
 	}
 #endif
 
-	iovmm_set_fault_handler(dev->device, s5p_mfc_sysmmu_fault_handler, NULL);
-
 	g_mfc_dev = dev;
-
-	vb2_ion_attach_iommu(dev->alloc_ctx);
 
 	dev->logging_data = devm_kzalloc(&pdev->dev, sizeof(struct s5p_mfc_debug), GFP_KERNEL);
 	if (!dev->logging_data) {
@@ -1283,27 +1224,31 @@ static int s5p_mfc_probe(struct platform_device *pdev)
 		goto err_alloc_debug;
 	}
 
+	/*
+	 * Stock requested the IRQ right after mapping the registers; it is
+	 * requested last here, once everything the handlers touch (context
+	 * table, hwlock, work bits, wait queues, workqueues, logging data)
+	 * exists, and freed first on removal.
+	 */
+	ret = request_threaded_irq(dev->irq, s5p_mfc_top_half_irq, s5p_mfc_irq,
+				IRQF_ONESHOT, pdev->name, dev);
+	if (ret != 0) {
+		dev_err(&pdev->dev, "failed to install irq (%d)\n", ret);
+		goto err_req_irq;
+	}
+
+	dev->debugfs_root = debugfs_create_dir("s5p-mfc", NULL);
+	debugfs_create_file("rsv2", 0444, dev->debugfs_root, dev, &mfc_rsv2_fops);
+
 	pr_debug("%s--\n", __func__);
 	return 0;
 
 /* Deinit MFC if probe had failed */
+err_req_irq:
 err_alloc_debug:
-	vb2_ion_detach_iommu(dev->alloc_ctx);
-#ifdef CONFIG_EXYNOS_CONTENT_PATH_PROTECTION
-alloc_ctx_sh_fail:
-	vb2_ion_destroy_context(dev->alloc_ctx_drm_fw);
-alloc_ctx_drm_fw_fail:
-#endif
-	vb2_ion_destroy_context(dev->alloc_ctx_fw);
-alloc_ctx_fw_fail:
-#ifdef CONFIG_ION_EXYNOS
-	ion_client_destroy(dev->mfc_ion_client);
-err_ion_client:
-#endif
+	g_mfc_dev = NULL;
 	destroy_workqueue(dev->butler_wq);
 err_butler_wq:
-	vb2_ion_destroy_context(dev->alloc_ctx);
-alloc_ctx_fail:
 	destroy_workqueue(dev->watchdog_wq);
 err_wq_watchdog:
 	video_unregister_device(dev->vfd_enc_drm);
@@ -1318,16 +1263,11 @@ alloc_vdev_enc:
 	video_unregister_device(dev->vfd_dec);
 reg_vdev_dec:
 alloc_vdev_dec:
+	s5p_mfc_destroy_listable_wq_dev(dev);
 	v4l2_device_unregister(&dev->v4l2_dev);
 err_v4l2_dev:
 	mutex_destroy(&dev->mfc_mutex);
-	free_irq(dev->irq, dev);
-err_req_irq:
 err_res_irq:
-	iounmap(dev->sysmmu1_base);
-err_ioremap_mmu1:
-	iounmap(dev->sysmmu0_base);
-err_ioremap_mmu0:
 	iounmap(dev->regs_base);
 err_ioremap:
 	release_mem_region(dev->mfc_mem->start, resource_size(dev->mfc_mem));
@@ -1339,46 +1279,33 @@ err_pm:
 }
 
 /* Remove the driver */
-static int s5p_mfc_remove(struct platform_device *pdev)
+static void s5p_mfc_remove(struct platform_device *pdev)
 {
 	struct s5p_mfc_dev *dev = platform_get_drvdata(pdev);
 
 	dev_dbg(&pdev->dev, "%s++\n", __func__);
 	v4l2_info(&dev->v4l2_dev, "Removing %s\n", pdev->name);
-	del_timer_sync(&dev->watchdog_timer);
+	debugfs_remove_recursive(dev->debugfs_root);
+	free_irq(dev->irq, dev);
+	timer_delete_sync(&dev->watchdog_timer);
 	flush_workqueue(dev->watchdog_wq);
 	destroy_workqueue(dev->watchdog_wq);
 	flush_workqueue(dev->butler_wq);
 	destroy_workqueue(dev->butler_wq);
+	g_mfc_dev = NULL;
+	video_unregister_device(dev->vfd_enc_drm);
+	video_unregister_device(dev->vfd_dec_drm);
 	video_unregister_device(dev->vfd_enc);
 	video_unregister_device(dev->vfd_dec);
-	v4l2_device_unregister(&dev->v4l2_dev);
-#ifdef CONFIG_EXYNOS_CONTENT_PATH_PROTECTION
-	remove_proc_entry(MFC_PROC_FW_STATUS, mfc_proc_entry);
-	remove_proc_entry(MFC_PROC_DRM_INSTANCE_NUMBER, mfc_proc_entry);
-	remove_proc_entry(MFC_PROC_INSTANCE_NUMBER, mfc_proc_entry);
-	remove_proc_entry(MFC_PROC_ROOT, NULL);
-	vb2_ion_destroy_context(dev->alloc_ctx_drm);
-	vb2_ion_destroy_context(dev->alloc_ctx_drm_fw);
-#endif
 	s5p_mfc_destroy_listable_wq_dev(dev);
-	vb2_ion_destroy_context(dev->alloc_ctx_fw);
-#ifdef CONFIG_ION_EXYNOS
-	ion_client_destroy(dev->mfc_ion_client);
-#endif
+	v4l2_device_unregister(&dev->v4l2_dev);
 	mfc_debug(2, "Will now deinit HW\n");
 	s5p_mfc_deinit_hw(dev);
-	vb2_ion_destroy_context(dev->alloc_ctx);
-	vb2_ion_detach_iommu(dev->alloc_ctx);
-	free_irq(dev->irq, dev);
-	iounmap(dev->sysmmu1_base);
-	iounmap(dev->sysmmu0_base);
+	mutex_destroy(&dev->mfc_mutex);
 	iounmap(dev->regs_base);
 	release_mem_region(dev->mfc_mem->start, resource_size(dev->mfc_mem));
 	s5p_mfc_pm_final(dev);
-	kfree(dev);
 	dev_dbg(&pdev->dev, "%s--\n", __func__);
-	return 0;
 }
 
 static void s5p_mfc_shutdown(struct platform_device *pdev)
@@ -1402,7 +1329,6 @@ static void s5p_mfc_shutdown(struct platform_device *pdev)
 		s5p_mfc_risc_off(dev);
 		dev->shutdown = 1;
 		s5p_mfc_clear_all_bits(&dev->work_bits);
-		vb2_ion_detach_iommu(dev->alloc_ctx);
 	}
 	s5p_mfc_release_hwlock_dev(dev);
 	mfc_info_dev("MFC shutdown completed\n");
@@ -1507,7 +1433,8 @@ static struct s5p_mfc_variant mfc_drvdata_v6 = {
 
 static const struct of_device_id exynos_mfc_match[] = {
 	{
-		.compatible = "samsung,mfc-v6",
+		/* stock "samsung,mfc-v6" (FDT:8305); spec L6B 4.1 */
+		.compatible = "samsung,exynos8895-mfc",
 		.data = &mfc_drvdata_v6,
 	},
 	{},
@@ -1537,7 +1464,6 @@ static struct platform_driver s5p_mfc_driver = {
 	.shutdown	= s5p_mfc_shutdown,
 	.driver	= {
 		.name	= S5P_MFC_NAME,
-		.owner	= THIS_MODULE,
 		.pm	= &s5p_mfc_pm_ops,
 		.of_match_table = exynos_mfc_match,
 		.suppress_bind_attrs = true,

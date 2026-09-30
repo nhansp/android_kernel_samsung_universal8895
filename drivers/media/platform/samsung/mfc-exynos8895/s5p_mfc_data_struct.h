@@ -13,14 +13,18 @@
 #ifndef __S5P_MFC_DATA_STRUCT_H
 #define __S5P_MFC_DATA_STRUCT_H __FILE__
 
-#ifdef CONFIG_ARM_EXYNOS8895_BUS_DEVFREQ
+/*
+ * Stock built the QoS code: CONFIG_ARM_EXYNOS8895_BUS_DEVFREQ=y (IKC:4357). The
+ * votes go to the Exynos8895 multimedia QoS shim (spec L6B 5.3).
+ */
 #define CONFIG_MFC_USE_BUS_DEVFREQ
-#endif
 
 #ifdef CONFIG_MFC_USE_BUS_DEVFREQ
-#include <linux/pm_qos.h>
-#include <soc/samsung/bts.h>
+#include <soc/samsung/exynos8895-mm-qos.h>
 #endif
+#include <linux/dma-buf.h>
+#include <linux/iosys-map.h>
+#include <linux/time64.h>
 #include <linux/videodev2.h>
 
 #include <media/v4l2-device.h>
@@ -241,8 +245,6 @@ struct s5p_mfc_debug {
 	u32	dynamic_used;
 	u32	last_src_addr;
 	u32	last_dst_addr[MFC_MAX_PLANES];
-	/* for SYSMMU */
-	struct	_sysmmu_fi *mmu_fi;
 	/* total logging data */
 	char	errorinfo[MFC_LOGGING_DATA_SIZE];
 };
@@ -260,6 +262,13 @@ struct s5p_mfc_buf {
 	} planes;
 	int used;
 	unsigned char *vir_addr;
+	/*
+	 * v4l2_buffer.reserved2 of this buffer: the codec flags of the OMX in
+	 * (FLAG_LAST_FRAME/EMPTY_DATA/CSD) and the HDR/SEI bits out. Stock vb2
+	 * kept it in vb2_v4l2_buffer (S:include/media/videobuf2-v4l2.h:46); 6.18
+	 * vb2 has no such field (spec L6B B-MFC-8).
+	 */
+	u32 reserved2;
 };
 
 struct s5p_mfc_buf_queue {
@@ -351,6 +360,13 @@ struct s5p_mfc_special_buf {
 };
 
 #ifdef CONFIG_MFC_USE_BUS_DEVFREQ
+/* S:include/soc/samsung/bts.h:92-96; the BTS calls themselves are not ported (spec L6B 5.3) */
+struct bts_bw {
+	unsigned int peak;
+	unsigned int read;
+	unsigned int write;
+};
+
 struct mfc_qos_bw_data {
 	unsigned long	peak;
 	unsigned long	read;
@@ -411,13 +427,8 @@ struct s5p_mfc_dev {
 	struct video_device	*vfd_dec_drm;
 	struct video_device	*vfd_enc_drm;
 	struct device		*device;
-#ifdef CONFIG_ION_EXYNOS
-	struct ion_client	*mfc_ion_client;
-#endif
 
 	void __iomem		*regs_base;
-	void __iomem		*sysmmu0_base;
-	void __iomem		*sysmmu1_base;
 	int			irq;
 	struct resource		*mfc_mem;
 
@@ -462,16 +473,11 @@ struct s5p_mfc_dev {
 	struct workqueue_struct *watchdog_wq;
 	struct work_struct watchdog_work;
 
-	struct vb2_alloc_ctx *alloc_ctx;
-
 	/* for DRM */
 	int curr_ctx_is_drm;
 	int num_drm_inst;
 	struct s5p_mfc_special_buf fw_buf;
 	struct s5p_mfc_special_buf drm_fw_buf;
-	struct vb2_alloc_ctx *alloc_ctx_fw;
-	struct vb2_alloc_ctx *alloc_ctx_drm_fw;
-	struct vb2_alloc_ctx *alloc_ctx_drm;
 
 	struct workqueue_struct *butler_wq;
 	struct work_struct butler_work;
@@ -479,11 +485,11 @@ struct s5p_mfc_dev {
 #ifdef CONFIG_MFC_USE_BUS_DEVFREQ
 	struct list_head qos_queue;
 	atomic_t qos_req_cur;
-	struct pm_qos_request qos_req_int;
-	struct pm_qos_request qos_req_mif;
+	struct mm_qos_request qos_req_int;
+	struct mm_qos_request qos_req_mif;
 #ifdef CONFIG_ARM_EXYNOS_MP_CPUFREQ
-	struct pm_qos_request qos_req_cluster1;
-	struct pm_qos_request qos_req_cluster0;
+	struct mm_qos_request qos_req_cluster1;
+	struct mm_qos_request qos_req_cluster0;
 #endif
 	int qos_has_enc_ctx;
 #ifdef CONFIG_EXYNOS8890_BTS_OPTIMIZATION
@@ -513,8 +519,13 @@ struct s5p_mfc_dev {
 #endif
 	int last_cmd;
 	int last_int;
-	struct timeval last_cmd_time;
-	struct timeval last_int_time;
+	struct timespec64 last_cmd_time;
+	struct timespec64 last_int_time;
+
+	/* debugfs s5p-mfc/rsv2 (spec L6B 8.2) */
+	struct dentry *debugfs_root;
+	u32 dbg_qbuf_rsv2;
+	u32 dbg_dqbuf_rsv2;
 };
 
 /**
@@ -861,7 +872,8 @@ struct mfc_enc_roi_info {
 
 struct mfc_user_shared_handle {
 	int fd;
-	struct ion_handle *ion_handle;
+	struct dma_buf *dmabuf;		/* stock: ion_import_dma_buf() handle */
+	struct iosys_map map;
 	void *vaddr;
 };
 
@@ -876,7 +888,7 @@ struct s5p_mfc_raw_info {
 
 struct mfc_timestamp {
 	struct list_head list;
-	struct timeval timestamp;
+	u64 timestamp;			/* ns (vb2 timestamp); stock struct timeval */
 	int index;
 	int interval;
 };

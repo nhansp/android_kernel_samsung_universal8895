@@ -8,3 +8,7 @@ source "drivers/media/platform/samsung/s3c-camif/Kconfig"
 source "drivers/media/platform/samsung/s5p-g2d/Kconfig"
 source "drivers/media/platform/samsung/s5p-jpeg/Kconfig"
 source "drivers/media/platform/samsung/s5p-mfc/Kconfig"
+
+# L6B multimedia
+source "drivers/media/platform/samsung/mfc-exynos8895/Kconfig"
+

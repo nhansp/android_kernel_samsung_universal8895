@@ -5,3 +5,7 @@ obj-y += s3c-camif/
 obj-y += s5p-g2d/
 obj-y += s5p-jpeg/
 obj-y += s5p-mfc/
+
+# L6B multimedia
+obj-$(CONFIG_VIDEO_EXYNOS8895_MFC) += mfc-exynos8895/
+

@@ -1,18 +1,11 @@
-config VIDEO_EXYNOS_MFC
-	bool "Exynos MFC Driver"
-	default n
-	depends on VIDEO_EXYNOS
-	select VIDEOBUF2_CORE
-	select EXYNOS_MFC_V11
-	---help---
-	  MFC driver for V4L2.
-
-choice
-depends on VIDEO_EXYNOS_MFC
-prompt "MFC version"
-default EXYNOS_MFC_V11
-config EXYNOS_MFC_V11
-prompt "MFC version 11"
-	bool
-	depends on ARCH_EXYNOS8
-endchoice
+# SPDX-License-Identifier: GPL-2.0-only
+config VIDEO_EXYNOS8895_MFC
+	bool "Samsung Exynos8895 MFC v11 video codec (stock transplant)"
+	depends on VIDEO_DEV && ARCH_EXYNOS && EXYNOS_IOMMU
+	select VIDEOBUF2_DMA_CONTIG
+	select V4L2_MEM2MEM_DEV
+	help
+	  MFC v11 decoder/encoder of the Exynos8895 (Galaxy Note 8), the
+	  stock SM-N950N driver ported to this kernel. It keeps the stock
+	  V4L2 nodes (/dev/video6..9), names and Exynos private controls
+	  that the LineageOS OMX components use. Firmware: mfc_fw.bin.
