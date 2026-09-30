@@ -23,6 +23,7 @@
 #include <linux/seq_file.h>
 #include <linux/sizes.h>
 #include <linux/soc/samsung/greatlte-hb.h>
+#include <soc/samsung/bts.h>
 #include <soc/samsung/exynos8895-bus-qos.h>
 
 /* Register addresses: SFR_BLOCK CMU 0x15a80000 / MIF 0x16000000 (CAL:exynos8895/cmucal-sfr.c:13,31) */
@@ -204,6 +205,10 @@ static const struct greatlte_hb_item l2b_rows[] = {
 	{ .layer = 2, .tag = "fcam", .kind = GREATLTE_HB_CLK, .path = "/bus-cam", .idx = 0 },
 	{ .layer = 2, .tag = "fdisp", .kind = GREATLTE_HB_CLK, .path = "/bus-disp", .idx = 0 },
 	{ .layer = 2, .tag = "bus", .kind = GREATLTE_HB_FN, .fn = exynos8895_bus_hb },
+#if IS_ENABLED(CONFIG_EXYNOS8895_BTS)
+	/* BTS register state (spec L2b 1.2); "off" without bts_exynos8895.program=1 */
+	{ .layer = 2, .tag = "bts", .kind = GREATLTE_HB_FN, .fn = bts_hb },
+#endif
 	{ .layer = 2, .tag = "mifsfr", .kind = GREATLTE_HB_FN, .fn = l2b_hb_mifsfr },
 	{ .layer = 2, .tag = "dispsfr", .kind = GREATLTE_HB_FN, .fn = l2b_hb_dispsfr },
 };
@@ -286,7 +291,7 @@ static int __init l2b_hb_init(void)
 	if (!l2b_pll_mif_va || !l2b_ddrphy_va || !l2b_shared1_va || !l2b_core_mux_va ||
 	    !l2b_core_div_va || !l2b_dpu_mux_va || !l2b_dpu_div_va) {
 		pr_err("greatlte-hb-l2b: ioremap failed\n");
-		/* the bus-state rows need no mapping */
+		/* the rows before mifsfr/dispsfr (the last two) need no mapping */
 		greatlte_hb_add_items(l2b_rows, ARRAY_SIZE(l2b_rows) - 2);
 		return 0;
 	}

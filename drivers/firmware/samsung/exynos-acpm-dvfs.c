@@ -108,6 +108,25 @@ int acpm_dvfs_sleep_release(struct acpm_handle *handle,
 	return acpm_do_xfer(handle, &xfer);
 }
 
+/*
+ * One DATA_INIT message of a devfreq domain's table (Exynos8895 MIF): stock
+ * exynos8895_mif_constraint_parse() sends {level, kHz, DATA_INIT, INT
+ * constraint kHz} per enabled MIF level and then {count, initial kHz,
+ * DATA_INIT, SET_CONST} on the domain's channel, response expected, indirection
+ * off (S:drivers/devfreq/exynos/exynos8895_bus_mif.c:121-123,130-133,151-154).
+ * Stock only checks the send result (:142-146,156-160); so does the caller.
+ */
+int acpm_dvfs_data_init(struct acpm_handle *handle, unsigned int acpm_chan_id,
+			u32 cmd0, u32 cmd1, u32 cmd3)
+{
+	u32 cmd[4] = { cmd0, cmd1, ACPM_DVFS_DATA_INIT, cmd3 };
+	struct acpm_xfer xfer = {0};
+
+	acpm_dvfs_set_xfer(&xfer, cmd, sizeof(cmd), acpm_chan_id, true);
+
+	return acpm_do_xfer(handle, &xfer);
+}
+
 unsigned long acpm_dvfs_get_rate(struct acpm_handle *handle,
 				 unsigned int acpm_chan_id, unsigned int clk_id)
 {
