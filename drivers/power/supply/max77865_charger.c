@@ -259,6 +259,12 @@ struct max77865_charger {
 	int vbat_cnt;
 	bool vbat_ovp_done;
 
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_SYSOVLO)
+	int sysovlo_irq;
+	bool sysovlo_armed;
+	bool sysovlo;
+#endif
+
 	/* debugfs (L6F 5.3.5) */
 	u32 override_usb_mc, override_chg_mc, override_t_mc, override_hc;
 
@@ -525,6 +531,9 @@ static void max77865_cable_event(struct max77865_charger *chg, bool attach)
 	chg->vbat_ovp_done = false;
 	max77865_reset_budget(chg, EXPIRED_MS);		/* BAT:1262-1263 */
 	if (attach) {
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_SYSOVLO)
+		chg->sysovlo = false;		/* stays armed while charging, as stock */
+#endif
 		/* rewrite everything for the new input, as stock's ONLINE path did (CHG:1057-1061) */
 		chg->hw_mode = -1;
 		chg->in_w = -1;
@@ -534,6 +543,14 @@ static void max77865_cable_event(struct max77865_charger *chg, bool attach)
 		chg->status = POWER_SUPPLY_STATUS_CHARGING;
 		max77865_set_mode(chg, MODE_CHARGING);	/* :4032-4036 */
 	} else {
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_SYSOVLO)
+		/* cleared on detach; unmasked on every removal */
+		chg->sysovlo = false;
+		if (chg->sysovlo_irq > 0 && !chg->sysovlo_armed) {
+			enable_irq(chg->sysovlo_irq);
+			chg->sysovlo_armed = true;
+		}
+#endif
 		chg->mode = STAGE_NONE;			/* :3928 */
 		chg->status = POWER_SUPPLY_STATUS_DISCHARGING;
 		chg->swelling = SWELLING_NONE;		/* :3887-3896 */
@@ -587,6 +604,19 @@ static void max77865_policy(struct max77865_charger *chg, struct max77865_sample
 			dev_info(chg->dev, "vbat ovp %d mV, charging off\n", vcell);
 			return;
 		}
+	}
+#endif
+
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_SYSOVLO)
+	if (chg->sysovlo && chg->health != H_VSYS_OVP &&
+	    chg->status != POWER_SUPPLY_STATUS_DISCHARGING) {
+		chg->health = H_VSYS_OVP;
+		chg->recharging = false;
+		chg->mode = STAGE_NONE;
+		chg->status = POWER_SUPPLY_STATUS_NOT_CHARGING;
+		max77865_set_mode(chg, MODE_CHARGING_OFF);
+		dev_info(chg->dev, "vsys ovp, charging off\n");
+		return;
 	}
 #endif
 
@@ -1439,6 +1469,23 @@ static const struct regulator_desc max77865_otg_desc = {
 
 /* ---- IRQ (L6F 5.3.1) ---- */
 
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_SYSOVLO)
+static irqreturn_t max77865_sysovlo_irq(int irq, void *data)
+{
+	struct max77865_charger *chg = data;
+
+	disable_irq_nosync(irq);			/* stock masks in the handler */
+	pm_wakeup_event(chg->dev, 5000);		/* stock 5 s wake lock */
+	mutex_lock(&chg->lock);
+	chg->sysovlo_armed = false;
+	chg->sysovlo = true;
+	if (!chg->stopping)
+		mod_delayed_work(system_freezable_wq, &chg->pass_dwork, 0);
+	mutex_unlock(&chg->lock);
+	return IRQ_HANDLED;
+}
+#endif
+
 static irqreturn_t max77865_chg_irq(int irq, void *data)
 {
 	struct max77865_charger *chg = data;
@@ -1981,6 +2028,15 @@ static int max77865_charger_probe(struct i2c_client *client)
 		ret = devm_add_action_or_reset(dev, max77865_put_core, core);
 		if (ret)
 			return ret;
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_SYSOVLO)
+		/* the SYSOVLO virq of the MFD's SYSTEM_INT sub-chip */
+		{
+			struct max77693_dev *max = i2c_get_clientdata(core);
+
+			if (max->sys_irq_data)
+				chg->sysovlo_irq = regmap_irq_get_virq(max->sys_irq_data, 5);
+		}
+#endif
 	}
 
 	psy_cfg.drv_data = chg;
@@ -2102,6 +2158,23 @@ static int max77865_charger_probe(struct i2c_client *client)
 	 */
 	if (enable_irq_wake(client->irq) < 0)
 		dev_warn(dev, "failed to enable wakeup source\n");
+
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_SYSOVLO)
+	/*
+	 * Requested masked (stock MFD init masks SYSTEM_INT) and armed on the first
+	 * removal; BIAS on as stock. After every lock/work the
+	 * handler touches.
+	 */
+	if (chg->sysovlo_irq > 0) {
+		regmap_update_bits(core_map, MAX77865_PMIC_REG_MAINCTRL1, MAX77865_MAINCTRL1_BIASEN,
+				   MAX77865_MAINCTRL1_BIASEN);
+		ret = devm_request_threaded_irq(dev, chg->sysovlo_irq, NULL, max77865_sysovlo_irq,
+						IRQF_ONESHOT | IRQF_NO_AUTOEN, "max77865-sysovlo", chg);
+		if (ret)
+			return dev_err_probe(dev, ret, "sysovlo irq %d\n", chg->sysovlo_irq);
+		enable_irq_wake(chg->sysovlo_irq);	/* stock wake lock 5 s */
+	}
+#endif
 
 	queue_delayed_work(system_freezable_wq, &chg->pass_dwork, 0);
 	return 0;
