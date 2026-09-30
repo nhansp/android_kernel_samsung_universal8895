@@ -60,3 +60,5 @@ obj-$(CONFIG_EXYNOS8895_PM)		+= exynos8895-pm.o
 obj-$(CONFIG_GREATLTE_HB_L7)		+= greatlte-hb-l7.o
 # L2b bus DVFS heartbeat
 obj-$(CONFIG_GREATLTE_HB_L2B)		+= greatlte-hb-l2b.o
+# L6K DRAM temperature trip (WP l6ki)
+obj-$(CONFIG_EXYNOS8895_MCINFO)	+= exynos8895-mcinfo.o
