@@ -80,6 +80,40 @@ static const struct {
 	{ 630000, 1, 0 }, { 533000, 0, 1 }, { 356000, 0, 2 }, { 214000, 0, 3 }, { 134000, 0, 5 },
 };
 
+/*
+ * INT read-back (integrator image 0109): the 16 CMU_TOP registers of the ECT
+ * dvfs_int clock list (ECT-DVFS:67), 8 muxes then 8 dividers, all inside the
+ * page 0x15a81000; field widths CAL:exynos8895/cmucal-sfr.c SELECT :3408 (BUS1 2),
+ * :3836 (FSYS0 2), :4010 (FSYS1 1), :3649 (G2D 2), :3781 (JPEG 2), :3964 (IMEM 2),
+ * :3436 (MFC 2), :3643 (BUSC 3); DIVRATIO [3:0] :3405,3383,3478,3448,3778,3961,3439,3646.
+ */
+#define L2B_TOP_PAGE			0x15a81000
+static const struct {
+	u16 off;	/* in the page */
+	u8 width;
+} l2b_int_reg[16] = {
+	{ 0x008, 2 }, { 0x058, 2 }, { 0x06c, 1 }, { 0x07c, 2 },
+	{ 0x080, 2 }, { 0x088, 2 }, { 0x098, 2 }, { 0x00c, 3 },
+	{ 0x808, 4 }, { 0x854, 4 }, { 0x868, 4 }, { 0x878, 4 },
+	{ 0x87c, 4 }, { 0x888, 4 }, { 0x898, 4 }, { 0x80c, 4 },
+};
+
+/* ECT dvfs_int L0..L6: kHz and the 16 field values in the order above (ECT-DVFS:68-74, full rows) */
+static const struct {
+	u32 khz;
+	u8 v[16];
+} l2b_int_lv[] = {
+	{ 667000, { 1, 2, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0 } },
+	{ 533000, { 1, 2, 1, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0 } },
+	{ 400000, { 3, 2, 0, 3, 2, 2, 3, 3, 0, 3, 4, 0, 0, 1, 0, 0 } },
+	{ 333000, { 0, 3, 1, 1, 0, 0, 1, 0, 1, 3, 3, 1, 1, 2, 1, 1 } },
+	{ 267000, { 1, 3, 1, 1, 0, 0, 1, 1, 1, 3, 3, 1, 1, 2, 1, 1 } },
+	{ 178000, { 1, 3, 1, 1, 0, 0, 1, 1, 2, 5, 5, 2, 2, 5, 2, 2 } },
+	{ 107000, { 1, 3, 1, 1, 0, 0, 1, 1, 4, 7, 7, 5, 5, 5, 5, 5 } },
+};
+
+static void __iomem *l2b_top_page_va;
+
 static void __iomem *l2b_pll_mif_va, *l2b_ddrphy_va, *l2b_shared1_va;
 static void __iomem *l2b_core_mux_va, *l2b_core_div_va;
 static void __iomem *l2b_dpu_mux_va, *l2b_dpu_div_va;
@@ -161,6 +195,35 @@ static void l2b_disp_read(struct l2b_disp_hw *h)
 	}
 }
 
+struct l2b_int_hw {
+	u32 raw[16];
+	u8 v[16];
+	int lv;
+};
+
+static void l2b_int_read(struct l2b_int_hw *h)
+{
+	int i;
+
+	for (i = 0; i < 16; i++) {
+		h->raw[i] = readl(l2b_top_page_va + l2b_int_reg[i].off);
+		h->v[i] = h->raw[i] & GENMASK(l2b_int_reg[i].width - 1, 0);
+	}
+
+	h->lv = -1;
+	for (i = 0; i < ARRAY_SIZE(l2b_int_lv); i++) {
+		if (!memcmp(h->v, l2b_int_lv[i].v, sizeof(h->v))) {
+			h->lv = i;
+			break;
+		}
+	}
+}
+
+static u32 l2b_int_khz(int lv)
+{
+	return lv < 0 ? 0 : l2b_int_lv[lv].khz;
+}
+
 static u32 l2b_mif_khz(int lv)
 {
 	return lv < 0 ? 0 : l2b_mif_lv[lv].khz;
@@ -191,6 +254,19 @@ static int l2b_hb_dispsfr(char *buf, size_t size)
 			 l2b_disp_khz(h.lv));
 }
 
+/* FN "intsfr": the 8 mux fields, the 8 divider fields (hex digits), level, kHz */
+static int l2b_hb_intsfr(char *buf, size_t size)
+{
+	struct l2b_int_hw h;
+	int n = 0, i;
+
+	l2b_int_read(&h);
+	for (i = 0; i < 16; i++)
+		n += scnprintf(buf + n, size - n, "%s%x", i == 8 ? "/" : "", h.v[i]);
+	n += scnprintf(buf + n, size - n, "/%d/%u", h.lv, l2b_int_khz(h.lv));
+	return n;
+}
+
 static const struct greatlte_hb_item l2b_rows[] = {
 	/* spec L2b 4.1 nodes, driver "exynos8895-bus" */
 	{ .layer = 2, .tag = "bmif", .kind = GREATLTE_HB_DEV, .path = "/bus-mif" },
@@ -211,6 +287,7 @@ static const struct greatlte_hb_item l2b_rows[] = {
 #endif
 	{ .layer = 2, .tag = "mifsfr", .kind = GREATLTE_HB_FN, .fn = l2b_hb_mifsfr },
 	{ .layer = 2, .tag = "dispsfr", .kind = GREATLTE_HB_FN, .fn = l2b_hb_dispsfr },
+	{ .layer = 2, .tag = "intsfr", .kind = GREATLTE_HB_FN, .fn = l2b_hb_intsfr },
 };
 
 /* debugfs exynos8895-bus/{mif,disp}_hw_khz: a fresh read on demand (spec L2b 5.8, V-2) */
@@ -234,6 +311,20 @@ static int disp_hw_khz_show(struct seq_file *s, void *unused)
 	return 0;
 }
 DEFINE_SHOW_ATTRIBUTE(disp_hw_khz);
+
+static int int_hw_khz_show(struct seq_file *s, void *unused)
+{
+	struct l2b_int_hw h;
+	int i;
+
+	l2b_int_read(&h);
+	seq_printf(s, "%u lv=%d raw=", l2b_int_khz(h.lv), h.lv);
+	for (i = 0; i < 16; i++)
+		seq_printf(s, "%s%08x", i ? "/" : "", h.raw[i]);
+	seq_putc(s, '\n');
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(int_hw_khz);
 
 /*
  * int_test_khz (0644, default 0): one INT class request set to the written
@@ -288,11 +379,12 @@ static int __init l2b_hb_init(void)
 	l2b_core_div_va = l2b_map(L2B_DIV_CLKCMU_CORE_BUS);
 	l2b_dpu_mux_va = l2b_map(L2B_MUX_CLKCMU_DPU_BUS);
 	l2b_dpu_div_va = l2b_map(L2B_DIV_CLKCMU_DPU_BUS);
+	l2b_top_page_va = ioremap(L2B_TOP_PAGE, SZ_4K);
 	if (!l2b_pll_mif_va || !l2b_ddrphy_va || !l2b_shared1_va || !l2b_core_mux_va ||
-	    !l2b_core_div_va || !l2b_dpu_mux_va || !l2b_dpu_div_va) {
+	    !l2b_core_div_va || !l2b_dpu_mux_va || !l2b_dpu_div_va || !l2b_top_page_va) {
 		pr_err("greatlte-hb-l2b: ioremap failed\n");
-		/* the rows before mifsfr/dispsfr (the last two) need no mapping */
-		greatlte_hb_add_items(l2b_rows, ARRAY_SIZE(l2b_rows) - 2);
+		/* the rows before mifsfr/dispsfr/intsfr (the last three) need no mapping */
+		greatlte_hb_add_items(l2b_rows, ARRAY_SIZE(l2b_rows) - 3);
 		return 0;
 	}
 
@@ -301,6 +393,7 @@ static int __init l2b_hb_init(void)
 	dir = debugfs_create_dir("exynos8895-bus", NULL);
 	debugfs_create_file("mif_hw_khz", 0400, dir, NULL, &mif_hw_khz_fops);
 	debugfs_create_file("disp_hw_khz", 0400, dir, NULL, &disp_hw_khz_fops);
+	debugfs_create_file("int_hw_khz", 0400, dir, NULL, &int_hw_khz_fops);
 
 	return 0;
 }
