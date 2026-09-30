@@ -128,4 +128,33 @@ config TYPEC_MAX77865_MUIC
 	  It writes no high-voltage register. Built in only: it reads the
 	  pmic_info= boot parameter from the saved command line.
 
+config TYPEC_S2MM005
+	tristate "Samsung S2MM005 USB Type-C / PD port controller"
+	depends on I2C && OF && TYPEC && USB_ROLE_SWITCH && TYPEC_MAX77865_MUIC
+	help
+	  The S2MM005 port controller of the Samsung Galaxy Note 8. Its
+	  firmware runs Type-C and USB Power Delivery; the driver reads the
+	  attach state and reports it through the Type-C class, the USB role
+	  switch and the MAX77865 MUIC. It never selects a PD voltage and never
+	  switches VBUS on unless the two options below are set.
+
+config TYPEC_S2MM005_OTG_VBUS
+	bool "Switch the OTG VBUS boost on for a USB host session"
+	depends on TYPEC_S2MM005
+	default n
+	help
+	  Let the port controller switch the phone's 5 V OTG boost on for a
+	  USB host session. Raises VBUS: see spec L6H 1A SAFETY row V1. Enable
+	  only with the user present. Say N.
+
+config TYPEC_S2MM005_PD_SELECT
+	bool "USB-PD sink voltage selection (charging path, see L6H SAFETY)"
+	depends on TYPEC_S2MM005
+	default n
+	help
+	  Lets the charger request USB-PD source voltages above 5 V (PDO
+	  selection and the alternate-mode power negotiation command).
+	  Charging path: see spec L6H 1A SAFETY. Enable only with the user
+	  present. Say N.
+
 endif # TYPEC
