@@ -47,3 +47,5 @@ obj-$(CONFIG_GREATLTE_HB_L6D_BT)	+= greatlte-hb-l6d-bt.o
 
 # L7 (power management)
 obj-$(CONFIG_EXYNOS8895_PM)		+= exynos8895-pm.o
+# L7 heartbeat printers
+obj-$(CONFIG_GREATLTE_HB_L7)		+= greatlte-hb-l7.o

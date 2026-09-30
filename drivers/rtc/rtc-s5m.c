@@ -324,6 +324,19 @@ static int s2mps17_rtc_udr(struct s5m_rtc_info *info, unsigned int op)
 	else
 		usleep_range(1000, 1000);	/* S:drivers/rtc/rtc-s2mps17.c:137 */
 
+#ifdef CONFIG_GREATLTE_HB_L7
+	/* DEBUG (spec L7 5.10.4 item 10, O7-18): which UPDATE op bits self-clear */
+	if (!ret) {
+		static unsigned int seen[5];	/* per op bit 0..4 */
+		unsigned int b = __ffs(op), v;
+
+		if (b < ARRAY_SIZE(seen) && seen[b] < 3 &&
+		    !regmap_read(info->regmap, S2MPS17_RTC_UPDATE, &v)) {
+			seen[b]++;
+			dev_info(info->dev, "s2mps17: udr op=0x%02x after 1ms=0x%02x\n", op, v);
+		}
+	}
+#endif
 	return ret;
 }
 
@@ -692,6 +705,11 @@ static int s2mps17_rtc_init_reg(struct s5m_rtc_info *info)
 		ret = regmap_read(info->regmap, S2MPS17_RTC_CAPSEL, &capsel);	/* :642 */
 	if (ret)
 		return ret;
+#ifdef CONFIG_GREATLTE_HB_L7
+	/* DEBUG (spec L7 5.10.4 item 10) */
+	dev_info(info->dev, "s2mps17: rtc ctrl=0x%02x capsel=0x%02x update=0x%02x\n",
+		 ctrl, capsel, upd);
+#endif
 
 	if (!(ctrl & MODEL24_MASK) ||
 	    (capsel & S2MPS17_RTC_CAPSEL_INIT) != S2MPS17_RTC_CAPSEL_INIT) {	/* :650 */
