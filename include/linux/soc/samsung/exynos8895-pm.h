@@ -43,6 +43,8 @@ void e8895_pmu_cpu_down(unsigned int cpu);
 void e8895_pmu_cpu_up(unsigned int cpu);
 bool e8895_pmu_cpu_conf_ok(unsigned int cpu);
 u32 e8895_pmu_cpu_status(unsigned int cpu);		/* DEBUG */
+#include <linux/percpu-defs.h>
+DECLARE_PER_CPU(int, e8895_dbg_fin_ret);		/* DEBUG */
 void e8895_pmu_cluster_down(unsigned int cpu);
 int e8895_pmu_cluster_up(unsigned int cpu);
 bool e8895_pmu_cluster_is_on(unsigned int cpu);

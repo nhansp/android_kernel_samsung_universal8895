@@ -258,8 +258,9 @@ static __cpuidle int __e8895_enter_c2(struct cpuidle_device *dev, int idx, bool 
 	if (c2_trace && cpu < 8)
 		atomic_inc(&c2_dbg_out[cpu]);
 	if (c2_trace && !test_and_set_bit(cpu, &c2_traced_out))
-		pr_info("exynos8895_idle: cpu%u mode=%u return %d conf_ok=%d\n",
-			cpu, mode, ret, e8895_pmu_cpu_conf_ok(cpu));
+		pr_info("exynos8895_idle: cpu%u mode=%u return %d (finisher %d) conf_ok=%d status=%x\n",
+			cpu, mode, ret, ret ? per_cpu(e8895_dbg_fin_ret, cpu) : 0,
+			e8895_pmu_cpu_conf_ok(cpu), e8895_pmu_cpu_status(cpu));
 	cpu_pm_exit();
 	if (ret)
 		return -EBUSY;					/* S:drivers/cpuidle/cpuidle-exynos64.c:156-164 */
