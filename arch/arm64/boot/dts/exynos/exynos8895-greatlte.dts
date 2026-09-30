@@ -208,13 +208,6 @@
 &cmu_fsys0 { status = "disabled"; };
 &cmu_fsys1 { status = "disabled"; };
 
-/* L7 (REWRITE_PLAN.md 5 X-7: the MCT stays disabled through L6; L7 verifies it
- * against stock and enables it as the broadcast timer): MCT.
- * exynos4_timer_resources() panics without its clocks
- * (A:drivers/clocksource/exynos_mct.c:517-524); timer_probe skips disabled
- * nodes (A:drivers/clocksource/timer-probe.c:25). */
-&{/soc@0/timer@10040000} { status = "disabled"; };
-
 /* L1: pinctrl (bank tables not yet verified against stock). */
 &pinctrl_alive { status = "disabled"; };
 &pinctrl_abox { status = "disabled"; };
