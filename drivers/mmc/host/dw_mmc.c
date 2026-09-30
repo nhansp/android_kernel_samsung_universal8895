@@ -188,6 +188,27 @@ static void dw_mci_init_debugfs(struct dw_mci_slot *slot)
 }
 #endif /* defined(CONFIG_DEBUG_FS) */
 
+/* stock S:drivers/mmc/host/dw_mmc.c:297-312; spec L2b 2.2 REQ-2B-L4-1 */
+static void dw_mci_qos_work(struct work_struct *work)
+{
+	struct dw_mci *host = container_of(work, struct dw_mci, qos_work.work);
+
+	exynos_bus_qos_update_request(&host->pm_qos_int, 0);
+}
+
+static void dw_mci_qos_get(struct dw_mci *host)
+{
+	if (delayed_work_pending(&host->qos_work))
+		cancel_delayed_work_sync(&host->qos_work);
+	exynos_bus_qos_update_request(&host->pm_qos_int, host->pdata->qos_int_level);
+}
+
+static void dw_mci_qos_put(struct dw_mci *host)
+{
+	queue_delayed_work(host->pm_workqueue, &host->qos_work,
+			   msecs_to_jiffies(5));
+}
+
 static bool dw_mci_ctrl_reset(struct dw_mci *host, u32 reset)
 {
 	u32 ctrl;
@@ -1431,6 +1452,10 @@ static void dw_mci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 		return;
 	}
 
+	/* stock S:drivers/mmc/host/dw_mmc.c:1900-1901; spec L2b REQ-2B-L4-1 */
+	if (host->qos_cntrl)
+		dw_mci_qos_get(host);
+
 	spin_lock_bh(&host->lock);
 
 	dw_mci_queue_request(host, slot, mrq);
@@ -1920,6 +1945,9 @@ static void dw_mci_request_end(struct dw_mci *host, struct mmc_request *mrq)
 	}
 
 	spin_unlock(&host->lock);
+	/* stock S:drivers/mmc/host/dw_mmc.c:2351-2352; spec L2b REQ-2B-L4-1 */
+	if (host->qos_cntrl)
+		dw_mci_qos_put(host);
 	mmc_request_done(prev_mmc, mrq);
 	spin_lock(&host->lock);
 }
@@ -3317,6 +3345,12 @@ static struct dw_mci_board *dw_mci_parse_dt(struct dw_mci *host)
 	device_property_read_u32(dev, "card-detect-delay",
 				 &pdata->detect_delay_ms);
 
+	/* stock S:drivers/mmc/host/dw_mmc.c:3971-3974; FDT:7715; spec L2b REQ-2B-L4-1 */
+	if (device_property_read_u32(dev, "qos-int-level", &pdata->qos_int_level))
+		host->qos_cntrl = false;
+	else
+		host->qos_cntrl = true;
+
 	device_property_read_u32(dev, "data-addr", &host->data_addr_override);
 
 	if (device_property_present(dev, "fifo-watermark-aligned"))
@@ -3533,11 +3567,23 @@ int dw_mci_probe(struct dw_mci *host)
 	else
 		host->fifo_reg = host->regs + DATA_240A_OFFSET;
 
+	/* stock S:drivers/mmc/host/dw_mmc.c:4297-4304; spec L2b 2.2 REQ-2B-L4-1 */
+	if (host->qos_cntrl) {
+		host->pm_workqueue = alloc_ordered_workqueue("kmmcd", 0);
+		if (!host->pm_workqueue) {
+			ret = -ENOMEM;
+			goto err_dmaunmap;
+		}
+
+		INIT_DELAYED_WORK(&host->qos_work, dw_mci_qos_work);
+		exynos_bus_qos_add_request(&host->pm_qos_int, EXYNOS_BUS_QOS_INT, 0);
+	}
+
 	INIT_WORK(&host->bh_work, dw_mci_work_func);
 	ret = devm_request_irq(host->dev, host->irq, dw_mci_interrupt,
 			       host->irq_flags, "dw-mci", host);
 	if (ret)
-		goto err_dmaunmap;
+		goto err_workqueue;
 
 	/*
 	 * Enable interrupts for command done, data over, data empty,
@@ -3557,13 +3603,21 @@ int dw_mci_probe(struct dw_mci *host)
 	ret = dw_mci_init_slot(host);
 	if (ret) {
 		dev_dbg(host->dev, "slot %d init failed\n", i);
-		goto err_dmaunmap;
+		goto err_workqueue;
 	}
 
 	/* Now that slots are all setup, we can enable card detect */
 	dw_mci_enable_cd(host);
 
 	return 0;
+
+err_workqueue:
+	/* stock S:drivers/mmc/host/dw_mmc.c:4375-4376; spec L2b REQ-2B-L4-1 */
+	if (host->qos_cntrl) {
+		cancel_delayed_work_sync(&host->qos_work);
+		destroy_workqueue(host->pm_workqueue);
+		exynos_bus_qos_remove_request(&host->pm_qos_int);
+	}
 
 err_dmaunmap:
 	if (host->use_dma && host->dma_ops->exit)
@@ -3593,6 +3647,13 @@ void dw_mci_remove(struct dw_mci *host)
 	/* disable clock to CIU */
 	mci_writel(host, CLKENA, 0);
 	mci_writel(host, CLKSRC, 0);
+
+	/* stock S:drivers/mmc/host/dw_mmc.c:4414-4415; spec L2b REQ-2B-L4-1 */
+	if (host->qos_cntrl) {
+		cancel_delayed_work_sync(&host->qos_work);
+		destroy_workqueue(host->pm_workqueue);
+		exynos_bus_qos_remove_request(&host->pm_qos_int);
+	}
 
 	if (host->use_dma && host->dma_ops->exit)
 		host->dma_ops->exit(host);

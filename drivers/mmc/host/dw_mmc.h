@@ -18,6 +18,7 @@
 #include <linux/hrtimer.h>
 #include <linux/interrupt.h>
 #include <linux/workqueue.h>
+#include <soc/samsung/exynos8895-bus-qos.h>
 
 enum dw_mci_state {
 	STATE_IDLE = 0,
@@ -242,6 +243,12 @@ struct dw_mci {
 	struct fault_attr	fail_data_crc;
 	struct hrtimer		fault_timer;
 #endif
+
+	/* INT throughput floor via bus QoS (S:include/linux/mmc/dw_mmc.h:180-182; spec L2b REQ-2B-L4-1) */
+	struct exynos_bus_qos_request	pm_qos_int;
+	struct delayed_work		qos_work;
+	struct workqueue_struct		*pm_workqueue;
+	bool				qos_cntrl;
 };
 
 /* DMA ops for Internal/External DMAC interface */
@@ -277,6 +284,9 @@ struct dw_mci_board {
 	struct reset_control *rstc;
 	struct dw_mci_dma_ops *dma_ops;
 	struct dma_pdata *data;
+
+	/* INT QOS khz S:include/linux/mmc/dw_mmc.h:354, FDT:7715 */
+	u32 qos_int_level;
 };
 
 /* Support for longer data read timeout */
