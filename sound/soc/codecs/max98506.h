@@ -710,5 +710,6 @@ struct max98506_priv {
 	struct max98506_volume_step_info vstep;
 	struct regmap *sub_regmap;	/* second amplifier: never set here */
 	int speaker_dac_enable;
+	int cal_rdc, cal_temp;
 };
 #endif /* _MAX98506_H */

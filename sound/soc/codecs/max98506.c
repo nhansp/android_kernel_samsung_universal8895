@@ -24,6 +24,7 @@
 #include <sound/tlv.h>
 #include <sound/max98506.h>
 #include "max98506.h"
+#include <sound/samsung/abox_dsm.h>
 
 #define DEBUG_MAX98506
 #ifdef DEBUG_MAX98506
@@ -1136,10 +1137,20 @@ static int max98506_dai_mute_stream(struct snd_soc_dai *dai,
 {
 	struct max98506_priv *max98506 =
 		snd_soc_component_get_drvdata(dai->component);
+	struct max98506_pdata *pdata = max98506->pdata;
 
 	if (stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		msg_maxim("max98506_spk_enable mute=%d\n", mute);
 		max98506_spk_enable(max98506, mute != 0 ? 0 : 1);
+	}
+
+	if (!pdata->nodsm && stream == SNDRV_PCM_STREAM_CAPTURE && mute == 0) {
+		msg_maxim("set maxdsm calibration\n");			/* stock :1424 */
+		if (max98506->cal_rdc <= 0 || max98506->cal_temp <= 0)
+			pr_info("%s: rdc(0x%08x) temp(%d)\n", __func__,	/* stock :1428-1437 messages merged */
+				max98506->cal_rdc, max98506->cal_temp);
+		else if (abox_dsm_set_rdc_temp(max98506->cal_rdc, max98506->cal_temp / 10) < 0)
+			pr_err("%s: Failed to set calibration\n", __func__);	/* stock :1441-1443 */
 	}
 
 	return 0;
@@ -1549,10 +1560,43 @@ static const struct i2c_device_id max98506_i2c_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, max98506_i2c_id);
 
+/* max98506.c (r5). Stock parse: kstrtos32(data, 16, &v) on the 12-byte file (S:sound/soc/codecs/maxim_dsm_cal.c:122-136,
+ * :169-183); the factory wrote sprintf("%x") padded with NULs (:107-121, :139-152), which kstrtos32 accepts up to the NUL. */
+static ssize_t dsm_cal_store(struct device *dev, const char *buf, int *dst)
+{
+	int v, ret = kstrtos32(buf, 16, &v);
+
+	if (ret)
+		return ret;
+	*dst = v;				/* <= 0 is kept and makes the push skip, as stock (max98506.c:1426-1438) */
+	return 0;
+}
+static ssize_t dsm_rdc_cal_store(struct device *dev, struct device_attribute *a, const char *buf, size_t n)
+{
+	struct max98506_priv *m = dev_get_drvdata(dev);
+	int ret = dsm_cal_store(dev, buf, &m->cal_rdc);
+	return ret ? ret : n;
+}
+static ssize_t dsm_temp_cal_store(struct device *dev, struct device_attribute *a, const char *buf, size_t n)
+{
+	struct max98506_priv *m = dev_get_drvdata(dev);
+	int ret = dsm_cal_store(dev, buf, &m->cal_temp);
+	return ret ? ret : n;
+}
+static DEVICE_ATTR_WO(dsm_rdc_cal);		/* mode 0200 */
+static DEVICE_ATTR_WO(dsm_temp_cal);
+static struct attribute *max98506_attrs[] = {
+	&dev_attr_dsm_rdc_cal.attr,
+	&dev_attr_dsm_temp_cal.attr,
+	NULL
+};
+ATTRIBUTE_GROUPS(max98506);			/* .driver.dev_groups = max98506_groups in the i2c_driver */
+
 static struct i2c_driver max98506_i2c_driver = {
 	.driver = {
 		.name = "max98506",
 		.of_match_table = max98506_dt_ids,
+		.dev_groups = max98506_groups,
 		.suppress_bind_attrs = true,
 	},
 	.probe  = max98506_i2c_probe,
