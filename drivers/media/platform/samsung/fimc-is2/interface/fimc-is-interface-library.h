@@ -227,15 +227,13 @@ struct fimc_is_lib_support {
 };
 
 struct fimc_is_memory_attribute {
-	pgprot_t state;
+	pteval_t state;	/* PTE_RDONLY (ROX) or PTE_WRITE (NX RW): a tag, stock pgprot_t */
 	int numpages;
 	ulong vaddr;
 };
 
-struct fimc_is_memory_change_data {
-	pgprot_t set_mask;
-	pgprot_t clear_mask;
-};
+/* fimc.is lib_rox (fimc-is-core.c): map the library code ROX (default) or RWX */
+extern bool fimc_is_lib_rox;
 
 int fimc_is_load_bin(void);
 void fimc_is_load_clear(void);
@@ -282,5 +280,7 @@ void fimc_is_load_ctrl_unlock(void);
 void fimc_is_load_ctrl_lock(void);
 void fimc_is_load_ctrl_init(void);
 int fimc_is_set_fw_names(char *fw_name, char *rta_fw_name);
+
+void fimc_is_stop_trigger(void);
 
 #endif

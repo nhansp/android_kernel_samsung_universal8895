@@ -12,7 +12,7 @@
 #include "../interface/fimc-is-interface-ischain.h"
 #include "fimc-is-err.h"
 
-void fimc_is_hw_vra_save_debug_info(struct fimc_is_hw_ip *hw_ip,
+static void fimc_is_hw_vra_save_debug_info(struct fimc_is_hw_ip *hw_ip,
 	struct fimc_is_lib_vra *lib_vra, int debug_point)
 {
 	struct fimc_is_hardware *hardware;
@@ -339,7 +339,7 @@ int fimc_is_hw_vra_open(struct fimc_is_hw_ip *hw_ip, u32 instance, u32 *size)
 	return ret;
 }
 
-int fimc_is_hw_vra_init(struct fimc_is_hw_ip *hw_ip,
+int __nocfi fimc_is_hw_vra_init(struct fimc_is_hw_ip *hw_ip,
 	struct fimc_is_group *group, bool flag, u32 module_id)
 {
 	u32 instance = 0;
@@ -425,7 +425,7 @@ int fimc_is_hw_vra_init(struct fimc_is_hw_ip *hw_ip,
 	return 0;
 }
 
-int fimc_is_hw_vra_desc_close(struct fimc_is_hw_ip *hw_ip, u32 instance)
+static __maybe_unused int fimc_is_hw_vra_desc_close(struct fimc_is_hw_ip *hw_ip, u32 instance)
 {
 	return 0;
 }

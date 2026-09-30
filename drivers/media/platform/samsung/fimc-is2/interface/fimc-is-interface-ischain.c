@@ -2023,7 +2023,7 @@ static void wq_func_group_xxx(struct fimc_is_groupmgr *groupmgr,
 	CALL_VOPS(vctx, done, frame->index, done_state);
 }
 
-void wq_func_group(struct fimc_is_device_ischain *device,
+static void wq_func_group(struct fimc_is_device_ischain *device,
 	struct fimc_is_groupmgr *groupmgr,
 	struct fimc_is_group *group,
 	struct fimc_is_framemgr *framemgr,
@@ -2446,6 +2446,14 @@ static void interface_timer(unsigned long data)
 	mod_timer(&itf->timer, jiffies + (FIMC_IS_COMMAND_TIMEOUT/TRY_TIMEOUT_COUNT));
 }
 
+/* timer_setup() callback for the stock unsigned-long handler above (spec L6B 5.6.8) */
+static void interface_timer_fn(struct timer_list *t)
+{
+	struct fimc_is_interface *itf = timer_container_of(itf, t, timer);
+
+	interface_timer((unsigned long)itf);
+}
+
 int fimc_is_interface_probe(struct fimc_is_interface *this,
 	struct fimc_is_minfo *minfo,
 	ulong regs,
@@ -2549,10 +2557,8 @@ int fimc_is_interface_open(struct fimc_is_interface *this)
 	clear_bit(IS_IF_STATE_READY, &this->state);
 	clear_bit(IS_IF_STATE_LOGGING, &this->state);
 
-	init_timer(&this->timer);
+	timer_setup(&this->timer, interface_timer_fn, 0);	/* stock data: this */
 	this->timer.expires = jiffies + (FIMC_IS_COMMAND_TIMEOUT/TRY_TIMEOUT_COUNT);
-	this->timer.data = (unsigned long)this;
-	this->timer.function = interface_timer;
 	add_timer(&this->timer);
 
 	set_bit(IS_IF_STATE_OPEN, &this->state);

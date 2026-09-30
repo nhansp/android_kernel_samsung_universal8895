@@ -92,7 +92,7 @@ int fimc_is_hw_tpu_open(struct fimc_is_hw_ip *hw_ip, u32 instance, u32 *size)
 	return 0;
 }
 
-int fimc_is_hw_tpu_init(struct fimc_is_hw_ip *hw_ip, struct fimc_is_group *group,
+int __nocfi fimc_is_hw_tpu_init(struct fimc_is_hw_ip *hw_ip, struct fimc_is_group *group,
 	bool flag, u32 module_id)
 {
 	int ret = 0;

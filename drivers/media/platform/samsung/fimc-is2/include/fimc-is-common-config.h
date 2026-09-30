@@ -12,6 +12,8 @@
 #ifndef FIMC_IS_COMMON_CONFIG_H
 #define FIMC_IS_COMMON_CONFIG_H
 
+#include <media/exynos8895-compat.h>
+
 /*
  * =================================================================================================
  * CONFIG - GLOBAL OPTIONS
@@ -37,7 +39,7 @@
 /* disable the Fast Shot because of AF fluctuating issue when touch af */
 /* #define ENABLE_FAST_SHOT */
 
-#define ENABLE_FAULT_HANDLER
+/* #define ENABLE_FAULT_HANDLER */
 #define ENABLE_PANIC_HANDLER
 #define ENABLE_REBOOT_HANDLER
 /* #define ENABLE_PANIC_SFR_PRINT */
@@ -116,7 +118,7 @@
 /* #define SENSOR_PANIC_ENABLE */
 #define OVERFLOW_PANIC_ENABLE_ISCHAIN
 #define OVERFLOW_PANIC_ENABLE_CSIS
-#define ENABLE_KERNEL_LOG_DUMP
+/* #define ENABLE_KERNEL_LOG_DUMP: copies the exynos-snapshot kernel log (Samsung debug infrastructure, excluded) */
 /* #define FIXED_FPS_DEBUG */
 
 /* 5fps */

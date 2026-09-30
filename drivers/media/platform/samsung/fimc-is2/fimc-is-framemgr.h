@@ -139,6 +139,13 @@ enum fimc_is_hw_frame_state {
 
 #define NR_FRAME_STATE FS_INVALID
 
+/*
+ * The queue API below takes the state as u32: stock passes both enum
+ * fimc_is_frame_state (FS_*) and enum fimc_is_hw_frame_state (FS_HW_*) values
+ * (same queues, hardware/fimc-is-hw-control.c); clang's
+ * -Wimplicit-enum-enum-cast rejects the implicit conversion.
+ */
+
 enum fimc_is_frame_mem_state {
 	/* initialized memory */
 	FRAME_MEM_INIT,
@@ -249,20 +256,20 @@ static const char * const frame_state_name[NR_FRAME_STATE] = {
 
 int frame_fcount(struct fimc_is_frame *frame, void *data);
 int put_frame(struct fimc_is_framemgr *this, struct fimc_is_frame *frame,
-			enum fimc_is_frame_state state);
+			u32 state);
 struct fimc_is_frame *get_frame(struct fimc_is_framemgr *this,
-			enum fimc_is_frame_state state);
+			u32 state);
 int trans_frame(struct fimc_is_framemgr *this, struct fimc_is_frame *frame,
-			enum fimc_is_frame_state state);
+			u32 state);
 struct fimc_is_frame *peek_frame(struct fimc_is_framemgr *this,
-			enum fimc_is_frame_state state);
+			u32 state);
 struct fimc_is_frame *peek_frame_tail(struct fimc_is_framemgr *this,
-			enum fimc_is_frame_state state);
+			u32 state);
 struct fimc_is_frame *find_frame(struct fimc_is_framemgr *this,
-			enum fimc_is_frame_state state,
+			u32 state,
 			int (*fn)(struct fimc_is_frame *, void *), void *data);
 void print_frame_queue(struct fimc_is_framemgr *this,
-			enum fimc_is_frame_state state);
+			u32 state);
 
 int frame_manager_probe(struct fimc_is_framemgr *this, u32 id);
 int frame_manager_open(struct fimc_is_framemgr *this, u32 buffers);

@@ -1,4 +1,4 @@
 obj-$(CONFIG_VENDER_DEFAULT) += fimc-is-vender.o
 
-EXTRA_CFLAGS += -Idrivers/media/platform/exynos/fimc-is2
-EXTRA_CFLAGS += -Idrivers/media/platform/exynos/fimc-is2/include
+EXTRA_CFLAGS += -I$(srctree)/drivers/media/platform/samsung/fimc-is2
+EXTRA_CFLAGS += -I$(srctree)/drivers/media/platform/samsung/fimc-is2/include

@@ -18,7 +18,7 @@
 #include <linux/device.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
-#include <video/videonode.h>
+#include <media/exynos8895-compat.h>
 #include <linux/videodev2.h>
 #include <linux/videodev2_exynos_camera.h>
 #include <linux/bug.h>
@@ -54,7 +54,7 @@ static void flite_early_buf_done_start(struct v4l2_subdev *subdev)
 
 static u32 g_print_cnt;
 
-void tasklet_flite_str_otf(unsigned long data)
+static void tasklet_flite_str_otf(unsigned long data)
 {
 	struct v4l2_subdev *subdev;
 	struct fimc_is_device_flite *flite;
@@ -169,7 +169,7 @@ trigger_skip:
 	v4l2_subdev_notify(subdev, FLITE_NOTIFY_FSTART, &fcount);
 }
 
-void tasklet_flite_str_m2m(unsigned long data)
+static void tasklet_flite_str_m2m(unsigned long data)
 {
 	struct v4l2_subdev *subdev;
 	struct fimc_is_device_flite *flite;
@@ -304,7 +304,7 @@ static inline void notify_fcount(struct fimc_is_device_flite *flite)
 #endif
 }
 
-irqreturn_t fimc_is_flite_isr(int irq, void *data)
+static irqreturn_t fimc_is_flite_isr(int irq, void *data)
 {
 	u32 status1;
 	u32 frame_start_end, frame_start_line;
@@ -847,7 +847,7 @@ p_err:
 }
 
 static int flite_s_format(struct v4l2_subdev *subdev,
-	struct v4l2_subdev_pad_config *cfg,
+	struct v4l2_subdev_state *cfg,
 	struct v4l2_subdev_format *fmt)
 {
 	int ret = 0;
@@ -973,9 +973,24 @@ p_err:
 	return ret;
 }
 
+/*
+ * 6.18 dropped the subdev g/s_ctrl, g/s_ext_ctrls and s/g_parm ops: the
+ * stock handlers are reached through core.ioctl with private codes
+ * (spec L6B 5.6.8; codes in include/fimc-is-compat.h).
+ */
+static long core_ops_fimc_is_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
+{
+	switch (cmd) {
+	case FIMC_IS_SUBDEV_S_CTRL:
+		return flite_s_ctrl(sd, arg);
+	}
+
+	return -ENOIOCTLCMD;
+}
+
 static const struct v4l2_subdev_core_ops core_ops = {
 	.init = flite_init,
-	.s_ctrl = flite_s_ctrl,
+	.ioctl = core_ops_fimc_is_ioctl,
 };
 
 static const struct v4l2_subdev_video_ops video_ops = {
@@ -1029,7 +1044,7 @@ int fimc_is_flite_probe(struct fimc_is_device_sensor *device,
 
 	flite->regs_start = mem_res->start;
 	flite->regs_end = mem_res->end;
-	flite->base_reg =  devm_ioremap_nocache(&pdev->dev, mem_res->start, resource_size(mem_res));
+	flite->base_reg =  devm_ioremap(&pdev->dev, mem_res->start, resource_size(mem_res));
 	if (!flite->base_reg) {
 		probe_err("Failed to remap io region(%p)", flite->base_reg);
 		ret = -ENOMEM;

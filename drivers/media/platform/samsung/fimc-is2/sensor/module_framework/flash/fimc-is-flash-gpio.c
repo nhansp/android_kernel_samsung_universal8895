@@ -90,7 +90,7 @@ p_err:
 	return ret;
 }
 
-int flash_gpio_s_ctrl(struct v4l2_subdev *subdev, struct v4l2_control *ctrl)
+static int flash_gpio_s_ctrl(struct v4l2_subdev *subdev, struct v4l2_control *ctrl)
 {
 	int ret = 0;
 	struct fimc_is_flash *flash = NULL;
@@ -137,16 +137,31 @@ p_err:
 	return ret;
 }
 
+/*
+ * 6.18 dropped the subdev g/s_ctrl, g/s_ext_ctrls and s/g_parm ops: the
+ * stock handlers are reached through core.ioctl with private codes
+ * (spec L6B 5.6.8; codes in include/fimc-is-compat.h).
+ */
+static long core_ops_fimc_is_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
+{
+	switch (cmd) {
+	case FIMC_IS_SUBDEV_S_CTRL:
+		return flash_gpio_s_ctrl(sd, arg);
+	}
+
+	return -ENOIOCTLCMD;
+}
+
 static const struct v4l2_subdev_core_ops core_ops = {
 	.init = flash_gpio_init,
-	.s_ctrl = flash_gpio_s_ctrl,
+	.ioctl = core_ops_fimc_is_ioctl,
 };
 
 static const struct v4l2_subdev_ops subdev_ops = {
 	.core = &core_ops,
 };
 
-int flash_gpio_probe(struct device *dev, struct i2c_client *client)
+static int flash_gpio_probe(struct device *dev, struct i2c_client *client)
 {
 	int ret = 0;
 	struct fimc_is_core *core;
@@ -228,7 +243,7 @@ p_err:
 	return ret;
 }
 
-int flash_gpio_platform_probe(struct platform_device *pdev)
+static int flash_gpio_platform_probe(struct platform_device *pdev)
 {
 	int ret = 0;
 	struct device *dev;
@@ -249,13 +264,10 @@ p_err:
 	return ret;
 }
 
-static int flash_gpio_platform_remove(struct platform_device *pdev)
+static void flash_gpio_platform_remove(struct platform_device *pdev)
 {
-        int ret = 0;
 
         info("%s\n", __func__);
-
-        return ret;
 }
 
 static const struct of_device_id exynos_fimc_is_sensor_flash_gpio_match[] = {

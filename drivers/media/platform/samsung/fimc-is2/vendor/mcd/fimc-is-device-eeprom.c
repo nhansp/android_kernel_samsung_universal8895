@@ -43,16 +43,16 @@
  * published by the Free Software Foundation.
  */
 
-int fimc_is_eeprom_parse_dt(struct i2c_client *client)
+static int fimc_is_eeprom_parse_dt(struct i2c_client *client)
 {
 	int ret = 0;
 
 	return ret;
 }
 
-int sensor_eeprom_probe(struct i2c_client *client,
-	const struct i2c_device_id *id)
+static int sensor_eeprom_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct fimc_is_core *core;
 	static bool probe_retried = false;
 	struct fimc_is_device_eeprom *device;
@@ -117,10 +117,8 @@ probe_defer:
 
 }
 
-static int sensor_eeprom_remove(struct i2c_client *client)
+static void sensor_eeprom_remove(struct i2c_client *client)
 {
-	int ret = 0;
-	return ret;
 }
 
 #ifdef CONFIG_OF

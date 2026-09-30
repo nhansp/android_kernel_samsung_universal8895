@@ -18,10 +18,10 @@ obj-$(CONFIG_OIS_USE_RUMBA_SA) += fimc-is-device-ois_sa.o
 
 obj-$(CONFIG_USE_DIRECT_IS_CONTROL) += preprocessor/
 
-EXTRA_CFLAGS += -Idrivers/media/platform/exynos/fimc-is2
-EXTRA_CFLAGS += -Idrivers/media/platform/exynos/fimc-is2/include
-EXTRA_CFLAGS += -Idrivers/media/platform/exynos/fimc-is2/sensor/module_framework
+EXTRA_CFLAGS += -I$(srctree)/drivers/media/platform/samsung/fimc-is2
+EXTRA_CFLAGS += -I$(srctree)/drivers/media/platform/samsung/fimc-is2/include
+EXTRA_CFLAGS += -I$(srctree)/drivers/media/platform/samsung/fimc-is2/sensor/module_framework
 
 ifeq ($(CONFIG_COMPANION_DIRECT_USE),y)
-EXTRA_CFLAGS += -Idrivers/media/platform/exynos/fimc-is2/vendor/mcd/preprocessor
+EXTRA_CFLAGS += -I$(srctree)/drivers/media/platform/samsung/fimc-is2/vendor/mcd/preprocessor
 endif

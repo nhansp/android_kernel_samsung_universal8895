@@ -64,8 +64,7 @@ int fimc_is_i2c_s_pin(struct i2c_client *client, int state)
 	return ret;
 }
 
-static int fimc_is_i2c0_probe(struct i2c_client *client,
-				  const struct i2c_device_id *id)
+static int fimc_is_i2c0_probe(struct i2c_client *client)
 {
 	struct fimc_is_core *core;
 
@@ -86,9 +85,8 @@ static int fimc_is_i2c0_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int fimc_is_i2c0_remove(struct i2c_client *client)
+static void fimc_is_i2c0_remove(struct i2c_client *client)
 {
-	return 0;
 }
 
 #ifdef CONFIG_OF

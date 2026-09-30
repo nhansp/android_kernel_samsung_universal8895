@@ -18,8 +18,8 @@
 #include <linux/device.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
-#include <video/videonode.h>
-#include <media/exynos_mc.h>
+#include <media/exynos8895-compat.h>
+/* stock <media/exynos_mc.h> (4.4 Exynos media-device header): nothing of it is used */
 #include <asm/cacheflush.h>
 #include <asm/pgtable.h>
 #include <linux/firmware.h>
@@ -44,7 +44,7 @@ int frame_fcount(struct fimc_is_frame *frame, void *data)
 }
 
 int put_frame(struct fimc_is_framemgr *this, struct fimc_is_frame *frame,
-			enum fimc_is_frame_state state)
+			u32 state)
 {
 	if (state == FS_INVALID)
 		return -EINVAL;
@@ -67,7 +67,7 @@ int put_frame(struct fimc_is_framemgr *this, struct fimc_is_frame *frame,
 }
 
 struct fimc_is_frame *get_frame(struct fimc_is_framemgr *this,
-			enum fimc_is_frame_state state)
+			u32 state)
 {
 	struct fimc_is_frame *frame;
 
@@ -88,7 +88,7 @@ struct fimc_is_frame *get_frame(struct fimc_is_framemgr *this,
 }
 
 int trans_frame(struct fimc_is_framemgr *this, struct fimc_is_frame *frame,
-			enum fimc_is_frame_state state)
+			u32 state)
 {
 	if (!frame) {
 		err("invalid frame");
@@ -114,7 +114,7 @@ int trans_frame(struct fimc_is_framemgr *this, struct fimc_is_frame *frame,
 }
 
 struct fimc_is_frame *peek_frame(struct fimc_is_framemgr *this,
-			enum fimc_is_frame_state state)
+			u32 state)
 {
 	if (state == FS_INVALID)
 		return NULL;
@@ -127,7 +127,7 @@ struct fimc_is_frame *peek_frame(struct fimc_is_framemgr *this,
 }
 
 struct fimc_is_frame *peek_frame_tail(struct fimc_is_framemgr *this,
-			enum fimc_is_frame_state state)
+			u32 state)
 {
 	if (state == FS_INVALID)
 		return NULL;
@@ -140,7 +140,7 @@ struct fimc_is_frame *peek_frame_tail(struct fimc_is_framemgr *this,
 }
 
 struct fimc_is_frame *find_frame(struct fimc_is_framemgr *this,
-		enum fimc_is_frame_state state,
+		u32 state,
 		int (*fn)(struct fimc_is_frame *, void *), void *data)
 {
 	struct fimc_is_frame *frame;
@@ -163,7 +163,7 @@ struct fimc_is_frame *find_frame(struct fimc_is_framemgr *this,
 }
 
 void print_frame_queue(struct fimc_is_framemgr *this,
-			enum fimc_is_frame_state state)
+			u32 state)
 {
 	struct fimc_is_frame *frame, *temp;
 
@@ -180,8 +180,8 @@ void print_frame_queue(struct fimc_is_framemgr *this,
 }
 
 #ifndef ENABLE_IS_CORE
-void print_frame_info_queue(struct fimc_is_framemgr *this,
-			enum fimc_is_frame_state state)
+static void print_frame_info_queue(struct fimc_is_framemgr *this,
+			u32 state)
 {
 	unsigned long long when[MAX_FRAME_INFO];
 	unsigned long usec[MAX_FRAME_INFO];

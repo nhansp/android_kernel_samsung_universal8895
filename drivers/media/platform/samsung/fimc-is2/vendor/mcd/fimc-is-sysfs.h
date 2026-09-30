@@ -99,4 +99,7 @@ struct fimc_is_cam_info {
 int fimc_is_get_cam_info(struct fimc_is_cam_info **caminfo);
 
 #endif
+struct fimc_is_core;
+int fimc_is_create_sysfs(struct fimc_is_core *core);
+
 #endif /* _FIMC_IS_SYSFS_H_ */

@@ -505,7 +505,7 @@ bool fimc_is_ois_version_compare_default(char *fw_ver1, char *fw_ver2)
 	return true;
 }
 
-u8 fimc_is_ois_read_status(struct fimc_is_core *core)
+static u8 fimc_is_ois_read_status(struct fimc_is_core *core)
 {
 	u8 status = 0;
 	struct fimc_is_device_ois *ois_device = NULL;
@@ -516,7 +516,7 @@ u8 fimc_is_ois_read_status(struct fimc_is_core *core)
 	return status;
 }
 
-u8 fimc_is_ois_read_cal_checksum(struct fimc_is_core *core)
+static u8 fimc_is_ois_read_cal_checksum(struct fimc_is_core *core)
 {
 	u8 status = 0;
 	struct fimc_is_device_ois *ois_device = NULL;

@@ -268,6 +268,12 @@ struct fimc_is_queue {
 };
 
 struct fimc_is_video_ctx {
+	/*
+	 * 6.18 treats file->private_data as a struct v4l2_fh (spec L6B B-V1,
+	 * A:include/media/v4l2-fh.h); it is the first member, so the stock
+	 * "vctx = file->private_data" reads stay valid.
+	 */
+	struct v4l2_fh			fh;
 	struct fimc_is_queue		queue;
 	struct mutex			lock;
 	u32				instance;
@@ -302,6 +308,23 @@ struct fimc_is_video {
 	bool				try_smp;
 };
 
+/*
+ * 6.18 dropped the vidioc_g/s_ctrl and crop ops (spec L6B B-V3). The stock
+ * handlers stay reachable through fimc_is_video_ioctl2(), which serves
+ * VIDIOC_G_CTRL/S_CTRL/CROPCAP/G_CROP/S_CROP with them exactly as the 4.4
+ * video_ioctl2() did and passes every other ioctl to video_ioctl2().
+ */
+struct fimc_is_video_ioctl_ops {
+	struct v4l2_ioctl_ops ops;
+	int (*vidioc_g_ctrl)(struct file *file, void *fh, struct v4l2_control *a);
+	int (*vidioc_s_ctrl)(struct file *file, void *fh, struct v4l2_control *a);
+	int (*vidioc_cropcap)(struct file *file, void *fh, struct v4l2_cropcap *a);
+	int (*vidioc_g_crop)(struct file *file, void *fh, struct v4l2_crop *a);
+	int (*vidioc_s_crop)(struct file *file, void *fh, const struct v4l2_crop *a);
+};
+
+long fimc_is_video_ioctl2(struct file *file, unsigned int cmd, unsigned long arg);
+
 /* video context operation */
 int open_vctx(struct file *file,
 	struct fimc_is_video *video,
@@ -317,7 +340,7 @@ int fimc_is_queue_setup(struct fimc_is_queue *queue,
 	void *alloc_ctx,
 	unsigned int *num_planes,
 	unsigned int sizes[],
-	void *allocators[]);
+	struct device *allocators[]);
 int fimc_is_queue_buffer_queue(struct fimc_is_queue *queue,
 	struct vb2_buffer *vb);
 int fimc_is_buffer_init(struct vb2_buffer *vb);

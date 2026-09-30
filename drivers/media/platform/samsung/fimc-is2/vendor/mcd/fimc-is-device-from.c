@@ -19,6 +19,7 @@
 
 #include "fimc-is-core.h"
 #include "fimc-is-regs.h"
+#include "fimc-is-device-from.h"
 
 int fimc_is_spi_write(struct fimc_is_spi *spi, u32 addr, u8 *data, size_t size)
 {

@@ -18,8 +18,8 @@
 #include <linux/device.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
-#include <video/videonode.h>
-#include <media/exynos_mc.h>
+#include <media/exynos8895-compat.h>
+/* stock <media/exynos_mc.h> (4.4 Exynos media-device header): nothing of it is used */
 #include <asm/cacheflush.h>
 #include <asm/pgtable.h>
 #include <linux/firmware.h>
@@ -474,7 +474,7 @@ p_err:
 	return ret;
 }
 
-int fimc_is_sensor_iclk_off(struct fimc_is_device_sensor *device)
+static int fimc_is_sensor_iclk_off(struct fimc_is_device_sensor *device)
 {
 	int ret = 0;
 	struct exynos_platform_fimc_is_sensor *pdata;
@@ -778,6 +778,14 @@ static void fimc_is_sensor_dtp(unsigned long data)
 	set_bit(FIMC_IS_SENSOR_BACK_NOWAIT_STOP, &device->state);
 
 }
+
+/* timer_setup() callback for the stock unsigned-long handler above (spec L6B 5.6.8) */
+static void fimc_is_sensor_dtp_timer(struct timer_list *t)
+{
+	struct fimc_is_device_sensor *device = timer_container_of(device, t, dtp_timer);
+
+	fimc_is_sensor_dtp((unsigned long)device);
+}
 #endif
 
 static int fimc_is_sensor_start(struct fimc_is_device_sensor *device)
@@ -1052,7 +1060,7 @@ static int fimc_is_sensor_notify_by_fstr(struct fimc_is_device_sensor *device, v
 
 			if (test_bit(FIMC_IS_SUBDEV_INTERNAL_USE, &dma_subdev->state)) {
 				ctrl.id = V4L2_CID_IS_G_VC1_FRAMEPTR + (i - 1);
-				ret = v4l2_subdev_call(device->subdev_csi, core, g_ctrl, &ctrl);
+				ret = v4l2_subdev_call(device->subdev_csi, core, ioctl, FIMC_IS_SUBDEV_G_CTRL, &ctrl);
 				if (ret) {
 					err("csi_g_ctrl fail");
 					return -EINVAL;
@@ -1304,7 +1312,7 @@ static void fimc_is_sensor_instanton(struct work_struct *data)
 
 #ifdef ENABLE_DTP
 	if (device->dtp_check) {
-		setup_timer(&device->dtp_timer, fimc_is_sensor_dtp, (unsigned long)device);
+		timer_setup(&device->dtp_timer, fimc_is_sensor_dtp_timer, 0);
 		mod_timer(&device->dtp_timer, jiffies +  msecs_to_jiffies(300));
 		info("DTP checking...\n");
 	}
@@ -1443,7 +1451,8 @@ static int fimc_is_sensor_probe(struct platform_device *pdev)
 	device->dtp_check = false;
 #endif
 
-	ret = fimc_is_mem_init(&device->mem, device->pdev);
+	/* stock device->pdev: mappings go through fimc_is, the one SysMMU master (spec L6B 5.6.5) */
+	ret = fimc_is_mem_init(&device->mem, core->pdev);
 	if (ret) {
 		merr("fimc_is_mem_probe is fail(%d)", device, ret);
 		goto p_err;
@@ -1536,6 +1545,19 @@ static int fimc_is_sensor_probe(struct platform_device *pdev)
 	if (test_bit(SUBDEV_SSVC3_INTERNAL_USE, &device->pdata->internal_state))
 		set_bit(FIMC_IS_SUBDEV_INTERNAL_USE, &device->ssvc3.state);
 
+	/*
+	 * fimc_is is the only master of the camera SysMMUs; DMA goes through its
+	 * mappings, and resuming this device must resume fimc_is (and through
+	 * exynos-iommu's own links the SysMMUs): spec L6B 4.5, 5.6.5. Stock
+	 * DL_FLAG_RPM_ACTIVE is not used: the sensor is runtime-suspended here,
+	 * so it would hold fimc_is active until the first open/close.
+	 */
+	if (!device_link_add(&pdev->dev, &core->pdev->dev,
+			     DL_FLAG_PM_RUNTIME | DL_FLAG_AUTOREMOVE_CONSUMER)) {
+		ret = -EINVAL;
+		goto p_err;
+	}
+
 	set_bit(FIMC_IS_SENSOR_PROBE, &device->state);
 
 p_err:
@@ -1543,13 +1565,10 @@ p_err:
 	return ret;
 }
 
-static int fimc_is_sensor_remove(struct platform_device *pdev)
+static void fimc_is_sensor_remove(struct platform_device *pdev)
 {
-	int ret = 0;
 
 	info("%s\n", __func__);
-
-	return ret;
 }
 
 int fimc_is_sensor_open(struct fimc_is_device_sensor *device,
@@ -2330,14 +2349,14 @@ int fimc_is_sensor_s_framerate(struct fimc_is_device_sensor *device,
 		goto p_err;
 	}
 
-	ret = v4l2_subdev_call(subdev_csi, video, s_parm, param);
+	ret = v4l2_subdev_call(subdev_csi, core, ioctl, FIMC_IS_SUBDEV_S_PARM, param);
 	if (ret) {
 		merr("v4l2_csi_call(s_param) is fail(%d)", device, ret);
 		goto p_err;
 	}
 
 	if (test_bit(FIMC_IS_SENSOR_DRIVING, &device->state)) {
-		ret = v4l2_subdev_call(subdev_module, video, s_parm, param);
+		ret = v4l2_subdev_call(subdev_module, core, ioctl, FIMC_IS_SUBDEV_S_PARM, param);
 		if (ret) {
 			merr("v4l2_module_call(s_param) is fail(%d)", device, ret);
 			goto p_err;
@@ -2367,7 +2386,7 @@ int fimc_is_sensor_s_ctrl(struct fimc_is_device_sensor *device,
 
 	subdev_module = device->subdev_module;
 
-	ret = v4l2_subdev_call(subdev_module, core, s_ctrl, ctrl);
+	ret = v4l2_subdev_call(subdev_module, core, ioctl, FIMC_IS_SUBDEV_S_CTRL, ctrl);
 	if (ret) {
 		err("s_ctrl is fail(%d)", ret);
 		goto p_err;
@@ -2604,7 +2623,7 @@ int fimc_is_sensor_g_ctrl(struct fimc_is_device_sensor *device,
 
 	subdev_module = device->subdev_module;
 
-	ret = v4l2_subdev_call(subdev_module, core, g_ctrl, ctrl);
+	ret = v4l2_subdev_call(subdev_module, core, ioctl, FIMC_IS_SUBDEV_G_CTRL, ctrl);
 	if (ret) {
 		err("g_ctrl is fail(%d)", ret);
 		goto p_err;
@@ -3036,7 +3055,7 @@ p_err:
 	return ret;
 }
 
-int fimc_is_sensor_standby_flush(struct fimc_is_device_sensor *device)
+static int fimc_is_sensor_standby_flush(struct fimc_is_device_sensor *device)
 {
 	struct fimc_is_group *group, *child;
 	int ret = 0;
@@ -3680,7 +3699,7 @@ static const struct dev_pm_ops fimc_is_sensor_pm_ops = {
 #ifdef CONFIG_OF
 static const struct of_device_id exynos_fimc_is_sensor_match[] = {
 	{
-		.compatible = "samsung,exynos5-fimc-is-sensor",
+		.compatible = "samsung,exynos8895-fimc-is-sensor",	/* stock "samsung,exynos5-fimc-is-sensor" (FDT:9179) */
 	},
 	{},
 };
@@ -3709,7 +3728,7 @@ MODULE_DEVICE_TABLE(platform, fimc_is_sensor_driver_ids);
 
 static struct platform_driver fimc_is_sensor_driver = {
 	.probe		= fimc_is_sensor_probe,
-	.remove		= __devexit_p(fimc_is_sensor_remove),
+	.remove		= fimc_is_sensor_remove,
 	.id_table	= fimc_is_sensor_driver_ids,
 	.driver	  = {
 		.name	= FIMC_IS_SENSOR_DEV_NAME,

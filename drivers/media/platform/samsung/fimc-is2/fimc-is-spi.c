@@ -218,9 +218,8 @@ p_err:
 	return ret;
 }
 
-static int fimc_is_spi_remove(struct spi_device *spi)
+static void fimc_is_spi_remove(struct spi_device *spi)
 {
-	return 0;
 }
 
 static const struct of_device_id exynos_fimc_is_spi_match[] = {

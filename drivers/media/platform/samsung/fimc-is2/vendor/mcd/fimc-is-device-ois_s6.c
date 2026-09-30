@@ -77,7 +77,7 @@ extern struct fimc_is_ois_info ois_uinfo;
 extern struct fimc_is_ois_exif ois_exif_data;
 #define OIS_SHIFT_ENABLE
 
-void fimc_is_ois_enable_s6(struct fimc_is_core *core)
+static void fimc_is_ois_enable_s6(struct fimc_is_core *core)
 {
 	int ret = 0;
 	struct fimc_is_vender_specific *specific = core->vender.private_data;
@@ -103,7 +103,7 @@ void fimc_is_ois_enable_s6(struct fimc_is_core *core)
 	info("%s : X\n", __FUNCTION__);
 }
 
-void fimc_is_ois_version_s6(struct fimc_is_core *core)
+static void fimc_is_ois_version_s6(struct fimc_is_core *core)
 {
 	int ret = 0;
 	u8 val_c = 0, val_d = 0;
@@ -540,7 +540,7 @@ bool fimc_is_ois_diff_test_s6(struct fimc_is_core *core, int *x_diff, int *y_dif
 	}
 }
 
-bool fimc_is_ois_sine_wavecheck_s6(struct fimc_is_core *core,
+static bool fimc_is_ois_sine_wavecheck_s6(struct fimc_is_core *core,
 		              int threshold, int *sinx, int *siny, int *result)
 {
 	u8 buf = 0, val = 0;
@@ -685,7 +685,7 @@ bool fimc_is_ois_auto_test_s6(struct fimc_is_core *core,
 }
 
 #ifdef CAMERA_REAR2_OIS
-bool fimc_is_ois_sine_wavecheck_rear2_s6(struct fimc_is_core *core,
+static bool fimc_is_ois_sine_wavecheck_rear2_s6(struct fimc_is_core *core,
 		              int threshold, int *sinx, int *siny, int *result,
 		              int *sinx_2nd, int *siny_2nd)
 {
@@ -1031,7 +1031,7 @@ u8 fimc_is_ois_read_cal_checksum_s6(struct fimc_is_core *core)
 	return status;
 }
 
-int fimc_is_ois_read_manual_cal_s6(struct fimc_is_core *core)
+static int fimc_is_ois_read_manual_cal_s6(struct fimc_is_core *core)
 {
 	int ret = 0;
 	u8 version[20] = {0, };
@@ -1528,7 +1528,7 @@ bool fimc_is_ois_check_fw_s6(struct fimc_is_core *core)
 	return true;
 }
 
-int fimc_is_ois_read_fw_ver_s6(char *name, char *ver)
+static int fimc_is_ois_read_fw_ver_s6(char *name, char *ver)
 {
 	int ret = 0;
 	ulong size = 0;
@@ -2126,7 +2126,7 @@ int fimc_is_set_ois_mode_s6(struct v4l2_subdev *subdev, int mode)
 	return ret;
 }
 
-void fimc_is_status_check_s6(struct i2c_client *client)
+static void fimc_is_status_check_s6(struct i2c_client *client)
 {
 	u8 ois_status_check = 0;
 	int retry_count = 0;
@@ -2146,7 +2146,7 @@ void fimc_is_status_check_s6(struct i2c_client *client)
 		err("%s, ois Memory access fail\n", __func__);
 }
 
-signed long long hex2float_kernel(unsigned int hex_data, int endian)
+static signed long long hex2float_kernel(unsigned int hex_data, int endian)
 {
 	const signed long long scale = SCALE;
 	unsigned int s,e,m;
@@ -2791,8 +2791,7 @@ static struct fimc_is_ois_ops ois_ops_s6 = {
 	.ois_read_fw_ver = fimc_is_ois_read_fw_ver_s6,
 };
 
-int ois_rumbaS6_probe(struct i2c_client *client,
-		const struct i2c_device_id *id)
+static int ois_rumbaS6_probe(struct i2c_client *client)
 {
 	int ret = 0;
 	struct fimc_is_core *core;
@@ -2907,10 +2906,8 @@ p_err:
 	return ret;
 }
 
-static int ois_rumbaS6_remove(struct i2c_client *client)
+static void ois_rumbaS6_remove(struct i2c_client *client)
 {
-	int ret = 0;
-	return ret;
 }
 
 static const struct of_device_id exynos_fimc_is_ois_rumbaS6_match[] = {

@@ -51,8 +51,9 @@
 #define SENSOR_TIMEOUT_COUNT	2
 #define TRY_RECV_AWARE_COUNT	10000
 
-#define LOWBIT_OF(num)	(num >= 32 ? 0 : (u32)1<<num)
-#define HIGHBIT_OF(num)	(num >= 32 ? (u32)1<<(num-32) : 0)
+/* shift counts masked to 0..31: same value, no clang shift-count diagnostic on the untaken branch */
+#define LOWBIT_OF(num)	(num >= 32 ? 0 : (u32)1<<((num) & 31))
+#define HIGHBIT_OF(num)	(num >= 32 ? (u32)1<<(((num)-32) & 31) : 0)
 
 enum fimc_is_interface_state {
 	IS_IF_STATE_OPEN,

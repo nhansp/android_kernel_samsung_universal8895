@@ -122,7 +122,7 @@ static void fimc_is_lib_vra_callback_frame_error(u32 instance,
 	}
 }
 
-void fimc_is_lib_vra_task_trigger(struct fimc_is_lib_vra *lib_vra,
+static void fimc_is_lib_vra_task_trigger(struct fimc_is_lib_vra *lib_vra,
 	void *func)
 {
 	u32 work_index = 0;
@@ -147,7 +147,7 @@ void fimc_is_lib_vra_task_trigger(struct fimc_is_lib_vra *lib_vra,
 	queue_kthread_work(&task_vra->worker, &task_vra->work[work_index].work);
 }
 
-int fimc_is_lib_vra_invoke_contol_event(struct fimc_is_lib_vra *lib_vra)
+static __maybe_unused int __nocfi fimc_is_lib_vra_invoke_contol_event(struct fimc_is_lib_vra *lib_vra)
 {
 	enum api_vra_type status = VRA_NO_ERROR;
 
@@ -183,7 +183,7 @@ int fimc_is_lib_vra_invoke_contol_event(struct fimc_is_lib_vra *lib_vra)
 	return 0;
 }
 
-int fimc_is_lib_vra_invoke_fwalgs_event(struct fimc_is_lib_vra *lib_vra)
+static int __nocfi fimc_is_lib_vra_invoke_fwalgs_event(struct fimc_is_lib_vra *lib_vra)
 {
 	enum api_vra_type status = VRA_NO_ERROR;
 
@@ -219,7 +219,7 @@ int fimc_is_lib_vra_invoke_fwalgs_event(struct fimc_is_lib_vra *lib_vra)
 	return 0;
 }
 
-void fimc_is_lib_vra_task_work(struct kthread_work *work)
+static void __nocfi fimc_is_lib_vra_task_work(struct kthread_work *work)
 {
 	struct fimc_is_task_work *cur_work;
 	struct fimc_is_lib_vra *lib_vra;
@@ -247,7 +247,7 @@ int fimc_is_lib_vra_init_task(struct fimc_is_lib_vra *lib_vra)
 	spin_lock_init(&lib_vra->task_vra.work_lock);
 	init_kthread_worker(&lib_vra->task_vra.worker);
 
-	lib_vra->task_vra.task = kthread_run(kthread_worker_fn,
+	lib_vra->task_vra.task = kthread_run(fimc_is_neon_kthread_fn,
 		&lib_vra->task_vra.worker, "fimc_is_lib_vra");
 	if (IS_ERR(lib_vra->task_vra.task)) {
 		err_lib("failed to create thread for VRA, err(%ld)",
@@ -255,7 +255,7 @@ int fimc_is_lib_vra_init_task(struct fimc_is_lib_vra *lib_vra)
 		return PTR_ERR(lib_vra->task_vra.task);
 	}
 #ifdef ENABLE_FPSIMD_FOR_USER
-	fpsimd_set_task_using(lib_vra->task_vra.task);
+	/* stock fpsimd_set_task_using(): the task runs fimc_is_neon_kthread_fn (spec L6B 5.4) */
 #endif
 	param.sched_priority = TASK_VRA_PRIORITY;
 	ret = sched_setscheduler_nocheck(lib_vra->task_vra.task,
@@ -281,14 +281,14 @@ int fimc_is_lib_vra_init_task(struct fimc_is_lib_vra *lib_vra)
 	return 0;
 }
 
-void fimc_is_lib_vra_set_event_control(u32 event_type)
+static void fimc_is_lib_vra_set_event_control(u32 event_type)
 {
 	warn_lib("Invalid event_type (%d)", event_type);
 
 	return;
 }
 
-void fimc_is_lib_vra_set_event_fw_algs(u32 event_type)
+static void fimc_is_lib_vra_set_event_fw_algs(u32 event_type)
 {
 	struct fimc_is_lib_vra *lib_vra = g_lib_vra;
 
@@ -311,7 +311,7 @@ void fimc_is_lib_vra_set_event_fw_algs(u32 event_type)
 	return;
 }
 
-int fimc_is_lib_vra_alloc_memory(struct fimc_is_lib_vra *lib_vra, ulong dma_addr)
+int __nocfi fimc_is_lib_vra_alloc_memory(struct fimc_is_lib_vra *lib_vra, ulong dma_addr)
 {
 	int index;
 	u32 size;
@@ -421,7 +421,7 @@ int fimc_is_lib_vra_free_memory(struct fimc_is_lib_vra *lib_vra)
 	return 0;
 }
 
-int fimc_is_lib_vra_init_frame_work(struct fimc_is_lib_vra *lib_vra,
+static int __nocfi fimc_is_lib_vra_init_frame_work(struct fimc_is_lib_vra *lib_vra,
 	void __iomem *base_addr, enum fimc_is_lib_vra_input_type input_type)
 {
 	int ret;
@@ -515,7 +515,7 @@ free:
 	return ret;
 }
 
-int fimc_is_lib_vra_init_frame_desc(struct fimc_is_lib_vra *lib_vra, u32 instance)
+static int __nocfi fimc_is_lib_vra_init_frame_desc(struct fimc_is_lib_vra *lib_vra, u32 instance)
 {
 	enum api_vra_type status;
 	int ret = 0;
@@ -617,7 +617,7 @@ int fimc_is_lib_vra_frame_desc_init(struct fimc_is_lib_vra *lib_vra,
 	return 0;
 }
 
-int fimc_is_lib_vra_set_orientation(struct fimc_is_lib_vra *lib_vra,
+int __nocfi fimc_is_lib_vra_set_orientation(struct fimc_is_lib_vra *lib_vra,
 	u32 scaler_orientation, u32 instance)
 {
 	enum api_vra_type status = VRA_NO_ERROR;
@@ -690,7 +690,7 @@ int fimc_is_lib_vra_set_orientation(struct fimc_is_lib_vra *lib_vra,
 	return 0;
 }
 
-int fimc_is_lib_vra_new_frame(struct fimc_is_lib_vra *lib_vra,
+int __nocfi fimc_is_lib_vra_new_frame(struct fimc_is_lib_vra *lib_vra,
 	unsigned char *buffer_kva, unsigned char *buffer_dva, u32 instance)
 {
 	enum api_vra_type status = VRA_NO_ERROR;
@@ -726,7 +726,7 @@ int fimc_is_lib_vra_new_frame(struct fimc_is_lib_vra *lib_vra,
 	return 0;
 }
 
-int fimc_is_lib_vra_handle_interrupt(struct fimc_is_lib_vra *lib_vra, u32 id)
+int __nocfi fimc_is_lib_vra_handle_interrupt(struct fimc_is_lib_vra *lib_vra, u32 id)
 {
 	enum api_vra_type result;
 
@@ -787,7 +787,7 @@ int fimc_is_lib_vra_stop_instance(struct fimc_is_lib_vra *lib_vra, u32 instance)
 	return 0;
 }
 
-int fimc_is_lib_vra_stop(struct fimc_is_lib_vra *lib_vra)
+int __nocfi fimc_is_lib_vra_stop(struct fimc_is_lib_vra *lib_vra)
 {
 	int ret;
 	enum api_vra_type result;
@@ -817,7 +817,7 @@ int fimc_is_lib_vra_stop(struct fimc_is_lib_vra *lib_vra)
 	return 0;
 }
 
-int fimc_is_lib_vra_frame_work_final(struct fimc_is_lib_vra *lib_vra)
+int __nocfi fimc_is_lib_vra_frame_work_final(struct fimc_is_lib_vra *lib_vra)
 {
 	enum api_vra_type result;
 	int ret;
@@ -860,7 +860,7 @@ int fimc_is_lib_vra_frame_work_final(struct fimc_is_lib_vra *lib_vra)
 	return 0;
 }
 
-int fimc_is_lib_vra_update_dm(struct fimc_is_lib_vra *lib_vra, u32 instance,
+static int fimc_is_lib_vra_update_dm(struct fimc_is_lib_vra *lib_vra, u32 instance,
 	enum facedetect_mode *faceDetectMode, struct camera2_stats_dm *dm)
 {
 	int face_num;
@@ -945,7 +945,7 @@ int fimc_is_lib_vra_update_dm(struct fimc_is_lib_vra *lib_vra, u32 instance,
 	return 0;
 }
 
-int fimc_is_lib_vra_update_sm(struct fimc_is_lib_vra *lib_vra)
+static __maybe_unused int fimc_is_lib_vra_update_sm(struct fimc_is_lib_vra *lib_vra)
 {
 	/* ToDo */
 	return 0;
@@ -1031,12 +1031,12 @@ buf_free:
 }
 #endif
 
-void fimc_is_lib_vra_assert(void)
+static void fimc_is_lib_vra_assert(void)
 {
 	BUG_ON(1);
 }
 
-void fimc_is_lib_vra_os_funcs(void)
+void __nocfi fimc_is_lib_vra_os_funcs(void)
 {
 	struct fimc_is_lib_vra_os_system_funcs funcs;
 
@@ -1069,7 +1069,7 @@ void fimc_is_lib_vra_os_funcs(void)
 #endif
 }
 
-void fimc_is_lib_vra_check_size(struct api_vra_input_desc *frame_desc, struct vra_param *param, u32 fcount)
+static __maybe_unused void fimc_is_lib_vra_check_size(struct api_vra_input_desc *frame_desc, struct vra_param *param, u32 fcount)
 {
 	if ((frame_desc->sizes.width != param->otf_input.width)
 		||(frame_desc->sizes.height != param->otf_input.height)) {
@@ -1082,7 +1082,7 @@ void fimc_is_lib_vra_check_size(struct api_vra_input_desc *frame_desc, struct vr
 	return;
 }
 
-int fimc_is_lib_vra_test_input(struct fimc_is_lib_vra *lib_vra, u32 instance)
+int __nocfi fimc_is_lib_vra_test_input(struct fimc_is_lib_vra *lib_vra, u32 instance)
 {
 	enum api_vra_type status;
 	struct api_vra_input_desc *frame_desc;
@@ -1132,7 +1132,7 @@ int fimc_is_lib_vra_test_input(struct fimc_is_lib_vra *lib_vra, u32 instance)
 	return 0;
 }
 
-int fimc_is_lib_vra_otf_input(struct fimc_is_lib_vra *lib_vra,
+int __nocfi fimc_is_lib_vra_otf_input(struct fimc_is_lib_vra *lib_vra,
 	struct vra_param *param, u32 instance, u32 fcount)
 {
 	enum api_vra_type status;
@@ -1186,7 +1186,7 @@ int fimc_is_lib_vra_otf_input(struct fimc_is_lib_vra *lib_vra,
 	return 0;
 }
 
-int fimc_is_lib_vra_dma_input(struct fimc_is_lib_vra *lib_vra,
+int __nocfi fimc_is_lib_vra_dma_input(struct fimc_is_lib_vra *lib_vra,
 	struct vra_param *param, u32 instance, u32 fcount)
 {
 	enum api_vra_type status;
@@ -1252,7 +1252,7 @@ int fimc_is_lib_vra_dma_input(struct fimc_is_lib_vra *lib_vra,
 	return 0;
 }
 
-int fimc_is_lib_vra_apply_tune(struct fimc_is_lib_vra *lib_vra,
+int __nocfi fimc_is_lib_vra_apply_tune(struct fimc_is_lib_vra *lib_vra,
 	struct fimc_is_lib_vra_tune_data *vra_tune, u32 instance)
 {
 	struct fimc_is_lib_vra_tune_data tune;

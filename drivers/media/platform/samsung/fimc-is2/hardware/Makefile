@@ -14,9 +14,9 @@ obj-$(CONFIG_SRDZ_V1_0) += fimc-is-hw-srdz.o
 obj-$(CONFIG_USE_DIRECT_IS_CONTROL) += api/
 obj-$(CONFIG_EXYNOS_FIMC_IS_HARDWARE) += api/
 
-EXTRA_CFLAGS += -Idrivers/media/platform/exynos/fimc-is2/
-EXTRA_CFLAGS += -Idrivers/media/platform/exynos/fimc-is2/include
-EXTRA_CFLAGS += -Idrivers/media/platform/exynos/fimc-is2/interface
-EXTRA_CFLAGS += -Idrivers/media/platform/exynos/fimc-is2/hardware
-EXTRA_CFLAGS += -Idrivers/media/platform/exynos/fimc-is2/hardware/api
-EXTRA_CFLAGS += -Idrivers/media/platform/exynos/fimc-is2/vendor
+EXTRA_CFLAGS += -I$(srctree)/drivers/media/platform/samsung/fimc-is2/
+EXTRA_CFLAGS += -I$(srctree)/drivers/media/platform/samsung/fimc-is2/include
+EXTRA_CFLAGS += -I$(srctree)/drivers/media/platform/samsung/fimc-is2/interface
+EXTRA_CFLAGS += -I$(srctree)/drivers/media/platform/samsung/fimc-is2/hardware
+EXTRA_CFLAGS += -I$(srctree)/drivers/media/platform/samsung/fimc-is2/hardware/api
+EXTRA_CFLAGS += -I$(srctree)/drivers/media/platform/samsung/fimc-is2/vendor

@@ -38,7 +38,7 @@ u32 fimc_is_sensor_convert_ns_to_us(u64 nsec)
 }
 
 
-u32 fimc_is_sensor_ctl_get_csi_vsync_cnt(struct fimc_is_device_sensor *device)
+static u32 fimc_is_sensor_ctl_get_csi_vsync_cnt(struct fimc_is_device_sensor *device)
 {
 	struct fimc_is_device_csi *csi = NULL;
 
@@ -54,7 +54,7 @@ u32 fimc_is_sensor_ctl_get_csi_vsync_cnt(struct fimc_is_device_sensor *device)
 }
 
 #ifdef CONFIG_COMPANION_USE
-void fimc_is_sensor_ctl_update_preproc_ae_gains(struct fimc_is_device_sensor_peri *sensor_peri)
+static void fimc_is_sensor_ctl_update_preproc_ae_gains(struct fimc_is_device_sensor_peri *sensor_peri)
 {
         cis_shared_data *cis_data = NULL;
         camera2_sensor_uctl_t *cur_sensor_uctrl = NULL;
@@ -93,7 +93,7 @@ void fimc_is_sensor_ctl_update_preproc_ae_gains(struct fimc_is_device_sensor_per
 }
 #endif
 
-void fimc_is_sensor_ctl_update_cis_data(cis_shared_data *cis_data, camera2_sensor_uctl_t *sensor_uctrl)
+static void fimc_is_sensor_ctl_update_cis_data(cis_shared_data *cis_data, camera2_sensor_uctl_t *sensor_uctrl)
 {
 	BUG_ON(!sensor_uctrl);
 	BUG_ON(!cis_data);
@@ -114,7 +114,7 @@ void fimc_is_sensor_ctl_update_cis_data(cis_shared_data *cis_data, camera2_senso
 
 }
 
-void fimc_is_sensor_ctl_get_ae_index(struct fimc_is_device_sensor *device,
+static void fimc_is_sensor_ctl_get_ae_index(struct fimc_is_device_sensor *device,
 					u32 *expo_index,
 					u32 *again_index,
 					u32 *dgain_index)
@@ -155,7 +155,7 @@ void fimc_is_sensor_ctl_get_ae_index(struct fimc_is_device_sensor *device,
 	}
 }
 
-void fimc_is_sensor_ctl_adjust_ae_setting(struct fimc_is_device_sensor *device,
+static void fimc_is_sensor_ctl_adjust_ae_setting(struct fimc_is_device_sensor *device,
 					ae_setting *setting, cis_shared_data *cis_data)
 {
 	u32 exposure_index = 0;
@@ -182,7 +182,7 @@ void fimc_is_sensor_ctl_adjust_ae_setting(struct fimc_is_device_sensor *device,
 	}
 }
 
-void fimc_is_sensor_ctl_compensate_expo_gain(struct fimc_is_device_sensor *device,
+static void fimc_is_sensor_ctl_compensate_expo_gain(struct fimc_is_device_sensor *device,
 						struct gain_setting  *adj_gain_setting,
 						ae_setting *setting,
 						cis_shared_data *cis_data)
@@ -214,7 +214,7 @@ void fimc_is_sensor_ctl_compensate_expo_gain(struct fimc_is_device_sensor *devic
 
 }
 
-int fimc_is_sensor_ctl_set_frame_rate(struct fimc_is_device_sensor *device,
+static int fimc_is_sensor_ctl_set_frame_rate(struct fimc_is_device_sensor *device,
 					u32 frame_duration,
 					u32 dynamic_duration)
 {
@@ -272,7 +272,7 @@ p_err:
 	return ret;
 }
 
-int fimc_is_sensor_ctl_adjust_gains(struct fimc_is_device_sensor *device,
+static int fimc_is_sensor_ctl_adjust_gains(struct fimc_is_device_sensor *device,
 				struct fimc_is_sensor_ctl *module_ctl,
 				ae_setting *applied_ae_setting,
 				struct gain_setting *adj_gain_setting)
@@ -338,7 +338,7 @@ p_err:
 	return ret;
 }
 
-int fimc_is_sensor_ctl_set_gains(struct fimc_is_device_sensor *device,
+static int fimc_is_sensor_ctl_set_gains(struct fimc_is_device_sensor *device,
 				struct gain_setting *adj_gain_setting)
 {
 	int ret = 0;
@@ -363,7 +363,7 @@ p_err:
 	return ret;
 }
 
-int fimc_is_sensor_ctl_update_gains(struct fimc_is_device_sensor *device,
+static int fimc_is_sensor_ctl_update_gains(struct fimc_is_device_sensor *device,
 				u32 *dm_index,
 				struct gain_setting *adj_gain_setting)
 {
@@ -411,7 +411,7 @@ p_err:
 	return ret;
 }
 
-int fimc_is_sensor_ctl_set_exposure(struct fimc_is_device_sensor *device,
+static int fimc_is_sensor_ctl_set_exposure(struct fimc_is_device_sensor *device,
 					u32 *dm_index,
 					u32 long_exposure, u32 short_exposure)
 {

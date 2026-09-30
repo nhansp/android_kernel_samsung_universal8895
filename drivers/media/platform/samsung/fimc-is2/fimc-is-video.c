@@ -18,8 +18,8 @@
 #include <linux/device.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
-#include <video/videonode.h>
-#include <media/exynos_mc.h>
+#include <media/exynos8895-compat.h>
+/* stock <media/exynos_mc.h> (4.4 Exynos media-device header): nothing of it is used */
 #include <asm/cacheflush.h>
 #include <asm/pgtable.h>
 #include <linux/firmware.h>
@@ -36,7 +36,7 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-mem2mem.h>
 #include <media/v4l2-mediabus.h>
-#include <media/exynos_mc.h>
+/* stock <media/exynos_mc.h> (4.4 Exynos media-device header): nothing of it is used */
 
 #include "fimc-is-time.h"
 #include "fimc-is-core.h"
@@ -259,7 +259,7 @@ struct fimc_is_fmt fimc_is_formats[] = {
 	}
 };
 
-struct fimc_is_fmt *fimc_is_find_format(u32 pixelformat,
+static struct fimc_is_fmt *fimc_is_find_format(u32 pixelformat,
 	u32 mbus_code)
 {
 	ulong i;
@@ -536,7 +536,9 @@ int open_vctx(struct file *file,
 	(*vctx)->queue.id = id;
 	(*vctx)->state = BIT(FIMC_IS_VIDEO_CLOSE);
 
-	file->private_data = *vctx;
+	/* stock: file->private_data = *vctx (spec L6B B-V1) */
+	v4l2_fh_init(&(*vctx)->fh, &video->vd);
+	v4l2_fh_add(&(*vctx)->fh, file);
 
 p_err:
 	return ret;
@@ -548,8 +550,9 @@ int close_vctx(struct file *file,
 {
 	int ret = 0;
 
+	v4l2_fh_del(&vctx->fh, file);
+	v4l2_fh_exit(&vctx->fh);
 	vfree(vctx);
-	file->private_data = NULL;
 	ret = vref_put(video, NULL);
 
 	return ret;
@@ -656,7 +659,7 @@ int fimc_is_queue_setup(struct fimc_is_queue *queue,
 	void *alloc_ctx,
 	unsigned int *num_planes,
 	unsigned int sizes[],
-	void *allocators[])
+	struct device *allocators[])
 {
 	u32 ret = 0;
 	u32 plane;
@@ -979,12 +982,23 @@ int fimc_is_video_probe(struct fimc_is_video *video,
 	video->vd.fops		= fops;
 	video->vd.ioctl_ops	= ioctl_ops;
 	video->vd.minor		= -1;
-	video->vd.release	= video_device_release;
+	/* vd is embedded in struct fimc_is_video (stock video_device_release would kfree it) */
+	video->vd.release	= video_device_release_empty;
 	video->vd.lock		= &video->lock;
+	/*
+	 * 6.18 needs device_caps before registration (spec L6B B-V4,
+	 * A:drivers/media/v4l2-core/v4l2-dev.c:931-933); stock querycaps set
+	 * none or CAPTURE only, so they come from the node direction.
+	 */
+	if (vfl_dir == VFL_DIR_RX)
+		video->vd.device_caps = V4L2_CAP_VIDEO_CAPTURE_MPLANE | V4L2_CAP_STREAMING;
+	else
+		video->vd.device_caps = V4L2_CAP_VIDEO_OUTPUT_MPLANE |
+					V4L2_CAP_VIDEO_CAPTURE_MPLANE | V4L2_CAP_STREAMING;
 	video_set_drvdata(&video->vd, video);
 
 	video_id = EXYNOS_VIDEONODE_FIMC_IS + video_number;
-	ret = video_register_device(&video->vd, VFL_TYPE_GRABBER, video_id);
+	ret = video_register_device(&video->vd, VFL_TYPE_VIDEO, video_id);
 	if (ret) {
 		err("Failed to register video device");
 		goto p_err;
@@ -992,6 +1006,83 @@ int fimc_is_video_probe(struct fimc_is_video *video,
 
 p_err:
 	info("[VID] %s(%d) is created\n", video_name, video_id);
+	return ret;
+}
+
+/*
+ * The 4.4 video_ioctl2() path for the five ioctls 6.18 no longer dispatches
+ * to driver ops: copy the argument in, call the stock handler under the node
+ * lock, copy the argument back (all five are _IOWR or _IOW; 4.4
+ * video_usercopy() copied _IOWR arguments back whatever the result).
+ * 32-bit callers reach this through v4l2_compat_ioctl32(); the three structs
+ * have the same layout for them.
+ */
+long fimc_is_video_ioctl2(struct file *file, unsigned int cmd, unsigned long arg)
+{
+	struct video_device *vdev = video_devdata(file);
+	const struct fimc_is_video_ioctl_ops *xops =
+		container_of(vdev->ioctl_ops, struct fimc_is_video_ioctl_ops, ops);
+	void __user *uarg = (void __user *)arg;
+	union {
+		struct v4l2_control ctrl;
+		struct v4l2_cropcap cropcap;
+		struct v4l2_crop crop;
+	} karg;
+	long ret;
+
+	switch (cmd) {
+	case VIDIOC_G_CTRL:
+	case VIDIOC_S_CTRL:
+	case VIDIOC_CROPCAP:
+	case VIDIOC_G_CROP:
+	case VIDIOC_S_CROP:
+		break;
+	default:
+		return video_ioctl2(file, cmd, arg);
+	}
+
+	if (copy_from_user(&karg, uarg, _IOC_SIZE(cmd)))
+		return -EFAULT;
+
+	if (vdev->lock && mutex_lock_interruptible(vdev->lock))
+		return -ERESTARTSYS;
+
+	if (!video_is_registered(vdev)) {
+		ret = -ENODEV;
+		goto unlock;
+	}
+
+	ret = -ENOTTY;
+	switch (cmd) {
+	case VIDIOC_G_CTRL:
+		if (xops->vidioc_g_ctrl)
+			ret = xops->vidioc_g_ctrl(file, file->private_data, &karg.ctrl);
+		break;
+	case VIDIOC_S_CTRL:
+		if (xops->vidioc_s_ctrl)
+			ret = xops->vidioc_s_ctrl(file, file->private_data, &karg.ctrl);
+		break;
+	case VIDIOC_CROPCAP:
+		if (xops->vidioc_cropcap)
+			ret = xops->vidioc_cropcap(file, file->private_data, &karg.cropcap);
+		break;
+	case VIDIOC_G_CROP:
+		if (xops->vidioc_g_crop)
+			ret = xops->vidioc_g_crop(file, file->private_data, &karg.crop);
+		break;
+	case VIDIOC_S_CROP:
+		if (xops->vidioc_s_crop)
+			ret = xops->vidioc_s_crop(file, file->private_data, &karg.crop);
+		break;
+	}
+
+unlock:
+	if (vdev->lock)
+		mutex_unlock(vdev->lock);
+
+	if (_IOC_DIR(cmd) & _IOC_READ && copy_to_user(uarg, &karg, _IOC_SIZE(cmd)))
+		ret = -EFAULT;
+
 	return ret;
 }
 
@@ -1312,7 +1403,7 @@ int fimc_is_video_qbuf(struct fimc_is_video_ctx *vctx,
 		goto p_err;
 	}
 
-	if (buf->index >= vbq->num_buffers) {
+	if (buf->index >= vb2_get_num_buffers(vbq)) {
 		mverr("buffer index%d out of range", vctx, video, buf->index);
 		ret = -EINVAL;
 		goto p_err;
@@ -1324,7 +1415,7 @@ int fimc_is_video_qbuf(struct fimc_is_video_ctx *vctx,
 		goto p_err;
 	}
 
-	vb = vbq->bufs[buf->index];
+	vb = vb2_get_buffer(vbq, buf->index);
 	if (!vb) {
 		mverr("vb is NULL", vctx, video);
 		ret = -EINVAL;
@@ -1333,7 +1424,7 @@ int fimc_is_video_qbuf(struct fimc_is_video_ctx *vctx,
 
 	queue->buf_req++;
 
-	ret = vb2_qbuf(queue->vbq, buf);
+	ret = vb2_qbuf(queue->vbq, NULL, buf);
 	if (ret) {
 		mverr("vb2_qbuf is fail(index : %d, %d)", vctx, video, buf->index, ret);
 		goto p_err;
@@ -1472,7 +1563,7 @@ int fimc_is_video_prepare(struct file *file,
 		goto p_err;
 	}
 
-	if (buf->index >= vbq->num_buffers) {
+	if (buf->index >= vb2_get_num_buffers(vbq)) {
 		mverr("buffer index%d out of range", vctx, video, buf->index);
 		ret = -EINVAL;
 		goto p_err;
@@ -1484,14 +1575,14 @@ int fimc_is_video_prepare(struct file *file,
 		goto p_err;
 	}
 
-	vb = vbq->bufs[buf->index];
+	vb = vb2_get_buffer(vbq, buf->index);
 	if (!vb) {
 		mverr("vb is NULL", vctx, video);
 		ret = -EINVAL;
 		goto p_err;
 	}
 
-	ret = vb2_prepare_buf(queue->vbq, buf);
+	ret = vb2_prepare_buf(queue->vbq, NULL, buf);
 	if (ret) {
 		mverr("vb2_prepare_buf is fail(index : %d, %d)", vctx, video, buf->index, ret);
 		goto p_err;
@@ -1759,7 +1850,7 @@ int fimc_is_video_buffer_done(struct fimc_is_video_ctx *vctx,
 		goto p_err;
 	}
 
-	vb = queue->vbq->bufs[index];
+	vb = vb2_get_buffer(queue->vbq, index);
 	if (!vb) {
 		mverr("vb is NULL", vctx, video);
 		ret = -EINVAL;

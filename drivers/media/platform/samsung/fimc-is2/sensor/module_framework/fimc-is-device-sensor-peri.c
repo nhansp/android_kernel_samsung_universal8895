@@ -224,7 +224,7 @@ p_err:
 	return;
 }
 
-int fimc_is_sensor_wait_streamoff(struct fimc_is_device_sensor *device)
+static int fimc_is_sensor_wait_streamoff(struct fimc_is_device_sensor *device)
 {
     int ret = 0;
     struct fimc_is_device_csi *csi;
@@ -282,7 +282,7 @@ p_err:
     return ret;
 }
 
-void fimc_is_sensor_cis_status_dump_work(struct work_struct *data)
+static void fimc_is_sensor_cis_status_dump_work(struct work_struct *data)
 {
 	int ret = 0;
 	struct fimc_is_cis *cis;
@@ -347,7 +347,7 @@ void fimc_is_sensor_set_cis_uctrl_list(struct fimc_is_device_sensor_peri *sensor
 	}
 }
 
-void fimc_is_sensor_sensor_work_fn(struct kthread_work *work)
+static void fimc_is_sensor_sensor_work_fn(struct kthread_work *work)
 {
 	struct fimc_is_device_sensor_peri *sensor_peri;
 	struct fimc_is_device_sensor *device;
@@ -444,7 +444,7 @@ void fimc_is_sensor_deinit_mode_change_thread(struct fimc_is_device_sensor_peri 
 	}
 }
 
-int fimc_is_sensor_initial_setting_low_exposure(struct fimc_is_device_sensor_peri *sensor_peri)
+static __maybe_unused int fimc_is_sensor_initial_setting_low_exposure(struct fimc_is_device_sensor_peri *sensor_peri)
 {
 	int ret = 0;
 	struct fimc_is_device_sensor *device;
@@ -534,7 +534,7 @@ int fimc_is_sensor_mode_change(struct fimc_is_cis *cis, u32 mode)
 	return ret;
 }
 
-void fimc_is_sensor_setting_mode_change(struct fimc_is_device_sensor_peri *sensor_peri)
+static void fimc_is_sensor_setting_mode_change(struct fimc_is_device_sensor_peri *sensor_peri)
 {
 	struct fimc_is_device_sensor *device;
 	u32 expo = 0;
@@ -896,6 +896,14 @@ void fimc_is_sensor_flash_expire_handler(unsigned long data)
 	schedule_work(&device->flash->flash_data.flash_expire_work);
 }
 
+/* timer_setup() callbacks for the stock unsigned-long handlers (spec L6B 5.6.8) */
+static void fimc_is_sensor_flash_expire_timer(struct timer_list *t)
+{
+	struct fimc_is_flash_data *flash_data = timer_container_of(flash_data, t, flash_expire_timer);
+
+	fimc_is_sensor_flash_expire_handler(flash_data->flash_expire_data);
+}
+
 void fimc_is_sensor_flash_expire_work(struct work_struct *data)
 {
 	int ret = 0;
@@ -952,7 +960,7 @@ int fimc_is_sensor_flash_fire(struct fimc_is_device_sensor_peri *device,
 	if (flash->flash_data.flash_fired != (bool)on) {
 		ctrl.id = V4L2_CID_FLASH_SET_FIRE;
 		ctrl.value = on ? flash->flash_data.intensity : 0;
-		ret = v4l2_subdev_call(subdev_flash, core, s_ctrl, &ctrl);
+		ret = v4l2_subdev_call(subdev_flash, core, ioctl, FIMC_IS_SUBDEV_S_CTRL, &ctrl);
 		if (ret < 0) {
 			err("err!!! ret(%d)", ret);
 			goto p_err;
@@ -969,7 +977,8 @@ int fimc_is_sensor_flash_fire(struct fimc_is_device_sensor_peri *device,
 			if (flash->flash_data.firing_time_us == 0 || flash->flash_data.firing_time_us > 1 * 1000 * 1000)
 				flash->flash_data.firing_time_us = 1 * 1000 * 1000;
 
-			setup_timer(&flash->flash_data.flash_expire_timer, fimc_is_sensor_flash_expire_handler, (unsigned long)device);
+			flash->flash_data.flash_expire_data = (unsigned long)device;
+			timer_setup(&flash->flash_data.flash_expire_timer, fimc_is_sensor_flash_expire_timer, 0);
 			mod_timer(&flash->flash_data.flash_expire_timer, jiffies +  usecs_to_jiffies(flash->flash_data.firing_time_us));
 		} else {
 			del_timer(&flash->flash_data.flash_expire_timer);
@@ -1287,7 +1296,7 @@ p_err:
 	return ret;
 }
 
-void fimc_is_sensor_peri_m2m_actuator(struct work_struct *data)
+static void fimc_is_sensor_peri_m2m_actuator(struct work_struct *data)
 {
 	int ret = 0;
 	int index;
@@ -1542,7 +1551,8 @@ void fimc_is_sensor_peri_init_work(struct fimc_is_device_sensor_peri *sensor_per
 
 	if (sensor_peri->actuator) {
 		INIT_WORK(&sensor_peri->actuator->actuator_data.actuator_work, fimc_is_sensor_peri_m2m_actuator);
-		hrtimer_init(&sensor_peri->actuator->actuator_data.afwindow_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+		hrtimer_setup(&sensor_peri->actuator->actuator_data.afwindow_timer, fimc_is_actuator_m2m_af_set,
+			      CLOCK_MONOTONIC, HRTIMER_MODE_REL);	/* stock hrtimer_init; function also set in module-base.c */
 	}
 
 	/* Init to LTE mode work */
@@ -2091,7 +2101,7 @@ p_err:
 	return ret;
 }
 
-void fimc_is_sensor_peri_actuator_check_landing_time(ulong data)
+static void fimc_is_sensor_peri_actuator_check_landing_time(ulong data)
 {
 	u32 *check_time_out = (u32 *)data;
 
@@ -2101,7 +2111,14 @@ void fimc_is_sensor_peri_actuator_check_landing_time(ulong data)
 	*check_time_out = true;
 }
 
-int fimc_is_sensor_peri_actuator_check_move_done(struct fimc_is_device_sensor_peri *device)
+static void fimc_is_sensor_peri_actuator_check_landing_timer(struct timer_list *t)
+{
+	struct fimc_is_actuator_data *actuator_data = timer_container_of(actuator_data, t, timer_wait);
+
+	fimc_is_sensor_peri_actuator_check_landing_time((ulong)&actuator_data->check_time_out);
+}
+
+static int fimc_is_sensor_peri_actuator_check_move_done(struct fimc_is_device_sensor_peri *device)
 {
 	int ret = 0;
 	struct fimc_is_actuator *actuator;
@@ -2123,7 +2140,7 @@ int fimc_is_sensor_peri_actuator_check_move_done(struct fimc_is_device_sensor_pe
 		jiffies +
 		msecs_to_jiffies(actuator_itf->soft_landing_table.step_delay));
 	do {
-		ret = v4l2_subdev_call(device->subdev_actuator, core, g_ctrl, &v4l2_ctrl);
+		ret = v4l2_subdev_call(device->subdev_actuator, core, ioctl, FIMC_IS_SUBDEV_G_CTRL, &v4l2_ctrl);
 		if (ret) {
 			err("[SEN:%d] v4l2_subdev_call(g_ctrl, id:%d) is fail",
 					actuator->id, v4l2_ctrl.id);
@@ -2160,9 +2177,8 @@ int fimc_is_sensor_peri_actuator_softlanding(struct fimc_is_device_sensor_peri *
 	actuator_data = &actuator->actuator_data;
 	soft_landing_table = &actuator_itf->soft_landing_table;
 
-	setup_timer(&actuator_data->timer_wait,
-			fimc_is_sensor_peri_actuator_check_landing_time,
-			(ulong)&actuator_data->check_time_out);
+	timer_setup(&actuator_data->timer_wait,
+			fimc_is_sensor_peri_actuator_check_landing_timer, 0);	/* stock data: &actuator_data->check_time_out */
 
 	if (!soft_landing_table->enable) {
 		soft_landing_table->position_num = 1;
@@ -2186,7 +2202,7 @@ int fimc_is_sensor_peri_actuator_softlanding(struct fimc_is_device_sensor_peri *
 
 		v4l2_ctrl.id = V4L2_CID_ACTUATOR_SET_POSITION;
 		v4l2_ctrl.value = soft_landing_table->hw_table[i];
-		ret = v4l2_subdev_call(device->subdev_actuator, core, s_ctrl, &v4l2_ctrl);
+		ret = v4l2_subdev_call(device->subdev_actuator, core, ioctl, FIMC_IS_SUBDEV_S_CTRL, &v4l2_ctrl);
 		if (ret) {
 			err("[SEN:%d] v4l2_subdev_call(s_ctrl, id:%d) is fail(%d)",
 					actuator->id, v4l2_ctrl.id, ret);

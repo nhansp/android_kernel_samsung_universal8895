@@ -26,12 +26,35 @@
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-subdev.h>
-#include <soc/samsung/tmu.h>
-#include <linux/isp_cooling.h>
+/*
+ * Stock <soc/samsung/tmu.h>: the ISP notifier states (S:include/soc/samsung/
+ * tmu.h:37-46) and exynos_tmu_isp_add_notifier(). 6.18 has no Exynos TMU ISP
+ * notifier chain, so the notifier is never registered, which is stock's own
+ * !CONFIG_EXYNOS_THERMAL stub (tmu.h:66-71); stock ran with
+ * CONFIG_EXYNOS_THERMAL=y (IKC:2540). Open item: ISP thermal throttling.
+ * The notifier body is built only with FIMC_IS_ISP_TMU_NOTIFIER (never
+ * defined; 6.18 CONFIG_EXYNOS_THERMAL is the upstream TMU driver).
+ */
+enum isp_noti_state_t {
+	ISP_NORMAL = 0,
+	ISP_COLD,
+	ISP_THROTTLING,
+	ISP_THROTTLING1,
+	ISP_THROTTLING2,
+	ISP_THROTTLING3,
+	ISP_THROTTLING4,
+	ISP_TRIPPING,
+};
+
+static inline int exynos_tmu_isp_add_notifier(struct notifier_block *n)
+{
+	return 0;
+}
+/* stock <linux/isp_cooling.h>: only used under CONFIG_EXYNOS_THERMAL (see above) */
 #if defined(CONFIG_SOC_EXYNOS8895)
 #include <linux/cpuidle.h>
-#include <linux/soc/samsung/exynos-soc.h>
-#include <soc/samsung/bts.h>
+#include <linux/panic_notifier.h>
+/* stock <linux/soc/samsung/exynos-soc.h>, <soc/samsung/bts.h>: BTS scenarios are not ported (spec L6B 5.3) */
 #endif
 
 #ifdef CONFIG_EXYNOS_BUSMONITOR
@@ -248,7 +271,7 @@ static int fimc_is_resourcemgr_allocmem(struct fimc_is_resourcemgr *resourcemgr)
 	minfo->total_size += minfo->pb_front_cal->size;
 
 	/* library logging */
-	minfo->pb_debug = mem->kmalloc(DEBUG_REGION_SIZE + 0x10, 16);
+	minfo->pb_debug = (mem->kmalloc)(DEBUG_REGION_SIZE + 0x10, 16);	/* parenthesized: 6.18 kmalloc() is a macro */
 	if (IS_ERR(minfo->pb_debug)) {
 		/* retry by ION */
 		minfo->pb_debug = CALL_PTR_MEMOP(mem, alloc, mem->default_ctx, DEBUG_REGION_SIZE + 0x10, 16);
@@ -441,7 +464,7 @@ static int fimc_is_resourcemgr_deinitmem(struct fimc_is_resourcemgr *resourcemgr
 static int fimc_is_tmu_notifier(struct notifier_block *nb,
 	unsigned long state, void *data)
 {
-#ifdef CONFIG_EXYNOS_THERMAL
+#ifdef FIMC_IS_ISP_TMU_NOTIFIER	/* stock CONFIG_EXYNOS_THERMAL: the ISP notifier chain is absent (see top) */
 	int ret = 0, fps = 0;
 	struct fimc_is_resourcemgr *resourcemgr;
 #ifdef CONFIG_EXYNOS_SNAPSHOT_THERMAL
@@ -1103,8 +1126,7 @@ int fimc_is_resource_get(struct fimc_is_resourcemgr *resourcemgr, u32 rsc_type)
 			info("%s: call cpuidle_pause()\n", __func__);
 			cpuidle_pause();
 
-			info("%s: call bts_update_scen(1)\n", __func__);
-			bts_update_scen(BS_CAMERA_DEFAULT, 1);
+			/* stock bts_update_scen(BS_CAMERA_DEFAULT, 1): BTS not ported (spec L6B 5.3) */
 			fimc_is_hw_ischain_qe_cfg();
 #endif
 			break;
@@ -1271,8 +1293,7 @@ int fimc_is_resource_put(struct fimc_is_resourcemgr *resourcemgr, u32 rsc_type)
 			info("%s: call cpuidle_resume()\n", __func__);
 			cpuidle_resume();
 
-			info("%s: call bts_update_scen(0)\n", __func__);
-			bts_update_scen(BS_CAMERA_DEFAULT, 0);
+			/* stock bts_update_scen(BS_CAMERA_DEFAULT, 0): BTS not ported (spec L6B 5.3) */
 #endif
 			break;
 		default:

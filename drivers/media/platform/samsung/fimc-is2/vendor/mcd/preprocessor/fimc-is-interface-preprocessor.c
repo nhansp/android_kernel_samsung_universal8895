@@ -376,7 +376,7 @@ p_err:
 	return ret;
 }
 
-int preproc_itf_get_ae_gains(struct fimc_is_preprocessor_interface *itf, u32 **preproc_auto_exposure)
+static int preproc_itf_get_ae_gains(struct fimc_is_preprocessor_interface *itf, u32 **preproc_auto_exposure)
 {
 	struct fimc_is_device_sensor_peri *sensor_peri;
         cis_shared_data *cis_data = NULL;

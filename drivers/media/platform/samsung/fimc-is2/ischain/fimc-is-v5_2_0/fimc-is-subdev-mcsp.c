@@ -22,7 +22,20 @@
 #include "fimc-is-hw-dvfs.h"
 
 #ifdef ENABLE_HWFC
-#include "../../../smfc/smfc-sync.h"
+/*
+ * HWFC wait of the JPEG encoder (stock ../../../smfc/smfc-sync.h, implemented
+ * in S:drivers/media/platform/exynos/smfc/smfc.c:405). The SMFC transplant is
+ * drivers/media/platform/samsung/smfc-exynos/ (spec L6B 5.9); without it
+ * there is no JPEG block to wait for.
+ */
+#if IS_ENABLED(CONFIG_VIDEO_EXYNOS_SMFC)
+#include "../../../smfc-exynos/smfc-sync.h"
+#else
+static inline int exynos_smfc_wait_done(bool enable_hwfc)
+{
+	return 0;
+}
+#endif
 #endif
 
 static int fimc_is_ischain_mxp_cfg(struct fimc_is_subdev *subdev,

@@ -18,8 +18,8 @@
 #include <linux/device.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
-#include <video/videonode.h>
-#include <media/exynos_mc.h>
+#include <media/exynos8895-compat.h>
+/* stock <media/exynos_mc.h> (4.4 Exynos media-device header): nothing of it is used */
 #include <asm/cacheflush.h>
 #include <asm/pgtable.h>
 #include <linux/firmware.h>
@@ -84,60 +84,105 @@ struct fimc_is_sysfs_sensor sysfs_sensor;
 #endif
 #endif
 
-static struct vm_struct fimc_is_lib_vm;
-static int __init fimc_is_lib_mem_alloc(char *str)
+/*
+ * Library window (spec L6B 5.6.1, D-4). Stock reserved LIB_SIZE with
+ * memblock_alloc() from the "reserve-fimc=" boot argument, registered the VA
+ * with vm_area_add_early() and mapped it with map_vm_area() at probe
+ * (S:drivers/media/platform/exynos/fimc-is2/fimc-is-core.c:88-135). The linked
+ * VA 0xffffff80fa000000 lies in a hole of the 6.18 linear map (DRAM ends at
+ * PA 0xffffffff below 0x880000000, memstart 0x80000000), so the window is
+ * built with page-table walkers on init_mm from order-0 pages. It is never
+ * unmapped (stock never unmapped it either); a probe retry after a deferral
+ * reuses it.
+ */
+struct fimc_is_lib_map_ctx {
+	struct page **pages;
+	int idx;
+};
+
+static bool fimc_is_lib_mapped;
+
+/* spec L6B 5.6.1 step 5: fallback if the library faults on its ROX code windows */
+bool fimc_is_lib_rox = true;
+module_param_named(lib_rox, fimc_is_lib_rox, bool, 0444);
+
+static int fimc_is_lib_map_pte(pte_t *ptep, unsigned long addr, void *data)
 {
-	ulong addr = 0;
+	struct fimc_is_lib_map_ctx *ctx = data;
 
-	if (kstrtoul(str, 0, (ulong *)&addr) || !addr) {
-		probe_warn("invalid fimc-is library memory address, use default");
-		addr = LIB_START;
-	}
+	if (!pte_none(__ptep_get(ptep)))
+		return -EBUSY;
 
-	if (addr != LIB_START)
-		probe_warn("use different address [reserve-fimc=0x%lx default:0x%lx]",
-				addr, LIB_START);
-
-	fimc_is_lib_vm.phys_addr = memblock_alloc(LIB_SIZE, SZ_4K);
-	fimc_is_lib_vm.addr = (void *)addr;
-	fimc_is_lib_vm.size = LIB_SIZE + PAGE_SIZE;
-
-	vm_area_add_early(&fimc_is_lib_vm);
-
-	probe_info("fimc-is library memory: 0x%lx\n", addr);
-
+	set_pte(ptep, mk_pte(ctx->pages[ctx->idx++], PAGE_KERNEL));
 	return 0;
 }
-__setup("reserve-fimc=", fimc_is_lib_mem_alloc);
 
-static int __init fimc_is_lib_mem_map(void)
+static int fimc_is_lib_unmap_pte(pte_t *ptep, unsigned long addr, void *data)
 {
-	int page_size, i;
-	struct page *page;
-	struct page **pages;
-
-	if (!fimc_is_lib_vm.phys_addr) {
-		probe_err("There is no reserve-fimc= at bootargs.");
-		return -ENOMEM;
-	}
-
-	page_size = fimc_is_lib_vm.size / PAGE_SIZE;
-	pages = kzalloc(sizeof(struct page*) * page_size, GFP_KERNEL);
-	page = phys_to_page(fimc_is_lib_vm.phys_addr);
-
-	for (i = 0; i < page_size; i++)
-		pages[i] = page++;
-
-	if (map_vm_area(&fimc_is_lib_vm, PAGE_KERNEL, pages)) {
-		probe_err("failed to mapping between virt and phys for binary");
-		vunmap(fimc_is_lib_vm.addr);
-		kfree(pages);
-		return -ENOMEM;
-	}
-
-	kfree(pages);
-
+	pte_clear(&init_mm, addr, ptep);
 	return 0;
+}
+
+static int fimc_is_lib_mem_map(void)
+{
+	struct page **pages;
+	struct fimc_is_lib_map_ctx ctx;
+	int nr_pages = LIB_SIZE / PAGE_SIZE + 1; /* stock vm area LIB_SIZE + PAGE_SIZE (:103): 1921 pages */
+	int i, ret;
+
+	if (fimc_is_lib_mapped)
+		return 0;
+
+	/* the VA must be an unused linear-map address (spec 5.6.1 step 1) */
+	if (memstart_addr != 0x80000000ULL ||
+	    pfn_valid(PHYS_PFN(__pa(LIB_START))) ||
+	    pfn_valid(PHYS_PFN(__pa(LIB_START + LIB_SIZE)))) {
+		pr_err("fimc-is: library VA 0x%lx not usable (memstart 0x%llx)\n",
+		       LIB_START, (unsigned long long)memstart_addr);
+		return -EBUSY;
+	}
+
+	pages = kmalloc_array(nr_pages, sizeof(struct page *), GFP_KERNEL);
+	if (!pages)
+		return -ENOMEM;
+
+	for (i = 0; i < nr_pages; i++) {
+		pages[i] = alloc_page(GFP_KERNEL | __GFP_ZERO);
+		if (!pages[i]) {
+			ret = -ENOMEM;
+			goto err_free;
+		}
+	}
+
+	/* allocates the missing PUD/PMD/PTE tables (A:mm/memory.c:3315-3320) */
+	ctx.pages = pages;
+	ctx.idx = 0;
+	ret = apply_to_page_range(&init_mm, LIB_START, LIB_SIZE + PAGE_SIZE,
+				  fimc_is_lib_map_pte, &ctx);
+	if (ret) {
+		pr_err("fimc-is: library window map failed: %d\n", ret);
+		if (ctx.idx) {
+			apply_to_existing_page_range(&init_mm, LIB_START,
+						     ctx.idx * PAGE_SIZE,
+						     fimc_is_lib_unmap_pte, NULL);
+			flush_tlb_kernel_range(LIB_START,
+					       LIB_START + ctx.idx * PAGE_SIZE);
+		}
+		goto err_free;
+	}
+
+	pr_info("fimc-is: library window 0x%lx-0x%lx mapped (%d pages)\n",
+		LIB_START, LIB_START + LIB_SIZE + PAGE_SIZE, nr_pages);
+
+	fimc_is_lib_mapped = true;
+	kfree(pages);
+	return 0;
+
+err_free:
+	while (--i >= 0)
+		__free_page(pages[i]);
+	kfree(pages);
+	return ret;
 }
 
 #ifdef CONFIG_CPU_THERMAL_IPA
@@ -1072,6 +1117,13 @@ static int fimc_is_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
+	/* INTCAM/CAM DVFS clocks of the QoS shim (spec L6B 5.3) */
+	ret = mm_qos_init(&pdev->dev);
+	if (ret) {
+		kfree(core);
+		return ret;
+	}
+
 	fimc_is_dev = &pdev->dev;
 	dev_set_drvdata(fimc_is_dev, core);
 
@@ -1081,7 +1133,7 @@ static int fimc_is_probe(struct platform_device *pdev)
 		ret = fimc_is_parse_dt(pdev);
 		if (ret) {
 			err("fimc_is_parse_dt is fail(%d)", ret);
-			return ret;
+			goto p_err1;	/* stock returned here, leaking core */
 		}
 
 		pdata = dev_get_platdata(&pdev->dev);
@@ -1115,7 +1167,7 @@ static int fimc_is_probe(struct platform_device *pdev)
 	}
 
 	core->regs_res = regs_res;
-	core->regs =  ioremap_nocache(mem_res->start, resource_size(mem_res));
+	core->regs =  ioremap(mem_res->start, resource_size(mem_res));
 	if (!core->regs) {
 		probe_err("Failed to remap io region(%p)", core->regs);
 		goto p_err2;
@@ -1439,13 +1491,15 @@ p_err2:
 	release_mem_region(regs_res->start, resource_size(regs_res));
 #endif
 p_err1:
+	/* the sensor/preprocessor probes defer on fimc_is_dev; do not leave it pointing at a freed core */
+	fimc_is_dev = NULL;
+	dev_set_drvdata(&pdev->dev, NULL);
 	kfree(core);
 	return ret;
 }
 
-static int fimc_is_remove(struct platform_device *pdev)
+static void fimc_is_remove(struct platform_device *pdev)
 {
-	return 0;
 }
 
 void fimc_is_cleanup(struct fimc_is_core *core)
@@ -1545,7 +1599,7 @@ static const struct dev_pm_ops fimc_is_pm_ops = {
 #ifdef CONFIG_OF
 static const struct of_device_id exynos_fimc_is_match[] = {
 	{
-		.compatible = "samsung,exynos5-fimc-is",
+		.compatible = "samsung,exynos8895-fimc-is",	/* stock "samsung,exynos5-fimc-is" (FDT:8526), spec L6B 5.6 */
 	},
 	{},
 };
@@ -1566,7 +1620,7 @@ static struct platform_driver fimc_is_driver = {
 #else
 static struct platform_driver fimc_is_driver = {
 	.probe		= fimc_is_probe,
-	.remove 	= __devexit_p(fimc_is_remove),
+	.remove 	= fimc_is_remove,
 	.driver = {
 		.name	= FIMC_IS_DRV_NAME,
 		.owner	= THIS_MODULE,

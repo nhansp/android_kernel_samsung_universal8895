@@ -18,8 +18,8 @@
 #include <linux/device.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
-#include <video/videonode.h>
-#include <media/exynos_mc.h>
+#include <media/exynos8895-compat.h>
+/* stock <media/exynos_mc.h> (4.4 Exynos media-device header): nothing of it is used */
 #include <asm/cacheflush.h>
 #include <asm/pgtable.h>
 #include <linux/firmware.h>

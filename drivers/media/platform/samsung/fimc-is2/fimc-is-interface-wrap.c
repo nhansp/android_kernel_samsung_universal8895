@@ -479,7 +479,7 @@ int fimc_is_itf_sys_ctl_wrap(struct fimc_is_device_ischain *device,
 	return ret;
 }
 
-int fimc_is_itf_sensor_mode_wrap(struct fimc_is_device_ischain *device,
+int __nocfi fimc_is_itf_sensor_mode_wrap(struct fimc_is_device_ischain *device,
 	struct fimc_is_sensor_cfg *cfg)
 {
 #ifdef USE_RTA_BINARY
@@ -513,7 +513,7 @@ void fimc_is_itf_fwboot_init(struct fimc_is_interface *this)
 	this->fw_boot_mode = COLD_BOOT;
 }
 
-bool check_setfile_change(struct fimc_is_group *group_leader,
+static bool check_setfile_change(struct fimc_is_group *group_leader,
 	struct fimc_is_group *group, struct fimc_is_hardware *hardware,
 	u32 instance, u32 scenario)
 {

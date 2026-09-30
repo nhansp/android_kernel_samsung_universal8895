@@ -77,7 +77,15 @@
 #define DEBUGCTL_OFFSET			(DEBUG_REGION_OFFSET + DEBUG_REGION_SIZE)
 #else /* #ifdef ENABLE_IS_CORE */
 /* static reserved memory for libraries */
-#define LIB_OFFSET		(VMALLOC_START + 0xF6000000 - 0x8000000)
+/*
+ * The libraries are position-dependent images linked for stock 4.4's
+ * VMALLOC_START + 0xF6000000 - 0x8000000 (S:.../include/fimc-is-binary.h:80):
+ * VA_BITS 39 (IKC:408), no KASAN, so VMALLOC_START = MODULES_END =
+ * 0xffffff8000000000 + SZ_128M (S:arch/arm64/include/asm/memory.h:51-56,81,
+ * pgtable.h:48) and LIB_START = 0xffffff80fa000000. 6.18's VMALLOC_START
+ * differs; the linked address is kept (spec L6B 5.6.1).
+ */
+#define LIB_OFFSET		(0xffffff80f6000000UL)
 #define LIB_START		(LIB_OFFSET + 0x04000000)
 
 #define VRA_LIB_ADDR		(LIB_START)
@@ -173,7 +181,7 @@ struct fimc_is_binary {
 	int	retry_err;
 
 	/* custom memory allocation */
-	void *(*alloc)(unsigned long size);
+	void *(*alloc)(unsigned long size);	/* default fimc_is_vmalloc() */
 	void (*free)(const void *buf);
 };
 
@@ -188,5 +196,7 @@ int request_binary(struct fimc_is_binary *bin, const char *path,
 				const char *name, struct device *device);
 void release_binary(struct fimc_is_binary *bin);
 int was_loaded_by(struct fimc_is_binary *bin);
+
+void *fimc_is_vmalloc(unsigned long size);
 
 #endif

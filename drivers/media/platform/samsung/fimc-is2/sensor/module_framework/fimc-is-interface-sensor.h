@@ -45,8 +45,13 @@
 #define ACTUATOR_MAX_SOFT_LANDING_NUM	32 /* Actuator interface */
 #define ACTUATOR_MAX_FOCUS_POSITIONS	1024
 
+/* 6.18 <linux/minmax.h> provides the same MIN/MAX (__cmp without type check) */
+#ifndef MIN
 #define MIN(a,b) (((a) < (b)) ? (a) : (b))
+#endif
+#ifndef MAX
 #define MAX(a,b) (((a) > (b)) ? (a) : (b))
+#endif
 
 #define FPS_TO_DURATION_US(x)  ((x == 0) ? (0) : ((1000 * 1000) / x))
 #define DURATION_US_TO_FPS(x)  ((x == 0) ? (0) : ((1000 * 1000) / x))

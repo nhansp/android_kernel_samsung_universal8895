@@ -30,6 +30,26 @@
 
 extern struct device *fimc_is_dev;
 struct class *camera_class = NULL;
+
+/*
+ * /sys/class/camera: stock created it lazily here (fimc_is_create_sysfs())
+ * while leds-s2mpb02 used it unconditionally (S:drivers/leds/
+ * leds-s2mpb02.c:813), an init-order dependency. Created once at
+ * subsys_initcall, before either driver probes (spec L6B 5.6.8).
+ */
+static int __init fimc_is_camera_class_init(void)
+{
+	struct class *cls = class_create("camera");
+
+	if (IS_ERR(cls)) {
+		pr_err("Failed to create class(camera)!\n");
+		return PTR_ERR(cls);
+	}
+	camera_class = cls;
+
+	return 0;
+}
+subsys_initcall(fimc_is_camera_class_init);
 struct device *camera_front_dev;
 struct device *camera_rear_dev;
 #ifdef CONFIG_SECURE_CAMERA_USE
@@ -245,7 +265,7 @@ static ssize_t camera_ssrm_camera_info_store(struct device *dev,
 	ret_count = sscanf(buf, "%d%d%d%d%d%d%d", &temp.operation, &temp.cameraID, &temp.previewMinFPS,
 		&temp.previewMaxFPS, &temp.previewSizeWidth,  &temp.previewSizeHeight, &temp.sensorOn);
 
-	if (ret_count > sizeof(SsrmCameraInfo)/sizeof(int))
+	if (ret_count > sizeof(SsrmCameraInfo)/(sizeof(int)))	/* stock bound kept; parenthesized for -Wsizeof-array-div */
 		return -EINVAL;
 
 	switch (temp.operation) {
@@ -2357,7 +2377,7 @@ static ssize_t camera_front_sensorid_exif_show(struct device *dev,
 }
 #endif
 
-int camera_fw_show_sub(char *path, char *buf, int startPos, int readsize)
+static int camera_fw_show_sub(char *path, char *buf, int startPos, int readsize)
 {
 	struct file *fp = NULL;
 	long fsize, nread;
@@ -2562,6 +2582,8 @@ static ssize_t camera_iris_checkfw_factory_show(struct device *dev,
 	}
 }
 
+#endif /* CONFIG_SECURE_CAMERA_USE: stock kept the hwparam block below inside the iris block, which only built with SECURE_CAMERA=y */
+
 #ifdef USE_CAMERA_HW_BIG_DATA
 static ssize_t rear_camera_hw_param_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -2701,6 +2723,7 @@ static ssize_t iris_camera_hw_param_store(struct device *dev,
 #endif
 #endif
 
+#ifdef CONFIG_SECURE_CAMERA_USE	/* reopened: see the #endif above rear_camera_hw_param_show() */
 static ssize_t camera_iris_checkfw_user_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -3007,7 +3030,7 @@ static DEVICE_ATTR(iris_hwparam, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH,
 #endif
 #endif
 
-int svc_cheating_prevent_device_file_create(struct kobject **obj)
+static int svc_cheating_prevent_device_file_create(struct kobject **obj)
 {
 	struct kernfs_node *svc_sd;
 	struct kobject *data;
@@ -3049,8 +3072,8 @@ int fimc_is_create_sysfs(struct fimc_is_core *core)
 
 	svc_cheating_prevent_device_file_create(&svc);
 
-	if (camera_class == NULL) {
-		camera_class = class_create(THIS_MODULE, "camera");
+	if (camera_class == NULL) {	/* normally created by fimc_is_camera_class_init() */
+		camera_class = class_create("camera");
 		if (IS_ERR(camera_class)) {
 			pr_err("Failed to create class(camera)!\n");
 			return PTR_ERR(camera_class);
@@ -3419,7 +3442,7 @@ int fimc_is_create_sysfs(struct fimc_is_core *core)
 	return 0;
 }
 
-int fimc_is_destroy_sysfs(struct fimc_is_core *core)
+static __maybe_unused int fimc_is_destroy_sysfs(struct fimc_is_core *core)
 {
 	if (camera_front_dev) {
 		device_remove_file(camera_front_dev, &dev_attr_front_sensorid);

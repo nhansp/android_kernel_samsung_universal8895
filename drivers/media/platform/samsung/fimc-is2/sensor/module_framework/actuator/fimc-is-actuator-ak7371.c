@@ -152,7 +152,7 @@ p_err:
 	return ret;
 }
 
-int sensor_ak7371_actuator_init(struct v4l2_subdev *subdev, u32 val)
+static int sensor_ak7371_actuator_init(struct v4l2_subdev *subdev, u32 val)
 {
 	int ret = 0;
 	u8 product_id = 0;
@@ -234,7 +234,7 @@ p_err:
 	return ret;
 }
 
-int sensor_ak7371_actuator_get_status(struct v4l2_subdev *subdev, u32 *info)
+static int sensor_ak7371_actuator_get_status(struct v4l2_subdev *subdev, u32 *info)
 {
 	int ret = 0;
 	struct fimc_is_actuator *actuator = NULL;
@@ -276,7 +276,7 @@ p_err:
 	return ret;
 }
 
-int sensor_ak7371_actuator_set_position(struct v4l2_subdev *subdev, u32 *info)
+static int sensor_ak7371_actuator_set_position(struct v4l2_subdev *subdev, u32 *info)
 {
 	int ret = 0;
 	struct fimc_is_actuator *actuator;
@@ -437,10 +437,26 @@ p_err:
 }
 #endif
 
+/*
+ * 6.18 dropped the subdev g/s_ctrl, g/s_ext_ctrls and s/g_parm ops: the
+ * stock handlers are reached through core.ioctl with private codes
+ * (spec L6B 5.6.8; codes in include/fimc-is-compat.h).
+ */
+static long core_ops_fimc_is_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
+{
+	switch (cmd) {
+	case FIMC_IS_SUBDEV_G_CTRL:
+		return sensor_ak7371_actuator_g_ctrl(sd, arg);
+	case FIMC_IS_SUBDEV_S_CTRL:
+		return sensor_ak7371_actuator_s_ctrl(sd, arg);
+	}
+
+	return -ENOIOCTLCMD;
+}
+
 static const struct v4l2_subdev_core_ops core_ops = {
 	.init = sensor_ak7371_actuator_init,
-	.g_ctrl = sensor_ak7371_actuator_g_ctrl,
-	.s_ctrl = sensor_ak7371_actuator_s_ctrl,
+	.ioctl = core_ops_fimc_is_ioctl,
 };
 
 static const struct v4l2_subdev_ops subdev_ops = {
@@ -453,8 +469,7 @@ static struct fimc_is_actuator_ops actuator_ops = {
 #endif
 };
 
-int sensor_ak7371_actuator_probe(struct i2c_client *client,
-		const struct i2c_device_id *id)
+static int sensor_ak7371_actuator_probe(struct i2c_client *client)
 {
 	int ret = 0;
 	struct fimc_is_core *core= NULL;
@@ -545,11 +560,8 @@ p_err:
 	return ret;
 }
 
-static int sensor_ak7371_actuator_remove(struct i2c_client *client)
+static void sensor_ak7371_actuator_remove(struct i2c_client *client)
 {
-	int ret = 0;
-
-	return ret;
 }
 
 static const struct of_device_id exynos_fimc_is_ak7371_match[] = {

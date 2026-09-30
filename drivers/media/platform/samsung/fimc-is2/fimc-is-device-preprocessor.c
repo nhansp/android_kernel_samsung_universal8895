@@ -18,8 +18,8 @@
 #include <linux/device.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
-#include <video/videonode.h>
-#include <media/exynos_mc.h>
+#include <media/exynos8895-compat.h>
+/* stock <media/exynos_mc.h> (4.4 Exynos media-device header): nothing of it is used */
 #include <asm/cacheflush.h>
 #include <asm/pgtable.h>
 #include <linux/firmware.h>
@@ -672,18 +672,28 @@ static int fimc_is_preproc_probe(struct platform_device *pdev)
 	pm_runtime_enable(&pdev->dev);
 #endif
 
+	/*
+	 * fimc_is is the only master of the camera SysMMUs; DMA goes through its
+	 * mappings, and resuming this device must resume fimc_is (and through
+	 * exynos-iommu's own links the SysMMUs): spec L6B 4.5, 5.6.5. Stock
+	 * DL_FLAG_RPM_ACTIVE is not used: the preprocessor is runtime-suspended here,
+	 * so it would hold fimc_is active until the first open/close.
+	 */
+	if (!device_link_add(&pdev->dev, &core->pdev->dev,
+			     DL_FLAG_PM_RUNTIME | DL_FLAG_AUTOREMOVE_CONSUMER)) {
+		ret = -EINVAL;
+		goto p_err;
+	}
+
 p_err:
 	info("[%d][PRE:D] %s():%d\n", instance, __func__, ret);
 	return ret;
 }
 
-static int fimc_is_preproc_remove(struct platform_device *pdev)
+static void fimc_is_preproc_remove(struct platform_device *pdev)
 {
-	int ret = 0;
 
 	info("%s\n", __func__);
-
-	return ret;
 }
 
 static int fimc_is_preproc_suspend(struct device *dev)
@@ -929,7 +939,7 @@ static const struct dev_pm_ops fimc_is_preproc_pm_ops = {
 #ifdef CONFIG_OF
 static const struct of_device_id exynos_fimc_is_preproc_match[] = {
 	{
-		.compatible = "samsung,exynos5-fimc-is-preprocessor",
+		.compatible = "samsung,exynos8895-fimc-is-preprocessor",	/* stock "samsung,exynos5-fimc-is-preprocessor" (FDT:11562) */
 	},
 	{},
 };
@@ -958,7 +968,7 @@ MODULE_DEVICE_TABLE(platform, fimc_is_preproc_driver_ids);
 
 static struct platform_driver fimc_is_preproc_driver = {
 	.probe		= fimc_is_preproc_probe,
-	.remove 	= __devexit_p(fimc_is_preproc_remove),
+	.remove 	= fimc_is_preproc_remove,
 	.id_table	= fimc_is_preproc_driver_ids,
 	.driver	  = {
 		.name	= FIMC_IS_PREPROC_DEV_NAME,

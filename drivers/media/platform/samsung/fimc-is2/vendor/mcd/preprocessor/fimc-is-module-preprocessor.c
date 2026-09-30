@@ -167,7 +167,7 @@ static int sensor_preproc_stream_off(struct v4l2_subdev *subdev)
 	return ret;
 }
 
-int sensor_preproc_get_mode(struct v4l2_subdev *subdev,
+static int sensor_preproc_get_mode(struct v4l2_subdev *subdev,
 		struct fimc_is_device_sensor *device, u16 *mode_select)
 {
 	struct fimc_is_preprocessor *preprocessor;
@@ -997,7 +997,7 @@ p_err:
 	return ret;
 }
 
-int sensor_preproc_deinit(struct v4l2_subdev *subdev)
+static int sensor_preproc_deinit(struct v4l2_subdev *subdev)
 {
 	struct fimc_is_preprocessor *preprocessor;
 	struct fimc_is_module_preprocessor *module_preproc;
@@ -1053,7 +1053,7 @@ exit:
 	return ret;
 }
 
-int sensor_preproc_s_format(struct v4l2_subdev *subdev, struct fimc_is_device_sensor *device)
+static int sensor_preproc_s_format(struct v4l2_subdev *subdev, struct fimc_is_device_sensor *device)
 {
 	struct fimc_is_preprocessor *preprocessor;
 	struct fimc_is_module_preprocessor *module_preproc;
@@ -1265,13 +1265,10 @@ p_err:
 	return ret;
 }
 
-static int sensor_preproc_remove(struct platform_device *pdev)
+static void sensor_preproc_remove(struct platform_device *pdev)
 {
-	int ret = 0;
 
 	info("%s\n", __func__);
-
-	return ret;
 }
 
 #ifdef CONFIG_OF
@@ -1305,7 +1302,7 @@ MODULE_DEVICE_TABLE(platform, fimc_is_device_preproc_driver_ids);
 
 static struct platform_driver fimc_is_device_preproc_driver = {
 	.probe		= sensor_preproc_probe,
-	.remove		= __devexit_p(sensor_preproc_remove),
+	.remove		= sensor_preproc_remove,
 	.id_table	= fimc_is_device_preproc_driver_ids,
 	.driver	  = {
 		.name	= FIMC_IS_DEV_COMP_DEV_NAME,

@@ -11,4 +11,4 @@ obj-$(CONFIG_EXYNOS_FIMC_IS) += fimc-is-v3_11_0/
 obj-$(CONFIG_EXYNOS_FIMC_IS) += fimc-is-v3_20_0/
 obj-$(CONFIG_EXYNOS_FIMC_IS) += fimc-is-v5_10_0/
 
-EXTRA_CFLAGS += -Idrivers/media/platform/exynos/fimc-is2/include
+EXTRA_CFLAGS += -I$(srctree)/drivers/media/platform/samsung/fimc-is2/include

@@ -28,7 +28,7 @@ config CAMERA_MC_SCALER_VER2_USE
         help
           use mc-scaler version 2(mcs param)
 
-source "drivers/media/platform/exynos/fimc-is2/hardware/api/Kconfig"
+source "drivers/media/platform/samsung/fimc-is2/hardware/api/Kconfig"
 endmenu
 
 config USE_HW_API_COMMON
