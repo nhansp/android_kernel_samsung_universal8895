@@ -328,3 +328,13 @@ config GREATLTE_HB_L6K
 	  Registers the L6K heartbeat rows: the certify-hall gpio-keys and
 	  mcinfo drivers, the four DMC over-temperature interrupt counts and
 	  the AP/WF/PA thermistor zones. Never enable in a release build.
+
+# L6I heartbeat rows (WP l6ki, DEBUG, spec L6I 5.3)
+config GREATLTE_HB_L6I
+	bool "greatlte heartbeat: L6I NFC controller (debug only)"
+	depends on GREATLTE_HB
+	default GREATLTE_HB
+	help
+	  Registers the L6I heartbeat rows: the sec-nfc driver binding, its
+	  interrupt count, its CLKOUT1 reference clock and the VDD_NFC_1P8
+	  rail. Never enable in a release build.
