@@ -632,6 +632,23 @@ config CHARGER_MAX77865
 	  safety-timer rules, the USB OTG VBUS boost regulator and the
 	  power-off-with-charger restart into LP charging.
 
+config CHARGER_MAX77865_CHARGE_CONTROL
+	bool "Maxim MAX77865 charge control (stock charge policy)"
+	depends on CHARGER_MAX77865
+	help
+	  Let the MAX77865 charger driver take charge control when the device
+	  tree asks for it ("samsung,charge-control"): the stock charger init
+	  and the stock charge policy, which switch charging on and off and set
+	  the input limit, charge current, top-off current and float voltage.
+
+	  Without this option the driver stays in monitor-only mode whatever
+	  the device tree says: it reports the charger, cable and battery
+	  state, keeps an enabled charger watchdog kicked and writes no
+	  register that starts or stops charging or changes a limit, so the
+	  configuration S-Boot left stays in charge.
+
+	  If unsure, say N.
+
 config CHARGER_MAX77976
 	tristate "Maxim MAX77976 battery charger driver"
 	depends on I2C

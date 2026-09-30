@@ -3,7 +3,8 @@
  * Maxim MAX77865 charger (Samsung Galaxy Note 8, greatlte)
  *
  * Charger page at I2C 0x69. Supplies "max77865-charger", "ac" and "usb"; in charge
- * control (DT "samsung,charge-control") the stock init and the stock sec_battery
+ * control (DT "samsung,charge-control", honoured only with
+ * CONFIG_CHARGER_MAX77865_CHARGE_CONTROL) the stock init and the stock sec_battery
  * charge policy (thermal, swelling, full, recharge, safety timer); the USB OTG VBUS
  * boost as a regulator; the power-off-with-charger restart into LP charging.
  * Spec rewrite/spec/L6F_power_input_misc.md 5.3 (L6F below).
@@ -1658,6 +1659,11 @@ static int max77865_charger_probe(struct i2c_client *client)
 	/* stock lpcharge (S:drivers/staging/samsung/sec_batt.c:24-33) */
 	chg->lpcharge = !!strstr(saved_command_line, "androidboot.mode=charger");
 	chg->charge_control = of_property_read_bool(dev->of_node, "samsung,charge-control");
+	if (chg->charge_control && !IS_ENABLED(CONFIG_CHARGER_MAX77865_CHARGE_CONTROL)) {
+		/* charging control is built only on request (Kconfig help) */
+		dev_warn(dev, "samsung,charge-control ignored: CONFIG_CHARGER_MAX77865_CHARGE_CONTROL is not set\n");
+		chg->charge_control = false;
+	}
 
 	ret = of_property_read_string(dev->of_node, "samsung,battery-ntc", &chg->tz_name);
 	if (ret)

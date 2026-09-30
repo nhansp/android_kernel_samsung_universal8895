@@ -47,3 +47,5 @@ obj-$(CONFIG_GREATLTE_HB_L6D_BT)	+= greatlte-hb-l6d-bt.o
 
 # DEBUG: CoreSight PC sampling at panic
 obj-$(CONFIG_GREATLTE_CSPC)		+= greatlte-cspc.o
+# L6F slice fp (WP-6F)
+obj-$(CONFIG_GREATLTE_HB_L6F_FP)	+= greatlte-hb-l6f-fp.o

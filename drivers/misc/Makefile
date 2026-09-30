@@ -79,3 +79,5 @@ obj-$(CONFIG_MISC_RP1)		+= rp1/
 obj-$(CONFIG_PKVM_SMC_FILTER)	+= pkvm-smc/
 obj-$(CONFIG_PKVM_IOMMU_TEMPLATE)  += pkvm-iommu-temp/
 obj-$(CONFIG_BCM43XX_BT_LPM)		+= bcm43xx_bt_lpm.o
+# WP-6F (L6F 5.10)
+obj-$(CONFIG_VFSSPI_EXYNOS8895)	+= vfsspi_exynos8895.o

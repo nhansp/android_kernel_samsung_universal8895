@@ -674,6 +674,18 @@ config BCM43XX_BT_LPM
 	bool "BCM43xx Bluetooth power, BT_WAKE and HOST_WAKE (Exynos8895 greatlte)"
 	depends on OF && GPIOLIB && RFKILL=y && SERIAL_SAMSUNG=y
 
+# WP-6F (L6F 5.10): greatlte fingerprint sensor, non-secure side
+config VFSSPI_EXYNOS8895
+	bool "Synaptics VFS8xxx fingerprint sensor on a TEE-owned SPI (Exynos 8895)"
+	depends on ARCH_EXYNOS && OF
+	select EXYNOS8895_SMC
+	help
+	  The non-secure side of the Galaxy Note 8 fingerprint sensor: sensor
+	  power, the SPI clocks the secure world needs, the DRDY interrupt and
+	  the suspend/resume calls to EL3. The secure world owns the SPI
+	  controller. Provides /dev/vfsspi with the stock ioctls and
+	  /sys/class/fingerprint/fingerprint for the vendor fingerprint HAL.
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"
