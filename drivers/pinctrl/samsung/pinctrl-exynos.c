@@ -19,6 +19,7 @@
 #include <linux/irqdomain.h>
 #include <linux/irq.h>
 #include <linux/irqchip/chained_irq.h>
+#include <linux/mfd/syscon.h>
 #include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/slab.h>
@@ -28,6 +29,7 @@
 #include <linux/err.h>
 #include <linux/soc/samsung/exynos-pmu.h>
 #include <linux/soc/samsung/exynos-regs-pmu.h>
+#include <linux/soc/samsung/exynos8895-pm.h>
 
 #include "pinctrl-samsung.h"
 #include "pinctrl-exynos.h"
@@ -534,6 +536,16 @@ static int exynos_wkup_irq_set_wake(struct irq_data *irqd, unsigned int on)
 		eint_wake_mask_values[0] &= ~bit;
 
 	return 0;
+}
+
+/*
+ * The EINT wake mask for the Exynos8895 PM driver's SICD and SLEEP entries
+ * (spec L7 5.6), which write it to PMU 0x60C as stock did from
+ * exynos_get_eint_wake_mask() (S:drivers/pinctrl/samsung/pinctrl-exynos.c:411-416).
+ */
+u32 exynos_pinctrl_get_eint_wake_mask(void)
+{
+	return READ_ONCE(eint_wake_mask_values[0]);
 }
 
 static void
@@ -1100,6 +1112,66 @@ exynos_retention_init(struct samsung_pinctrl_drv_data *drvdata,
 	/* Ensure that retention is disabled on driver init */
 	for (i = 0; i < ctrl->nr_regs; i++)
 		regmap_write(pmu_regs, ctrl->regs[i], ctrl->value);
+
+	return ctrl;
+}
+
+/*
+ * Exynos8895 variant: the stock PMUCAL writes of the PAD_RETENTION_*_OPTION
+ * registers are read-modify-writes of bit 28 only
+ * (CAL:pmucal_system_exynos8895.h:1506-1514, mask (0x1 << 28); stock
+ * pmucal_rae_write() S:drivers/soc/samsung/cal-if/pmucal_rae.c:112-122), so
+ * the other bits of these registers are left alone here as well.
+ */
+static void exynos_retention_disable_rmw(struct samsung_pinctrl_drv_data *drvdata)
+{
+	struct samsung_retention_ctrl *ctrl = drvdata->retention_ctrl;
+	int i;
+
+	if (ctrl->refcnt && !atomic_dec_and_test(ctrl->refcnt))
+		return;
+
+	for (i = 0; i < ctrl->nr_regs; i++)
+		regmap_update_bits(ctrl->priv, ctrl->regs[i], ctrl->value, ctrl->value);
+}
+
+/*
+ * Not exynos_get_pmu_regmap(): it returns -EPROBE_DEFER until the exynos-pmu
+ * driver is bound, and the 8895 PMU node comes after five of the pin
+ * controllers in the population order, so they (and every consumer of their
+ * pins) would move to late_initcall. The 8895 PMU is a plain MMIO syscon
+ * (no pmu_secure), for which the PMU probe itself only calls
+ * syscon_node_to_regmap() (A:drivers/soc/samsung/exynos-pmu.c:648-654);
+ * syscon creates or returns the one cached regmap of the node in either
+ * order (A:drivers/mfd/syscon.c:170-196,274-294).
+ */
+struct samsung_retention_ctrl *
+exynos_retention_init_rmw(struct samsung_pinctrl_drv_data *drvdata,
+			  const struct samsung_retention_data *data)
+{
+	struct samsung_retention_ctrl *ctrl;
+	struct regmap *pmu_regs;
+	int i;
+
+	ctrl = devm_kzalloc(drvdata->dev, sizeof(*ctrl), GFP_KERNEL);
+	if (!ctrl)
+		return ERR_PTR(-ENOMEM);
+
+	pmu_regs = syscon_regmap_lookup_by_compatible("samsung,exynos8895-pmu");
+	if (IS_ERR(pmu_regs))
+		return ERR_CAST(pmu_regs);
+
+	ctrl->priv = pmu_regs;
+	ctrl->regs = data->regs;
+	ctrl->nr_regs = data->nr_regs;
+	ctrl->value = data->value;
+	ctrl->refcnt = data->refcnt;
+	ctrl->enable = exynos_retention_enable;
+	ctrl->disable = exynos_retention_disable_rmw;
+
+	/* Ensure that retention is disabled on driver init, RMW */
+	for (i = 0; i < ctrl->nr_regs; i++)
+		regmap_update_bits(pmu_regs, ctrl->regs[i], ctrl->value, ctrl->value);
 
 	return ctrl;
 }

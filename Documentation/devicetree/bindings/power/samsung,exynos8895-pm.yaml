@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/samsung,exynos8895-pm.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8895 system power management
+
+maintainers:
+  - nhansp <nhan.094.vn@gmail.com>
+
+description: |
+  System suspend (SLEEP and its VTS/AUD variants), the system idle clock-down
+  (SICD) veto and the suspend voltages of the BUCK8-11 rails (PM-DVS) of the
+  Samsung Exynos8895 SoC. The registers are PMU registers and the PMUCAL
+  sequences are built into the driver; the node is a child of the Exynos PMU
+  system controller. Local binding of the greatlte port (spec L7 4.4), not for
+  upstream.
+
+properties:
+  compatible:
+    const: samsung,exynos8895-pm
+
+  vdd-mldo-supply:
+    description: BUCK11 "vdd_mldo"; a missing supply skips PM-DVS for it.
+
+  vdd-lldo1-supply:
+    description: BUCK8 "vdd_lldo1"; a missing supply skips PM-DVS for it.
+
+  vdd-lldo2-supply:
+    description: BUCK9 "vdd_lldo2"; a missing supply skips PM-DVS for it.
+
+  vdd-lldo3-supply:
+    description: BUCK10 "vdd_lldo3"; a missing supply skips PM-DVS for it.
+
+  samsung,acpm:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      ACPM IPC node, used only for the optional APM sleep handshake of the MIF
+      and INT DVFS domains.
+
+  samsung,sicd-veto:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    maxItems: 96
+    items:
+      items:
+        - description: node whose IP must be idle for SICD
+        - description:
+            busy predicate, include/dt-bindings/soc/samsung,exynos8895-pm.h;
+            0 first clock enabled, 1 not runtime-suspended, 2 I2C bus lock
+            held, 3 a PWM channel running. The first clock of a kind-0 node
+            must be a gate of an always-on CMU registered without runtime PM.
+          enum: [0, 1, 2, 3]
+    description:
+      The stock idle-IP devices that must be idle before SICD. Without the
+      property SICD is never entered. Entries whose node is disabled are
+      ignored.
+
+required:
+  - compatible
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/soc/samsung,exynos8895-pm.h>
+
+    power-management {
+        compatible = "samsung,exynos8895-pm";
+        vdd-mldo-supply = <&buck11_reg>;
+        vdd-lldo1-supply = <&buck8_reg>;
+        vdd-lldo2-supply = <&buck9_reg>;
+        vdd-lldo3-supply = <&buck10_reg>;
+        samsung,acpm = <&acpm_ipc>;
+        samsung,sicd-veto = <&pwm E8895_SICD_VETO_PWM>,
+                            <&ufs E8895_SICD_VETO_CLK>,
+                            <&hsi2c_1 E8895_SICD_VETO_I2C>,
+                            <&mmc E8895_SICD_VETO_RPM>;
+    };

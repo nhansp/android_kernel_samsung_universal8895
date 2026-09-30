@@ -662,6 +662,24 @@
 #define EXYNOS5433_PAD_RETENTION_UFS_OPTION			(0x3268)
 #define EXYNOS5433_PAD_RETENTION_FSYSGENIO_OPTION		(0x32A8)
 
+/*
+ * For Exynos8895: PMU PAD retention OPTION registers; bit 28
+ * (EXYNOS_WAKEUP_FROM_LOWPWR) releases the retention after SLEEP.
+ * CAL:pmucal_system_exynos8895.h:1506-1514 (exit_sleep; CAL: =
+ * S:drivers/soc/samsung/cal-if/exynos8895/). UART_BT (0x3188) is released by
+ * the exynos8895-pm driver's .complete instead (CAL:...:1515 is commented out;
+ * S:drivers/tty/serial/samsung.c:133,2123-2124).
+ */
+#define EXYNOS8895_PAD_RETENTION_LPDDR4_OPTION			(0x3008)
+#define EXYNOS8895_PAD_RETENTION_TOP_OPTION			(0x3068)
+#define EXYNOS8895_PAD_RETENTION_SPI_OPTION			(0x3088)
+#define EXYNOS8895_PAD_RETENTION_BOOTLDO_0_OPTION		(0x30A8)
+#define EXYNOS8895_PAD_RETENTION_BOOTLDO_1_OPTION		(0x30C8)
+#define EXYNOS8895_PAD_RETENTION_MMC0_OPTION			(0x30E8)
+#define EXYNOS8895_PAD_RETENTION_MMC2_OPTION			(0x3108)
+#define EXYNOS8895_PAD_RETENTION_PCIE_OPTION			(0x3128)
+#define EXYNOS8895_PAD_RETENTION_UFS_CARD_OPTION		(0x3168)
+
 /* For Exynos990 */
 #define EXYNOS990_PHY_CTRL_USB20				(0x72C)
 

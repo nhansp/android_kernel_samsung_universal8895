@@ -18,6 +18,7 @@
 #include <linux/mfd/samsung/irq.h>
 #include <linux/mfd/samsung/rtc.h>
 #include <linux/mfd/samsung/s2mps14.h>
+#include <linux/mfd/samsung/s2mps17.h>
 
 /*
  * Maximum number of retries for checking changes in UDR field
@@ -58,6 +59,7 @@ enum {
  * S2MPS11/14 | WUDR       | RUDR      | WUDR + RUDR
  * S2MPS13    | WUDR       | RUDR      | WUDR + AUDR
  * S2MPS15    | WUDR       | RUDR      | AUDR
+ * S2MPS17    | WUDR       | RUDR      | AUDR   (full write + 1 ms, no poll)
  */
 struct s5m_rtc_reg_config {
 	/* Number of registers used for setting time/alarm0/alarm1 */
@@ -160,6 +162,25 @@ static const struct s5m_rtc_reg_config s2mps15_rtc_regs = {
 	.write_alarm_udr_mask	= S2MPS15_RTC_AUDR_MASK,
 };
 
+/*
+ * Register map for S2MPS17 (S:include/linux/mfd/samsung/rtc-s2mp.h:45-72).
+ * autoclear_udr_mask = 0: stock never polls UPDATE, it sleeps 1 ms after each
+ * write (S:drivers/rtc/rtc-s2mps17.c:132-137); the UDR writes go through
+ * s2mps17_rtc_udr().
+ */
+static const struct s5m_rtc_reg_config s2mps17_rtc_regs = {
+	.regs_count		= 7,			/* NR_RTC_CNT_REGS, S:include/linux/mfd/samsung/rtc-s2mp.h:133-144 */
+	.time			= S2MPS17_RTC_SEC,
+	.ctrl			= S2MPS17_RTC_CTRL,
+	.alarm0			= S2MPS17_RTC_A0SEC,
+	.alarm1			= S2MPS17_RTC_A1SEC,
+	.udr_update		= S2MPS17_RTC_UPDATE,
+	.autoclear_udr_mask	= 0,
+	.read_time_udr_mask	= S2MPS_RTC_RUDR_MASK,	/* S:drivers/rtc/rtc-s2mps17.c:117 RTC_RUDR_MASK */
+	.write_time_udr_mask	= S2MPS15_RTC_WUDR_MASK,/* S:drivers/rtc/rtc-s2mps17.c:120 RTC_WUDR_MASK_REV */
+	.write_alarm_udr_mask	= S2MPS15_RTC_AUDR_MASK,/* S:drivers/rtc/rtc-s2mps17.c:123 RTC_AUDR_MASK_REV */
+};
+
 struct s5m_rtc_info {
 	struct device *dev;
 	struct sec_pmic_dev *s5m87xx;
@@ -169,6 +190,8 @@ struct s5m_rtc_info {
 	enum sec_device_type device_type;
 	int rtc_24hr_mode;
 	const struct s5m_rtc_reg_config	*regs;
+	/* S2MPS17: UPDATE value read at probe, FREEZE and RUDR cleared */
+	unsigned int udr_base;
 };
 
 static const struct regmap_config s5m_rtc_regmap_config = {
@@ -262,6 +285,12 @@ static int s5m_check_pending_alarm_interrupt(struct s5m_rtc_info *info,
 				&val);
 		val &= S2MPS_ALARM0_STATUS;
 		break;
+	case S2MPS17X:
+		/* S:drivers/rtc/rtc-s2mps17.c:303-320: PMIC STATUS2 0x0D, RTCA0E bit 2 */
+		ret = regmap_read(info->s5m87xx->regmap_pmic,
+				  S2MPS17_PMIC_REG_STATUS2, &val);
+		val &= S2MPS_ALARM0_STATUS;
+		break;
 	default:
 		return -EINVAL;
 	}
@@ -276,9 +305,47 @@ static int s5m_check_pending_alarm_interrupt(struct s5m_rtc_info *info,
 	return 0;
 }
 
+/*
+ * S2MPS17: stock writes the whole UPDATE register = op bit | the probe-time
+ * value with FREEZE and RUDR cleared, then sleeps 1 ms
+ * (S:drivers/rtc/rtc-s2mps17.c:104-140 s2m_rtc_update, :616-626 update_reg).
+ * The RMW + poll used for the other chips would leave a previous op bit set
+ * if the chip does not self-clear it; stock documents a RUDR/WUDR
+ * clear-timing hazard (S:drivers/rtc/rtc-s2mps17.c:205-209).
+ */
+static int s2mps17_rtc_udr(struct s5m_rtc_info *info, unsigned int op)
+{
+	int ret = regmap_write(info->regmap, S2MPS17_RTC_UPDATE,
+			       op | info->udr_base);
+
+	if (ret < 0)
+		dev_err(info->dev, "fail to write update reg(%d,%u)\n", ret,
+			op | info->udr_base);
+	else
+		usleep_range(1000, 1000);	/* S:drivers/rtc/rtc-s2mps17.c:137 */
+
+#ifdef CONFIG_GREATLTE_HB_L7
+	/* DEBUG (spec L7 5.10.4 item 10, O7-18): which UPDATE op bits self-clear */
+	if (!ret) {
+		static unsigned int seen[5];	/* per op bit 0..4 */
+		unsigned int b = __ffs(op), v;
+
+		if (b < ARRAY_SIZE(seen) && seen[b] < 3 &&
+		    !regmap_read(info->regmap, S2MPS17_RTC_UPDATE, &v)) {
+			seen[b]++;
+			dev_info(info->dev, "s2mps17: udr op=0x%02x after 1ms=0x%02x\n", op, v);
+		}
+	}
+#endif
+	return ret;
+}
+
 static int s5m8767_rtc_set_time_reg(struct s5m_rtc_info *info)
 {
 	int ret;
+
+	if (info->device_type == S2MPS17X)	/* S:drivers/rtc/rtc-s2mps17.c:199 */
+		return s2mps17_rtc_udr(info, S2MPS15_RTC_WUDR_MASK);
 
 	ret = regmap_set_bits(info->regmap, info->regs->udr_update,
 			      info->regs->write_time_udr_mask);
@@ -306,11 +373,16 @@ static int s5m8767_rtc_set_alarm_reg(struct s5m_rtc_info *info)
 	case S2MPS15X:
 	case S2MPS14X:
 	case S2MPS13X:
+	case S2MPS17X:
 		/* No exceptions needed */
 		break;
 	default:
 		return -EINVAL;
 	}
+
+	/* S:drivers/rtc/rtc-s2mps17.c:370,386 */
+	if (info->device_type == S2MPS17X)
+		return s2mps17_rtc_udr(info, S2MPS15_RTC_AUDR_MASK);
 
 	ret = regmap_update_bits(info->regmap, info->regs->udr_update,
 				 udr_mask, info->regs->write_alarm_udr_mask);
@@ -336,7 +408,12 @@ static int s5m_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	u8 data[RTC_MAX_NUM_TIME_REGS];
 	int ret;
 
-	if (info->regs->read_time_udr_mask) {
+	if (info->device_type == S2MPS17X) {
+		/* S:drivers/rtc/rtc-s2mps17.c:149 */
+		ret = s2mps17_rtc_udr(info, S2MPS_RTC_RUDR_MASK);
+		if (ret)
+			return ret;
+	} else if (info->regs->read_time_udr_mask) {
 		ret = regmap_set_bits(info->regmap, info->regs->udr_update,
 				      info->regs->read_time_udr_mask);
 		if (ret) {
@@ -357,6 +434,7 @@ static int s5m_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	case S2MPS15X:
 	case S2MPS14X:
 	case S2MPS13X:
+	case S2MPS17X:
 		s5m8767_data_to_tm(data, tm, info->rtc_24hr_mode);
 		break;
 
@@ -381,6 +459,7 @@ static int s5m_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	case S2MPS15X:
 	case S2MPS14X:
 	case S2MPS13X:
+	case S2MPS17X:
 		ret = s5m8767_tm_to_data(tm, data);
 		break;
 	default:
@@ -408,6 +487,13 @@ static int s5m_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	u8 data[RTC_MAX_NUM_TIME_REGS];
 	int ret, i;
 
+	if (info->device_type == S2MPS17X) {
+		/* S:drivers/rtc/rtc-s2mps17.c:280 */
+		ret = s2mps17_rtc_udr(info, S2MPS_RTC_RUDR_MASK);
+		if (ret < 0)
+			return ret;
+	}
+
 	ret = regmap_bulk_read(info->regmap, info->regs->alarm0, data,
 			info->regs->regs_count);
 	if (ret < 0)
@@ -419,6 +505,7 @@ static int s5m_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	case S2MPS15X:
 	case S2MPS14X:
 	case S2MPS13X:
+	case S2MPS17X:
 		s5m8767_data_to_tm(data, &alrm->time, info->rtc_24hr_mode);
 		alrm->enabled = 0;
 		for (i = 0; i < info->regs->regs_count; i++) {
@@ -458,6 +545,7 @@ static int s5m_rtc_stop_alarm(struct s5m_rtc_info *info)
 	case S2MPS15X:
 	case S2MPS14X:
 	case S2MPS13X:
+	case S2MPS17X:
 		for (i = 0; i < info->regs->regs_count; i++)
 			data[i] &= ~ALARM_ENABLE_MASK;
 
@@ -497,6 +585,7 @@ static int s5m_rtc_start_alarm(struct s5m_rtc_info *info)
 	case S2MPS15X:
 	case S2MPS14X:
 	case S2MPS13X:
+	case S2MPS17X:
 		data[RTC_SEC] |= ALARM_ENABLE_MASK;
 		data[RTC_MIN] |= ALARM_ENABLE_MASK;
 		data[RTC_HOUR] |= ALARM_ENABLE_MASK;
@@ -535,6 +624,7 @@ static int s5m_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	case S2MPS15X:
 	case S2MPS14X:
 	case S2MPS13X:
+	case S2MPS17X:
 		s5m8767_tm_to_data(&alrm->time, data);
 		break;
 
@@ -591,6 +681,68 @@ static const struct rtc_class_ops s5m_rtc_ops = {
 	.alarm_irq_enable = s5m_rtc_alarm_irq_enable,
 };
 
+/*
+ * S2MPS17 register init, in stock order: S:drivers/rtc/rtc-s2mps17.c:610-688
+ * (init_reg) and :569-595 (WTSR/SMPL, called from probe :754-756).
+ */
+static int s2mps17_rtc_init_reg(struct s5m_rtc_info *info)
+{
+	unsigned int upd, ctrl, capsel;
+	int ret;
+
+	ret = regmap_read(info->regmap, S2MPS17_RTC_UPDATE, &upd);	/* :616 */
+	if (ret)
+		return ret;
+	/* stock also clears info->wudr_mask | info->audr_mask, which are never
+	 * assigned, i.e. 0 (S:drivers/rtc/rtc-s2mps17.c:49-50,623-624) */
+	info->udr_base = upd & ~(S2MPS17_RTC_FREEZE_MASK | S2MPS_RTC_RUDR_MASK);
+	ret = regmap_write(info->regmap, S2MPS17_RTC_UPDATE, info->udr_base);	/* :626 */
+	if (ret)
+		return ret;
+	s2mps17_rtc_udr(info, S2MPS_RTC_RUDR_MASK);			/* :633, result unused as stock */
+	ret = regmap_read(info->regmap, S2MPS17_RTC_CTRL, &ctrl);	/* :635 */
+	if (!ret)
+		ret = regmap_read(info->regmap, S2MPS17_RTC_CAPSEL, &capsel);	/* :642 */
+	if (ret)
+		return ret;
+#ifdef CONFIG_GREATLTE_HB_L7
+	/* DEBUG (spec L7 5.10.4 item 10) */
+	dev_info(info->dev, "s2mps17: rtc ctrl=0x%02x capsel=0x%02x update=0x%02x\n",
+		 ctrl, capsel, upd);
+#endif
+
+	if (!(ctrl & MODEL24_MASK) ||
+	    (capsel & S2MPS17_RTC_CAPSEL_INIT) != S2MPS17_RTC_CAPSEL_INIT) {	/* :650 */
+		/* RTC registers were reset (e.g. battery out): stock re-inits and
+		 * sets its init_time */
+		struct rtc_time tm = {
+			.tm_sec = 0, .tm_min = 0, .tm_hour = 12,	/* FDT:6940-6942 */
+			.tm_mday = 1, .tm_mon = 0, .tm_year = 117,	/* FDT:6943-6945: 2017-01-01 */
+			.tm_wday = 0,					/* FDT:6946 */
+		};
+
+		dev_warn(info->dev, "s2mps17: RTC registers were reset, initialising\n");
+		/* :659-660, binary + 24 h */
+		ret = regmap_write(info->regmap, S2MPS17_RTC_CTRL, MODEL24_MASK);
+		if (!ret)
+			ret = s2mps17_rtc_udr(info, S2MPS15_RTC_AUDR_MASK);	/* :667 */
+		if (!ret)
+			ret = regmap_write(info->regmap, S2MPS17_RTC_CAPSEL,
+					   capsel | S2MPS17_RTC_CAPSEL_INIT);	/* :671-672 */
+		if (!ret)
+			ret = s5m_rtc_set_time(info->dev, &tm);		/* :679-681 */
+		if (ret)
+			return ret;
+	}
+
+	/* WTSR + SMPL; check_jigon = 0 (FDT:6939), so no JIGONB read (:575-576) */
+	ret = regmap_write(info->regmap, S2MPS17_RTC_WTSR_SMPL,
+			   S2MPS17_RTC_WTSR_SMPL_INIT);
+	if (!ret)
+		dev_info(info->dev, "s2mps17: WTSR: enable, SMPL: enable\n");	/* :583-585 */
+	return ret;
+}
+
 static int s5m8767_rtc_init_reg(struct s5m_rtc_info *info)
 {
 	u8 data[2];
@@ -628,6 +780,10 @@ static int s5m8767_rtc_init_reg(struct s5m_rtc_info *info)
 		 * really.
 		 */
 		ret = s5m8767_rtc_set_alarm_reg(info);
+		break;
+
+	case S2MPS17X:
+		ret = s2mps17_rtc_init_reg(info);
 		break;
 
 	default:
@@ -720,6 +876,9 @@ static int s5m_rtc_probe(struct platform_device *pdev)
 	} else if (device_type == S2MPG10) {
 		info->regs = &s2mpg10_rtc_regs;
 		alarm_irq = S2MPG10_IRQ_RTCA0;
+	} else if (device_type == S2MPS17X) {
+		info->regs = &s2mps17_rtc_regs;
+		alarm_irq = S2MPS17_IRQ_RTCA0;	/* INT2 bit 2, S:drivers/mfd/s2mps17_irq.c:68 */
 	} else {
 		return dev_err_probe(&pdev->dev, -ENODEV,
 				     "Unsupported device type %d\n",
@@ -811,12 +970,26 @@ static int s5m_rtc_suspend(struct device *dev)
 
 static SIMPLE_DEV_PM_OPS(s5m_rtc_pm_ops, s5m_rtc_suspend, s5m_rtc_resume);
 
+/*
+ * S2MPS17: clear WTSR_EN and SMPL_EN on reboot and power-off, as stock
+ * (S:drivers/rtc/rtc-s2mps17.c:838-847 -> :597-608, an UPDATE of the two bits).
+ */
+static void s5m_rtc_shutdown(struct platform_device *pdev)
+{
+	struct s5m_rtc_info *info = platform_get_drvdata(pdev);
+
+	if (info && info->device_type == S2MPS17X)
+		regmap_update_bits(info->regmap, S2MPS17_RTC_WTSR_SMPL,
+				   WTSR_ENABLE_MASK | SMPL_ENABLE_MASK, 0);
+}
+
 static const struct platform_device_id s5m_rtc_id[] = {
 	{ "s5m-rtc",		S5M8767X },
 	{ "s2mpg10-rtc",	S2MPG10 },
 	{ "s2mps13-rtc",	S2MPS13X },
 	{ "s2mps14-rtc",	S2MPS14X },
 	{ "s2mps15-rtc",	S2MPS15X },
+	{ "s2mps17-rtc",	S2MPS17X },
 	{ },
 };
 MODULE_DEVICE_TABLE(platform, s5m_rtc_id);
@@ -827,6 +1000,7 @@ static struct platform_driver s5m_rtc_driver = {
 		.pm	= &s5m_rtc_pm_ops,
 	},
 	.probe		= s5m_rtc_probe,
+	.shutdown	= s5m_rtc_shutdown,
 	.id_table	= s5m_rtc_id,
 };
 

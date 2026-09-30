@@ -10,3 +10,880 @@
  * value, which gl-verify V-DUP reports as an error. L0's reserved-memory stays in
  * the .dts; carveout additions and flag changes are &label edits here (plan X-8).
  */
+
+/*
+ * L7 4.2: the arch counter does not tick in SLEEP. Stock removed
+ * CLOCK_SOURCE_SUSPEND_NONSTOP from the arch counter and takes the sleep time
+ * from rtc0 (S:drivers/clocksource/arm_arch_timer.c:455-461; IK:3889-3890);
+ * 6.18 sets NONSTOP unless this property is present
+ * (A:drivers/clocksource/arm_arch_timer.c:940-941,1177-1178). The node has no
+ * label (A:arch/arm64/boot/dts/exynos/exynos8895.dtsi:1358). always-on is not
+ * added: the arch timer is in the core and stops in C2, C3STOP stays. Spec
+ * O7-3: if P12 shows the counter runs in SLEEP, the property may be dropped.
+ */
+&{/timer} {
+	arm,no-tick-in-suspend;
+};
+
+#include <dt-bindings/soc/samsung,exynos8895-pm.h>
+
+/*
+ * L7 4.4: system power management node, a child of the PMU (populated by
+ * devm_of_platform_populate() in the PMU probe, A:drivers/soc/samsung/exynos-pmu.c:678).
+ * Never give it pinctrl-0: the pin controllers must not depend on the PMU device.
+ */
+&pmu_system_controller {
+	exynos8895_pm: power-management {
+		compatible = "samsung,exynos8895-pm";
+
+		/* PM-DVS rails (FDT:12134-12164): stock looked them up by regulator name
+		 * (S:drivers/soc/samsung/exynos-pm-dvs.c:72); 6.18 uses phandle supplies */
+		vdd-mldo-supply = <&buck11_reg>;	/* FDT:12137-12142 "vdd_mldo" */
+		vdd-lldo1-supply = <&buck8_reg>;	/* FDT:12144-12149 "vdd_lldo1" */
+		vdd-lldo2-supply = <&buck9_reg>;	/* FDT:12151-12156 "vdd_lldo2" */
+		vdd-lldo3-supply = <&buck10_reg>;	/* FDT:12158-12163 "vdd_lldo3" */
+
+		/* ACPM handle for the optional APM sleep handshake (exynos8895_pm.apm_release) */
+		samsung,acpm = <&acpm_ipc>;
+
+		/*
+		 * SICD veto set: the stock idle-IP devices of FDT:4429 that are in the
+		 * SYS_SICD ref-idle-ip list (FDT:4437), each with its 6.18 busy
+		 * predicate (stock index and device name in the comment). The 13 PDs and
+		 * the APM bit are built into the driver. Entries whose node is disabled
+		 * are skipped at resolve time.
+		 */
+		samsung,sicd-veto =
+			<&pwm E8895_SICD_VETO_PWM>,		/* idx 0x00 "104c0000.pwm" */
+			<&adc E8895_SICD_VETO_CLK>,		/* idx 0x01 "15b70000.adc" */
+			<&hsi2c_1 E8895_SICD_VETO_I2C>,		/* idx 0x03 "10990000.hsi2c" */
+			<&hsi2c_2 E8895_SICD_VETO_I2C>,		/* idx 0x04 "109a0000.hsi2c" */
+			<&hsi2c_3 E8895_SICD_VETO_I2C>,		/* idx 0x05 "109b0000.hsi2c" */
+			<&hsi2c_4 E8895_SICD_VETO_I2C>,		/* idx 0x06 "109c0000.hsi2c" */
+			<&hsi2c_5 E8895_SICD_VETO_I2C>,		/* idx 0x07 "10440000.hsi2c" */
+			<&hsi2c_6 E8895_SICD_VETO_I2C>,		/* idx 0x08 "10450000.hsi2c" */
+			<&hsi2c_7 E8895_SICD_VETO_I2C>,		/* idx 0x09 "10460000.hsi2c" */
+			<&hsi2c_8 E8895_SICD_VETO_I2C>,		/* idx 0x0a "10470000.hsi2c" */
+			<&hsi2c_9 E8895_SICD_VETO_I2C>,		/* idx 0x0b "10480000.hsi2c" */
+			<&hsi2c_10 E8895_SICD_VETO_I2C>,	/* idx 0x0c "10490000.hsi2c" */
+			<&hsi2c_11 E8895_SICD_VETO_I2C>,	/* idx 0x0d "104a0000.hsi2c" */
+			<&hsi2c_12 E8895_SICD_VETO_I2C>,	/* idx 0x0e "104b0000.hsi2c" */
+			<&hsi2c_13 E8895_SICD_VETO_I2C>,	/* idx 0x0f "10840000.hsi2c" */
+			<&hsi2c_14 E8895_SICD_VETO_I2C>,	/* idx 0x10 "10850000.hsi2c" */
+			<&hsi2c_15 E8895_SICD_VETO_I2C>,	/* idx 0x11 "10860000.hsi2c" */
+			<&hsi2c_16 E8895_SICD_VETO_I2C>,	/* idx 0x12 "10870000.hsi2c" */
+			<&hsi2c_17 E8895_SICD_VETO_I2C>,	/* idx 0x13 "10880000.hsi2c" */
+			<&hsi2c_18 E8895_SICD_VETO_I2C>,	/* idx 0x14 "10890000.hsi2c" */
+			<&hsi2c_19 E8895_SICD_VETO_I2C>,	/* idx 0x15 "108a0000.hsi2c" */
+			<&hsi2c_20 E8895_SICD_VETO_I2C>,	/* idx 0x16 "108b0000.hsi2c" */
+			<&hsi2c_21 E8895_SICD_VETO_I2C>,	/* idx 0x17 "108c0000.hsi2c" */
+			<&hsi2c_22 E8895_SICD_VETO_I2C>,	/* idx 0x18 "108d0000.hsi2c" */
+			<&hsi2c_23 E8895_SICD_VETO_I2C>,	/* idx 0x19 "108e0000.hsi2c" */
+			<&hsi2c_24 E8895_SICD_VETO_I2C>,	/* idx 0x1a "108f0000.hsi2c" */
+			<&hsi2c_25 E8895_SICD_VETO_I2C>,	/* idx 0x1b "10900000.hsi2c" */
+			<&hsi2c_26 E8895_SICD_VETO_I2C>,	/* idx 0x1c "10910000.hsi2c" */
+			<&hsi2c_27 E8895_SICD_VETO_I2C>,	/* idx 0x1d "10920000.hsi2c" */
+			<&hsi2c_28 E8895_SICD_VETO_I2C>,	/* idx 0x1e "10930000.hsi2c" */
+			<&hsi2c_29 E8895_SICD_VETO_I2C>,	/* idx 0x1f "10940000.hsi2c" */
+			<&hsi2c_30 E8895_SICD_VETO_I2C>,	/* idx 0x20 "10950000.hsi2c" */
+			<&hsi2c_31 E8895_SICD_VETO_I2C>,	/* idx 0x21 "10960000.hsi2c" */
+			<&hsi2c_32 E8895_SICD_VETO_I2C>,	/* idx 0x22 "10970000.hsi2c" */
+			<&spi_0 E8895_SICD_VETO_RPM>,		/* not in stock's list (it names 109e0000 twice, idx 0x23/0x24); added, conservative */
+			<&spi_1 E8895_SICD_VETO_RPM>,		/* idx 0x23 "109e0000.spi" */
+			<&spi_2 E8895_SICD_VETO_RPM>,		/* idx 0x25 "10440000.spi" */
+			<&spi_3 E8895_SICD_VETO_RPM>,		/* idx 0x26 "10460000.spi" */
+			<&spi_4 E8895_SICD_VETO_RPM>,		/* idx 0x27 "10480000.spi" */
+			<&spi_5 E8895_SICD_VETO_RPM>,		/* idx 0x28 "104a0000.spi" */
+			<&spi_6 E8895_SICD_VETO_RPM>,		/* idx 0x29 "10840000.spi" */
+			<&spi_7 E8895_SICD_VETO_RPM>,		/* idx 0x2a "10860000.spi" */
+			<&spi_8 E8895_SICD_VETO_RPM>,		/* idx 0x2b "10880000.spi" */
+			<&spi_9 E8895_SICD_VETO_RPM>,		/* idx 0x2c "108a0000.spi" */
+			<&spi_10 E8895_SICD_VETO_RPM>,		/* idx 0x2d "108c0000.spi" */
+			<&spi_11 E8895_SICD_VETO_RPM>,		/* idx 0x2e "108e0000.spi" */
+			<&spi_12 E8895_SICD_VETO_RPM>,		/* idx 0x2f "10900000.spi" */
+			<&spi_13 E8895_SICD_VETO_RPM>,		/* idx 0x30 "10920000.spi" */
+			<&spi_14 E8895_SICD_VETO_RPM>,		/* idx 0x31 "10940000.spi" */
+			<&spi_15 E8895_SICD_VETO_RPM>,		/* idx 0x32 "10960000.spi" */
+			<&ufs E8895_SICD_VETO_CLK>,		/* idx 0x33 "11120000.ufs" (first clock core_clk) */
+			<&mmc E8895_SICD_VETO_RPM>,		/* idx 0x34 "11500000.dwmmc2" */
+			<&usbdrd_dwc3 E8895_SICD_VETO_RPM>,	/* idx 0x35 "10c00000.usb" (the dwc3 core) */
+			<&pcie0 E8895_SICD_VETO_RPM>,		/* idx 0x37 stock "116a0000.pcie0"; 6.18 device "11700000.pcie" */
+			<&serial_1 E8895_SICD_VETO_CLK>;	/* idx 0x49 "bluetooth" (UART_BT pclk, held while the BT tty is powered) */
+	};
+};
+
+/* L7 4.6: stock controller-level power-down pin configuration (config-only hog).
+ * Generated by rewrite/work/scratch/L7_pm/v4/gen_pdn_dts.py from the shipped FDT sleep-state nodes;
+ * every value = the FDT line in the comment. Values: con-pdn 0 out0, 1 out1, 2 input, 3 previous;
+ * pud-pdn 0 none, 1 pull-down, 3 pull-up (S:drivers/pinctrl/samsung/pinctrl-samsung.c:50-51 parse them;
+ * register fields CON_PDN +0x10 / PUD_PDN +0x14, 2 bits per pin, equal in stock and ACK bank types). */
+
+&pinctrl_fsys0 {			/* FDT pinctrl@11050000 */
+	pinctrl-names = "default";
+	pinctrl-0 = <&fsys0_pdn>;
+
+	fsys0_pdn: sleep-state {
+		gpi0-2-pin {		/* FDT:806-810 */
+			samsung,pins = "gpi0-2";
+			samsung,pin-con-pdn = <2>;	/* FDT:808 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:809 */
+		};
+		gpi1-0-pin {		/* FDT:812-816 */
+			samsung,pins = "gpi1-0";
+			samsung,pin-con-pdn = <2>;	/* FDT:814 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:815 */
+		};
+		gpi1-1-pin {		/* FDT:818-822 */
+			samsung,pins = "gpi1-1";
+			samsung,pin-con-pdn = <3>;	/* FDT:820 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:821 */
+		};
+		gpi1-2-pin {		/* FDT:824-828 */
+			samsung,pins = "gpi1-2";
+			samsung,pin-con-pdn = <2>;	/* FDT:826 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:827 */
+		};
+		gpi1-3-pin {		/* FDT:830-834 */
+			samsung,pins = "gpi1-3";
+			samsung,pin-con-pdn = <2>;	/* FDT:832 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:833 */
+		};
+		gpi1-4-pin {		/* FDT:836-840 */
+			samsung,pins = "gpi1-4";
+			samsung,pin-con-pdn = <2>;	/* FDT:838 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:839 */
+		};
+		gpi1-5-pin {		/* FDT:842-846 */
+			samsung,pins = "gpi1-5";
+			samsung,pin-con-pdn = <2>;	/* FDT:844 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:845 */
+		};
+		gpi1-6-pin {		/* FDT:848-852 */
+			samsung,pins = "gpi1-6";
+			samsung,pin-con-pdn = <0>;	/* FDT:850 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:851 */
+		};
+		gpi1-7-pin {		/* FDT:854-858 */
+			samsung,pins = "gpi1-7";
+			samsung,pin-con-pdn = <2>;	/* FDT:856 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:857 */
+		};
+	};
+};
+
+&pinctrl_fsys1 {			/* FDT pinctrl@11430000 */
+	pinctrl-names = "default";
+	pinctrl-0 = <&fsys1_pdn>;
+
+	fsys1_pdn: sleep-state {
+		gpj0-6-pin {		/* FDT:1089-1093 */
+			samsung,pins = "gpj0-6";
+			samsung,pin-con-pdn = <2>;	/* FDT:1091 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:1092 */
+		};
+		gpj1-0-pin {		/* FDT:1095-1099 */
+			samsung,pins = "gpj1-0";
+			samsung,pin-con-pdn = <2>;	/* FDT:1097 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1098 */
+		};
+		gpj1-1-pin {		/* FDT:1101-1105 */
+			samsung,pins = "gpj1-1";
+			samsung,pin-con-pdn = <2>;	/* FDT:1103 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:1104 */
+		};
+		gpj1-3-pin {		/* FDT:1107-1111 */
+			samsung,pins = "gpj1-3";
+			samsung,pin-con-pdn = <3>;	/* FDT:1109 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1110 */
+		};
+		gpj1-4-pin {		/* FDT:1113-1117 */
+			samsung,pins = "gpj1-4";
+			samsung,pin-con-pdn = <3>;	/* FDT:1115 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1116 */
+		};
+		gpj1-5-pin {		/* FDT:1119-1123 */
+			samsung,pins = "gpj1-5";
+			samsung,pin-con-pdn = <2>;	/* FDT:1121 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1122 */
+		};
+		gpj1-6-pin {		/* FDT:1125-1129 */
+			samsung,pins = "gpj1-6";
+			samsung,pin-con-pdn = <2>;	/* FDT:1127 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:1128 */
+		};
+		gpj1-7-pin {		/* FDT:1131-1135 */
+			samsung,pins = "gpj1-7";
+			samsung,pin-con-pdn = <3>;	/* FDT:1133 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1134 */
+		};
+	};
+};
+
+&pinctrl_busc {			/* FDT pinctrl@15A30000 */
+	pinctrl-names = "default";
+	pinctrl-0 = <&busc_pdn>;
+
+	busc_pdn: sleep-state {
+		gpb2-0-pin {		/* FDT:1198-1202 */
+			samsung,pins = "gpb2-0";
+			samsung,pin-con-pdn = <3>;	/* FDT:1200 */
+			samsung,pin-pud-pdn = <3>;	/* FDT:1201 */
+		};
+		gpb2-1-pin {		/* FDT:1204-1208 */
+			samsung,pins = "gpb2-1";
+			samsung,pin-con-pdn = <2>;	/* FDT:1206 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:1207 */
+		};
+	};
+};
+
+&pinctrl_peric0 {			/* FDT pinctrl@104D0000 */
+	pinctrl-names = "default";
+	pinctrl-0 = <&peric0_pdn>;
+
+	peric0_pdn: sleep-state {
+		gpb1-2-pin {		/* FDT:1747-1751 */
+			samsung,pins = "gpb1-2";
+			samsung,pin-con-pdn = <3>;	/* FDT:1749 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1750 */
+		};
+		gpb1-3-pin {		/* FDT:1753-1757 */
+			samsung,pins = "gpb1-3";
+			samsung,pin-con-pdn = <2>;	/* FDT:1755 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1756 */
+		};
+		gpd0-0-pin {		/* FDT:1759-1763 */
+			samsung,pins = "gpd0-0";
+			samsung,pin-con-pdn = <2>;	/* FDT:1761 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1762 */
+		};
+		gpd0-1-pin {		/* FDT:1765-1769 */
+			samsung,pins = "gpd0-1";
+			samsung,pin-con-pdn = <2>;	/* FDT:1767 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1768 */
+		};
+		gpd0-2-pin {		/* FDT:1771-1775 */
+			samsung,pins = "gpd0-2";
+			samsung,pin-con-pdn = <2>;	/* FDT:1773 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1774 */
+		};
+		gpd0-3-pin {		/* FDT:1777-1781 */
+			samsung,pins = "gpd0-3";
+			samsung,pin-con-pdn = <2>;	/* FDT:1779 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1780 */
+		};
+		gpd0-6-pin {		/* FDT:1783-1787 */
+			samsung,pins = "gpd0-6";
+			samsung,pin-con-pdn = <2>;	/* FDT:1785 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:1786 */
+		};
+		gpd0-7-pin {		/* FDT:1789-1793 */
+			samsung,pins = "gpd0-7";
+			samsung,pin-con-pdn = <2>;	/* FDT:1791 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:1792 */
+		};
+		gpd1-0-pin {		/* FDT:1795-1799 */
+			samsung,pins = "gpd1-0";
+			samsung,pin-con-pdn = <2>;	/* FDT:1797 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:1798 */
+		};
+		gpd1-1-pin {		/* FDT:1801-1805 */
+			samsung,pins = "gpd1-1";
+			samsung,pin-con-pdn = <0>;	/* FDT:1803 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1804 */
+		};
+		gpd1-2-pin {		/* FDT:1807-1811 */
+			samsung,pins = "gpd1-2";
+			samsung,pin-con-pdn = <0>;	/* FDT:1809 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1810 */
+		};
+		gpd1-3-pin {		/* FDT:1813-1817 */
+			samsung,pins = "gpd1-3";
+			samsung,pin-con-pdn = <2>;	/* FDT:1815 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:1816 */
+		};
+		gpd1-4-pin {		/* FDT:1819-1823 */
+			samsung,pins = "gpd1-4";
+			samsung,pin-con-pdn = <2>;	/* FDT:1821 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:1822 */
+		};
+		gpd1-5-pin {		/* FDT:1825-1829 */
+			samsung,pins = "gpd1-5";
+			samsung,pin-con-pdn = <2>;	/* FDT:1827 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:1828 */
+		};
+		gpd1-6-pin {		/* FDT:1831-1835 */
+			samsung,pins = "gpd1-6";
+			samsung,pin-con-pdn = <2>;	/* FDT:1833 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:1834 */
+		};
+		gpd1-7-pin {		/* FDT:1837-1841 */
+			samsung,pins = "gpd1-7";
+			samsung,pin-con-pdn = <2>;	/* FDT:1839 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:1840 */
+		};
+		gpd2-0-pin {		/* FDT:1843-1847 */
+			samsung,pins = "gpd2-0";
+			samsung,pin-con-pdn = <2>;	/* FDT:1845 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1846 */
+		};
+		gpd2-1-pin {		/* FDT:1849-1853 */
+			samsung,pins = "gpd2-1";
+			samsung,pin-con-pdn = <2>;	/* FDT:1851 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1852 */
+		};
+		gpd2-2-pin {		/* FDT:1855-1859 */
+			samsung,pins = "gpd2-2";
+			samsung,pin-con-pdn = <3>;	/* FDT:1857 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1858 */
+		};
+		gpd2-3-pin {		/* FDT:1861-1865 */
+			samsung,pins = "gpd2-3";
+			samsung,pin-con-pdn = <3>;	/* FDT:1863 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1864 */
+		};
+		gpd3-0-pin {		/* FDT:1867-1871 */
+			samsung,pins = "gpd3-0";
+			samsung,pin-con-pdn = <2>;	/* FDT:1869 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1870 */
+		};
+		gpd3-1-pin {		/* FDT:1873-1877 */
+			samsung,pins = "gpd3-1";
+			samsung,pin-con-pdn = <2>;	/* FDT:1875 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1876 */
+		};
+		gpd3-2-pin {		/* FDT:1879-1883 */
+			samsung,pins = "gpd3-2";
+			samsung,pin-con-pdn = <2>;	/* FDT:1881 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1882 */
+		};
+		gpd3-3-pin {		/* FDT:1885-1889 */
+			samsung,pins = "gpd3-3";
+			samsung,pin-con-pdn = <2>;	/* FDT:1887 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1888 */
+		};
+		gpd3-4-pin {		/* FDT:1891-1895 */
+			samsung,pins = "gpd3-4";
+			samsung,pin-con-pdn = <2>;	/* FDT:1893 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:1894 */
+		};
+		gpe7-0-pin {		/* FDT:1897-1901 */
+			samsung,pins = "gpe7-0";
+			samsung,pin-con-pdn = <3>;	/* FDT:1899 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1900 */
+		};
+		gpe7-1-pin {		/* FDT:1903-1907 */
+			samsung,pins = "gpe7-1";
+			samsung,pin-con-pdn = <2>;	/* FDT:1905 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:1906 */
+		};
+		gpe7-2-pin {		/* FDT:1909-1913 */
+			samsung,pins = "gpe7-2";
+			samsung,pin-con-pdn = <3>;	/* FDT:1911 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1912 */
+		};
+		gpe7-3-pin {		/* FDT:1915-1919 */
+			samsung,pins = "gpe7-3";
+			samsung,pin-con-pdn = <2>;	/* FDT:1917 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:1918 */
+		};
+		gpe7-5-pin {		/* FDT:1921-1925 */
+			samsung,pins = "gpe7-5";
+			samsung,pin-con-pdn = <3>;	/* FDT:1923 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1924 */
+		};
+		gpe7-6-pin {		/* FDT:1927-1931 */
+			samsung,pins = "gpe7-6";
+			samsung,pin-con-pdn = <2>;	/* FDT:1929 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:1930 */
+		};
+		gpe7-7-pin {		/* FDT:1933-1937 */
+			samsung,pins = "gpe7-7";
+			samsung,pin-con-pdn = <2>;	/* FDT:1935 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:1936 */
+		};
+		gpf1-0-pin {		/* FDT:1939-1943 */
+			samsung,pins = "gpf1-0";
+			samsung,pin-con-pdn = <2>;	/* FDT:1941 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:1942 */
+		};
+		gpf1-1-pin {		/* FDT:1945-1949 */
+			samsung,pins = "gpf1-1";
+			samsung,pin-con-pdn = <2>;	/* FDT:1947 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1948 */
+		};
+		gpf1-2-pin {		/* FDT:1951-1955 */
+			samsung,pins = "gpf1-2";
+			samsung,pin-con-pdn = <2>;	/* FDT:1953 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1954 */
+		};
+		gpf1-3-pin {		/* FDT:1957-1961 */
+			samsung,pins = "gpf1-3";
+			samsung,pin-con-pdn = <2>;	/* FDT:1959 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1960 */
+		};
+		gpf1-4-pin {		/* FDT:1963-1967 */
+			samsung,pins = "gpf1-4";
+			samsung,pin-con-pdn = <2>;	/* FDT:1965 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:1966 */
+		};
+		gpf1-5-pin {		/* FDT:1969-1973 */
+			samsung,pins = "gpf1-5";
+			samsung,pin-con-pdn = <3>;	/* FDT:1971 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1972 */
+		};
+		gpf1-7-pin {		/* FDT:1975-1979 */
+			samsung,pins = "gpf1-7";
+			samsung,pin-con-pdn = <2>;	/* FDT:1977 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:1978 */
+		};
+	};
+};
+
+&pinctrl_peric1 {			/* FDT pinctrl@10980000 */
+	pinctrl-names = "default";
+	pinctrl-0 = <&peric1_pdn>;
+
+	peric1_pdn: sleep-state {
+		gpb0-0-pin {		/* FDT:3391-3395 */
+			samsung,pins = "gpb0-0";
+			samsung,pin-con-pdn = <2>;	/* FDT:3393 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3394 */
+		};
+		gpc0-0-pin {		/* FDT:3397-3401 */
+			samsung,pins = "gpc0-0";
+			samsung,pin-con-pdn = <2>;	/* FDT:3399 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3400 */
+		};
+		gpc0-1-pin {		/* FDT:3403-3407 */
+			samsung,pins = "gpc0-1";
+			samsung,pin-con-pdn = <3>;	/* FDT:3405 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3406 */
+		};
+		gpc0-2-pin {		/* FDT:3409-3413 */
+			samsung,pins = "gpc0-2";
+			samsung,pin-con-pdn = <3>;	/* FDT:3411 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3412 */
+		};
+		gpc0-3-pin {		/* FDT:3415-3419 */
+			samsung,pins = "gpc0-3";
+			samsung,pin-con-pdn = <2>;	/* FDT:3417 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3418 */
+		};
+		gpc0-4-pin {		/* FDT:3421-3425 */
+			samsung,pins = "gpc0-4";
+			samsung,pin-con-pdn = <2>;	/* FDT:3423 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3424 */
+		};
+		gpc1-0-pin {		/* FDT:3427-3431 */
+			samsung,pins = "gpc1-0";
+			samsung,pin-con-pdn = <2>;	/* FDT:3429 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3430 */
+		};
+		gpc1-1-pin {		/* FDT:3433-3437 */
+			samsung,pins = "gpc1-1";
+			samsung,pin-con-pdn = <2>;	/* FDT:3435 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3436 */
+		};
+		gpc1-2-pin {		/* FDT:3439-3443 */
+			samsung,pins = "gpc1-2";
+			samsung,pin-con-pdn = <2>;	/* FDT:3441 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3442 */
+		};
+		gpc1-3-pin {		/* FDT:3445-3449 */
+			samsung,pins = "gpc1-3";
+			samsung,pin-con-pdn = <2>;	/* FDT:3447 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3448 */
+		};
+		gpc1-4-pin {		/* FDT:3451-3455 */
+			samsung,pins = "gpc1-4";
+			samsung,pin-con-pdn = <2>;	/* FDT:3453 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3454 */
+		};
+		gpc2-0-pin {		/* FDT:3457-3461 */
+			samsung,pins = "gpc2-0";
+			samsung,pin-con-pdn = <2>;	/* FDT:3459 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3460 */
+		};
+		gpc2-1-pin {		/* FDT:3463-3467 */
+			samsung,pins = "gpc2-1";
+			samsung,pin-con-pdn = <2>;	/* FDT:3465 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3466 */
+		};
+		gpc2-2-pin {		/* FDT:3469-3473 */
+			samsung,pins = "gpc2-2";
+			samsung,pin-con-pdn = <2>;	/* FDT:3471 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3472 */
+		};
+		gpc2-3-pin {		/* FDT:3475-3479 */
+			samsung,pins = "gpc2-3";
+			samsung,pin-con-pdn = <2>;	/* FDT:3477 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3478 */
+		};
+		gpc2-4-pin {		/* FDT:3481-3485 */
+			samsung,pins = "gpc2-4";
+			samsung,pin-con-pdn = <2>;	/* FDT:3483 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3484 */
+		};
+		gpc2-5-pin {		/* FDT:3487-3491 */
+			samsung,pins = "gpc2-5";
+			samsung,pin-con-pdn = <2>;	/* FDT:3489 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3490 */
+		};
+		gpc2-6-pin {		/* FDT:3493-3497 */
+			samsung,pins = "gpc2-6";
+			samsung,pin-con-pdn = <2>;	/* FDT:3495 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3496 */
+		};
+		gpc2-7-pin {		/* FDT:3499-3503 */
+			samsung,pins = "gpc2-7";
+			samsung,pin-con-pdn = <2>;	/* FDT:3501 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3502 */
+		};
+		gpc3-0-pin {		/* FDT:3505-3509 */
+			samsung,pins = "gpc3-0";
+			samsung,pin-con-pdn = <2>;	/* FDT:3507 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3508 */
+		};
+		gpc3-1-pin {		/* FDT:3511-3515 */
+			samsung,pins = "gpc3-1";
+			samsung,pin-con-pdn = <2>;	/* FDT:3513 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3514 */
+		};
+		gpc3-2-pin {		/* FDT:3517-3521 */
+			samsung,pins = "gpc3-2";
+			samsung,pin-con-pdn = <2>;	/* FDT:3519 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3520 */
+		};
+		gpc3-3-pin {		/* FDT:3523-3527 */
+			samsung,pins = "gpc3-3";
+			samsung,pin-con-pdn = <2>;	/* FDT:3525 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3526 */
+		};
+		gpc3-4-pin {		/* FDT:3529-3533 */
+			samsung,pins = "gpc3-4";
+			samsung,pin-con-pdn = <2>;	/* FDT:3531 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3532 */
+		};
+		gpc3-5-pin {		/* FDT:3535-3539 */
+			samsung,pins = "gpc3-5";
+			samsung,pin-con-pdn = <2>;	/* FDT:3537 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3538 */
+		};
+		gpc3-6-pin {		/* FDT:3541-3545 */
+			samsung,pins = "gpc3-6";
+			samsung,pin-con-pdn = <2>;	/* FDT:3543 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3544 */
+		};
+		gpc3-7-pin {		/* FDT:3547-3551 */
+			samsung,pins = "gpc3-7";
+			samsung,pin-con-pdn = <2>;	/* FDT:3549 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3550 */
+		};
+		gpk0-0-pin {		/* FDT:3553-3557 */
+			samsung,pins = "gpk0-0";
+			samsung,pin-con-pdn = <2>;	/* FDT:3555 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3556 */
+		};
+		gpk0-1-pin {		/* FDT:3559-3563 */
+			samsung,pins = "gpk0-1";
+			samsung,pin-con-pdn = <2>;	/* FDT:3561 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3562 */
+		};
+		gpk0-2-pin {		/* FDT:3565-3569 */
+			samsung,pins = "gpk0-2";
+			samsung,pin-con-pdn = <2>;	/* FDT:3567 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3568 */
+		};
+		gpk0-3-pin {		/* FDT:3571-3575 */
+			samsung,pins = "gpk0-3";
+			samsung,pin-con-pdn = <2>;	/* FDT:3573 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3574 */
+		};
+		gpe1-0-pin {		/* FDT:3577-3581 */
+			samsung,pins = "gpe1-0";
+			samsung,pin-con-pdn = <3>;	/* FDT:3579 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3580 */
+		};
+		gpe1-1-pin {		/* FDT:3583-3587 */
+			samsung,pins = "gpe1-1";
+			samsung,pin-con-pdn = <2>;	/* FDT:3585 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3586 */
+		};
+		gpe1-2-pin {		/* FDT:3589-3593 */
+			samsung,pins = "gpe1-2";
+			samsung,pin-con-pdn = <2>;	/* FDT:3591 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3592 */
+		};
+		gpe1-3-pin {		/* FDT:3595-3599 */
+			samsung,pins = "gpe1-3";
+			samsung,pin-con-pdn = <2>;	/* FDT:3597 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3598 */
+		};
+		gpe1-4-pin {		/* FDT:3601-3605 */
+			samsung,pins = "gpe1-4";
+			samsung,pin-con-pdn = <0>;	/* FDT:3603 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3604 */
+		};
+		gpe1-5-pin {		/* FDT:3607-3611 */
+			samsung,pins = "gpe1-5";
+			samsung,pin-con-pdn = <0>;	/* FDT:3609 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3610 */
+		};
+		gpe1-6-pin {		/* FDT:3613-3617 */
+			samsung,pins = "gpe1-6";
+			samsung,pin-con-pdn = <0>;	/* FDT:3615 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3616 */
+		};
+		gpe1-7-pin {		/* FDT:3619-3623 */
+			samsung,pins = "gpe1-7";
+			samsung,pin-con-pdn = <0>;	/* FDT:3621 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3622 */
+		};
+		gpe2-4-pin {		/* FDT:3625-3629 */
+			samsung,pins = "gpe2-4";
+			samsung,pin-con-pdn = <2>;	/* FDT:3627 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3628 */
+		};
+		gpe2-5-pin {		/* FDT:3631-3635 */
+			samsung,pins = "gpe2-5";
+			samsung,pin-con-pdn = <1>;	/* FDT:3633 */
+			samsung,pin-pud-pdn = <3>;	/* FDT:3634 */
+		};
+		gpe2-6-pin {		/* FDT:3637-3641 */
+			samsung,pins = "gpe2-6";
+			samsung,pin-con-pdn = <1>;	/* FDT:3639 */
+			samsung,pin-pud-pdn = <3>;	/* FDT:3640 */
+		};
+		gpe2-7-pin {		/* FDT:3643-3647 */
+			samsung,pins = "gpe2-7";
+			samsung,pin-con-pdn = <2>;	/* FDT:3645 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3646 */
+		};
+		gpe3-0-pin {		/* FDT:3649-3653 */
+			samsung,pins = "gpe3-0";
+			samsung,pin-con-pdn = <3>;	/* FDT:3651 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3652 */
+		};
+		gpe3-1-pin {		/* FDT:3655-3659 */
+			samsung,pins = "gpe3-1";
+			samsung,pin-con-pdn = <3>;	/* FDT:3657 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3658 */
+		};
+		gpe3-4-pin {		/* FDT:3661-3665 */
+			samsung,pins = "gpe3-4";
+			samsung,pin-con-pdn = <2>;	/* FDT:3663 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3664 */
+		};
+		gpe3-5-pin {		/* FDT:3667-3671 */
+			samsung,pins = "gpe3-5";
+			samsung,pin-con-pdn = <2>;	/* FDT:3669 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3670 */
+		};
+		gpe3-6-pin {		/* FDT:3673-3677 */
+			samsung,pins = "gpe3-6";
+			samsung,pin-con-pdn = <2>;	/* FDT:3675 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3676 */
+		};
+		gpe3-7-pin {		/* FDT:3679-3683 */
+			samsung,pins = "gpe3-7";
+			samsung,pin-con-pdn = <2>;	/* FDT:3681 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3682 */
+		};
+		gpe4-0-pin {		/* FDT:3685-3689 */
+			samsung,pins = "gpe4-0";
+			samsung,pin-con-pdn = <2>;	/* FDT:3687 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3688 */
+		};
+		gpe4-1-pin {		/* FDT:3691-3695 */
+			samsung,pins = "gpe4-1";
+			samsung,pin-con-pdn = <2>;	/* FDT:3693 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3694 */
+		};
+		gpe4-2-pin {		/* FDT:3697-3701 */
+			samsung,pins = "gpe4-2";
+			samsung,pin-con-pdn = <2>;	/* FDT:3699 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3700 */
+		};
+		gpe4-3-pin {		/* FDT:3703-3707 */
+			samsung,pins = "gpe4-3";
+			samsung,pin-con-pdn = <2>;	/* FDT:3705 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3706 */
+		};
+		gpe4-4-pin {		/* FDT:3709-3713 */
+			samsung,pins = "gpe4-4";
+			samsung,pin-con-pdn = <2>;	/* FDT:3711 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3712 */
+		};
+		gpe4-5-pin {		/* FDT:3715-3719 */
+			samsung,pins = "gpe4-5";
+			samsung,pin-con-pdn = <2>;	/* FDT:3717 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3718 */
+		};
+		gpe4-6-pin {		/* FDT:3721-3725 */
+			samsung,pins = "gpe4-6";
+			samsung,pin-con-pdn = <2>;	/* FDT:3723 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3724 */
+		};
+		gpe4-7-pin {		/* FDT:3727-3731 */
+			samsung,pins = "gpe4-7";
+			samsung,pin-con-pdn = <2>;	/* FDT:3729 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3730 */
+		};
+		gpe5-0-pin {		/* FDT:3733-3737 */
+			samsung,pins = "gpe5-0";
+			samsung,pin-con-pdn = <2>;	/* FDT:3735 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3736 */
+		};
+		gpe5-1-pin {		/* FDT:3739-3743 */
+			samsung,pins = "gpe5-1";
+			samsung,pin-con-pdn = <2>;	/* FDT:3741 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3742 */
+		};
+		gpe5-2-pin {		/* FDT:3745-3749 */
+			samsung,pins = "gpe5-2";
+			samsung,pin-con-pdn = <2>;	/* FDT:3747 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3748 */
+		};
+		gpe5-3-pin {		/* FDT:3751-3755 */
+			samsung,pins = "gpe5-3";
+			samsung,pin-con-pdn = <2>;	/* FDT:3753 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3754 */
+		};
+		gpe5-4-pin {		/* FDT:3757-3761 */
+			samsung,pins = "gpe5-4";
+			samsung,pin-con-pdn = <2>;	/* FDT:3759 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3760 */
+		};
+		gpe5-5-pin {		/* FDT:3763-3767 */
+			samsung,pins = "gpe5-5";
+			samsung,pin-con-pdn = <2>;	/* FDT:3765 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3766 */
+		};
+		gpe5-6-pin {		/* FDT:3769-3773 */
+			samsung,pins = "gpe5-6";
+			samsung,pin-con-pdn = <2>;	/* FDT:3771 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3772 */
+		};
+		gpe5-7-pin {		/* FDT:3775-3779 */
+			samsung,pins = "gpe5-7";
+			samsung,pin-con-pdn = <2>;	/* FDT:3777 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3778 */
+		};
+		gpe6-0-pin {		/* FDT:3781-3785 */
+			samsung,pins = "gpe6-0";
+			samsung,pin-con-pdn = <2>;	/* FDT:3783 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3784 */
+		};
+		gpe6-1-pin {		/* FDT:3787-3791 */
+			samsung,pins = "gpe6-1";
+			samsung,pin-con-pdn = <0>;	/* FDT:3789 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3790 */
+		};
+		gpe6-2-pin {		/* FDT:3793-3797 */
+			samsung,pins = "gpe6-2";
+			samsung,pin-con-pdn = <3>;	/* FDT:3795 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3796 */
+		};
+		gpe6-3-pin {		/* FDT:3799-3803 */
+			samsung,pins = "gpe6-3";
+			samsung,pin-con-pdn = <2>;	/* FDT:3801 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3802 */
+		};
+		gpe6-4-pin {		/* FDT:3805-3809 */
+			samsung,pins = "gpe6-4";
+			samsung,pin-con-pdn = <0>;	/* FDT:3807 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3808 */
+		};
+		gpe6-5-pin {		/* FDT:3811-3815 */
+			samsung,pins = "gpe6-5";
+			samsung,pin-con-pdn = <2>;	/* FDT:3813 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3814 */
+		};
+		gpe6-6-pin {		/* FDT:3817-3821 */
+			samsung,pins = "gpe6-6";
+			samsung,pin-con-pdn = <2>;	/* FDT:3819 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3820 */
+		};
+		gpe6-7-pin {		/* FDT:3823-3827 */
+			samsung,pins = "gpe6-7";
+			samsung,pin-con-pdn = <2>;	/* FDT:3825 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3826 */
+		};
+		gpf0-0-pin {		/* FDT:3829-3833 */
+			samsung,pins = "gpf0-0";
+			samsung,pin-con-pdn = <3>;	/* FDT:3831 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3832 */
+		};
+		gpg0-1-pin {		/* FDT:3835-3839 */
+			samsung,pins = "gpg0-1";
+			samsung,pin-con-pdn = <2>;	/* FDT:3837 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3838 */
+		};
+		gpf0-3-pin {		/* FDT:3841-3845 */
+			samsung,pins = "gpf0-3";
+			samsung,pin-con-pdn = <3>;	/* FDT:3843 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3844 */
+		};
+		gpb0-1-pin {		/* FDT:3847-3851 */
+			samsung,pins = "gpb0-1";
+			samsung,pin-con-pdn = <3>;	/* FDT:3849 */
+			samsung,pin-pud-pdn = <0>;	/* FDT:3850 */
+		};
+		gpb0-2-pin {		/* FDT:3853-3857 */
+			samsung,pins = "gpb0-2";
+			samsung,pin-con-pdn = <2>;	/* FDT:3855 */
+			samsung,pin-pud-pdn = <1>;	/* FDT:3856 */
+		};
+	};
+};
+
+/*
+ * L7 4.1: C2 on both clusters. CPD and SICD have no DT state: they are driver
+ * upgrades of C2 (drivers/cpuidle/cpuidle-exynos8895.c). Stock compatible
+ * "exynos,idle-state" (FDT:4362) has no binding and no 6.18 user; the values
+ * are unchanged. local-timer-stop is a deliberate deviation from stock: the
+ * 6.18 tick is the in-core arch timer, not the MCT (spec F-10, F-28), so the
+ * cpuidle core must hand the next event to the MCT broadcast before C2
+ * (A:drivers/cpuidle/dt_idle_states.c:80-81, A:drivers/cpuidle/cpuidle.c:237-246).
+ * Node names per the binding pattern ^(cpu|cluster)-; the node name becomes the
+ * cpuidle state name, idle-state-name its desc.
+ */
+/ {
+	cpus {
+		idle-states {
+			entry-method = "psci";		/* stock "arm,psci" FDT:4358 */
+
+			/* A53 = boot cluster (logical cpu0-3). S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:259-267, FDT:4360-4370 */
+			BOOTCL_CPU_SLEEP: cpu-sleep-bootcl {
+				compatible = "arm,idle-state";
+				idle-state-name = "c2";			/* FDT:4361 */
+				arm,psci-suspend-param = <0x10000>;	/* FDT:4363 */
+				local-timer-stop;
+				entry-latency-us = <35>;		/* FDT:4364 <0x23> */
+				exit-latency-us = <90>;			/* FDT:4365 <0x5a> */
+				min-residency-us = <750>;		/* FDT:4366 <0x2ee> */
+			};
+
+			/* Mongoose M2 = non-boot cluster (logical cpu4-7). S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:269-277, FDT:4372-4382 */
+			NONBOOTCL_CPU_SLEEP: cpu-sleep-nonbootcl {
+				compatible = "arm,idle-state";
+				idle-state-name = "c2";			/* FDT:4373 */
+				arm,psci-suspend-param = <0x10000>;	/* FDT:4375 */
+				local-timer-stop;
+				entry-latency-us = <30>;		/* FDT:4376 <0x1e> */
+				exit-latency-us = <75>;			/* FDT:4377 <0x4b> */
+				min-residency-us = <2000>;		/* FDT:4378 <0x7d0> */
+			};
+		};
+	};
+};
+
+&cpu0 { cpu-idle-states = <&BOOTCL_CPU_SLEEP>; };	/* S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:187; FDT:4277 */
+&cpu1 { cpu-idle-states = <&BOOTCL_CPU_SLEEP>; };	/* S:...:197; FDT:4290 */
+&cpu2 { cpu-idle-states = <&BOOTCL_CPU_SLEEP>; };	/* S:...:206; FDT:4300 */
+&cpu3 { cpu-idle-states = <&BOOTCL_CPU_SLEEP>; };	/* S:...:215; FDT:4310 */
+&cpu4 { cpu-idle-states = <&NONBOOTCL_CPU_SLEEP>; };	/* S:...:224; FDT:4320 */
+&cpu5 { cpu-idle-states = <&NONBOOTCL_CPU_SLEEP>; };	/* S:...:234; FDT:4333 */
+&cpu6 { cpu-idle-states = <&NONBOOTCL_CPU_SLEEP>; };	/* S:...:243; FDT:4343 */
+&cpu7 { cpu-idle-states = <&NONBOOTCL_CPU_SLEEP>; };	/* S:...:252; FDT:4353 */

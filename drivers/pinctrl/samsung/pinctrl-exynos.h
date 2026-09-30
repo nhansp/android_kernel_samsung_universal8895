@@ -279,5 +279,8 @@ void gs101_pinctrl_resume(struct samsung_pin_bank *bank);
 struct samsung_retention_ctrl *
 exynos_retention_init(struct samsung_pinctrl_drv_data *drvdata,
 		      const struct samsung_retention_data *data);
+struct samsung_retention_ctrl *
+exynos_retention_init_rmw(struct samsung_pinctrl_drv_data *drvdata,
+			  const struct samsung_retention_data *data);
 
 #endif /* __PINCTRL_SAMSUNG_EXYNOS_H */

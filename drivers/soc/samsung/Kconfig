@@ -267,3 +267,33 @@ config GREATLTE_HB_L6C
 	default GREATLTE_HB
 	help
 	  Registers the L6C heartbeat rows cp, cpmb, hub and l38.
+# L7 (power management): system suspend (SLEEP), SICD, PM-DVS; the PMU CPU hooks in exynos8895-pmu.c
+config EXYNOS8895_PM
+	bool "Exynos 8895 system suspend (SLEEP), PM-DVS and SICD support"
+	depends on SOC_SAMSUNG
+	depends on ARCH_EXYNOS && ARM64 && EXYNOS_PMU && SUSPEND && ARM_PSCI_FW
+	depends on EXYNOS_ACPM_PROTOCOL=y
+	help
+	  System suspend to the stock SLEEP mode with the PMUCAL sequences,
+	  the SICD entry/exit and veto used by the Exynos 8895 cpuidle
+	  driver, the BUCK8-11 suspend voltages and the PMU CPU/cluster
+	  power hooks for deep idle and CPU hotplug (spec L7 5.3, 5.5).
+
+# L7 heartbeat printers L7, L7t, L7kg (spec L7 5.8)
+config GREATLTE_HB_L7
+	bool "greatlte heartbeat: L7 deep idle and suspend printers (debug only)"
+	depends on GREATLTE_HB && EXYNOS8895_PM
+	default GREATLTE_HB
+	help
+	  Registers the L7 heartbeat printers "L7" (C2/CPD/SICD counters,
+	  last SICD veto, PMU core and cluster status) and "L7t" (arch
+	  counter and RTC across the last suspend), and the S2MPS17 RTC
+	  UPDATE read-back lines. Never enable in a release build.
+
+config GREATLTE_HB_L7_KG
+	bool "greatlte heartbeat: L7 kept-gate dump around suspend (debug only)"
+	depends on GREATLTE_HB_L7
+	help
+	  Adds the "L7kg" printer: the 143 L1-kept CMU gate registers that
+	  differ before and after the last suspend (spec L7 P17, T7-KG).
+	  Only for the T7-KG boot.

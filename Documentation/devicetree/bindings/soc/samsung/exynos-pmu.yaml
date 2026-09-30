@@ -111,6 +111,12 @@ properties:
     $ref: /schemas/phy/samsung,mipi-video-phy.yaml
     unevaluatedProperties: false
 
+  power-management:
+    $ref: /schemas/power/samsung,exynos8895-pm.yaml#
+    type: object
+    description:
+      Exynos 8895 system power management (idle upgrades, SLEEP, PM-DVS)
+
   reboot-mode:
     $ref: /schemas/power/reset/syscon-reboot-mode.yaml
     type: object
@@ -194,6 +200,16 @@ allOf:
     else:
       properties:
         dp-phy: false
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: samsung,exynos8895-pmu
+    then: {}
+    else:
+      properties:
+        power-management: false
 
   - if:
       properties:
