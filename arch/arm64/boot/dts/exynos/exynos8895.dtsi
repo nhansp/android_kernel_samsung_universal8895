@@ -2238,6 +2238,22 @@
 			status = "disabled";
 		};
 
+		mcinfo: mcinfo@1603004c {
+			compatible = "samsung,exynos8895-mcinfo";	/* stock "samsung,exynos-mcinfo" FDT:6704 */
+			reg = <0x1603004c 0x4>, <0x1613004c 0x4>,	/* FDT:6705 */
+			      <0x1623004c 0x4>, <0x1633004c 0x4>;
+			/*
+			 * FDT:6709 <0 0x73 0>, <0 0x7a 0>, <0 0x81 0>, <0 0x88 0>: stock flags 0.
+			 * LEVEL_HIGH as every other stock flag-0 SPI in this tree (ADC FDT:7618);
+			 * IRQ_TYPE_NONE WARNs in the GIC translate (A:drivers/irqchip/irq-gic.c:1113)
+			 */
+			interrupts = <GIC_SPI 115 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 122 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 129 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 136 IRQ_TYPE_LEVEL_HIGH>;
+			status = "disabled";
+		};
+
 		cmu_apm: clock-controller@16400000 {
 			compatible = "samsung,exynos8895-cmu-apm";
 			reg = <0x16400000 0x8000>;	/* CAL:cmucal-sfr.c:9 SFR_BLOCK(APM, 0x16400000, 0x8000) */

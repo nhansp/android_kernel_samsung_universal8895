@@ -64,3 +64,9 @@ obj-$(CONFIG_GREATLTE_HB_L2B)		+= greatlte-hb-l2b.o
 obj-$(CONFIG_EXYNOS8895_BTS_BW)		+= bts/
 # greatlte WP-L4b: FMP/TRNG heartbeat rows and FMP known-answer test (DEBUG, spec L4b 5.5-5.6)
 obj-$(CONFIG_GREATLTE_HB_L4B)		+= greatlte-hb-l4b.o
+# L6K DRAM temperature trip (WP l6ki)
+obj-$(CONFIG_EXYNOS8895_MCINFO)	+= exynos8895-mcinfo.o
+# L6K heartbeat rows (WP l6ki, DEBUG)
+obj-$(CONFIG_GREATLTE_HB_L6K)	+= greatlte-hb-l6k.o
+# L6I heartbeat rows (WP l6ki, DEBUG)
+obj-$(CONFIG_GREATLTE_HB_L6I)	+= greatlte-hb-l6i.o
