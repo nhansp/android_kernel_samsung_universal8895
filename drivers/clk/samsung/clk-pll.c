@@ -31,6 +31,8 @@ struct samsung_clk_pll {
 	enum samsung_pll_type	type;
 	unsigned int		rate_count;
 	const struct samsung_pll_rate_table *rate_table;
+	/* pll_1061x: PLL_MUX_SEL cleared by .disable, set again by .enable */
+	bool			mux_parked;
 };
 
 #define to_clk_pll(_hw) container_of(_hw, struct samsung_clk_pll, hw)
@@ -646,6 +648,7 @@ static const struct clk_ops samsung_pll0831x_clk_min_ops = {
 #define PLL1061X_K_OFFSET	0xC	/* PLL_CON3 0x12c - PLL_CON0 0x120: cmucal-sfr.c:47-48 */
 #define PLL1061X_KDIV_MASK	0xFFFF	/* cmucal-sfr.c:2135 DIV_K 0/16 */
 #define PLL1061X_MUX_BUSY	BIT(7)	/* PLL_MUX_BUSY: S:drivers/soc/samsung/cal-if/ra.h:35-36 */
+#define PLL1061X_MUX_SEL	BIT(4)	/* PLL_MUX_SEL: S:drivers/soc/samsung/cal-if/ra.h:33-34 */
 #define PLL1061X_LOCK_STAT_SHIFT 29
 #define PLL1061X_ENABLE_SHIFT	31
 
@@ -721,29 +724,65 @@ static int samsung_pll1061x_set_rate(struct clk_hw *hw, unsigned long drate,
 	return on ? samsung_pll_lock_wait(pll, BIT(pll->lock_offs)) : 0;
 }
 
-/*
- * Stock ra_enable_pll(clk, 0) clears PLL_MUX_SEL, waits PLL_MUX_BUSY == 0 for
- * up to 100 x 1 us and only then clears ENABLE (ra.c:82-102). In CCF the
- * PLL_MUX_SEL write is the reparent of the bypass mux to oscclk, after which
- * the core disables the old parent (this PLL), so the busy wait sits here,
- * between the two stock steps. Runs under the enable lock: atomic poll.
- */
-static void samsung_pll1061x_disable(struct clk_hw *hw)
+static void samsung_pll1061x_wait_mux(struct samsung_clk_pll *pll)
 {
-	struct samsung_clk_pll *pll = to_clk_pll(hw);
 	u32 val;
 
 	if (readl_relaxed_poll_timeout_atomic(pll->con_reg, val,
 					      !(val & PLL1061X_MUX_BUSY), 1, 100))
-		pr_err("%s: pll mux change time out\n", clk_hw_get_name(hw));
+		pr_err("%s: pll mux change time out\n", clk_hw_get_name(&pll->hw));
+}
+
+/*
+ * Stock ra_enable_pll(clk, 0) clears PLL_MUX_SEL, waits PLL_MUX_BUSY == 0 for
+ * up to 100 x 1 us and only then clears ENABLE (S:drivers/soc/samsung/cal-if/
+ * ra.c:82-102). PLL_MUX_SEL is the bypass mux of this PLL (PLL_CON0 bit 4,
+ * CCF "mout_abox_pll_aud"), which feeds the ABOX bus divider and with it the
+ * APB of CMU_ABOX itself. A reparent to oscclk clears it before the core
+ * disables this PLL; but when the last consumer goes away the mux still
+ * selects the PLL, and clearing ENABLE then stops the clock of the very bus
+ * the write went through: the next CMU_ABOX access (or the write's response)
+ * stalls the SoC (image 0108/0111 hang in the ABOX SysMMU probe's clock
+ * disable). So park the mux on OSCCLK here as stock did, and put it back in
+ * .enable once the PLL is locked again. The CCF parent of the mux stays the
+ * PLL: nothing is clocked from it while the PLL is off. Runs under the enable
+ * lock: atomic polls.
+ */
+static void samsung_pll1061x_disable(struct clk_hw *hw)
+{
+	struct samsung_clk_pll *pll = to_clk_pll(hw);
+	u32 val = readl_relaxed(pll->con_reg);
+
+	if (val & PLL1061X_MUX_SEL) {
+		writel_relaxed(val & ~PLL1061X_MUX_SEL, pll->con_reg);
+		pll->mux_parked = true;
+	}
+	samsung_pll1061x_wait_mux(pll);
 	samsung_pll3xxx_disable(hw);
+}
+
+static int samsung_pll1061x_enable(struct clk_hw *hw)
+{
+	struct samsung_clk_pll *pll = to_clk_pll(hw);
+	int ret;
+
+	ret = samsung_pll3xxx_enable(hw);	/* stock ra_enable_pll(clk, 1) */
+	if (ret || !pll->mux_parked)
+		return ret;
+
+	writel_relaxed(readl_relaxed(pll->con_reg) | PLL1061X_MUX_SEL,
+		       pll->con_reg);
+	samsung_pll1061x_wait_mux(pll);
+	pll->mux_parked = false;
+
+	return 0;
 }
 
 static const struct clk_ops samsung_pll1061x_clk_ops = {
 	.recalc_rate = samsung_pll1061x_recalc_rate,
 	.determine_rate = samsung_pll_determine_rate,
 	.set_rate = samsung_pll1061x_set_rate,
-	.enable = samsung_pll3xxx_enable,
+	.enable = samsung_pll1061x_enable,
 	.disable = samsung_pll1061x_disable,
 };
 
