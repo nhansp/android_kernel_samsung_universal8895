@@ -11,4 +11,5 @@ source "drivers/media/platform/samsung/s5p-mfc/Kconfig"
 
 # L6B multimedia
 source "drivers/media/platform/samsung/mfc-exynos8895/Kconfig"
+source "drivers/media/platform/samsung/fimc-is2/Kconfig"
 
