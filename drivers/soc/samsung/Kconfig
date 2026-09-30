@@ -387,6 +387,15 @@ config GREATLTE_HB_L6M
 	  Registers the L6M heartbeat rows: the SMFC driver binding
 	  (/soc@0/jpeg@13b00000) and the MSCL scaler binding
 	  (/soc@0/scaler@13b10000). Never enable in a release build.
+# L6B multimedia heartbeat (l6b2)
+config GREATLTE_HB_L6B
+	bool "greatlte heartbeat: L6B multimedia"
+	depends on GREATLTE_HB
+	default GREATLTE_HB
+	help
+	  Registers the L6B heartbeat rows (MFC, camera, JPEG, scaler, BUSP
+	  ratios) and the hooks the MFC and camera drivers report through.
+
 # L6B multimedia QoS shim (spec L6B 5.3)
 config EXYNOS8895_MM_QOS
 	bool "Exynos8895 multimedia QoS requests (camera and MFC DVFS votes)"

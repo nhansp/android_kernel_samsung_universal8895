@@ -10,6 +10,8 @@
  * (at your option) any later version.
  */
 
+#include <linux/soc/samsung/greatlte-hb-l6b.h>
+
 #include "s5p_mfc_ctrl.h"
 
 #include "s5p_mfc_hwlock.h"
@@ -126,6 +128,8 @@ static int mfc_init_hw(struct s5p_mfc_dev *dev, enum mfc_buf_usage_type buf_type
 		ret = -EIO;
 		goto err_init_hw;
 	}
+	/* DEBUG heartbeat row mfcv (spec L6B 5.10) */
+	greatlte_hb_l6b_set_mfcv(fw_ver);
 
 #ifdef CONFIG_EXYNOS_CONTENT_PATH_PROTECTION
 	/* Cache flush for base address change */
