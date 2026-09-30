@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Galaxy Note 8 (greatlte, SM-N950N) board DT, part "l4b":
+ * L4b: secure-world TRNG (spec L4b 4.2). The UFS inline encryption (FMP) of
+ * L4b needs no DT change (spec L4b 4.1).
+ *
+ * Included at the end of exynos8895-greatlte.dts after the L4 part
+ * (spec L4b 9.5 I-1). Owner: WP-L4b; no other work package edits this file
+ * (plan 2.3 rule D1).
+ */
+
+/ {
+	/*
+	 * Secure-world DTRNG reached through SMC_CMD_RANDOM
+	 * (S:include/linux/smc.h:83-87); stock registered the device from the
+	 * driver (S:drivers/char/hw_random/exyswd-rng.c:335-357): no clock,
+	 * no register window.
+	 */
+	rng {
+		compatible = "samsung,exynos8895-trng";
+	};
+};
