@@ -80,6 +80,10 @@ properties:
 
   '#clock-cells':
     const: 1
+    description:
+      Cell 0 is CLKOUT (PMU_DEBUG 0xA00, its mux inputs named by clock-names).
+      Cell 1 (Exynos8895 only) is CLKOUT1 (PMU_DEBUG1 0xA0C) with the TCXO
+      source.
 
   clock-names:
     description:
