@@ -72,3 +72,5 @@ obj-$(CONFIG_GREATLTE_HB_L6K)	+= greatlte-hb-l6k.o
 obj-$(CONFIG_GREATLTE_HB_L6I)	+= greatlte-hb-l6i.o
 # L6E audio heartbeat
 obj-$(CONFIG_GREATLTE_HB_L6E)	+= greatlte-hb-l6e.o
+# L6L (G2D blitter) heartbeat rows (WP l6l, DEBUG)
+obj-$(CONFIG_GREATLTE_HB_L6L)	+= greatlte-hb-l6l.o
