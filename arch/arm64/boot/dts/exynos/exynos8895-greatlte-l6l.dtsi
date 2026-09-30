@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Galaxy Note 8 (greatlte, SM-N950N) board DT, part "l6l":
+ * Exynos 8895 2D graphic accelerator (G2D) blitter + SysMMUs (spec L6L 4.2).
+ *
+ * G2D ships together with DisplayPort (spec-usbc L6G), so the G2D node status
+ * is left "disabled" here per user decision (DECISIONS.md / BRIEF-l6l.md); the
+ * integrator enables it when DP lands.
+ */
+
+&cmu_g2d {
+	status = "okay";
+};
+
+&sysmmu_g2dd0 {
+	status = "okay";
+};
+
+&sysmmu_g2dd1 {
+	status = "okay";
+};
+
+&g2d {
+	status = "disabled"; /* enabled with DisplayPort (spec-usbc L6G) */
+};
