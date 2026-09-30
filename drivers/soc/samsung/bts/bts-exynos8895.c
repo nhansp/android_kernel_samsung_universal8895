@@ -1066,6 +1066,28 @@ static struct notifier_block exynos_bts_notifier = {
 	.notifier_call = exynos_bts_notifier_event,
 };
 
+#if IS_ENABLED(CONFIG_GREATLTE_HB)
+/*
+ * DEBUG: heartbeat "bts" row (spec L2b 1.2), lock-free:
+ * s<top scenario bitmap> q<last qmax read>/<write> t<tq>, "off" unless programmed
+ */
+int bts_hb(char *buf, size_t size)
+{
+	unsigned long scen = 0;
+	struct bts_info *bts;
+
+	if (!READ_ONCE(bts_programmed))
+		return scnprintf(buf, size, "off");
+
+	for (bts = exynos_bts; bts <= &exynos_bts[ARRAY_SIZE(exynos_bts) - 1]; bts++)
+		if (bts->enable)
+			scen |= BIT(READ_ONCE(bts->top_scen));
+
+	return scnprintf(buf, size, "s%lx q%u/%u t%u", scen, READ_ONCE(trex_snode[0].read),
+			 READ_ONCE(trex_snode[0].write), READ_ONCE(trex_sci.value));
+}
+#endif
+
 #endif /* CONFIG_EXYNOS8895_BTS */
 
 #define BIT_PER_BYTE		8
