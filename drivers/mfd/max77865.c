@@ -90,6 +90,32 @@ static const struct regmap_irq_chip max77865_irq_chip = {
 	.num_irqs	= ARRAY_SIZE(max77865_irqs),
 };
 
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_SYSOVLO)
+/*
+ * TOP sub-chip on SYSTEM_INT for SYSOVLO. Every SYS_INT source stock declared is
+ * listed (Samsung's drivers/mfd/max77865-irq.c: BSTEN 3, SYSUVLO 4,
+ * SYSOVLO 5, TSHDN 6, TM 7), so regmap-irq masks all of them at registration
+ * (it only touches the bits of declared irqs) before it unmasks TOP in INTSRC_MASK;
+ * only SYSOVLO is ever requested (by the charger).
+ */
+static const struct regmap_irq max77865_sys_irqs[] = {
+	REGMAP_IRQ_REG(3, 0, BIT(3)),
+	REGMAP_IRQ_REG(4, 0, BIT(4)),
+	REGMAP_IRQ_REG(5, 0, MAX77865_SYSTEM_INT_SYSOVLO),
+	REGMAP_IRQ_REG(6, 0, BIT(6)),
+	REGMAP_IRQ_REG(7, 0, BIT(7)),
+};
+
+static const struct regmap_irq_chip max77865_sys_irq_chip = {
+	.name		= "max77865-sys",
+	.status_base	= MAX77865_PMIC_REG_SYSTEM_INT,
+	.mask_base	= MAX77865_PMIC_REG_SYSTEM_INT_MASK,
+	.num_regs	= 1,
+	.irqs		= max77865_sys_irqs,
+	.num_irqs	= ARRAY_SIZE(max77865_sys_irqs),
+};
+#endif
+
 /* L6F 5.2 step 5: haptic and RGB LED child cells */
 static const struct mfd_cell max77865_cells[] = {
 	MFD_CELL_OF("max77865-haptic", NULL, NULL, 0, 0, "maxim,max77865-haptic"),
@@ -142,6 +168,16 @@ static int max77865_i2c_probe(struct i2c_client *i2c)
 				       &max77865_irq_chip, &irq_data);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to add IRQ chip\n");
+
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_SYSOVLO)
+	ret = devm_regmap_add_irq_chip(dev, max->regmap,
+				       regmap_irq_get_virq(irq_data, 1),
+				       IRQF_ONESHOT, 0,
+				       &max77865_sys_irq_chip,
+				       &max->sys_irq_data);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to add SYS IRQ chip\n");
+#endif
 
 	/*
 	 * L6F 5.2 step 5: haptic and RGB LED child cells.
