@@ -35,6 +35,7 @@
 #include <linux/soc/samsung/exynos8895-pm.h>
 #include <linux/suspend.h>
 #include <linux/syscore_ops.h>
+#include <trace/events/power.h>
 #include <asm/memory.h>
 #include <asm/suspend.h>
 #include <dt-bindings/soc/samsung,exynos8895-pm.h>
@@ -481,6 +482,115 @@ static int e8895_peek_set(const char *val, const struct kernel_param *kp)
 static const struct kernel_param_ops e8895_peek_ops = { .set = e8895_peek_set };
 module_param_cb(peek, &e8895_peek_ops, NULL, 0200);
 
+/*
+ * DEBUG stage_poke=<mask> (image 0123: cam and iva refuse to power off at syscore time,
+ * dpu1/srdz/g2d/vts in genpd noirq, while the same pokes succeed at run time). During a
+ * mem suspend, power each selected domain that is on off and on again (pd_poke) at every
+ * PM phase boundary (suspend_resume tracepoint) and after every device PM callback
+ * (device_pm_callback_end), from PM_SUSPEND_PREPARE up to and including syscore suspend,
+ * and once around each PM-DVS rail change. The first failure per domain is printed with
+ * the step before it; later probes of that domain stop. Bit i = e8895_pd_stat[i];
+ * 0x802 = cam + iva (no driver, no genpd: safe to cycle). Use with
+ * echo 0 > /sys/power/pm_async, so that "after" names one callback.
+ *   dvs_skip=1  PM-DVS suspend_late/resume_early do nothing (A/B for the rail drop)
+ */
+static unsigned int stage_poke;
+module_param(stage_poke, uint, 0644);
+static bool dvs_skip;
+module_param(dvs_skip, bool, 0644);
+static DEFINE_RAW_SPINLOCK(e8895_sp_lock);
+static bool e8895_sp_active;
+static u32 e8895_sp_failed;
+static unsigned int e8895_sp_n;
+static char e8895_sp_last[96] = "PM_SUSPEND_PREPARE";
+
+/* 0: off and on again, 1: domain off (skipped), -1: power-off did not happen within 2 ms */
+static int e8895_sp_poke1(u16 st)
+{
+	unsigned int t;
+	bool ok;
+
+	if (!(pmu_raw_readl(st) & 0xf))
+		return 1;
+	pmu_raw_writel(pmu_raw_readl(st - 4) & ~0xf, st - 4);
+	for (t = 0; t < 2000 && (pmu_raw_readl(st) & 0xf); t++)
+		udelay(1);
+	ok = !(pmu_raw_readl(st) & 0xf);
+	pmu_raw_writel(pmu_raw_readl(st - 4) | 0xf, st - 4);
+	for (t = 0; t < 2000 && (pmu_raw_readl(st) & 0xf) != 0xf; t++)
+		udelay(1);
+	if ((pmu_raw_readl(st) & 0xf) != 0xf)
+		pr_err("exynos8895-pm: DEBUG stagepoke: STATUS %x after on again\n",
+		       pmu_raw_readl(st) & 0xf);
+	return ok ? 0 : -1;
+}
+
+static void e8895_sp_probe(const char *a, const char *b)
+{
+	unsigned long flags;
+	unsigned int i;
+	u32 mask = READ_ONCE(stage_poke);
+
+	if (!mask || !READ_ONCE(e8895_sp_active))
+		return;
+	raw_spin_lock_irqsave(&e8895_sp_lock, flags);
+	e8895_sp_n++;
+	for (i = 0; i < ARRAY_SIZE(e8895_pd_stat); i++) {
+		if (!(mask & BIT(i)) || (e8895_sp_failed & BIT(i)))
+			continue;
+		if (e8895_sp_poke1(e8895_pd_stat[i].off) < 0) {
+			e8895_sp_failed |= BIT(i);
+			pr_info("exynos8895-pm: DEBUG stagepoke: %s FAILED at probe %u [%s %s], last ok [%s]\n",
+				e8895_pd_stat[i].name, e8895_sp_n, a, b, e8895_sp_last);
+		}
+	}
+	snprintf(e8895_sp_last, sizeof(e8895_sp_last), "%s %s", a, b);
+	raw_spin_unlock_irqrestore(&e8895_sp_lock, flags);
+}
+
+static void e8895_sp_tp_dev(void *data, struct device *dev, int error)
+{
+	char who[96];
+
+	snprintf(who, sizeof(who), "%s %s", dev_driver_string(dev), dev_name(dev));
+	e8895_sp_probe("after", who);
+}
+
+static void e8895_sp_tp_phase(void *data, const char *action, int val, bool start)
+{
+	e8895_sp_probe(start ? "start" : "end", action);
+}
+
+static int e8895_sp_pm_nb_fn(struct notifier_block *nb, unsigned long ev, void *p)
+{
+	if (ev == PM_SUSPEND_PREPARE) {
+		e8895_sp_failed = 0;
+		e8895_sp_n = 0;
+		strscpy(e8895_sp_last, "PM_SUSPEND_PREPARE", sizeof(e8895_sp_last));
+		WRITE_ONCE(e8895_sp_active, true);
+		e8895_sp_probe("PM_SUSPEND_PREPARE", "notifier");
+	} else if (ev == PM_POST_SUSPEND) {
+		if (READ_ONCE(stage_poke))
+			pr_info("exynos8895-pm: DEBUG stagepoke: %u probes, failed %04x\n",
+				e8895_sp_n, e8895_sp_failed);
+		WRITE_ONCE(e8895_sp_active, false);
+	}
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block e8895_sp_pm_nb = { .notifier_call = e8895_sp_pm_nb_fn };
+
+static void e8895_sp_init(void)
+{
+	int r1, r2;
+
+	register_pm_notifier(&e8895_sp_pm_nb);
+	r1 = register_trace_device_pm_callback_end(e8895_sp_tp_dev, NULL);
+	r2 = register_trace_suspend_resume(e8895_sp_tp_phase, NULL);
+	if (r1 || r2)
+		pr_warn("exynos8895-pm: DEBUG stagepoke tracepoints: %d %d\n", r1, r2);
+}
+
 /* = A:drivers/firmware/psci/psci.c:502-510, but used for the TYPE-0 Exynos states too:
  * stock always passes cpu_resume (S:arch/arm64/kernel/psci.c:212-255) */
 /* DEBUG: the finisher's own return (psci_to_linux_errno() of the SMC result) of the last
@@ -687,6 +797,8 @@ static int e8895_pm_syscore_suspend(void)
 	 * (A:kernel/power/suspend.c:525, reset at :562). s2idle runs no syscore ops. */
 	if (pm_suspend_target_state != PM_SUSPEND_MEM)
 		return 0;
+	e8895_sp_probe("in", "e8895_pm_syscore_suspend");	/* DEBUG stage_poke */
+	WRITE_ONCE(e8895_sp_active, false);
 	if (cp_check && !pmu_raw_readl(E8895_CP_STAT)) {	/* :233-237 */
 		pr_info("exynos8895-pm: sleep canceled by CP reset\n");
 		return -EINVAL;
@@ -848,11 +960,12 @@ static int e8895_dvs_suspend_late(struct device *dev)
 	int ret;
 
 	/* only around SLEEP, as stock (stock had no s2idle and no hibernation) */
-	if (pm_suspend_target_state != PM_SUSPEND_MEM)
+	if (pm_suspend_target_state != PM_SUSPEND_MEM || dvs_skip)	/* DEBUG dvs_skip */
 		return 0;
 	for (i = 0; i < ARRAY_SIZE(e8895_dvs); i++) {
 		if (!e8895_dvs_reg[i])
 			continue;
+		e8895_sp_probe("pm-dvs before", e8895_dvs[i].supply);	/* DEBUG stage_poke */
 		ret = e8895_dvs_set(i, true);
 		if (ret) {
 			/*
@@ -868,6 +981,7 @@ static int e8895_dvs_suspend_late(struct device *dev)
 		}
 	}
 	e8895_dvs_lowered = true;
+	e8895_sp_probe("pm-dvs", "all rails lowered");		/* DEBUG stage_poke */
 	return 0;
 }
 
@@ -962,6 +1076,7 @@ static int e8895_pm_probe(struct platform_device *pdev)
 	register_syscore_ops(&e8895_pm_syscore_ops);
 	suspend_set_ops(&e8895_pm_ops);			/* A:kernel/power/suspend.c:224-241: mem = deep */
 	bus_register_notifier(&platform_bus_type, &e8895_pm_bus_nb);
+	e8895_sp_init();					/* DEBUG stage_poke */
 	dev_info(dev, "SLEEP via PSCI 0x%08x, %zu PMUCAL blocks\n", E8895_PSCI_SLEEP,
 		 ARRAY_SIZE(e8895_pm_bases));
 	e8895_pm_try_resolve();				/* no-op before late_initcall_sync */
