@@ -192,6 +192,32 @@ static int e8895_handle(struct e8895_seq *s, unsigned int n)
 	return 0;
 }
 
+/*
+ * DEBUG (sleep_trace=1, image 0127: SLEEP is reached but nothing wakes it):
+ * read back every WRITE of the enter list right after it ran and print the
+ * words that do not hold the written value (a write the hardware ignored,
+ * a self-clearing bit, or another master changing it). Works under
+ * pm_test=core, i.e. without a real SLEEP.
+ */
+static void e8895_verify(const struct e8895_seq *s, unsigned int n)
+{
+	unsigned int i, bad = 0;
+
+	for (i = 0; i < n; i++, s++) {
+		u32 v;
+
+		if (s->type != E8895_WRITE)
+			continue;
+		v = readl_relaxed(e8895_va[s->base] + s->off);
+		if ((v & s->mask) != s->val) {
+			bad++;
+			pr_info("exynos8895-pm: DEBUG verify [%u] base %u +0x%04x = 0x%08x, wrote 0x%08x/0x%08x\n",
+				i, s->base, s->off, v, s->val, s->mask);
+		}
+	}
+	pr_info("exynos8895-pm: DEBUG verify: %u entries, %u differ\n", n, bad);
+}
+
 /* pmucal_rae_save_seq(), :124-149 */
 static void e8895_save(struct e8895_seq *s, unsigned int n)
 {
@@ -899,8 +925,10 @@ static int e8895_pm_syscore_suspend(void)
 	e8895_early = true;
 	e8895_sleep_armed = true;
 	pr_info("exynos8895-pm: SLEEP mode=%d\n", e8895_mode);
-	if (sleep_trace)					/* DEBUG */
+	if (sleep_trace) {					/* DEBUG */
+		e8895_verify(t->t[0], t->n[0]);
 		e8895_sleep_dump();
+	}
 	return 0;
 
 refuse:
