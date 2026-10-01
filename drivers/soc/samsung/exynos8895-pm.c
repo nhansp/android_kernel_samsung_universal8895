@@ -514,6 +514,31 @@ static int e8895_dbg_pdoff(void)
 	return ra ? : rv;
 }
 
+/*
+ * Deviation from stock, which entered SLEEP regardless: a domain whose
+ * power-off timed out with CONFIGURATION still 0 (STATUS on) stalls the system
+ * power-down with no wake (image 0120: dpu1/g2d/vts/srdz CONFIGURATION 0 STATUS
+ * 0xf, no return from the SLEEP SMC). Refuse SLEEP while any PMU domain's
+ * CONFIGURATION[3:0] differs from its STATUS[3:0].
+ */
+static int e8895_pd_check(void)
+{
+	unsigned int i;
+	int ret = 0;
+
+	for (i = 0; i < ARRAY_SIZE(e8895_pd_stat); i++) {
+		u16 st = e8895_pd_stat[i].off;		/* CONFIGURATION = STATUS - 4 */
+		u32 c = pmu_raw_readl(st - 4) & 0xf, v = pmu_raw_readl(st) & 0xf;
+
+		if (c != v) {
+			pr_err("exynos8895-pm: pd %s CONFIGURATION 0x%x STATUS 0x%x: no SLEEP\n",
+			       e8895_pd_stat[i].name, c, v);
+			ret = -EBUSY;
+		}
+	}
+	return ret;
+}
+
 /* S:drivers/soc/samsung/exynos-pm.c:231-255 */
 static int e8895_pm_syscore_suspend(void)
 {
@@ -530,6 +555,8 @@ static int e8895_pm_syscore_suspend(void)
 		pr_info("exynos8895-pm: sleep canceled by CP reset\n");
 		return -EINVAL;
 	}
+	if (e8895_pd_check())
+		return -EBUSY;
 	if (sleep_pdoff && e8895_dbg_pdoff())			/* DEBUG */
 		return -EIO;
 	if (E8895_PD_ON(E8895_PD_ABOX))			/* abox_is_on(), :239 */
