@@ -412,6 +412,75 @@ module_param(sleep_psci, uint, 0644);
 static bool sleep_pdoff;
 module_param(sleep_pdoff, bool, 0644);
 
+/*
+ * DEBUG (image 0120: dpu1/g2d/vts/srdz power-off times out with STATUS still 0xf,
+ * i.e. the PMU never starts the sequence). Runtime probes, no suspend needed:
+ *   echo <pmu off> > /sys/module/exynos8895_pm/parameters/pd_poke
+ *       CONFIGURATION offset of one domain (0x4080 dpu1, 0x40c0 g2d, 0x41a0 vts,
+ *       0x5420 srdz): request off, trace STATUS for up to 20 ms, then request on
+ *       again and wait (genpd keeps these domains on after their failed power-off)
+ *   echo <phys> > /sys/module/exynos8895_pm/parameters/peek
+ *       print one 32-bit register (only blocks that are clocked and powered:
+ *       CMU_TOP 0x15a80000, CMU_DPU0 0x12800000, PMU 0x16480000)
+ */
+static int e8895_pd_poke_set(const char *val, const struct kernel_param *kp)
+{
+	u32 off, st, last, trace[8];
+	unsigned int t, n = 0, i;
+	int ret = kstrtou32(val, 0, &off);
+
+	if (ret)
+		return ret;
+	if (!pmu_base_addr || off < 0x4000 || off > 0x5fe0 || off & 0x1f)
+		return -EINVAL;
+	pr_info("exynos8895-pm: DEBUG poke %x: CONFIGURATION %x STATUS %x OPTION %08x\n", off,
+		pmu_raw_readl(off) & 0xf, pmu_raw_readl(off + 4) & 0xf, pmu_raw_readl(off + 8));
+	pmu_raw_writel(pmu_raw_readl(off) & ~0xf, off);
+	last = pmu_raw_readl(off + 4);
+	trace[n++] = last;
+	for (t = 0; t < 20000 && (last & 0xf); t++) {
+		udelay(1);
+		st = pmu_raw_readl(off + 4);
+		if (st != last && n < ARRAY_SIZE(trace))
+			trace[n++] = st;
+		last = st;
+	}
+	pr_info("exynos8895-pm: DEBUG poke %x: off %s after %u us, STATUS trace:\n", off,
+		last & 0xf ? "FAILED" : "ok", t);
+	for (i = 0; i < n; i++)
+		pr_info("exynos8895-pm: DEBUG poke %x:   %08x\n", off, trace[i]);
+	pmu_raw_writel(pmu_raw_readl(off) | 0xf, off);
+	for (t = 0; t < 20000 && (pmu_raw_readl(off + 4) & 0xf) != 0xf; t++)
+		udelay(1);
+	pr_info("exynos8895-pm: DEBUG poke %x: on again: STATUS %x after %u us\n", off,
+		pmu_raw_readl(off + 4) & 0xf, t);
+	return 0;
+}
+
+static const struct kernel_param_ops e8895_pd_poke_ops = { .set = e8895_pd_poke_set };
+module_param_cb(pd_poke, &e8895_pd_poke_ops, NULL, 0200);
+
+static int e8895_peek_set(const char *val, const struct kernel_param *kp)
+{
+	void __iomem *va;
+	u64 pa;
+	int ret = kstrtou64(val, 0, &pa);
+
+	if (ret)
+		return ret;
+	if (pa & 3)
+		return -EINVAL;
+	va = ioremap(pa, 4);
+	if (!va)
+		return -ENOMEM;
+	pr_info("exynos8895-pm: DEBUG peek 0x%llx = 0x%08x\n", pa, readl(va));
+	iounmap(va);
+	return 0;
+}
+
+static const struct kernel_param_ops e8895_peek_ops = { .set = e8895_peek_set };
+module_param_cb(peek, &e8895_peek_ops, NULL, 0200);
+
 /* = A:drivers/firmware/psci/psci.c:502-510, but used for the TYPE-0 Exynos states too:
  * stock always passes cpu_resume (S:arch/arm64/kernel/psci.c:212-255) */
 /* DEBUG: the finisher's own return (psci_to_linux_errno() of the SMC result) of the last
