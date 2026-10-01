@@ -18,6 +18,7 @@
 #include <linux/pm_domain.h>
 #include <linux/delay.h>
 #include <linux/clk.h>
+#include <linux/moduleparam.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/pm_runtime.h>
@@ -50,11 +51,53 @@ struct exynos_pd_extra {
 	unsigned int genpd_flags;
 };
 
+/*
+ * Exynos8895 PMUCAL local lists (exynos8895-pd-cal.h, generated from
+ * CAL:pmucal_local_exynos8895.h). Stock ran, per domain, the save list before
+ * power-off and wrote the saved words back after power-on
+ * (S:drivers/soc/samsung/cal-if/pmucal_local.c:42-43,81-82): the block CMU's
+ * USER muxes, dividers, PLL words, every QCH_CON (Q-channel) word and
+ * CMU_CONTROLLER_OPTION, and the SYSREG DRCG_EN. Without the write-back a block
+ * comes out of a power cycle with its CMU at reset values, and its next
+ * power-off never completes (image 0124: STATUS stuck at step 9).
+ */
+enum exynos8895_pd_seq_type {
+	EXYNOS8895_PD_SAVE,		/* PMUCAL_SAVE_RESTORE */
+	EXYNOS8895_PD_READ,		/* PMUCAL_READ: read at save, never written back */
+	EXYNOS8895_PD_CHECK_SKIP,	/* PMUCAL_CHECK_SKIP: skip the next entry if the value holds */
+	EXYNOS8895_PD_WAIT,		/* PMUCAL_WAIT */
+	EXYNOS8895_PD_WRITE,		/* PMUCAL_WRITE */
+};
+
+struct exynos8895_pd_seq {
+	u8 type, base;			/* base: index into exynos8895_pd_cal.bases[] */
+	u16 off;
+	u32 mask, val;
+};
+
+struct exynos8895_pd_cal {
+	phys_addr_t conf;		/* CONFIGURATION, selects the row */
+	phys_addr_t bases[3];
+	u32 sizes[3];
+	const struct exynos8895_pd_seq *save;
+	unsigned int nr_save;
+	const struct exynos8895_pd_seq *pre_off;	/* before CONFIGURATION = 0 */
+	unsigned int nr_pre_off;
+};
+
+#include "exynos8895-pd-cal.h"
+
+/* escape hatch: exynos_pm_domains.pmucal=0 leaves the CMU/SYSREG words alone */
+static bool pmucal = true;
+module_param(pmucal, bool, 0444);
+
 struct exynos_pm_domain_config {
 	/* Value for LOCAL_PWR_CFG and STATUS fields for each domain */
 	u32 local_pwr_cfg;
 	const struct exynos_pd_extra *extra;
 	unsigned int nr_extra;
+	const struct exynos8895_pd_cal *cal;
+	unsigned int nr_cal;
 };
 
 /*
@@ -68,10 +111,95 @@ struct exynos_pm_domain {
 	void __iomem *seq_base;
 	struct regmap *pmu;
 	struct regmap *sysreg;
-	struct clk *bus_clk;		/* the block's bus clock, on around sysreg[] */
+	struct clk *bus_clk;		/* the block's bus clock, on around the sequences */
 	u32 saved[2];
 	bool saved_valid;
+	const struct exynos8895_pd_cal *cal;
+	void __iomem *cal_va[3];
+	u32 *cal_val;			/* per save entry: the word read before power-off */
+	unsigned long *cal_saved;	/* per save entry: read, to be written back */
 };
+
+/* pmucal_rae_check_value(), S:drivers/soc/samsung/cal-if/pmucal_rae.c:73-82 */
+static bool exynos8895_pd_cal_ok(struct exynos_pm_domain *pd, const struct exynos8895_pd_seq *e)
+{
+	return (readl_relaxed(pd->cal_va[e->base] + e->off) & e->mask) == e->val;
+}
+
+/* pmucal_rae_write(), :112-122 */
+static void exynos8895_pd_cal_write(struct exynos_pm_domain *pd,
+				    const struct exynos8895_pd_seq *e, u32 v)
+{
+	void __iomem *a = pd->cal_va[e->base] + e->off;
+
+	writel_relaxed(e->mask == U32_MAX ? v : (readl_relaxed(a) & ~e->mask) | v, a);
+}
+
+/* pmucal_rae_save_seq(), :124-149 */
+static void exynos8895_pd_cal_save(struct exynos_pm_domain *pd)
+{
+	const struct exynos8895_pd_seq *e = pd->cal->save;
+	unsigned int i;
+
+	for (i = 0; i < pd->cal->nr_save; i++, e++) {
+		if (e->type != EXYNOS8895_PD_SAVE && e->type != EXYNOS8895_PD_READ)
+			continue;
+		pd->cal_val[i] = readl_relaxed(pd->cal_va[e->base] + e->off) & e->mask;
+		if (e->type == EXYNOS8895_PD_SAVE)
+			set_bit(i, pd->cal_saved);
+		else
+			clear_bit(i, pd->cal_saved);
+	}
+}
+
+/* pmucal_rae_restore_seq(), :151-210; a lock timeout is reported, not fatal */
+static void exynos8895_pd_cal_restore(struct exynos_pm_domain *pd)
+{
+	const struct exynos8895_pd_seq *e = pd->cal->save;
+	bool skip = false;
+	unsigned int i, t;
+
+	for (i = 0; i < pd->cal->nr_save; i++, e++) {
+		if (skip) {
+			skip = false;
+			continue;
+		}
+		switch (e->type) {
+		case EXYNOS8895_PD_SAVE:
+			if (test_and_clear_bit(i, pd->cal_saved))
+				exynos8895_pd_cal_write(pd, e, pd->cal_val[i]);
+			break;
+		case EXYNOS8895_PD_CHECK_SKIP:
+			skip = exynos8895_pd_cal_ok(pd, e);
+			break;
+		case EXYNOS8895_PD_WAIT:	/* pmucal_rae_wait(), :84-103 */
+			for (t = 0; !exynos8895_pd_cal_ok(pd, e); t++) {
+				if (t > 1000) {
+					pr_err("Power domain %s: restore wait at 0x%x timed out\n",
+					       pd->pd.name, e->off);
+					break;
+				}
+				udelay(1);
+			}
+			break;
+		case EXYNOS8895_PD_WRITE:
+			exynos8895_pd_cal_write(pd, e, e->val);
+			break;
+		default:
+			break;
+		}
+	}
+}
+
+/* the <pd>_off entries before CONFIGURATION (only pd_iva has any left) */
+static void exynos8895_pd_cal_pre_off(struct exynos_pm_domain *pd)
+{
+	const struct exynos8895_pd_seq *e = pd->cal->pre_off;
+	unsigned int i;
+
+	for (i = 0; i < pd->cal->nr_pre_off; i++, e++)
+		exynos8895_pd_cal_write(pd, e, e->val);
+}
 
 static void exynos_pd_seq(void __iomem *base, const struct exynos_pd_write *w,
 			  unsigned int n)
@@ -173,6 +301,19 @@ static int exynos_pd_power(struct generic_pm_domain *domain, bool power_on)
 	pd = container_of(domain, struct exynos_pm_domain, pd);
 	base = pd->base;
 
+	/*
+	 * Stock never gated a block's CMU_TOP feed (no vclk holds the
+	 * GATE_CLKCMU_* gates, CAL:cmucal-vclk.c), so the block CMU was clocked
+	 * for the save/restore and the power-off handshake. Here the block CMU
+	 * driver gates it in its runtime suspend; hold it on around the whole
+	 * sequence (clk_enable(NULL) does nothing).
+	 */
+	clk_enable(pd->bus_clk);
+	if (pd->cal && !power_on) {
+		exynos8895_pd_cal_save(pd);	/* pmucal_local_disable(), pmucal_local.c:81-82 */
+		exynos8895_pd_cal_pre_off(pd);
+	}
+
 	exynos_pd_before(pd, power_on);
 
 	pwr = power_on ? pd->local_pwr_cfg : 0;
@@ -186,8 +327,13 @@ static int exynos_pd_power(struct generic_pm_domain *domain, bool power_on)
 			op = (power_on) ? "enable" : "disable";
 			pr_err("Power domain %s %s failed (STATUS 0x%x)\n", domain->name, op,
 			       readl_relaxed(base + 0x4) & pd->local_pwr_cfg);
-			if (!power_on)
+			if (!power_on) {
 				exynos_pd_off_rollback(domain, base, pd->local_pwr_cfg);
+				/* still powered: nothing to write back */
+				if (pd->cal)
+					bitmap_zero(pd->cal_saved, pd->cal->nr_save);
+			}
+			clk_disable(pd->bus_clk);
 			return -ETIMEDOUT;
 		}
 		timeout--;
@@ -195,7 +341,11 @@ static int exynos_pd_power(struct generic_pm_domain *domain, bool power_on)
 		usleep_range(80, 100);
 	}
 
+	if (pd->cal && power_on)
+		exynos8895_pd_cal_restore(pd);	/* pmucal_local_enable(), pmucal_local.c:42-43 */
+
 	exynos_pd_after(pd, power_on);
+	clk_disable(pd->bus_clk);
 
 	return 0;
 }
@@ -308,6 +458,8 @@ static const struct exynos_pm_domain_config exynos8895_cfg = {
 	.local_pwr_cfg		= 0xf,
 	.extra			= exynos8895_pd_extra,
 	.nr_extra		= ARRAY_SIZE(exynos8895_pd_extra),
+	.cal			= exynos8895_pd_cal,
+	.nr_cal			= ARRAY_SIZE(exynos8895_pd_cal),
 };
 
 static const struct of_device_id exynos_pm_domain_of_match[] = {
@@ -366,7 +518,9 @@ static int exynos_pd_get_extra(struct device *dev, struct exynos_pm_domain *pd,
 		if (IS_ERR(pd->sysreg))
 			return dev_err_probe(dev, PTR_ERR(pd->sysreg),
 					     "samsung,sysreg\n");
+	}
 
+	if (!pd->bus_clk) {
 		/*
 		 * The SYSREG sits behind the block's bus clock, which the
 		 * block's CMU gates in its runtime suspend (clk-exynos-arm64
@@ -399,6 +553,42 @@ static int exynos_pd_get_extra(struct device *dev, struct exynos_pm_domain *pd,
 	return 0;
 }
 
+static int exynos_pd_get_cal(struct device *dev, struct exynos_pm_domain *pd,
+			     const struct exynos_pm_domain_config *cfg)
+{
+	struct device_node *np = dev->of_node;
+	const struct exynos8895_pd_cal *c = NULL;
+	struct resource res;
+	unsigned int i;
+
+	if (!cfg->nr_cal || !pmucal || of_address_to_resource(np, 0, &res))
+		return 0;
+	for (i = 0; i < cfg->nr_cal; i++)
+		if (cfg->cal[i].conf == res.start)
+			c = &cfg->cal[i];
+	if (!c)
+		return 0;
+
+	/* non-requesting maps: the block CMU and SYSREG drivers request their ranges */
+	for (i = 0; i < ARRAY_SIZE(c->bases) && c->bases[i]; i++) {
+		pd->cal_va[i] = devm_ioremap(dev, c->bases[i], c->sizes[i]);
+		if (!pd->cal_va[i])
+			return -ENOMEM;
+	}
+	pd->cal_val = devm_kcalloc(dev, c->nr_save, sizeof(*pd->cal_val), GFP_KERNEL);
+	pd->cal_saved = devm_bitmap_zalloc(dev, c->nr_save, GFP_KERNEL);
+	if (!pd->cal_val || !pd->cal_saved)
+		return -ENOMEM;
+
+	if (!pd->bus_clk) {	/* see exynos_pd_power() */
+		pd->bus_clk = devm_clk_get_optional_prepared(dev, "bus");
+		if (IS_ERR(pd->bus_clk))
+			return dev_err_probe(dev, PTR_ERR(pd->bus_clk), "bus clock\n");
+	}
+	pd->cal = c;
+	return 0;
+}
+
 static int exynos_pd_probe(struct platform_device *pdev)
 {
 	const struct exynos_pm_domain_config *pm_domain_cfg;
@@ -426,6 +616,9 @@ static int exynos_pd_probe(struct platform_device *pdev)
 	pd->local_pwr_cfg = pm_domain_cfg->local_pwr_cfg;
 
 	ret = exynos_pd_get_extra(dev, pd, pm_domain_cfg);
+	if (ret)
+		return ret;
+	ret = exynos_pd_get_cal(dev, pd, pm_domain_cfg);
 	if (ret)
 		return ret;
 
