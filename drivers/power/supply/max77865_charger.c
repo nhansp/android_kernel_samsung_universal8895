@@ -389,6 +389,9 @@ struct max77865_charger {
 	struct s2mm005_pd_status pd;
 	unsigned long pd_event;		/* enum s2mm005_pd_event of the last notification */
 #endif
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_USB_SS)
+	bool usb_ss;			/* a SuperSpeed host configured 900 mA */
+#endif
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
 	/* stock pdic_info / pd_list state, under lock */
 	bool pd_new;			/* a notification the pass has not handled */
@@ -856,6 +859,9 @@ static void max77865_cable_event(struct max77865_charger *chg, bool attach)
 		chg->cv_want = max77865_cv_normal(chg);	/* swelling_normal_float_voltage */
 		max77865_set_events(chg, 0, EV_SWELLING_MODE);
 		chg->mix_limit = false;			/* :3946 */
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_USB_SS)
+		chg->usb_ss = false;			/* USB back to HIGH_SPEED */
+#endif
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
 		max77865_pd_reset(chg);
 #endif
@@ -1205,6 +1211,17 @@ static void max77865_currents(struct max77865_charger *chg, const struct max7786
 		*cc = 500;
 		break;
 	}
+
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_USB_SS)
+	/*
+	 * USB 3 host configured the gadget at SuperSpeed: SDP USB_CURRENT_SUPER_SPEED
+	 * 900/900; an Rp above default wins
+	 */
+	if (s->cable == CABLE_SDP && chg->usb_ss) {
+		*in = 900;
+		*cc = 900;
+	}
+#endif
 
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_TYPEC_RP)
 	/*
@@ -2470,6 +2487,9 @@ static int max77865_chg_get_property(struct power_supply *psy, enum power_supply
 static enum power_supply_property max77865_usb_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_CURRENT_MAX,
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_USB_SS)
+	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,	/* dwc3's vbus draw (drivers/usb/dwc3/core.c) */
+#endif
 };
 
 static enum power_supply_property max77865_ac_props[] = {
@@ -2499,6 +2519,11 @@ static int max77865_in_get_property(struct power_supply *psy, enum power_supply_
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
 		val->intval = (ac && chg->rep_ac ? chg->rep_ac_mv : 5000) * 1000;
 		break;
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_USB_SS)
+	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
+		val->intval = chg->usb_ss ? 900000 : 500000;
+		break;
+#endif
 	default:
 		mutex_unlock(&chg->lock);
 		return -EINVAL;
@@ -2541,12 +2566,48 @@ static const struct power_supply_desc max77865_ac_desc = {
 	.get_property = max77865_in_get_property,
 };
 
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_USB_SS)
+/*
+ * The gadget's configured current (stock USB_CONFIGURE): only the in-kernel
+ * power_supply_set_property() of dwc3 reaches this; values below 500 mA do not lower the
+ * SDP current (USB_100MA is 0 in this build)
+ */
+static int max77865_usb_set_property(struct power_supply *psy, enum power_supply_property psp,
+				     const union power_supply_propval *val)
+{
+	struct max77865_charger *chg = power_supply_get_drvdata(psy);
+	bool ss = val->intval >= 900000;
+
+	if (psp != POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT)
+		return -EINVAL;
+	mutex_lock(&chg->lock);
+	if (ss != chg->usb_ss) {
+		chg->usb_ss = ss;
+		dev_info(chg->dev, "usb configured %d mA\n", val->intval / 1000);
+		if (!chg->stopping)
+			mod_delayed_work(system_freezable_wq, &chg->pass_dwork, 0);
+	}
+	mutex_unlock(&chg->lock);
+	return 0;
+}
+
+/* read-only in sysfs: no root process can select the 900 mA branch */
+static int max77865_usb_writeable(struct power_supply *psy, enum power_supply_property psp)
+{
+	return 0;
+}
+#endif
+
 static const struct power_supply_desc max77865_usb_desc = {
 	.name = "usb",
 	.type = POWER_SUPPLY_TYPE_USB,
 	.properties = max77865_usb_props,
 	.num_properties = ARRAY_SIZE(max77865_usb_props),
 	.get_property = max77865_in_get_property,
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_USB_SS)
+	.set_property = max77865_usb_set_property,
+	.property_is_writeable = max77865_usb_writeable,
+#endif
 };
 
 /* ---- charge-control init (L6F 5.3.2) = stock max77865_charger_initialize() CHG:718-794 ---- */
