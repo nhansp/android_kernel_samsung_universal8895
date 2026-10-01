@@ -5,6 +5,10 @@
  *
  * Contact: Cho KyongHo <pullip.cho@samsung.com>
  *
+ * Exynos m2m1shot framework, ported to Linux 6.18 (spec L6B 5.9).
+ *
+ * Exynos m2m1shot framework ported to Linux 6.18 (spec L6B 5.9).
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
  * version 2 as published by the Free Software Foundation.
@@ -128,6 +132,10 @@ struct m2m1shot_buffer_plane_dma {
 	dma_addr_t dma_addr;
 	void *priv;
 	off_t offset;
+	/* 6.18 userptr mapping (NULL for dmabuf planes) */
+	struct page **upages;
+	unsigned int num_upages;
+	enum dma_data_direction map_dir;
 };
 
 /**

@@ -5,6 +5,8 @@
  *
  * Contact: Cho KyongHo <pullip.cho@samsung.com>
  *
+ * Exynos m2m1shot helpers, ported to Linux 6.18 (spec L6B 5.9).
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
  * version 2 as published by the Free Software Foundation.
