@@ -1,0 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Galaxy Note 8 (greatlte, SM-N950N) board DT, part "l6m":
+ * Exynos 8895 JPEG codec (SMFC), M2M scaler (MSCL) and their SysMMU (spec L6B 4.8, 5.9).
+ */
