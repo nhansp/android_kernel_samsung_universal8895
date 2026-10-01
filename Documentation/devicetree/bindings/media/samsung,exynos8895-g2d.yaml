@@ -1,0 +1,84 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/samsung,exynos8895-g2d.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8895 2D Graphic Accelerator (G2D)
+
+maintainers:
+  - nhansp <nhan.094.vn@gmail.com>
+
+description:
+  Exynos 8895 2D graphic accelerator (FIMG2D) blitter, driven through the
+  m2m1shot2 framework.
+
+properties:
+  compatible:
+    const: samsung,exynos8895-g2d
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    items:
+      - const: gate
+
+  power-domains:
+    maxItems: 1
+
+  iommus:
+    minItems: 2
+    maxItems: 2
+
+  samsung,hw-ppc:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    minItems: 3
+    maxItems: 3
+    description:
+      Pixels-per-cycle performance values for default, rotation, and color-fill.
+
+  samsung,skia-qos-table:
+    $ref: /schemas/types.yaml#/definitions/uint32-matrix
+    items:
+      items:
+        - description: cluster 0 minimum frequency in kHz
+        - description: cluster 1 minimum frequency in kHz
+        - description: MIF minimum frequency in kHz
+    description:
+      Skia QoS levels, one {cluster0, cluster1, mif} row per level.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+  - power-domains
+  - iommus
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/samsung,exynos8895.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    g2d@13a30000 {
+        compatible = "samsung,exynos8895-g2d";
+        reg = <0x13a30000 0x1000>;
+        interrupts = <GIC_SPI 224 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&cmu_g2d CLK_GOUT_G2D_CLK>;
+        clock-names = "gate";
+        power-domains = <&pd_g2d>;
+        iommus = <&sysmmu_g2dd0>, <&sysmmu_g2dd1>;
+        samsung,hw-ppc = <2800 2400 3800>;
+        samsung,skia-qos-table = <0 0 1014000>, <0 0 1014000>, <0 0 845000>,
+                                 <0 0 845000>, <0 0 676000>, <0 0 0>;
+    };

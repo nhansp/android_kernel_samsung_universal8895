@@ -2153,6 +2153,48 @@
 			status = "disabled";
 		};
 
+		g2d: g2d@13a30000 {
+			compatible = "samsung,exynos8895-g2d";		/* NEW; stock "samsung,s5p-fimg2d" (FDT:6864) */
+			reg = <0x13a30000 0x1000>;			/* FDT:6865 */
+			interrupts = <GIC_SPI 224 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:6866 <0x00 0xe0 0x00> */
+			clocks = <&cmu_g2d CLK_GOUT_G2D_CLK>;		/* id 19; CAL:cmucal-sfr.c:1292 GOUT_BLK_G2D_UID_G2D_IPCLKPORT_CLK 0x2048;
+									 * stock 0x258 GATE_G2D, HWACG (S:drivers/clk/samsung/clk-exynos8895.c:264) */
+			clock-names = "gate";				/* FDT:6868 */
+			power-domains = <&pd_g2d>;			/* FDT:6869 <0x17> = pd-g2d (FDT:3936-3942) */
+			iommus = <&sysmmu_g2dd0>, <&sysmmu_g2dd1>;	/* FDT:6870 <0xc0 0xc1> */
+			/* no dma-coherent (D-5): the SysMMU PTEs are not shareable (WT:drivers/iommu/exynos-iommu.c:97,1268);
+			 * stock FDT:6863-6875 has none either */
+			samsung,hw-ppc = <2800 2400 3800>;		/* FDT:6871 hw_ppc <0xaf0 0x960 0xed8>; G:g2d1shot.h:113-118 order */
+			samsung,skia-qos-table = <0 0 1014000>, <0 0 1014000>, <0 0 845000>,
+						 <0 0 845000>, <0 0 676000>, <0 0 0>;	/* FDT:6872 skia_qos_table, triples {c0,c1,mif} kHz */
+			status = "disabled";
+		};
+
+		sysmmu_g2dd0: iommu@13a60000 {
+			compatible = "samsung,exynos-sysmmu";
+			reg = <0x13a60000 0x3000>;			/* FDT:6879 */
+			interrupts = <GIC_SPI 215 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:6880 0xd7; 0xd8 is the secure IRQ, not wired */
+			clocks = <&cmu_g2d CLK_GOUT_G2D_SMMU_G2DD0_ACLK>,	/* id 40; CAL:cmucal-sfr.c:1283 */
+				 <&cmu_g2d CLK_GOUT_G2D_SMMU_G2DD0_PCLK_NONSECURE>;	/* id 41; :1284 */
+			clock-names = "aclk", "pclk";			/* stock "aclk" 0x265 only (FDT:6881-6882); pclk as the tree's
+									 * DPU SysMMUs (WT:.../exynos8895.dtsi:1919-1929) */
+			power-domains = <&pd_g2d>;			/* QCH_CON_SMMU_G2DD0_QCH in g2d_save (WT:drivers/clk/samsung/clk-exynos8895.c:4698) */
+			#iommu-cells = <0>;
+			status = "disabled";
+		};
+
+		sysmmu_g2dd1: iommu@13a70000 {
+			compatible = "samsung,exynos-sysmmu";
+			reg = <0x13a70000 0x3000>;			/* FDT:6893 */
+			interrupts = <GIC_SPI 218 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:6894 0xda; 0xdb secure */
+			clocks = <&cmu_g2d CLK_GOUT_G2D_SMMU_G2DD1_ACLK>,	/* id 43; CAL:cmucal-sfr.c:1294 */
+				 <&cmu_g2d CLK_GOUT_G2D_SMMU_G2DD1_PCLK_NONSECURE>;	/* id 44; :1293 */
+			clock-names = "aclk", "pclk";
+			power-domains = <&pd_g2d>;			/* QCH_CON_SMMU_G2DD1_QCH (WT:.../clk-exynos8895.c:4699) */
+			#iommu-cells = <0>;
+			status = "disabled";
+		};
+
 		cmu_mfc: clock-controller@13c00000 {
 			compatible = "samsung,exynos8895-cmu-mfc";
 			reg = <0x13c00000 0x8000>;	/* CAL:cmucal-sfr.c:30 SFR_BLOCK(MFC, 0x13c00000, 0x8000) */

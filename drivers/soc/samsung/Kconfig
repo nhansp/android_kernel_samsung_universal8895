@@ -367,3 +367,13 @@ config GREATLTE_HB_L6E
 	default GREATLTE_HB
 	help
 	  Registers the L6E audio heartbeat rows (codec, amp, ABOX, VTS).
+
+# L6L (G2D blitter) heartbeat rows (WP l6l, DEBUG, spec L6L 5.4)
+config GREATLTE_HB_L6L
+	bool "greatlte heartbeat: L6L G2D blitter (debug only)"
+	depends on GREATLTE_HB && VIDEO_EXYNOS_G2D1SHOT
+	default GREATLTE_HB
+	help
+	  Registers the L6L heartbeat rows: the G2D driver binding (/soc@0/g2d@13a30000),
+	  jobs finished (g2dj), error interrupts (g2de), timeouts (g2dt), and NV12
+	  flip-flop runs (g2dff). Never enable in a release build.

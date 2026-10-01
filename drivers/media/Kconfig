@@ -259,3 +259,6 @@ source "drivers/media/dvb-frontends/Kconfig"
 endmenu
 
 endif # MEDIA_SUPPORT
+
+# WP-6L
+source "drivers/media/m2m1shot2/Kconfig"
