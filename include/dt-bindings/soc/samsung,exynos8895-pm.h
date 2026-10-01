@@ -9,6 +9,6 @@
 #define E8895_SICD_VETO_CLK	0	/* busy while the node's first clock is enabled */
 #define E8895_SICD_VETO_RPM	1	/* busy unless the device is runtime-suspended */
 #define E8895_SICD_VETO_I2C	2	/* busy while an I2C transfer holds the adapter bus lock */
-#define E8895_SICD_VETO_PWM	3	/* busy while any PWM channel runs (TCON start bits) */
+#define E8895_SICD_VETO_PWM	3	/* busy while the PWM framework has a channel enabled */
 
 #endif /* __DT_BINDINGS_SOC_SAMSUNG_EXYNOS8895_PM_H */

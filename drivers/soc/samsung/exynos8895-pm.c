@@ -27,6 +27,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/psci.h>
+#include <linux/pwm.h>
 #include <linux/regulator/consumer.h>
 #include <linux/rtmutex.h>
 #include <linux/slab.h>
@@ -54,8 +55,6 @@ struct e8895_idle_stats e8895_stats;
 #define E8895_IDLE_IP_MASK(x)	(0x03F0 + (x) * 4)	/* S:drivers/soc/samsung/exynos-powermode.c:113,115 */
 #define E8895_FIX_IDLE_IP	0x60	/* FDT:4430-4431 fix-idle-ip "acpm_dvfs", <0x60>: IDLE_IP3 bit 0 */
 #define E8895_PAD_RET_UART_BT	0x3188	/* S:drivers/tty/serial/samsung.c:133; CAL:pmucal_system_exynos8895.h:1515 (commented out) */
-#define E8895_PWM_TCON		0x08	/* A:drivers/pwm/pwm-samsung.c:31 REG_TCON */
-#define E8895_PWM_TCON_START	0x00111101	/* TCON_START() of TCON channels 0, 2, 3, 4, 5, A:drivers/pwm/pwm-samsung.c:50,114-117 */
 
 /* S:drivers/soc/samsung/cal-if/pmucal_system.h:20-34 (enum sys_powerdown) */
 enum {
@@ -303,7 +302,6 @@ struct e8895_veto {
 	struct clk *clk;		/* CLK */
 	struct device *dev;		/* RPM, PWM */
 	struct i2c_adapter *adap;	/* I2C */
-	void __iomem *tcon;		/* PWM */
 };
 
 static struct e8895_veto *e8895_vetoes;
@@ -333,9 +331,29 @@ static bool e8895_veto_busy(const struct e8895_veto *v)
 	case E8895_SICD_VETO_I2C:
 		/* held for every transfer, A:include/linux/i2c.h:741; A:include/linux/rtmutex.h:42-45 */
 		return rt_mutex_base_is_locked(&v->adap->bus_lock.rtmutex);
-	case E8895_SICD_VETO_PWM:
-		/* unbound driver: the clock may be off and nothing runs */
-		return READ_ONCE(v->dev->driver) && (readl_relaxed(v->tcon) & E8895_PWM_TCON_START);
+	case E8895_SICD_VETO_PWM: {
+		/*
+		 * Stock voted busy while its PWM driver had the timer gate enabled, i.e.
+		 * while a channel it drives is enabled (S:drivers/pwm/pwm-samsung.c:
+		 * 121-152 pwm_samsung_clk_enable()/_disable()), never on TCON itself.
+		 * TCON is no proxy: S-Boot/EL3 leave timer 4 free-running (image 0131:
+		 * TCON 0x0054440c, TCNTB4 0xffffffff, no Linux user), and stock leaves
+		 * an unrequested channel alone. Busy = a channel the PWM framework has
+		 * enabled; drvdata is the struct pwm_chip (A:drivers/pwm/pwm-samsung.c:609).
+		 */
+		struct pwm_chip *chip;
+		unsigned int i;
+
+		if (!READ_ONCE(v->dev->driver))		/* unbound: nothing of ours runs */
+			return false;
+		chip = dev_get_drvdata(v->dev);
+		if (!chip)
+			return false;
+		for (i = 0; i < chip->npwm; i++)
+			if (READ_ONCE(chip->pwms[i].state.enabled))
+				return true;
+		return false;
+	}
 	}
 	return true;
 }
@@ -1187,8 +1205,6 @@ static void e8895_veto_put(struct e8895_veto *v)
 {
 	if (v->clk)
 		clk_put(v->clk);
-	if (v->tcon)
-		iounmap(v->tcon - E8895_PWM_TCON);
 	if (v->dev)
 		put_device(v->dev);
 	if (v->adap)
@@ -1263,16 +1279,6 @@ static void e8895_pm_resolve_vetoes_locked(void)
 				break;
 			}
 			v->dev = &pdev->dev;
-			if (v->kind == E8895_SICD_VETO_PWM) {
-				v->tcon = of_iomap(a.np, 0);
-				if (!v->tcon) {
-					e8895_veto_put(v);
-					memset(v, 0, sizeof(*v));
-					bad++;
-					break;
-				}
-				v->tcon += E8895_PWM_TCON;
-			}
 			v->name = dev_name(v->dev);
 			k++;
 			break;
