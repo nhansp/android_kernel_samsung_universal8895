@@ -2487,6 +2487,15 @@
 		pd_g2d: power-domain@164840c0 {
 			compatible = "samsung,exynos8895-pd", "samsung,exynos5433-pd";
 			reg = <0x164840c0 0x20>;	/* S:...-pm-domains.dtsi:70-75; CAL:...:315 */
+			/*
+			 * CMU_G2D's feed, gated by the CMU_G2D driver in its runtime
+			 * suspend: the PD driver holds it around the power sequence
+			 * and the PMUCAL save/restore of CMU_G2D (CAL:...:319-346).
+			 * Stock never gated it (no vclk holds GATE_CLKCMU_G2D_G2D,
+			 * CAL:cmucal-node.c:1436 only).
+			 */
+			clocks = <&cmu_top CLK_DOUT_CMU_G2D_G2D>;
+			clock-names = "bus";
 			#power-domain-cells = <0>;
 			label = "g2d";
 			status = "disabled";	/* L1 4.4: enabled by the board (greatlte: -l1.dtsi) */

@@ -61,6 +61,12 @@
 &pd_vpu { status = "okay"; };
 &pd_dcam { status = "okay"; };
 &pd_srdz { status = "okay"; };
+/*
+ * L7 (SLEEP): stock enables pd-iva (FDT:3974-3980) and powers it off when unused;
+ * the PD driver now runs the iva_off VMCU steps (CAL:pmucal_local_exynos8895.h:487-488)
+ * before CONFIGURATION, so an unused IVA is off before the SLEEP sequence.
+ */
+&pd_iva { status = "okay"; };
 
 /*
  * PMU (spec/L1_platform.md 4.3, 5.7, 5.8a): exynos8895_pmu_data applies stock lpm_init and
