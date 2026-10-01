@@ -4,6 +4,8 @@
  *
  * The main source file of Samsung Exynos SMFC Driver
  *
+ * JPEG stream header parser, ported to Linux 6.18 (spec L6B 5.9).
+ *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
@@ -16,6 +18,50 @@
 #include <media/videobuf2-core.h>
 
 #include "smfc.h"
+
+/*
+ * The JPEG stream can live in a USERPTR buffer (a userspace address, read
+ * with get_user()/copy_from_user()) or in a kernel-mapped MMAP/DMABUF plane
+ * (vb2_plane_vaddr()). libhwjpeg uses both
+ * (LOS:hardware_samsung_slsi-linaro/graphics/base/libhwjpeg/hwjpeg-v4l2.cpp:207,234,304,314)
+ * while stock only handled USERPTR (S:.../smfc/smfc-stream-parser.c:360-367).
+ * The cursor below is either kind of address; is_user selects the accessor.
+ */
+struct smfc_stream {
+	bool is_user;
+};
+
+static int smfc_stream_get_u8(struct smfc_ctx *ctx,
+			      struct smfc_stream *s,
+			      unsigned long *cursor, u8 *val)
+{
+	int ret = 0;
+
+	if (s->is_user) {
+		ret = get_user(*val, (u8 __user *)*cursor);
+	} else {
+		/* kernel-mapped plane: a plain load cannot fault */
+		*val = *(const u8 *)*cursor;
+	}
+	(*cursor)++;
+
+	return ret;
+}
+
+static int smfc_stream_read(struct smfc_ctx *ctx,
+			    struct smfc_stream *s,
+			    unsigned long *cursor, void *dst, size_t n)
+{
+	int ret = 0;
+
+	if (s->is_user)
+		ret = copy_from_user(dst, (const void __user *)*cursor, n);
+	else
+		memcpy(dst, (const void *)*cursor, n);
+	*cursor += n;
+
+	return ret;
+}
 
 static bool smfc_alloc_tables(struct smfc_ctx *ctx)
 {
@@ -48,17 +94,20 @@ union jpeg_hword_t {
 };
 
 static int smfc_get_segment_length(struct smfc_ctx *ctx,
+				   struct smfc_stream *s,
 				   unsigned long addr, u8 marker, u16 *length)
 {
 	union jpeg_hword_t len;
 	int ret;
 
 	if (IS_ENABLED(CONFIG_CPU_BIG_ENDIAN)) {
-		ret = get_user(len.byte[0], (u16 *)addr++);
-		ret |= get_user(len.byte[1], (u16 *)addr);
+		ret = smfc_stream_get_u8(ctx, s, &addr, &len.byte[0]);
+		if (!ret)
+			ret = smfc_stream_get_u8(ctx, s, &addr, &len.byte[1]);
 	} else {
-		ret = get_user(len.byte[1], (u16 *)addr++);
-		ret |= get_user(len.byte[0], (u16 *)addr);
+		ret = smfc_stream_get_u8(ctx, s, &addr, &len.byte[1]);
+		if (!ret)
+			ret = smfc_stream_get_u8(ctx, s, &addr, &len.byte[0]);
 	}
 	if (ret) {
 		dev_err(ctx->smfc->dev,
@@ -94,14 +143,15 @@ unsigned int smfc_get_num_huffval(u8 *hufflen)
 	return num;
 }
 
-static int smfc_parse_dht(struct smfc_ctx *ctx, unsigned long *cursor)
+static int smfc_parse_dht(struct smfc_ctx *ctx,
+			  struct smfc_stream *s, unsigned long *cursor)
 {
-	u8 __user *pcursor = (u8 __user *)*cursor;
+	unsigned long pcursor = *cursor;
 	unsigned long segend;
 	int ret;
 	u16 len;
 
-	ret = smfc_get_segment_length(ctx, *cursor, 0xc4, &len);
+	ret = smfc_get_segment_length(ctx, s, *cursor, 0xc4, &len);
 	if (ret)
 		return ret;
 
@@ -109,13 +159,13 @@ static int smfc_parse_dht(struct smfc_ctx *ctx, unsigned long *cursor)
 	pcursor += 2;
 
 	/* 17 : TcTh, L1...L16 */
-	while (((unsigned long)pcursor) < (segend - 17)) {
+	while (pcursor < (segend - 17)) {
 		u8 *table;
 		unsigned int num_values;
 		u8 tcth;
 		bool dc;
 
-		ret = get_user(tcth, pcursor++);
+		ret = smfc_stream_get_u8(ctx, s, &pcursor, &tcth);
 		if (ret) {
 			dev_err(ctx->smfc->dev, "Failed to read TcTh in DHT\n");
 			return ret;
@@ -129,8 +179,8 @@ static int smfc_parse_dht(struct smfc_ctx *ctx, unsigned long *cursor)
 		dc = (((tcth >> 4) & 0xF) == 0);
 		table = dc ? ctx->huffman_tables->dc[tcth & 1].code
 			   : ctx->huffman_tables->ac[tcth & 1].code;
-		ret = copy_from_user(table, pcursor, SMFC_NUM_HCODE);
-		pcursor += SMFC_NUM_HCODE;
+		ret = smfc_stream_read(ctx, s, &pcursor, table,
+				       SMFC_NUM_HCODE);
 		if (ret) {
 			dev_err(ctx->smfc->dev,
 					"Failed to read HUFFLEN of %d,%d\n",
@@ -147,14 +197,13 @@ static int smfc_parse_dht(struct smfc_ctx *ctx, unsigned long *cursor)
 			return -EINVAL;
 		}
 
-		if (((unsigned long)pcursor + num_values) > segend)
+		if ((pcursor + num_values) > segend)
 			break;
 
 		/* HUFFVAL */
 		table = dc ? ctx->huffman_tables->dc[tcth & 1].value
 			   : ctx->huffman_tables->ac[tcth & 1].value;
-		ret = copy_from_user(table, pcursor, num_values);
-		pcursor += num_values;
+		ret = smfc_stream_read(ctx, s, &pcursor, table, num_values);
 		if (ret) {
 			dev_err(ctx->smfc->dev,
 				"Failed to read huffval of %d,%d\n",
@@ -163,7 +212,7 @@ static int smfc_parse_dht(struct smfc_ctx *ctx, unsigned long *cursor)
 		}
 	}
 
-	if ((*cursor + len) != (unsigned long)pcursor) {
+	if ((*cursor + len) != pcursor) {
 		dev_err(ctx->smfc->dev, "Incorrect DHT length %d\n", len);
 		return -EINVAL;
 	}
@@ -173,14 +222,15 @@ static int smfc_parse_dht(struct smfc_ctx *ctx, unsigned long *cursor)
 	return 0;
 }
 
-static int smfc_parse_dqt(struct smfc_ctx *ctx, unsigned long *cursor)
+static int smfc_parse_dqt(struct smfc_ctx *ctx,
+			  struct smfc_stream *s, unsigned long *cursor)
 {
-	u8 __user *pcursor = (u8 __user *)*cursor;
+	unsigned long pcursor = *cursor;
 	unsigned long segend;
 	int ret;
 	u16 len;
 
-	ret = smfc_get_segment_length(ctx, *cursor, 0xdb, &len);
+	ret = smfc_get_segment_length(ctx, s, *cursor, 0xdb, &len);
 	if (ret)
 		return ret;
 
@@ -188,10 +238,10 @@ static int smfc_parse_dqt(struct smfc_ctx *ctx, unsigned long *cursor)
 	pcursor += 2;
 
 	/* 17 : TcTh, L1...L16 */
-	while ((unsigned long)pcursor < segend) {
+	while (pcursor < segend) {
 		u8 pqtq;
 
-		ret = get_user(pqtq, pcursor++);
+		ret = smfc_stream_get_u8(ctx, s, &pcursor, &pqtq);
 		if (ret) {
 			dev_err(ctx->smfc->dev, "Failed to read PqTq in DQT\n");
 			return ret;
@@ -202,9 +252,9 @@ static int smfc_parse_dqt(struct smfc_ctx *ctx, unsigned long *cursor)
 			return -EINVAL;
 		}
 
-		ret = copy_from_user(ctx->quantizer_tables->table[pqtq],
-							pcursor, SMFC_MCU_SIZE);
-		pcursor += SMFC_MCU_SIZE;
+		ret = smfc_stream_read(ctx, s, &pcursor,
+				       ctx->quantizer_tables->table[pqtq],
+				       SMFC_MCU_SIZE);
 		if (ret) {
 			dev_err(ctx->smfc->dev,
 				"Failed to read %dth Q-Table\n", pqtq);
@@ -218,7 +268,9 @@ static int smfc_parse_dqt(struct smfc_ctx *ctx, unsigned long *cursor)
 }
 
 #define SOF0_LENGTH 17 /* Lf+P+Y+X+Nf+Nf*Comp */
-static int smfc_parse_frameheader(struct smfc_ctx *ctx, unsigned long *cursor)
+static int smfc_parse_frameheader(struct smfc_ctx *ctx,
+				  struct smfc_stream *s,
+				  unsigned long *cursor)
 {
 	u8 *pos;
 	int i, ret;
@@ -226,7 +278,7 @@ static int smfc_parse_frameheader(struct smfc_ctx *ctx, unsigned long *cursor)
 
 	pos = sof0;
 
-	ret = copy_from_user(sof0, (void __user *)*cursor, sizeof(sof0));
+	ret = smfc_stream_read(ctx, s, cursor, sof0, sizeof(sof0));
 	if (ret) {
 		dev_err(ctx->smfc->dev, "Failed to read SOF0\n");
 		return ret;
@@ -234,7 +286,7 @@ static int smfc_parse_frameheader(struct smfc_ctx *ctx, unsigned long *cursor)
 
 	if (__get_u16(pos) != SOF0_LENGTH) {
 		dev_err(ctx->smfc->dev, "Unsupported data in SOF0\n");
-		return ret;
+		return -EINVAL;
 	}
 
 	if (*pos != 8) { /* bits per sample */
@@ -287,14 +339,13 @@ static int smfc_parse_frameheader(struct smfc_ctx *ctx, unsigned long *cursor)
 		ctx->quantizer_tables->compsel[pos[0] - 1] = pos[2];
 	}
 
-	*cursor += SOF0_LENGTH;
-
 	return 0;
 }
 
 #define SOS_LENGTH 12 /* Ls+Ns+Ns*Comp+Ss+Se+AhAl */
 static int smfc_parse_scanheader(struct smfc_ctx *ctx,
-				unsigned long streambase, unsigned long *cursor)
+				 struct smfc_stream *s,
+				 unsigned long streambase, unsigned long *cursor)
 {
 	u8 *pos;
 	int i, ret;
@@ -304,7 +355,7 @@ static int smfc_parse_scanheader(struct smfc_ctx *ctx,
 
 	ctx->offset_of_sos = *cursor - streambase - SMFC_JPEG_MARKER_LEN;
 
-	ret = copy_from_user(sos, (void __user *)*cursor, sizeof(sos));
+	ret = smfc_stream_read(ctx, s, cursor, sos, sizeof(sos));
 	if (ret) {
 		dev_err(ctx->smfc->dev, "Failed to read SOS\n");
 		return ret;
@@ -312,7 +363,7 @@ static int smfc_parse_scanheader(struct smfc_ctx *ctx,
 
 	if (__get_u16(pos) != SOS_LENGTH) {
 		dev_err(ctx->smfc->dev, "Unsupported length of SOS segment.\n");
-		return ret;
+		return -EINVAL;
 	}
 
 	if ((*pos != 3) && (*pos != 1)) { /* Ns: number of components */
@@ -352,19 +403,34 @@ static int smfc_parse_scanheader(struct smfc_ctx *ctx,
 	 * during decompression.
 	 */
 
-	*cursor += SOS_LENGTH;
-
 	return 0;
 }
 
 int smfc_parse_jpeg_header(struct smfc_ctx *ctx, struct vb2_buffer *vb)
 {
+	struct smfc_stream stream;
 	int ret;
 	union jpeg_hword_t marker;
 	u16 len;
-	unsigned long streambase = vb->planes[0].m.userptr;
-	unsigned long cursor = streambase;
-	unsigned long streamend = streambase + vb2_get_plane_payload(vb, 0);
+	unsigned long streambase, cursor, streamend;
+
+	if (vb->memory == VB2_MEMORY_USERPTR) {
+		stream.is_user = true;
+		streambase = vb->planes[0].m.userptr;
+	} else {
+		void *vaddr = vb2_plane_vaddr(vb, 0);
+
+		if (!vaddr) {
+			dev_err(ctx->smfc->dev,
+				"No kernel mapping for JPEG stream\n");
+			return -EFAULT;
+		}
+		stream.is_user = false;
+		streambase = (unsigned long)vaddr;
+	}
+
+	cursor = streambase;
+	streamend = streambase + vb2_get_plane_payload(vb, 0);
 
 	ctx->num_components = 0;
 
@@ -373,20 +439,22 @@ int smfc_parse_jpeg_header(struct smfc_ctx *ctx, struct vb2_buffer *vb)
 
 	/* the buffer in vb the entire JPEG stream from SOI */
 
-	/* userptr: get_user/copy_from_user to read stream headers */
-	/* dmabuf: map the buffer in the kernelspace to read stream headers */
-
 	/* SOI */
-	ret = get_user(marker.byte[0], (u16 *)cursor++);
-	ret |= get_user(marker.byte[1], (u16 *)cursor++);
+	ret = smfc_stream_get_u8(ctx, &stream, &cursor, &marker.byte[0]);
+	if (!ret)
+		ret = smfc_stream_get_u8(ctx, &stream, &cursor,
+					 &marker.byte[1]);
 	if (ret || (marker.byte[0] != 0xFF) || (marker.byte[1] != 0xD8)) {
 		dev_err(ctx->smfc->dev, "SOS maker is not found\n");
 		return -EINVAL;
 	}
 
 	while (cursor < (streamend - SMFC_JPEG_MARKER_LEN)) {
-		ret = get_user(marker.byte[0], (u16 *)cursor++);
-		ret |= get_user(marker.byte[1], (u16 *)cursor++);
+		ret = smfc_stream_get_u8(ctx, &stream, &cursor,
+					 &marker.byte[0]);
+		if (!ret)
+			ret = smfc_stream_get_u8(ctx, &stream, &cursor,
+						 &marker.byte[1]);
 		if (ret) {
 			dev_err(ctx->smfc->dev, "Failed to read JPEG maker\n");
 			return -EFAULT;
@@ -399,22 +467,23 @@ int smfc_parse_jpeg_header(struct smfc_ctx *ctx, struct vb2_buffer *vb)
 
 		switch (marker.byte[1]) {
 		case 0xC4: /* DHT */
-			ret = smfc_parse_dht(ctx, &cursor);
+			ret = smfc_parse_dht(ctx, &stream, &cursor);
 			if (ret)
 				return ret;
 			break;
 		case 0xDB: /* DQT */
-			ret = smfc_parse_dqt(ctx, &cursor);
+			ret = smfc_parse_dqt(ctx, &stream, &cursor);
 			if (ret)
 				return ret;
 			break;
 		case 0xC0: /* SOF0 */
-			ret = smfc_parse_frameheader(ctx, &cursor);
+			ret = smfc_parse_frameheader(ctx, &stream, &cursor);
 			if (ret)
 				return ret;
 			break;
 		case 0xDA: /**** SOS - THE END OF HEADER PARSING ****/
-			return smfc_parse_scanheader(ctx, streambase, &cursor);
+			return smfc_parse_scanheader(ctx, &stream,
+						     streambase, &cursor);
 		case 0xD9: /* EOI */
 			dev_err(ctx->smfc->dev,
 				"EOI found during header parsing\n");
@@ -428,8 +497,8 @@ int smfc_parse_jpeg_header(struct smfc_ctx *ctx, struct vb2_buffer *vb)
 			}
 
 			/* Ignores all other markers */
-			ret = smfc_get_segment_length(
-					ctx, cursor, marker.byte[1], &len);
+			ret = smfc_get_segment_length(ctx, &stream, cursor,
+						      marker.byte[1], &len);
 			if (ret)
 				return ret;
 

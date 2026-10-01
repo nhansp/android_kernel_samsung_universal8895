@@ -11,8 +11,6 @@
 
 #include <linux/kernel.h>
 
-#include <media/videobuf2-ion.h>
-
 #include "smfc.h"
 
 /* SMFC SPECIFIC CONTROLS */
@@ -283,8 +281,11 @@ static int smfc_s_ctrl(struct v4l2_ctrl *ctrl)
 			return -EINVAL;
 		}
 		ctx->enable_hwfc = (unsigned char)ctrl->val;
-		vb2_ion_set_noncoherent_dma_read(ctx->smfc->vb2_alloc_ctx,
-						 ctx->enable_hwfc);
+		/*
+		 * Stock also forced non-coherent DMA reads here
+		 * (S:.../smfc/smfc-v4l2-ioctls.c:286-287); with vb2_dma_contig
+		 * all planes are non-coherent by default, so nothing to do.
+		 */
 		break;
 	case V4L2_CID_JPEG_RESTART_INTERVAL:
 		ctx->restart_interval = (unsigned char)ctrl->val;
@@ -327,12 +328,12 @@ static int smfc_s_ctrl(struct v4l2_ctrl *ctrl)
 		ctx->quality_factor = 0;
 		break;
 	case V4L2_CID_JPEG_MAX_PERF:
-		/* set the dvfs level of clock for jpeg */
-		if(ctrl->val != 0)
-			pm_qos_update_request(&ctx->smfc->qosreq_int,
-					ctx->smfc->qosreq_int_level);
-		else
-			pm_qos_update_request(&ctx->smfc->qosreq_int, 0);
+		/*
+		 * Stock voted the INT QoS level here
+		 * (S:.../smfc/smfc-v4l2-ioctls.c:329-336). QoS votes are
+		 * deferred (open item O-MM-QOS, REPORT.md): accept the control
+		 * for userspace ABI and ignore it.
+		 */
 		break;
 	default:
 		dev_err(ctx->smfc->dev, "Unsupported CID %#x\n", ctrl->id);
@@ -461,11 +462,12 @@ static int smfc_v4l2_querycap(struct file *filp, void *fh,
 	cap->card[sizeof(cap->card) - 1] = '\0';
 	cap->bus_info[sizeof(cap->bus_info) - 1] = '\0';
 
-	cap->capabilities = V4L2_CAP_STREAMING | V4L2_CAP_VIDEO_M2M_MPLANE
-				| V4L2_CAP_VIDEO_M2M;
-	cap->capabilities |= V4L2_CAP_DEVICE_CAPS;
-
-	cap->device_caps = smfc->devdata->device_caps;
+	/*
+	 * Capabilities come from videodev->device_caps (set before
+	 * registration, spec L6B B-V4); 6.18 querycap warns on driver
+	 * rewrites, so the stock writes (S:.../smfc/smfc-v4l2-ioctls.c:464-468)
+	 * are dropped.
+	 */
 
 	return 0;
 }
