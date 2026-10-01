@@ -215,6 +215,17 @@ MODULE_PARM_DESC(d1_skip_connt, "DEBUG 8895: no generic post-link CPort setup (D
 #define gl_t_ufs5		false
 #define gl_d1_skip_connt	false
 #endif
+
+/*
+ * Exynos 8895 clock gating with hibern8 (stock caps CLK_GATING |
+ * HIBERN8_WITH_CLK_GATING, S:drivers/scsi/ufs/ufs-exynos.c:1509-1511). Off by
+ * default until the hardware I/O stress test has passed: boot with
+ * ufs_exynos.clkgate8895=1. Once on, ufshcd's clkgate_enable/clkgate_delay_ms
+ * sysfs files switch and tune it at run time.
+ */
+static bool exynos8895_clkgate;
+module_param_named(clkgate8895, exynos8895_clkgate, bool, 0444);
+MODULE_PARM_DESC(clkgate8895, "Exynos 8895: UFS clock gating with hibern8 (stock behaviour)");
 #define EXYNOS_UFS_OPT_DBG_SKIP_POST_LINK_CONNT	BIT(31)	/* DEBUG: gl_d1_skip_connt */
 
 static void exynos_ufs_auto_ctrl_hcc(struct exynos_ufs *ufs, bool en);
@@ -481,6 +492,28 @@ static void exynos_ufs_ctrl_clkstop(struct exynos_ufs *ufs, bool en)
 {
 	u32 ctrl = hci_readl(ufs, HCI_CLKSTOP_CTRL);
 	u32 misc = hci_readl(ufs, HCI_MISC);
+
+	/*
+	 * Exynos 8895 (stock hw-rev 4), S:drivers/scsi/ufs/ufs-exynos.c:458-467,
+	 * 419-436, 1617-1672: the clock stop covers REFCLKOUT, REFCLK, UNIPRO_MCLK
+	 * and UNIPRO_PCLK only (CLK_STOP_ALL = 0x17, ufs-exynos.h:72-75; never the
+	 * M-PHY APB clock); the HCI_MISC stop enables (0xDE0) stay set from link
+	 * startup on (:1694, here exynos8895_ufs_pre_link()); the hardware auto
+	 * clock gating is enabled while gated (HCI_UFS_ACG_DISABLE = 0) and
+	 * disabled while running (= 1).
+	 */
+	if (ufs->opts & EXYNOS_UFS_OPT_CLKSTOP_8895) {
+		u32 acg = hci_readl(ufs, HCI_UFS_ACG_DISABLE);
+
+		if (en) {
+			hci_writel(ufs, ctrl | EXYNOS8895_CLK_STOP_ALL, HCI_CLKSTOP_CTRL);
+			hci_writel(ufs, acg & ~HCI_UFS_ACG_DISABLE_EN, HCI_UFS_ACG_DISABLE);
+		} else {
+			hci_writel(ufs, ctrl & ~EXYNOS8895_CLK_STOP_ALL, HCI_CLKSTOP_CTRL);
+			hci_writel(ufs, acg | HCI_UFS_ACG_DISABLE_EN, HCI_UFS_ACG_DISABLE);
+		}
+		return;
+	}
 
 	if (en) {
 		hci_writel(ufs, misc | CLK_CTRL_EN_MASK, HCI_MISC);
@@ -1746,6 +1779,12 @@ static void exynos_ufs_post_hibern8(struct ufs_hba *hba, enum uic_cmd_dme cmd)
 {
 	struct exynos_ufs *ufs = ufshcd_get_variant(hba);
 
+	/*
+	 * Not taken from stock: its PA_PWRMODE check after a hibern8 exit
+	 * (S:drivers/scsi/ufs/ufs-exynos.c:1366-1386; the CPort re-establishment
+	 * there returns early on rev 4, :807-812). A DME_GET from here would run
+	 * ufshcd_hold() inside the clock-ungate work, which flushes that work.
+	 */
 	if (cmd == UIC_CMD_DME_HIBER_ENTER) {
 		ufs->entry_hibern8_t = ktime_get();
 		exynos_ufs_gate_clks(ufs);
@@ -2411,6 +2450,17 @@ static int exynos8895_ufs_drv_init(struct exynos_ufs *ufs)
 	hba->rpm_lvl = UFS_PM_LVL_0;
 	pm_runtime_forbid(hba->dev);
 
+	/*
+	 * Idle: hibern8, then the clocks off (stock caps, S:drivers/scsi/ufs/
+	 * ufs-exynos.c:1509-1511; the stock gate work S:drivers/scsi/ufs/
+	 * ufshcd.c:1015-1085 = A:drivers/ufs/core/ufshcd.c ufshcd_gate_work()).
+	 * Deviation: the delay stays at the core's 150 ms, stock used 20 ms
+	 * (LINK_H8_DELAY, S:drivers/scsi/ufs/ufshcd.c:92,1159); tunable through
+	 * clkgate_delay_ms. Stock also set INTR_AGGR, not taken here.
+	 */
+	if (exynos8895_clkgate)
+		hba->caps |= UFSHCD_CAP_CLK_GATING | UFSHCD_CAP_HIBERN8_WITH_CLK_GATING;
+
 	if (gl_d1_skip_connt)		/* DEBUG */
 		ufs->opts |= EXYNOS_UFS_OPT_DBG_SKIP_POST_LINK_CONNT;
 
@@ -2977,7 +3027,8 @@ static const struct exynos_ufs_drv_data exynos8895_ufs_drvs = {
 				  EXYNOS_UFS_OPT_TIMER_TICK_SELECT |
 				  EXYNOS_UFS_OPT_UNIPRO_PCLK |
 				  EXYNOS_UFS_OPT_SKIP_SYNC_PATTERN_MASK |
-				  EXYNOS_UFS_OPT_UPMCRS_IN_UNIPRO,
+				  EXYNOS_UFS_OPT_UPMCRS_IN_UNIPRO |
+				  EXYNOS_UFS_OPT_CLKSTOP_8895,
 	.iocc_mask		= BIT(9) | BIT(8),	/* dtsi:1082-1086 */
 	.drv_init		= exynos8895_ufs_drv_init,
 	.pre_hce_enable		= exynos8895_ufs_pre_hce_enable,
