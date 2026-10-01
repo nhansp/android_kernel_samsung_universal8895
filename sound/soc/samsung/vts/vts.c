@@ -310,28 +310,6 @@ static int vts_download_firmware(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	dev_info(dev, "%s\n", __func__);
 
-	/*
-	 * Stock requested vts.bin with request_firmware_nowait() at probe and
-	 * read the versions in its callback (S:sound/soc/samsung/vts/vts.c:
-	 * 1912-1931, :2219-2230). Before /vendor is mounted the 6.18 loader has
-	 * no fallback, so the request moves here and a miss is retried at the
-	 * next runtime resume (spec L6E 5.8, F-52).
-	 */
-	if (!data->firmware &&
-			!firmware_request_nowarn(&data->firmware, "vts.bin", dev)) {
-		const struct firmware *fw = data->firmware;
-		unsigned int *pversion;
-
-		if (fw->size >= VTSFW_VERSION_OFFSET + sizeof(*pversion)) {
-			pversion = (unsigned int *)(fw->data + VTSFW_VERSION_OFFSET);
-			data->vtsfw_version = *pversion;
-			pversion = (unsigned int *)(fw->data + DETLIB_VERSION_OFFSET);
-			data->vtsdetectlib_version = *pversion;
-		}
-		dev_info(dev, "Firmware loaded at %p (%zu)\n", fw->data, fw->size);
-		dev_info(dev, "Firmware version: 0x%x Detection library version: 0x%x\n", data->vtsfw_version, data->vtsdetectlib_version);
-	}
-
 	if (!data->firmware) {
 		dev_err(dev, "firmware is not loaded\n");
 		return -EAGAIN;
@@ -1859,6 +1837,42 @@ static ssize_t vtsdetectlib_version_show(struct device *dev,
 static DEVICE_ATTR_RO(vtsfw_version);
 static DEVICE_ATTR_RO(vtsdetectlib_version);
 
+/*
+ * Stock vts_complete_firmware_request() (S:sound/soc/samsung/vts/vts.c:
+ * 1912-1931): vts.bin is requested asynchronously at probe, so with the
+ * sysfs fallback (CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y, IKC:1157) ueventd
+ * serves it from /vendor/firmware once it runs; vts_download_firmware()
+ * returns -EAGAIN until then, as stock. A version read is bounded by the
+ * file size.
+ */
+static void vts_complete_firmware_request(const struct firmware *fw, void *context)
+{
+	struct platform_device *pdev = context;
+	struct device *dev = &pdev->dev;
+	struct vts_data *data = platform_get_drvdata(pdev);
+	unsigned int *pversion = NULL;
+
+	if (!fw) {
+		dev_err(dev, "Failed to request firmware\n");
+		return;
+	}
+	if (!data) {			/* unbound while the request was pending */
+		release_firmware(fw);
+		return;
+	}
+
+	data->firmware = fw;
+	if (fw->size >= VTSFW_VERSION_OFFSET + sizeof(*pversion)) {
+		pversion = (unsigned int *)(fw->data + VTSFW_VERSION_OFFSET);
+		data->vtsfw_version = *pversion;
+		pversion = (unsigned int *)(fw->data + DETLIB_VERSION_OFFSET);
+		data->vtsdetectlib_version = *pversion;
+	}
+
+	dev_info(dev, "Firmware loaded at %p (%zu)\n", fw->data, fw->size);
+	dev_info(dev, "Firmware version: 0x%x Detection library version: 0x%x\n", data->vtsfw_version, data->vtsdetectlib_version);
+}
+
 static int samsung_vts_devm_request_threaded_irq(
 		struct platform_device *pdev, const char *irq_name,
 		unsigned int hw_irq, irq_handler_t thread_fn)
@@ -2097,6 +2111,18 @@ static int samsung_vts_probe(struct platform_device *pdev)
 	if (!data->pdev_mailbox) {
 		dev_err(dev, "Failed to get mailbox\n");
 		result = -EPROBE_DEFER;
+		goto error;
+	}
+
+	result = request_firmware_nowait(THIS_MODULE,
+			FW_ACTION_UEVENT,
+			"vts.bin",
+			dev,
+			GFP_KERNEL,
+			pdev,
+			vts_complete_firmware_request);
+	if (result < 0) {
+		dev_err(dev, "Failed to request firmware\n");
 		goto error;
 	}
 

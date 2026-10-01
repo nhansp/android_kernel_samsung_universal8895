@@ -4735,35 +4735,90 @@ static void abox_request_iva_firmware(struct abox_data *data)
 	dev_info(dev, "IVA firmware loaded\n");
 }
 
-/*
- * Stock requested the firmware with request_firmware_nowait() at probe:
- * calliope_sram.bin, from its callback calliope_dram.bin, and from that one
- * the ext bins and calliope_iva.bin (S:sound/soc/samsung/abox/abox.c:
- * 5156-5220). Before /vendor is mounted the 6.18 loader has no fallback, so
- * the same chain runs from abox_enable() until both mandatory files are in
- * (spec L6E 5.7.3, F-52); a miss is silent and abox_download_firmware()
- * returns -EAGAIN as stock.
- */
-static void abox_load_firmware(struct abox_data *data)
+static void abox_complete_dram_firmware_request(const struct firmware *fw,
+		void *context)
 {
-	struct device *dev = &data->pdev->dev;
+	struct platform_device *pdev = context;
+	struct device *dev = &pdev->dev;
+	struct abox_data *data = platform_get_drvdata(pdev);
 
-	if (!data->firmware_sram) {
-		if (firmware_request_nowarn(&data->firmware_sram,
-				"calliope_sram.bin", dev))
-			return;
-		dev_info(dev, "SRAM firmware loaded\n");
+	if (!data) {			/* unbound while the request was pending */
+		release_firmware(fw);
+		return;
 	}
 
-	if (!data->firmware_dram) {
-		if (firmware_request_nowarn(&data->firmware_dram,
-				"calliope_dram.bin", dev))
-			return;
-		dev_info(dev, "DRAM firmware loaded\n");
-
-		abox_request_extra_firmware(data);
-		abox_request_iva_firmware(data);
+	if (!fw) {
+		dev_err(dev, "Failed to request firmware\n");
+		clear_bit(ABOX_FW_REQUEST_PENDING, &data->fw_flags);
+		return;
 	}
+
+	data->firmware_dram = fw;
+
+	dev_info(dev, "DRAM firmware loaded\n");
+
+	abox_request_extra_firmware(data);
+	abox_request_iva_firmware(data);
+	clear_bit(ABOX_FW_REQUEST_PENDING, &data->fw_flags);
+
+	/* stock: if (pm_runtime_active(dev)) abox_enable(dev); */
+	data->fw_retry_jiffies = jiffies;
+	schedule_work(&data->fw_retry_work);
+}
+
+static void abox_complete_sram_firmware_request(const struct firmware *fw,
+		void *context)
+{
+	struct platform_device *pdev = context;
+	struct device *dev = &pdev->dev;
+	struct abox_data *data = platform_get_drvdata(pdev);
+
+	if (!data) {
+		release_firmware(fw);
+		return;
+	}
+
+	if (!fw) {
+		dev_err(dev, "Failed to request firmware\n");
+		clear_bit(ABOX_FW_REQUEST_PENDING, &data->fw_flags);
+		return;
+	}
+
+	data->firmware_sram = fw;
+
+	dev_info(dev, "SRAM firmware loaded\n");
+
+	if (request_firmware_nowait(THIS_MODULE, FW_ACTION_UEVENT,
+			"calliope_dram.bin", dev, GFP_KERNEL, pdev,
+			abox_complete_dram_firmware_request))
+		clear_bit(ABOX_FW_REQUEST_PENDING, &data->fw_flags);
+}
+
+/*
+ * Stock firmware request (S:sound/soc/samsung/abox/abox.c:5535-5541 at probe,
+ * callbacks :5174-5220): asynchronous, so that with the sysfs fallback
+ * (CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y as stock IKC:1157) the request
+ * waits for ueventd to serve /vendor/firmware instead of blocking a probe or
+ * a runtime resume. The kernel's own read of /vendor/firmware is refused by
+ * the LOS policy (image 0136), ueventd's is not. Re-issued (at most once a
+ * second, from abox_enable() and the retry work) after a failed request.
+ */
+static void abox_request_firmware(struct abox_data *data)
+{
+	struct platform_device *pdev = data->pdev;
+
+	if ((data->firmware_sram && data->firmware_dram) ||
+	    test_and_set_bit(ABOX_FW_REQUEST_PENDING, &data->fw_flags))
+		return;
+
+	if (data->firmware_sram ?
+	    request_firmware_nowait(THIS_MODULE, FW_ACTION_UEVENT,
+			"calliope_dram.bin", &pdev->dev, GFP_KERNEL, pdev,
+			abox_complete_dram_firmware_request) :
+	    request_firmware_nowait(THIS_MODULE, FW_ACTION_UEVENT,
+			"calliope_sram.bin", &pdev->dev, GFP_KERNEL, pdev,
+			abox_complete_sram_firmware_request))
+		clear_bit(ABOX_FW_REQUEST_PENDING, &data->fw_flags);
 }
 
 /*
@@ -4805,8 +4860,7 @@ static int abox_enable(struct device *dev)
 
 	dev_info(dev, "%s\n", __func__);
 
-	if (!data->firmware_sram || !data->firmware_dram)
-		abox_load_firmware(data);
+	abox_request_firmware(data);	/* no-op while loaded or pending */
 
 	abox_gic_enable_irq(&data->pdev_gic->dev);
 
@@ -4866,13 +4920,12 @@ error:
 }
 
 /*
- * Firmware retry for the "powered, Calliope not booted" state (spec L6E
- * 5.7.3, F-52): stock requested the firmware asynchronously at probe and
- * booted Calliope from the request callback once /vendor was mounted
- * (S:sound/soc/samsung/abox/abox.c:5175-5220 -> abox_enable()). The port
- * retries on every runtime resume; an ABOX that is kept runtime-active
- * (e.g. back-to-back stream opens) never resumes again, so a not-ready IPC
- * schedules this retry. It runs only while ABOX stays runtime-active (the
+ * Boot for the "powered, Calliope not booted" state (spec L6E 5.7.3, F-52):
+ * stock booted Calliope from the firmware callback when ABOX was runtime-
+ * active (S:sound/soc/samsung/abox/abox.c:5190-5193 -> abox_enable()); the
+ * callback and a not-ready IPC (an ABOX kept active by back-to-back stream
+ * opens never resumes again) schedule this work, which also re-issues a
+ * failed firmware request. It runs only while ABOX stays runtime-active (the
  * reference blocks a concurrent abox_disable()), at most once a second, and
  * continues abox_enable() at the step where it stopped.
  */
@@ -4890,8 +4943,7 @@ static void abox_fw_retry_work_func(struct work_struct *work)
 		return;
 
 	if (data->calliope_state == CALLIOPE_DISABLED && !data->enabled) {
-		if (!data->firmware_sram || !data->firmware_dram)
-			abox_load_firmware(data);
+		abox_request_firmware(data);
 		if (data->firmware_sram && data->firmware_dram) {
 			dev_info(dev, "%s: booting Calliope\n", __func__);
 			abox_boot_calliope(dev);
@@ -5462,6 +5514,9 @@ static int samsung_abox_probe(struct platform_device *pdev)
 	if (IS_ERR(data->regmap))
 		return PTR_ERR(data->regmap);
 	regcache_cache_only(data->regmap, true);
+
+	/* stock :5535-5541: asynchronous, served by ueventd from /vendor/firmware */
+	abox_request_firmware(data);
 
 	ret = devm_pm_runtime_enable(dev);
 	if (ret < 0)
