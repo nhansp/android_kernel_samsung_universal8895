@@ -436,6 +436,11 @@ static int e8895_pd_poke_set(const char *val, const struct kernel_param *kp)
 		return -EINVAL;
 	pr_info("exynos8895-pm: DEBUG poke %x: CONFIGURATION %x STATUS %x OPTION %08x\n", off,
 		pmu_raw_readl(off) & 0xf, pmu_raw_readl(off + 4) & 0xf, pmu_raw_readl(off + 8));
+	/* an off domain proves nothing, and powering it on would desync genpd */
+	if (!(pmu_raw_readl(off + 4) & 0xf)) {
+		pr_info("exynos8895-pm: DEBUG poke %x: already off, not poked\n", off);
+		return 0;
+	}
 	pmu_raw_writel(pmu_raw_readl(off) & ~0xf, off);
 	last = pmu_raw_readl(off + 4);
 	trace[n++] = last;
