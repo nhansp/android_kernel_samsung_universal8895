@@ -3,9 +3,9 @@
  * Samsung Galaxy Note 8 (greatlte, SM-N950N) board DT, part "l6l":
  * Exynos 8895 2D graphic accelerator (G2D) blitter + SysMMUs (spec L6L 4.2).
  *
- * G2D ships together with DisplayPort (spec-usbc L6G), so the G2D node status
- * is left "disabled" here per user decision (DECISIONS.md / BRIEF-l6l.md); the
- * integrator enables it when DP lands.
+ * The stock HWC (libacryl) uses /dev/fimg2d for everyday composition, not only
+ * for DisplayPort (hardware log 2026-10-02: "Failed to open /dev/fimg2d" on every
+ * frame), so the G2D is enabled now (user decision 2026-10-02, DECISIONS.md).
  */
 
 &cmu_g2d {
@@ -21,5 +21,5 @@
 };
 
 &g2d {
-	status = "disabled"; /* enabled with DisplayPort (spec-usbc L6G) */
+	status = "okay";
 };
