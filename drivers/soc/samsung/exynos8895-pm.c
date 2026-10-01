@@ -399,7 +399,8 @@ module_param(cp_check, bool, 0644);
  * them on and no 6.18 driver turns them off, while stock's ABOX/VTS drivers keep them off):
  *   sleep_pdoff=1      power ABOX and VTS off in syscore suspend with stock's abox_off/vts_off
  *                      lists (CAL:pmucal_local_exynos8895.h:61-65,636-641) before the mode
- *                      choice; a wait timeout aborts the suspend (-EIO). They stay off.
+ *                      choice; a wait timeout aborts the suspend (-EIO). They are powered on
+ *                      again in syscore resume or on a refusal (as sleep_alloff).
  * The sleep_trace dumps run at the end of syscore suspend, so pm_test=core prints them too.
  */
 static bool sleep_trace;
@@ -412,6 +413,7 @@ module_param(sleep_wkmask0, int, 0644);
 module_param(sleep_psci, uint, 0644);
 static bool sleep_pdoff;
 module_param(sleep_pdoff, bool, 0644);
+static u32 e8895_alloff_done;	/* DEBUG: e8895_pd_stat[] bits powered off by pdoff/alloff */
 
 /*
  * DEBUG (image 0120: dpu1/g2d/vts/srdz power-off times out with STATUS still 0xf,
@@ -683,6 +685,7 @@ static int e8895_dbg_pdoff(void)
 	if (readl_relaxed(pmu + 0x4004) & 0xf) {
 		writel_relaxed(readl_relaxed(pmu + 0x2528) | BIT(16), pmu + 0x2528);	/* ABOX_CA7_OPTION */
 		writel_relaxed(readl_relaxed(pmu + 0x4000) & ~0xf, pmu + 0x4000);	/* ABOX_CONFIGURATION */
+		e8895_alloff_done |= BIT(0);		/* e8895_pd_stat[0] abox: on again in allon */
 		ra = e8895_dbg_wait(pmu + 0x4004, 0xf, 0);				/* ABOX_STATUS */
 	}
 	if (readl_relaxed(pmu + 0x41a4) & 0xf) {
@@ -690,6 +693,7 @@ static int e8895_dbg_pdoff(void)
 		rv = e8895_dbg_wait(vts + 0x1000, BIT(16), 0);
 		if (!rv) {
 			writel_relaxed(readl_relaxed(pmu + 0x41a0) & ~0xf, pmu + 0x41a0);	/* VTS_CONFIGURATION */
+			e8895_alloff_done |= BIT(15);	/* e8895_pd_stat[15] vts */
 			rv = e8895_dbg_wait(pmu + 0x41a4, 0xf, 0);			/* VTS_STATUS */
 		}
 	}
@@ -711,7 +715,6 @@ static int e8895_dbg_pdoff(void)
  */
 static unsigned int sleep_alloff;
 module_param(sleep_alloff, uint, 0644);
-static u32 e8895_alloff_done;
 
 static void e8895_dbg_allon(void)
 {
@@ -738,10 +741,19 @@ static int e8895_dbg_alloff(void)
 	unsigned int i;
 	int ret = 0;
 
+	/*
+	 * Never dbg (bit 2) or g3d (bit 8): stock never power-managed pd-dbg at run
+	 * time (FDT:3889-3895 status = "disabled") and enters SLEEP with it on; the
+	 * raw cycle here skips CMU_DBG's PMUCAL restore (CAL:pmucal_local_exynos8895.h:128-156), and image
+	 * 0126 died in a C2 idle hard lockup after ten raw dbg cycles. g3d has its own
+	 * PLL steps in the PD driver.
+	 */
+	u32 mask = sleep_alloff & ~(BIT(2) | BIT(8));
+
 	for (i = 0; i < ARRAY_SIZE(e8895_pd_stat); i++) {
 		u16 st = e8895_pd_stat[i].off;
 
-		if (!(sleep_alloff & BIT(i)) || !(pmu_raw_readl(st) & 0xf))
+		if (!(mask & BIT(i)) || !(pmu_raw_readl(st) & 0xf))
 			continue;
 		if (st == E8895_PD_ABOX)
 			pmu_raw_writel(pmu_raw_readl(0x2528) | BIT(16), 0x2528);	/* ABOX_CA7_OPTION */
@@ -759,7 +771,7 @@ static int e8895_dbg_alloff(void)
 		}
 	}
 	pr_info("exynos8895-pm: DEBUG alloff: off %04x (mask %04x): %d\n",
-		e8895_alloff_done, sleep_alloff, ret);
+		e8895_alloff_done, mask, ret);
 	if (ret)
 		e8895_dbg_allon();
 	return ret;
@@ -793,8 +805,11 @@ static int e8895_pd_check(void)
 /* S:drivers/soc/samsung/exynos-pm.c:231-255 */
 static int e8895_pm_syscore_suspend(void)
 {
+	u32 ipm[4], wk[4], eint;
 	struct e8895_tabs *t;
+	const char *why;
 	unsigned int i;
+	int ret;
 
 	e8895_sleep_armed = false;
 	/* hibernation's create_image() runs syscore_suspend()/syscore_resume() too
@@ -804,16 +819,34 @@ static int e8895_pm_syscore_suspend(void)
 		return 0;
 	e8895_sp_probe("in", "e8895_pm_syscore_suspend");	/* DEBUG stage_poke */
 	WRITE_ONCE(e8895_sp_active, false);
+
+	/*
+	 * Every refusal below leaves the PMU as it was: a failing syscore
+	 * suspend op gets no syscore_resume() call (syscore_suspend()
+	 * resumes only the ops that already succeeded), so nothing armed
+	 * here may survive an error return (A:drivers/base/syscore.c:66-82). A
+	 * refusal is logged at pr_err.
+	 */
 	if (cp_check && !pmu_raw_readl(E8895_CP_STAT)) {	/* :233-237 */
-		pr_info("exynos8895-pm: sleep canceled by CP reset\n");
-		return -EINVAL;
+		why = "CP reset";
+		ret = -EINVAL;
+		goto refuse;
 	}
-	if (e8895_pd_check())
-		return -EBUSY;
-	if (sleep_pdoff && e8895_dbg_pdoff())			/* DEBUG */
-		return -EIO;
-	if (sleep_alloff && e8895_dbg_alloff())			/* DEBUG */
-		return -EIO;
+	if (e8895_pd_check()) {
+		why = "power domain half-way";
+		ret = -EBUSY;
+		goto refuse;
+	}
+	if (sleep_pdoff && e8895_dbg_pdoff()) {			/* DEBUG */
+		why = "sleep_pdoff";
+		ret = -EIO;
+		goto refuse;
+	}
+	if (sleep_alloff && e8895_dbg_alloff()) {		/* DEBUG */
+		why = "sleep_alloff";
+		ret = -EIO;
+		goto refuse;
+	}
 	if (E8895_PD_ON(E8895_PD_ABOX))			/* abox_is_on(), :239 */
 		e8895_mode = E8895_SYS_SLEEP_AUD_ON;	/* FDT:4419 cp_call_mode_idx = <0x0a> */
 	else if (E8895_PD_ON(E8895_PD_VTS))		/* vts_is_on(), :245 */
@@ -822,6 +855,13 @@ static int e8895_pm_syscore_suspend(void)
 		e8895_mode = E8895_SYS_SLEEP;		/* FDT:4417 suspend_mode_idx = <0x08> */
 	if (sleep_mode >= E8895_SYS_SLEEP && sleep_mode <= E8895_SYS_SLEEP_AUD_ON)	/* DEBUG */
 		e8895_mode = sleep_mode;
+
+	/* kept for a refusal; a completed cycle leaves the SLEEP values, as stock */
+	for (i = 0; i < 4; i++) {
+		ipm[i] = pmu_raw_readl(E8895_IDLE_IP_MASK(i));
+		wk[i] = pmu_raw_readl(e8895_wkmask_off[i]);
+	}
+	eint = pmu_raw_readl(E8895_EINT_WAKEUP_MASK);
 
 	/* only SYS_SICD has a ref-idle-ip node (FDT:4433-4439): the SLEEP masks are all-ones,
 	 * S:drivers/soc/samsung/exynos-powermode.c:171-182 */
@@ -838,11 +878,16 @@ static int e8895_pm_syscore_suspend(void)
 		/* deviation: stock drops this error and enters SLEEP anyway
 		 * (S:drivers/soc/samsung/exynos-pm.c:241-248); here the half-programmed
 		 * PMU is rolled back and the suspend aborted */
-		pr_err("exynos8895-pm: SLEEP mode=%d enter list: wait timed out\n", e8895_mode);
 		e8895_handle(t->t[3], t->n[3]);
 		e8895_restore(t->t[1], t->n[1]);
-		e8895_dbg_allon();				/* DEBUG */
-		return -EIO;
+		for (i = 0; i < 4; i++) {
+			pmu_raw_writel(ipm[i], E8895_IDLE_IP_MASK(i));
+			pmu_raw_writel(wk[i], e8895_wkmask_off[i]);
+		}
+		pmu_raw_writel(eint, E8895_EINT_WAKEUP_MASK);
+		why = "enter list wait timed out";
+		ret = -EIO;
+		goto refuse;
 	}
 	/*
 	 * Until ->enter reports a real power-down the correct unwind is the
@@ -857,6 +902,11 @@ static int e8895_pm_syscore_suspend(void)
 	if (sleep_trace)					/* DEBUG */
 		e8895_sleep_dump();
 	return 0;
+
+refuse:
+	e8895_dbg_allon();					/* DEBUG: sleep_alloff/sleep_pdoff */
+	pr_err("exynos8895-pm: SLEEP refused: %s (%d)\n", why, ret);
+	return ret;
 }
 
 /* S:drivers/soc/samsung/exynos-pm.c:257-273 */
