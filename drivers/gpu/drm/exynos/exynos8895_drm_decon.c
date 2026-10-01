@@ -274,7 +274,8 @@ static const struct {
 	{ "vg1", 4, 1, 0 }, { "vgf0", 1, 1, 1 }, { "vgf1", 2, 1, 1 },
 };
 
-static const char * const d8895_clk_names[] = { "aclk", "dpp_g0", "dma_sfr", "dma_ch1" };
+/* "sysreg": SYSREG_DPU0 PCLK, on while the DECON is (TE_SEL, DLMUX, DRCG_EN) */
+static const char * const d8895_clk_names[] = { "aclk", "dpp_g0", "dma_sfr", "dma_ch1", "sysreg" };
 
 /* DRM fourcc -> IDMA_IMG_FORMAT code (S:.../dpu/regs-dpp.h:107-117), alpha_sel, YUV */
 struct d8895_fmt {

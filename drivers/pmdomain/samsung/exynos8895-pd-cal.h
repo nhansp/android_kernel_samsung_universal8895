@@ -5,7 +5,8 @@
  * Do not edit. <pd>_save: the PMUCAL save list, read before power-off and
  * written back after power-on (S:drivers/soc/samsung/cal-if/pmucal_local.c:42,81);
  * <pd>_pre_off: the <pd>_off entries before CONFIGURATION that no other code
- * of this driver or the CMU drivers already runs.
+ * of this driver or the CMU drivers already runs. dpu0: no SYSREG_DPU0 word
+ * (its PCLK belongs to the DECON/DSIM, which write DRCG_EN on resume).
  */
 
 static const struct exynos8895_pd_seq exynos8895_abox_save[] = {
@@ -175,7 +176,6 @@ static const struct exynos8895_pd_seq exynos8895_dpu0_save[] = {
 	{ EXYNOS8895_PD_SAVE, 0, 0x3008, 0xffffffff, 0x00000000 },	/* :227 QCH_CON_BTM_DPUD1_QCH */
 	{ EXYNOS8895_PD_SAVE, 0, 0x3004, 0xffffffff, 0x00000000 },	/* :228 QCH_CON_BTM_DPUD0_QCH */
 	{ EXYNOS8895_PD_SAVE, 0, 0x0800, 0x30000000, 0x30000000 },	/* :229 DPU0_CMU_CONTROLLER_OPTION */
-	{ EXYNOS8895_PD_SAVE, 1, 0x0200, 0xffffffff, 0x00000000 },	/* :230 BUS_COMPONENT_DRCG_EN */
 };
 
 static const struct exynos8895_pd_seq exynos8895_dpu1_save[] = {
@@ -452,8 +452,8 @@ static const struct exynos8895_pd_cal exynos8895_pd_cal[] = {
 	},
 	{	/* pd_dpu0: :199 DPU0_CONFIGURATION */
 		.conf		= 0x16484060,
-		.bases		= { 0x12800000, 0x12820000 },
-		.sizes		= { 0x4000, 0x1000 },
+		.bases		= { 0x12800000 },
+		.sizes		= { 0x4000 },
 		.save		= exynos8895_dpu0_save,
 		.nr_save	= ARRAY_SIZE(exynos8895_dpu0_save),
 	},

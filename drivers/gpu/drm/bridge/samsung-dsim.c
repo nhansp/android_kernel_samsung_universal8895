@@ -688,6 +688,7 @@ static const struct samsung_dsim_driver_data imx8mm_dsi_driver_data = {
 
 static struct clk_bulk_data exynos8895_clk_bulk_data[] = {
 	{ .id = "bus" },
+	{ .id = "sysreg" },	/* SYSREG_DPU0 PCLK: LPMUX_CFG in samsung_dsim_init_exynos8895() */
 };
 
 /*

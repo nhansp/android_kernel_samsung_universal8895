@@ -1839,11 +1839,13 @@
 		 * LPMUX/DLMUX/MIPI_PHY_CON/TE_SEL at +0x1000..+0x100c (vendor mapping
 		 * FDT:7465 <0x12821000 0x10>, regs-decon.h:21,27,43,50) and
 		 * BUS_COMPONENT_DRCG_EN at +0x200 (S:.../pmucal_local_exynos8895.h:230).
+		 * Its PCLK (CLK_GOUT_DPU0_SYSREG_DPU0_PCLK, CAL:cmucal-sfr.c:978) is a
+		 * clock of the DECON and the DSIM, the only users: a syscon clock stays
+		 * prepared for good, which keeps CMU_DPU0 runtime-active and pd_dpu0 on.
 		 */
 		syscon_dpu0: syscon@12820000 {
 			compatible = "samsung,exynos8895-dpu0-sysreg", "syscon";
 			reg = <0x12820000 0x2000>;
-			clocks = <&cmu_dpu0 CLK_GOUT_DPU0_SYSREG_DPU0_PCLK>;	/* CAL:cmucal-sfr.c:978 (0x2108) */
 		};
 
 		/*
@@ -1888,8 +1890,9 @@
 			clocks = <&cmu_dpu0 CLK_GOUT_DPU0_DECON0_ACLK>,	/* CAL:cmucal-sfr.c:971 */
 				 <&cmu_dpu0 CLK_GOUT_DPU0_DPP_DPP_G0_ACLK>,	/* :1001 */
 				 <&cmu_dpu0 CLK_GOUT_DPU0_DPU_DMA_ACLK_SFR>,	/* :1010 */
-				 <&cmu_dpu0 CLK_GOUT_DPU0_DPU_DMA_ACLK_CH1>;	/* :1006 */
-			clock-names = "aclk", "dpp_g0", "dma_sfr", "dma_ch1";
+				 <&cmu_dpu0 CLK_GOUT_DPU0_DPU_DMA_ACLK_CH1>,	/* :1006 */
+				 <&cmu_dpu0 CLK_GOUT_DPU0_SYSREG_DPU0_PCLK>;	/* :978, SYSREG_DPU0 */
+			clock-names = "aclk", "dpp_g0", "dma_sfr", "dma_ch1", "sysreg";
 			power-domains = <&pd_dpu0>;	/* FDT:7537 */
 			iommus = <&sysmmu_dpu0>, <&sysmmu_dpu1>, <&sysmmu_dpu2>;
 			samsung,disp-sysreg = <&syscon_dpu0>;
@@ -1919,8 +1922,9 @@
 			compatible = "samsung,exynos8895-mipi-dsi";
 			reg = <0x12870000 0x100>;	/* FDT:7485 */
 			interrupts = <GIC_SPI 150 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:7486 0x96 */
-			clocks = <&cmu_dpu0 CLK_GOUT_DPU0_AD_APB_MIPI_DSIM0_PCLKS>;	/* CAL:cmucal-sfr.c:994 */
-			clock-names = "bus";
+			clocks = <&cmu_dpu0 CLK_GOUT_DPU0_AD_APB_MIPI_DSIM0_PCLKS>,	/* CAL:cmucal-sfr.c:994 */
+				 <&cmu_dpu0 CLK_GOUT_DPU0_SYSREG_DPU0_PCLK>;	/* :978, SYSREG_DPU0 LPMUX */
+			clock-names = "bus", "sysreg";
 			phys = <&mipi_phy 1>;	/* EXYNOS_MIPI_PHY_ID_DSIM0 */
 			phy-names = "dsim";
 			power-domains = <&pd_dpu1>;	/* FDT:7489 */

@@ -200,11 +200,12 @@ allOf:
     then:
       properties:
         clocks:
-          maxItems: 1
+          maxItems: 2
 
         clock-names:
           items:
             - const: bus
+            - const: sysreg
 
         ports:
           required:
