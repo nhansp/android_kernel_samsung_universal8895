@@ -389,6 +389,24 @@ struct max77865_charger {
 	struct s2mm005_pd_status pd;
 	unsigned long pd_event;		/* enum s2mm005_pd_event of the last notification */
 #endif
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
+	/* stock pdic_info / pd_list state, under lock */
+	bool pd_new;			/* a notification the pass has not handled */
+	bool pd_attached;		/* stock pdic_attach */
+	bool pd_ready;			/* stock pdic_ps_rdy */
+	bool pd_limit;			/* stock chg_limit of the PDIC branch */
+	int pd_mv[S2MM005_MAX_PDO_NUM + 1];	/* power_list after the 15 W and 3 A clamps */
+	int pd_ma[S2MM005_MAX_PDO_NUM + 1];
+	struct {
+		int mv, ma, pdo;
+	} pd_list[S2MM005_MAX_PDO_NUM];
+	int pd_count;			/* max_pd_count */
+	int pd_index;			/* now_pd_index; -1 below the list (thermal) */
+	int pd_target;			/* list index the policy wants */
+	int pd_cap_ma;			/* input cap of this pass, 0 = none */
+	int pd_want;			/* PDO this pass asks for, 0 = none */
+	int pd_req;			/* last select_pdo() argument */
+#endif
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_TEST) && IS_ENABLED(CONFIG_CHARGER_MAX77865_HV_GUARD)
 	u32 override_pd_mv;		/* test override: feeds only the HV guard */
 #endif
@@ -770,6 +788,10 @@ static void max77865_log_swelling(struct max77865_charger *chg, const char *what
 		 mode_name[chg->chg_mode]);
 }
 
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
+static void max77865_pd_reset(struct max77865_charger *chg);
+#endif
+
 /* (3) cable attach / detach (stock sec_bat_cable_work(), BAT:3887-4036) */
 static void max77865_cable_event(struct max77865_charger *chg, bool attach)
 {
@@ -834,6 +856,9 @@ static void max77865_cable_event(struct max77865_charger *chg, bool attach)
 		chg->cv_want = max77865_cv_normal(chg);	/* swelling_normal_float_voltage */
 		max77865_set_events(chg, 0, EV_SWELLING_MODE);
 		chg->mix_limit = false;			/* :3946 */
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
+		max77865_pd_reset(chg);
+#endif
 		max77865_set_mode(chg, MODE_CHARGING_OFF);	/* :3974 */
 	}
 }
@@ -1154,6 +1179,10 @@ static void max77865_currents(struct max77865_charger *chg, const struct max7786
 	case CABLE_PD:		/* cable 19 PDIC: the contract's PDO */
 		*in = s->pd_ma;
 		*cc = min(s->pd_mv * s->pd_ma / FLOAT_MV, 2350);
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
+		if (chg->pd_cap_ma)		/* lower input before a PDO change */
+			*in = min(*in, chg->pd_cap_ma);
+#endif
 		break;
 	case WLS_NV:		/* cable 10,12,15,27 */
 		*in = 900;
@@ -1554,6 +1583,197 @@ static void max77865_wls_hv_decide(struct max77865_charger *chg, const struct ma
 }
 #endif
 
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
+#define PD_CHARGE_POWER		15000	/* mW, battery,pd_charging_charge_power 0x3a98 */
+#define PD_MAX_INPUT_MV		12000	/* battery,max_input_voltage 0x2ee0 */
+#define PD_MAX_INPUT_MA		3000	/* battery,max_input_current 0xbb8 */
+/* nv_charge_power: not in stock's DT, so 5 V x default_input_current 1800 */
+#define PD_NV_CHARGE_POWER	9000
+
+static void max77865_pd_reset(struct max77865_charger *chg)
+{
+	chg->pd_attached = false;
+	chg->pd_ready = false;
+	chg->pd_limit = false;
+	chg->pd_count = 0;
+	chg->pd_index = 0;
+	chg->pd_target = 0;
+	chg->pd_req = 0;
+}
+
+/* stock make_pd_list() on the clamped copy of the source's PDOs */
+static void max77865_pd_make_list(struct max77865_charger *chg)
+{
+	int avail = min_t(int, chg->pd.available_pdo_num, S2MM005_MAX_PDO_NUM);
+	int base, i, j, n = 0;
+
+	for (base = PD_CHARGE_POWER * 1000; base >= 1000000; base -= 1000000) {
+		int sel_mv = PD_MAX_INPUT_MV + 1, sel = 0;
+
+		for (i = 1; i <= avail; i++) {
+			long p = (long)chg->pd_mv[i] * chg->pd_ma[i];
+
+			if (p > base - 1000000 && p <= base && chg->pd_mv[i] < sel_mv) {
+				sel_mv = chg->pd_mv[i];
+				sel = i;
+				chg->pd_ma[i] = min(chg->pd_ma[i], PD_MAX_INPUT_MA);
+			}
+		}
+		if (sel && n < S2MM005_MAX_PDO_NUM) {
+			chg->pd_list[n].mv = chg->pd_mv[sel];
+			chg->pd_list[n].ma = chg->pd_ma[sel];
+			chg->pd_list[n].pdo = sel;
+			n++;
+		}
+	}
+	for (i = 0; i < n - 1; i++) {			/* ascending voltage */
+		int min = i;
+
+		for (j = i + 1; j < n; j++)
+			if (chg->pd_list[j].mv < chg->pd_list[min].mv)
+				min = j;
+		swap(chg->pd_list[i], chg->pd_list[min]);
+	}
+	for (i = 0; i < n; i++)
+		dev_info(chg->dev, "pd list %d:%dmV/%dmA (pdo %d)\n", i, chg->pd_list[i].mv,
+			 chg->pd_list[i].ma, chg->pd_list[i].pdo);
+	chg->pd_count = n;
+}
+
+/* a CCIC notification (stock usb_typec_handle_notification() PD part) */
+static void max77865_pd_event(struct max77865_charger *chg)
+{
+	int i, avail;
+
+	chg->pd_new = false;
+	chg->pd_req = 0;				/* the firmware reported its contract */
+	if (chg->pd_event != S2MM005_PD_EVENT_PD_SINK && chg->pd_event != S2MM005_PD_EVENT_PD_SINK_CAP) {
+		if (chg->pd_event == S2MM005_PD_EVENT_DETACH)
+			max77865_pd_reset(chg);
+		return;
+	}
+	if (chg->pd_attached && chg->pd_event == S2MM005_PD_EVENT_PD_SINK) {
+		/* a later contract: index of the current PDO, ready */
+		chg->pd_index = 0;
+		for (i = 0; i < chg->pd_count; i++)
+			if (chg->pd_list[i].pdo == chg->pd.current_pdo_num)
+				chg->pd_index = i;
+		chg->pd_ready = true;
+		return;
+	}
+	/* the first contract or new source capabilities: clamp every PDO to 15 W */
+	avail = min_t(int, chg->pd.available_pdo_num, S2MM005_MAX_PDO_NUM);
+	for (i = 0; i <= S2MM005_MAX_PDO_NUM; i++) {
+		chg->pd_mv[i] = chg->pd.power_list[i].max_voltage;
+		chg->pd_ma[i] = chg->pd.power_list[i].max_current;
+		if (i >= 1 && i <= avail && chg->pd_mv[i] > 0 &&
+		    (long)chg->pd_mv[i] * chg->pd_ma[i] > PD_CHARGE_POWER * 1000L)
+			chg->pd_ma[i] = PD_CHARGE_POWER * 1000 / chg->pd_mv[i];
+	}
+	chg->pd_index = 0;
+	chg->pd_limit = false;
+	max77865_pd_make_list(chg);
+	if (!chg->pd_count) {
+		dev_info(chg->dev, "pd list empty\n");
+		return;
+	}
+	chg->pd_attached = true;
+	chg->pd_target = chg->pd_count - 1;		/* the highest power */
+	chg->pd_ready = chg->pd.selected_pdo_num == chg->pd_list[chg->pd_target].pdo;
+	if (chg->pd_ready)
+		chg->pd_index = chg->pd_target;
+}
+
+/*
+ * PD step before the apply step: the stock PDIC thermal step
+ * with the charger NTC, then the PDO this pass asks for and the input cap that must be
+ * written before it is requested. Unlike stock, only the
+ * lowest (5 V) PDO is asked for unless charging with H GOOD, no swelling, a valid NTC, no
+ * fault mode and no OTG.
+ */
+static void max77865_pd_step(struct max77865_charger *chg, struct max77865_sample *s)
+{
+	int idx, want, pos = chg->pd.current_pdo_num;
+	bool grant;
+
+	if (chg->pd_new)
+		max77865_pd_event(chg);
+	chg->pd_cap_ma = 0;
+	chg->pd_want = 0;
+	if (s->input != INPUT_WIRED || !chg->pd_attached || !chg->pd_count ||
+	    pos < 1 || pos > S2MM005_MAX_PDO_NUM)
+		return;
+	s->cable = CABLE_PD;
+	s->pd_mv = chg->pd_mv[pos];
+	s->pd_ma = chg->pd_ma[pos];			/* the clamped value */
+
+	/* sec_bat_check_pdic_temp(), siop 100, not under the mix limit */
+	if (chg->pd_ready && !chg->mix_limit && s->ntc_valid) {
+		idx = chg->pd_index;
+		if (!chg->pd_limit) {
+			if (s->tc >= CHG_HIGH_TEMP) {
+				chg->pd_limit = true;
+				idx--;
+			} else {
+				idx++;
+			}
+		} else {
+			if (s->tc <= CHG_HIGH_TEMP_REC)
+				chg->pd_limit = false;
+			else if (s->tc >= CHG_HIGH_TEMP)
+				idx--;
+		}
+		if (idx < 0) {
+			/* a PDO below 1 V (malformed source) gets no current at all */
+			if (chg->pd_limit)
+				chg->pd_cap_ma = chg->pd_list[0].mv >= 1000 ?
+					PD_NV_CHARGE_POWER / (chg->pd_list[0].mv / 1000) : 1;
+			chg->pd_index = chg->pd_limit ? -1 : 0;
+		} else {
+			chg->pd_target = min(idx, chg->pd_count - 1);
+		}
+	}
+
+	grant = chg->status == POWER_SUPPLY_STATUS_CHARGING && chg->health == H_GOOD &&
+		chg->swelling == SWELLING_NONE && !(chg->events & EV_SWELLING_MODE) &&
+		chg->ntc_seen && s->ntc_valid && !chg->fault && !chg->otg_on;
+	want = grant ? chg->pd_list[chg->pd_target].pdo : 1;
+	if (want != pos && want != chg->pd_req) {
+		int ma = chg->pd_ma[want];
+
+		chg->pd_cap_ma = chg->pd_cap_ma ? min(chg->pd_cap_ma, ma) : ma;
+		chg->pd_want = want;
+	}
+}
+
+/* after the apply step wrote the lower input: request the PDO */
+static void max77865_pd_request(struct max77865_charger *chg)
+{
+	int want = chg->pd_want;
+
+	if (!want)
+		return;
+	dev_info(chg->dev, "select pdo %d (%d mV)\n", want, chg->pd_mv[want]);
+	chg->pd_ready = false;
+	chg->pd_req = want;
+	s2mm005_select_pdo(want);
+}
+
+static int max77865_pd_list_show(struct seq_file *m, void *unused)
+{
+	struct max77865_charger *chg = m->private;
+	int i;
+
+	mutex_lock(&chg->lock);
+	for (i = 0; i < chg->pd_count; i++)
+		seq_printf(m, "%d:%dmV/%dmA pdo %d%s\n", i, chg->pd_list[i].mv, chg->pd_list[i].ma,
+			   chg->pd_list[i].pdo, i == chg->pd_index ? " *" : "");
+	mutex_unlock(&chg->lock);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(max77865_pd_list);
+#endif
+
 /* ---- the pass (L6F 5.3.3): one delayed work for every trigger ---- */
 
 static void max77865_pass_work(struct work_struct *work)
@@ -1670,11 +1890,18 @@ static void max77865_pass_work(struct work_struct *work)
 	if (chg->charge_control) {
 		/* (3)-(9) */
 		max77865_policy(chg, &s);
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
+		max77865_pd_step(chg, &s);
+#endif
 		/* (10) safety-time accounting while CHG is on (BAT:3637-3641); not while an override holds it off */
 		if (!chg->chg_block && chg->hw_mode == MODE_CHARGING)
 			max77865_safety_time(chg, &s);
 		/* (11) */
 		max77865_apply(chg, &s);
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
+		/* (12) */
+		max77865_pd_request(chg);
+#endif
 #if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
 		/* (12) */
 		max77865_wls_hv_decide(chg, &s);
@@ -2497,6 +2724,9 @@ static int max77865_debugfs_init(struct max77865_charger *chg)
     IS_ENABLED(CONFIG_CHARGER_MAX77865_TYPEC_RP) || IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
 	debugfs_create_bool("chg_high_temp", 0400, d, &chg->chg_high_temp_limit);
 #endif
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
+	debugfs_create_file("pd_list", 0400, d, chg, &max77865_pd_list_fops);
+#endif
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_TEST) && IS_ENABLED(CONFIG_CHARGER_MAX77865_HV_GUARD)
 	debugfs_create_u32("override_pd_mv", 0600, d, &chg->override_pd_mv);
 #endif
@@ -2580,6 +2810,9 @@ static int max77865_ccic_notify(struct notifier_block *nb, unsigned long action,
 	else
 		chg->pd = *st;
 	chg->pd_event = action;
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
+	chg->pd_new = true;
+#endif
 	if (!chg->stopping)
 		mod_delayed_work(system_freezable_wq, &chg->pass_dwork, 0);
 	mutex_unlock(&chg->lock);
