@@ -584,6 +584,73 @@ static int e8895_dbg_pdoff(void)
 }
 
 /*
+ * DEBUG sleep_alloff=<mask> (image 0121: every domain consistent, abox dbg dpu0 dpu1 g2d iva
+ * srdz vts cam/isp on at the SMC, still no return even with a C2 power_state): power the
+ * selected domains off in syscore suspend, as stock has them before SLEEP, and on again in
+ * syscore resume (or when the suspend aborts). Bit i = e8895_pd_stat[i]: 0 abox, 1 cam,
+ * 2 dbg, 3 dcam, 4 dpu0, 5 dpu1, 6 dsp, 7 g2d, 8 g3d, 9 isphq, 10 isplp, 11 iva, 12 mfc,
+ * 13 srdz, 14 vpu, 15 vts; 0xfeff = all but g3d. abox and vts get their stock pre-off step
+ * (CAL:pmucal_local_exynos8895.h:62, :637-638). A domain that does not reach STATUS 0
+ * within 1 ms is requested on again and the suspend aborts (-EIO). The domain contents
+ * (ABOX firmware, SYSREG DRCG_EN) are lost; the CMUs restore themselves on resume.
+ */
+static unsigned int sleep_alloff;
+module_param(sleep_alloff, uint, 0644);
+static u32 e8895_alloff_done;
+
+static void e8895_dbg_allon(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(e8895_pd_stat); i++) {
+		u16 st = e8895_pd_stat[i].off;
+
+		if (!(e8895_alloff_done & BIT(i)))
+			continue;
+		pmu_raw_writel(pmu_raw_readl(st - 4) | 0xf, st - 4);
+		if (e8895_dbg_wait(pmu_base_addr + st, 0xf, 0xf))
+			pr_err("exynos8895-pm: DEBUG alloff: %s did not come back on (STATUS %x)\n",
+			       e8895_pd_stat[i].name, pmu_raw_readl(st) & 0xf);
+	}
+	if (e8895_alloff_done)
+		pr_info("exynos8895-pm: DEBUG alloff: on again %04x\n", e8895_alloff_done);
+	e8895_alloff_done = 0;
+}
+
+static int e8895_dbg_alloff(void)
+{
+	void __iomem *vts = e8895_va[E8895_VA_VTS];
+	unsigned int i;
+	int ret = 0;
+
+	for (i = 0; i < ARRAY_SIZE(e8895_pd_stat); i++) {
+		u16 st = e8895_pd_stat[i].off;
+
+		if (!(sleep_alloff & BIT(i)) || !(pmu_raw_readl(st) & 0xf))
+			continue;
+		if (st == E8895_PD_ABOX)
+			pmu_raw_writel(pmu_raw_readl(0x2528) | BIT(16), 0x2528);	/* ABOX_CA7_OPTION */
+		if (st == E8895_PD_VTS) {
+			writel_relaxed(readl_relaxed(vts + 0x1000) & ~BIT(0), vts + 0x1000);
+			e8895_dbg_wait(vts + 0x1000, BIT(16), 0);
+		}
+		pmu_raw_writel(pmu_raw_readl(st - 4) & ~0xf, st - 4);
+		e8895_alloff_done |= BIT(i);
+		if (e8895_dbg_wait(pmu_base_addr + st, 0xf, 0)) {
+			pr_err("exynos8895-pm: DEBUG alloff: %s stays on (STATUS %x)\n",
+			       e8895_pd_stat[i].name, pmu_raw_readl(st) & 0xf);
+			ret = -EIO;
+			break;
+		}
+	}
+	pr_info("exynos8895-pm: DEBUG alloff: off %04x (mask %04x): %d\n",
+		e8895_alloff_done, sleep_alloff, ret);
+	if (ret)
+		e8895_dbg_allon();
+	return ret;
+}
+
+/*
  * Deviation from stock, which entered SLEEP regardless: a domain whose
  * power-off timed out with CONFIGURATION still 0 (STATUS on) stalls the system
  * power-down with no wake (image 0120: dpu1/g2d/vts/srdz CONFIGURATION 0 STATUS
@@ -628,6 +695,8 @@ static int e8895_pm_syscore_suspend(void)
 		return -EBUSY;
 	if (sleep_pdoff && e8895_dbg_pdoff())			/* DEBUG */
 		return -EIO;
+	if (sleep_alloff && e8895_dbg_alloff())			/* DEBUG */
+		return -EIO;
 	if (E8895_PD_ON(E8895_PD_ABOX))			/* abox_is_on(), :239 */
 		e8895_mode = E8895_SYS_SLEEP_AUD_ON;	/* FDT:4419 cp_call_mode_idx = <0x0a> */
 	else if (E8895_PD_ON(E8895_PD_VTS))		/* vts_is_on(), :245 */
@@ -655,6 +724,7 @@ static int e8895_pm_syscore_suspend(void)
 		pr_err("exynos8895-pm: SLEEP mode=%d enter list: wait timed out\n", e8895_mode);
 		e8895_handle(t->t[3], t->n[3]);
 		e8895_restore(t->t[1], t->n[1]);
+		e8895_dbg_allon();				/* DEBUG */
 		return -EIO;
 	}
 	/*
@@ -695,6 +765,7 @@ static void e8895_pm_syscore_resume(void)
 		pmu_raw_readl(E8895_EINT_WAKEUP_MASK),
 		stat & BIT(0) ? " (EINT)" : "", stat & BIT(1) ? " (RTC alarm)" : "",
 		stat & BIT(24) ? " (MBOX)" : "");
+	e8895_dbg_allon();					/* DEBUG */
 }
 
 static struct syscore_ops e8895_pm_syscore_ops = {
