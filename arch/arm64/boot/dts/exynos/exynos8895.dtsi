@@ -1714,6 +1714,7 @@
 			phy-names = "ufs-phy";
 			samsung,sysreg = <&syscon_fsys0 0x700>;	/* :1082-1086 0x11020700, bits 9:8 */
 			dma-coherent;				/* :850 */
+			ufs-pm-qos-int = <400000>;		/* FDT:4704 <0x61a80>; spec L2b REQ-2B-L4-1 */
 			status = "disabled";
 		};
 
@@ -1769,6 +1770,7 @@
 				 <&cmu_fsys1 CLK_GOUT_FSYS1_MMC_CARD_SDCLKIN>;
 			clock-names = "biu", "ciu";
 			fifo-depth = <64>;
+			qos-int-level = <400000>;		/* FDT:7715 <0x61a80>; spec L2b REQ-2B-L4-1 */
 			interrupts = <GIC_SPI 341 IRQ_TYPE_LEVEL_HIGH>;
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -2099,6 +2101,8 @@
 			clock-names = "clk_mali";
 			operating-points-v2 = <&gpu_opp_table>;
 			#cooling-cells = <2>;		/* FDT:4644 */
+			/* ECT GEN DTM_PWR_Coeff[2] (G3D), sboot.bin SB:0x4b288; spec L2c 7.1 REQ-L6A-1 */
+			dynamic-power-coefficient = <9450>;
 			samsung,autosuspend-delay-ms = <50>;	/* FDT:4672 gpu_runtime_pm_delay_time = <0x32> */
 			status = "disabled";
 		};
@@ -2106,26 +2110,32 @@
 		/*
 		 * FDT:4648 gpu_dvfs_table column 0 inside [gpu_min_clock FDT:4655
 		 * 0x3f7a0, gpu_max_clock FDT:4653 0x854d0]; each is also an ECT
-		 * dvfs_g3d level (SB+0x4647c). No opp-microvolt: the APM owns the
-		 * G3D voltage.
+		 * dvfs_g3d level (SB+0x4647c). opp-microvolt feeds only the energy
+		 * model of the IPA power actor (the APM owns the G3D rail):
+		 * ECT ASV dvfs_g3d version 8 group 0 (spec L2c 7.1 REQ-L6A-1).
 		 */
 		gpu_opp_table: opp-table-gpu {
 			compatible = "operating-points-v2";
 
 			opp-260000000 {
 				opp-hz = /bits/ 64 <260000000>;	/* 0x3f7a0 */
+				opp-microvolt = <725000>;
 			};
 			opp-338000000 {
 				opp-hz = /bits/ 64 <338000000>;	/* 0x52850 */
+				opp-microvolt = <725000>;
 			};
 			opp-385000000 {
 				opp-hz = /bits/ 64 <385000000>;	/* 0x5dfe8 */
+				opp-microvolt = <725000>;
 			};
 			opp-455000000 {
 				opp-hz = /bits/ 64 <455000000>;	/* 0x6f158 */
+				opp-microvolt = <725000>;
 			};
 			opp-546000000 {
 				opp-hz = /bits/ 64 <546000000>;	/* 0x854d0 */
+				opp-microvolt = <737500>;
 			};
 		};
 

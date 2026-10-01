@@ -9,6 +9,8 @@
 #ifndef _UFS_EXYNOS_H_
 #define _UFS_EXYNOS_H_
 
+#include <soc/samsung/exynos8895-bus-qos.h>
+
 /*
  * Component registers
  */
@@ -256,6 +258,8 @@ struct exynos_ufs {
 	u32 iocc_mask;
 	u32 iocc_val;
 	unsigned long ufspr_security;	/* 8895: UFSPRSECURITY read back at probe */
+	struct exynos_bus_qos_request pm_qos_int;
+	u32 pm_qos_int_value;
 
 	u32 opts;
 #define EXYNOS_UFS_OPT_HAS_APB_CLK_CTRL		BIT(0)

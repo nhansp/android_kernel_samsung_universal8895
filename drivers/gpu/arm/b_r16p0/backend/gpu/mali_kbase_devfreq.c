@@ -394,10 +394,12 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 	}
 
 #ifdef CONFIG_DEVFREQ_THERMAL
-	/* IPA is not ported (L6A 5.1.2): no power model, the GPU node is kept */
-	kbdev->devfreq_cooling = of_devfreq_cooling_register(
-			kbdev->dev->of_node,
-			kbdev->devfreq);
+	/*
+	 * REQ-L6A-1 (spec L2c_thermal.md 7.1): register with Energy Model so
+	 * the GPU cooling device is a power actor for the power_allocator governor.
+	 */
+	kbdev->devfreq_cooling = devfreq_cooling_em_register(
+			kbdev->devfreq, NULL);
 	if (IS_ERR_OR_NULL(kbdev->devfreq_cooling)) {
 		err = PTR_ERR(kbdev->devfreq_cooling);
 		dev_err(kbdev->dev,
