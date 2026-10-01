@@ -2088,6 +2088,26 @@ static ssize_t algorithm_params_store(struct device *dev,
 	return ret ? ret : len;
 }
 
+/*
+ * greatlte: LineageOS 23.2 fs_mgr (swapon_all) still writes max_comp_streams and
+ * aborts the whole zram swap setup when the file is missing. Restore the
+ * compatibility no-op that upstream carried from 4.7 to 6.13: zram has used one
+ * compression stream per online CPU since then, so the value is reported and a
+ * write is accepted and ignored (stock 4.4 kept a real stream count,
+ * S:drivers/block/zram/zram_drv.c:307-343).
+ */
+static ssize_t max_comp_streams_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "%d\n", num_online_cpus());
+}
+
+static ssize_t max_comp_streams_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t len)
+{
+	return len;
+}
+
 static ssize_t comp_algorithm_show(struct device *dev,
 				   struct device_attribute *attr,
 				   char *buf)
@@ -3322,6 +3342,7 @@ static DEVICE_ATTR_WO(reset);
 static DEVICE_ATTR_WO(mem_limit);
 static DEVICE_ATTR_WO(mem_used_max);
 static DEVICE_ATTR_WO(idle);
+static DEVICE_ATTR_RW(max_comp_streams);
 static DEVICE_ATTR_RW(comp_algorithm);
 #ifdef CONFIG_ZRAM_WRITEBACK
 static DEVICE_ATTR_RO(bd_stat);
@@ -3346,6 +3367,7 @@ static struct attribute *zram_disk_attrs[] = {
 	&dev_attr_mem_limit.attr,
 	&dev_attr_mem_used_max.attr,
 	&dev_attr_idle.attr,
+	&dev_attr_max_comp_streams.attr,
 	&dev_attr_comp_algorithm.attr,
 #ifdef CONFIG_ZRAM_WRITEBACK
 	&dev_attr_bd_stat.attr,
