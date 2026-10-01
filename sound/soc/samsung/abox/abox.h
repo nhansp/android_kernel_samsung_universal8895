@@ -606,6 +606,8 @@ struct abox_data {
 	void *vss_base;			/* CPU view of the VSS carve-out */
 	size_t vss_size;
 	struct work_struct boot_done_work;
+	struct work_struct fw_retry_work;	/* powered-not-booted: firmware retry */
+	unsigned long fw_retry_jiffies;
 	struct wakeup_source *ws;
 	unsigned long long audio_mode_time;
 	enum audio_mode audio_mode;

@@ -243,8 +243,16 @@ static int abox_start_ipc_transaction_atomic(struct device *dev,
 			break;
 		fallthrough;
 	case CALLIOPE_DISABLED:
-		dev_warn(dev, "IPC request when calliope is not ready: %d\n",
+		/*
+		 * A user that retries every few ms (the audio HAL) must not
+		 * flood the log; a powered ABOX without firmware retries the
+		 * firmware from process context (abox_fw_retry_work_func).
+		 */
+		dev_warn_ratelimited(dev,
+				"IPC request when calliope is not ready: %d\n",
 				data->calliope_state);
+		if (data->calliope_state == CALLIOPE_DISABLED && !data->enabled)
+			schedule_work(&data->fw_retry_work);
 		result = -EAGAIN;
 		goto unlock;
 	case CALLIOPE_DISABLING:
@@ -4758,9 +4766,39 @@ static void abox_load_firmware(struct abox_data *data)
 	}
 }
 
-static int abox_enable(struct device *dev)
+/*
+ * The tail of stock abox_enable() (S:sound/soc/samsung/abox/abox.c:
+ * 5035-5053): download the firmware and start the Calliope CPU. -EAGAIN
+ * while a mandatory firmware file is missing (powered, not booted).
+ */
+static int abox_boot_calliope(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
+	struct abox_data *data = dev_get_drvdata(dev);
+	int result;
+
+	result = abox_download_firmware(pdev);
+	if (result < 0) {
+		if (result != -EAGAIN)
+			dev_err(dev, "Failed to download firmware\n");
+		return result;
+	}
+
+	abox_request_dram_on(pdev, dev, true);
+	abox_cpu_power(data, true);
+	abox_cpu_enable(data, true);
+	data->calliope_state = CALLIOPE_ENABLING;
+
+	abox_pad_retention(data, false);
+
+	data->enabled = true;
+	__pm_wakeup_event(data->ws, BOOT_DONE_TIMEOUT_MS);
+
+	return 0;
+}
+
+static int abox_enable(struct device *dev)
+{
 	struct abox_data *data = dev_get_drvdata(dev);
 	unsigned int i, value = 0;
 	int result = 0;
@@ -4822,24 +4860,45 @@ static int abox_enable(struct device *dev)
 
 	abox_cfg_gpio(dev, "active");
 
-	result = abox_download_firmware(pdev);
-	if (result < 0) {
-		if (result != -EAGAIN)
-			dev_err(dev, "Failed to download firmware\n");
-		goto error;
-	}
-
-	abox_request_dram_on(pdev, dev, true);
-	abox_cpu_power(data, true);
-	abox_cpu_enable(data, true);
-	data->calliope_state = CALLIOPE_ENABLING;
-
-	abox_pad_retention(data, false);
-
-	data->enabled = true;
-	__pm_wakeup_event(data->ws, BOOT_DONE_TIMEOUT_MS);
+	result = abox_boot_calliope(dev);
 error:
 	return result;
+}
+
+/*
+ * Firmware retry for the "powered, Calliope not booted" state (spec L6E
+ * 5.7.3, F-52): stock requested the firmware asynchronously at probe and
+ * booted Calliope from the request callback once /vendor was mounted
+ * (S:sound/soc/samsung/abox/abox.c:5175-5220 -> abox_enable()). The port
+ * retries on every runtime resume; an ABOX that is kept runtime-active
+ * (e.g. back-to-back stream opens) never resumes again, so a not-ready IPC
+ * schedules this retry. It runs only while ABOX stays runtime-active (the
+ * reference blocks a concurrent abox_disable()), at most once a second, and
+ * continues abox_enable() at the step where it stopped.
+ */
+static void abox_fw_retry_work_func(struct work_struct *work)
+{
+	struct abox_data *data = container_of(work, struct abox_data,
+			fw_retry_work);
+	struct device *dev = &data->pdev->dev;
+
+	if (time_before(jiffies, data->fw_retry_jiffies))
+		return;
+	data->fw_retry_jiffies = jiffies + HZ;
+
+	if (pm_runtime_get_if_active(dev) <= 0)
+		return;
+
+	if (data->calliope_state == CALLIOPE_DISABLED && !data->enabled) {
+		if (!data->firmware_sram || !data->firmware_dram)
+			abox_load_firmware(data);
+		if (data->firmware_sram && data->firmware_dram) {
+			dev_info(dev, "%s: booting Calliope\n", __func__);
+			abox_boot_calliope(dev);
+		}
+	}
+
+	pm_runtime_put(dev);
 }
 
 static int abox_disable(struct device *dev)
@@ -5228,6 +5287,7 @@ static int samsung_abox_probe(struct platform_device *pdev)
 	INIT_WORK(&data->boot_done_work, abox_boot_done_work_func);
 	INIT_WORK(&data->l2c_work, abox_l2c_work_func);
 	INIT_WORK(&data->change_mif_freq_work, abox_change_mif_freq_work_func);
+	INIT_WORK(&data->fw_retry_work, abox_fw_retry_work_func);
 	INIT_LIST_HEAD(&data->irq_actions);
 
 	data->pinctrl = devm_pinctrl_get(dev);
@@ -5441,6 +5501,7 @@ static void samsung_abox_remove(struct platform_device *pdev)
 
 	dev_info(dev, "%s\n", __func__);
 
+	cancel_work_sync(&data->fw_retry_work);
 	device_remove_file(dev, &dev_attr_calliope_version);
 	device_remove_file(dev, &dev_attr_calliope_debug);
 	device_remove_file(dev, &dev_attr_calliope_cmd);
