@@ -132,7 +132,7 @@ static int smfc_get_segment_length(struct smfc_ctx *ctx,
 #define __halfbytes_larger_than(val, maxval) \
 			(max((val) & 0xF, ((val) >> 4) & 0xF) > (maxval))
 
-unsigned int smfc_get_num_huffval(u8 *hufflen)
+static unsigned int smfc_get_num_huffval(u8 *hufflen)
 {
 	int i;
 	unsigned int num = 0;

@@ -905,40 +905,38 @@ static int sc_v4l2_streamoff(struct file *file, void *fh,
 	return v4l2_m2m_streamoff(file, ctx->m2m_ctx, type);
 }
 
-static int sc_v4l2_cropcap(struct file *file, void *fh,
-			    struct v4l2_cropcap *cr)
+static int sc_v4l2_g_selection(struct file *file, void *fh,
+				struct v4l2_selection *sel)
 {
 	struct sc_ctx *ctx = fh_to_sc_ctx(file->private_data);
 	struct sc_frame *frame;
 
-	frame = ctx_get_frame(ctx, cr->type);
+	frame = ctx_get_frame(ctx, sel->type);
 	if (IS_ERR(frame))
 		return PTR_ERR(frame);
 
-	cr->bounds.left		= 0;
-	cr->bounds.top		= 0;
-	cr->bounds.width	= frame->width;
-	cr->bounds.height	= frame->height;
-	cr->defrect		= cr->bounds;
-
-	return 0;
-}
-
-static int sc_v4l2_g_crop(struct file *file, void *fh, struct v4l2_crop *cr)
-{
-	struct sc_ctx *ctx = fh_to_sc_ctx(file->private_data);
-	struct sc_frame *frame;
-
-	frame = ctx_get_frame(ctx, cr->type);
-	if (IS_ERR(frame))
-		return PTR_ERR(frame);
-
-	cr->c.left = SC_CROP_MAKE_FR_VAL(frame->crop.left, ctx->init_phase.yh);
-	cr->c.top = SC_CROP_MAKE_FR_VAL(frame->crop.top, ctx->init_phase.yv);
-	cr->c.width = SC_CROP_MAKE_FR_VAL(frame->crop.width, ctx->init_phase.w);
-	cr->c.height = SC_CROP_MAKE_FR_VAL(frame->crop.height, ctx->init_phase.h);
-
-	return 0;
+	/* 6.18 routes (G/S_)CROP through the selection API
+	 * (A:drivers/media/v4l2-core/v4l2-ioctl.c:2510-2562). */
+	switch (sel->target) {
+	case V4L2_SEL_TGT_CROP:
+	case V4L2_SEL_TGT_COMPOSE:
+		sel->r.left = SC_CROP_MAKE_FR_VAL(frame->crop.left, ctx->init_phase.yh);
+		sel->r.top = SC_CROP_MAKE_FR_VAL(frame->crop.top, ctx->init_phase.yv);
+		sel->r.width = SC_CROP_MAKE_FR_VAL(frame->crop.width, ctx->init_phase.w);
+		sel->r.height = SC_CROP_MAKE_FR_VAL(frame->crop.height, ctx->init_phase.h);
+		return 0;
+	case V4L2_SEL_TGT_CROP_DEFAULT:
+	case V4L2_SEL_TGT_CROP_BOUNDS:
+	case V4L2_SEL_TGT_COMPOSE_DEFAULT:
+	case V4L2_SEL_TGT_COMPOSE_BOUNDS:
+		sel->r.left = 0;
+		sel->r.top = 0;
+		sel->r.width = frame->width;
+		sel->r.height = frame->height;
+		return 0;
+	default:
+		return -EINVAL;
+	}
 }
 
 static int sc_get_fract_val(struct v4l2_rect *rect, struct sc_ctx *ctx)
@@ -992,19 +990,25 @@ static int sc_get_fract_val(struct v4l2_rect *rect, struct sc_ctx *ctx)
 	return 0;
 }
 
-static int sc_v4l2_s_crop(struct file *file, void *fh,
-		const struct v4l2_crop *cr)
+static int sc_v4l2_s_selection(struct file *file, void *fh,
+				struct v4l2_selection *sel)
 {
 	struct sc_ctx *ctx = fh_to_sc_ctx(file->private_data);
 	struct sc_dev *sc = ctx->sc_dev;
 	struct sc_frame *frame;
-	struct v4l2_rect rect = cr->c;
+	struct v4l2_rect rect = sel->r;
 	const struct sc_size_limit *limit = NULL;
 	int w_align = 0;
 	int h_align = 0;
 	int ret = 0;
 
-	frame = ctx_get_frame(ctx, cr->type);
+	/* Only CROP/COMPOSE are settable; the core maps S_CROP on OUTPUT
+	 * to COMPOSE (A:drivers/media/v4l2-core/v4l2-ioctl.c:2540-2562). */
+	if (sel->target != V4L2_SEL_TGT_CROP &&
+	    sel->target != V4L2_SEL_TGT_COMPOSE)
+		return -EINVAL;
+
+	frame = ctx_get_frame(ctx, sel->type);
 	if (IS_ERR(frame))
 		return PTR_ERR(frame);
 
@@ -1014,13 +1018,13 @@ static int sc_v4l2_s_crop(struct file *file, void *fh,
 		return -EINVAL;
 	}
 
-	if (cr->c.left < 0 || cr->c.top < 0) {
+	if (rect.left < 0 || rect.top < 0) {
 		v4l2_err(&ctx->sc_dev->m2m.v4l2_dev,
 				"crop position is negative\n");
 		return -EINVAL;
 	}
 
-	if (V4L2_TYPE_IS_OUTPUT(cr->type)) {
+	if (V4L2_TYPE_IS_OUTPUT(sel->type)) {
 		ret = sc_get_fract_val(&rect, ctx);
 		if (ret < 0)
 			return ret;
@@ -1058,14 +1062,18 @@ static int sc_v4l2_s_crop(struct file *file, void *fh,
 	frame->crop.height = rect.height;
 	frame->crop.width = rect.width;
 
+	sel->r = rect;
+
 	return 0;
 }
 
 static const struct v4l2_ioctl_ops sc_v4l2_ioctl_ops = {
 	.vidioc_querycap		= sc_v4l2_querycap,
 
-	.vidioc_enum_fmt_vid_cap_mplane	= sc_v4l2_enum_fmt_mplane,
-	.vidioc_enum_fmt_vid_out_mplane	= sc_v4l2_enum_fmt_mplane,
+	/* 6.18 has a single enum_fmt op per direction (no _mplane
+	 * variants); the consolidated handler serves both. */
+	.vidioc_enum_fmt_vid_cap	= sc_v4l2_enum_fmt_mplane,
+	.vidioc_enum_fmt_vid_out	= sc_v4l2_enum_fmt_mplane,
 
 	.vidioc_g_fmt_vid_cap_mplane	= sc_v4l2_g_fmt_mplane,
 	.vidioc_g_fmt_vid_out_mplane	= sc_v4l2_g_fmt_mplane,
@@ -1085,9 +1093,10 @@ static const struct v4l2_ioctl_ops sc_v4l2_ioctl_ops = {
 	.vidioc_streamon		= sc_v4l2_streamon,
 	.vidioc_streamoff		= sc_v4l2_streamoff,
 
-	.vidioc_g_crop			= sc_v4l2_g_crop,
-	.vidioc_s_crop			= sc_v4l2_s_crop,
-	.vidioc_cropcap			= sc_v4l2_cropcap
+	/* 6.18 routes (G/S_)CROP through the selection API
+	 * (A:drivers/media/v4l2-core/v4l2-ioctl.c:2510-2562). */
+	.vidioc_g_selection		= sc_v4l2_g_selection,
+	.vidioc_s_selection		= sc_v4l2_s_selection
 };
 
 static int sc_ctx_stop_req(struct sc_ctx *ctx)
@@ -1799,14 +1808,14 @@ static void sc_vb2_stop_streaming(struct vb2_queue *vq)
 	/* On STREAMOFF put every pending fence (spec L6B 5.9): signal any
 	 * unsignalled release fence first so its waiter does not hang,
 	 * then drop any acquire fence that never reached the work item. */
-	for (i = 0; i < vq->num_buffers; i++) {
+	for (i = 0; i < vb2_get_num_buffers(vq); i++) {
 		struct vb2_buffer *vb = vq->bufs[i];
 
 		if (vb)
 			flush_work(&to_vb2_sc_buffer(vb)->work);
 	}
 	spin_lock_irqsave(&sc->slock, flags);
-	for (i = 0; i < vq->num_buffers; i++) {
+	for (i = 0; i < vb2_get_num_buffers(vq); i++) {
 		struct vb2_buffer *vb = vq->bufs[i];
 		struct vb2_sc_buffer *svb;
 
@@ -2158,7 +2167,7 @@ static int sc_open(struct file *file)
 
 	ctx->fh.ctrl_handler = &ctx->ctrl_handler;
 	file->private_data = &ctx->fh;
-	v4l2_fh_add(&ctx->fh);
+	v4l2_fh_add(&ctx->fh, file);
 
 	/* Default color format */
 	ctx->s_frame.sc_fmt = &sc_formats[0];
@@ -2323,7 +2332,7 @@ static void sc_job_finish(struct sc_dev *sc, struct sc_ctx *ctx)
 
 static void sc_watchdog(struct timer_list *t)
 {
-	struct sc_dev *sc = from_timer(sc, t, wdt.timer);
+	struct sc_dev *sc = timer_container_of(sc, t, wdt.timer);
 	struct sc_ctx *ctx;
 	unsigned long flags;
 

@@ -354,7 +354,7 @@ static u32 smfc_get_jpeg_format(unsigned int hfactor, unsigned int vfactor)
 
 int smfc_hwconfigure_2nd_image(struct smfc_ctx *ctx, bool hwfc_enabled)
 {
-	struct vb2_buffer *vb2buf_img, *vb2buf_jpg;
+	struct vb2_v4l2_buffer *vb2buf_img, *vb2buf_jpg;
 	u32 format, stream_address;
 	int ret;
 
@@ -367,14 +367,14 @@ int smfc_hwconfigure_2nd_image(struct smfc_ctx *ctx, bool hwfc_enabled)
 	vb2buf_img = v4l2_m2m_next_src_buf(ctx->fh.m2m_ctx);
 	vb2buf_jpg = v4l2_m2m_next_dst_buf(ctx->fh.m2m_ctx);
 
-	ret = smfc_hwconfigure_image_base(ctx, vb2buf_img, true);
+	ret = smfc_hwconfigure_image_base(ctx, &vb2buf_img->vb2_buf, true);
 	if (ret)
 		return ret;
 	/*
 	 * secondary image stream base is not required because there is no
 	 * MAX_COMPRESSED_SIZE register for the secondary image
 	 */
-	ret = smfc_hwconfigure_jpeg_base(ctx, vb2buf_jpg, 0, true,
+	ret = smfc_hwconfigure_jpeg_base(ctx, &vb2buf_jpg->vb2_buf, 0, true,
 					 &stream_address);
 	if (ret)
 		return ret;
@@ -399,7 +399,7 @@ int smfc_hwconfigure_2nd_image(struct smfc_ctx *ctx, bool hwfc_enabled)
 int smfc_hwconfigure_image(struct smfc_ctx *ctx,
 			    unsigned int hfactor, unsigned int vfactor)
 {
-	struct vb2_buffer *vb2buf_img, *vb2buf_jpg;
+	struct vb2_v4l2_buffer *vb2buf_img, *vb2buf_jpg;
 	u32 stream_address;
 	u32 format = ctx->img_fmt->regcfg;
 	unsigned char num_plane = ctx->img_fmt->num_planes;
@@ -438,11 +438,11 @@ int smfc_hwconfigure_image(struct smfc_ctx *ctx,
 					ctx->img_fmt->chroma_vfactor));
 	}
 
-	ret = smfc_hwconfigure_image_base(ctx, vb2buf_img, false);
+	ret = smfc_hwconfigure_image_base(ctx, &vb2buf_img->vb2_buf, false);
 	if (ret)
 		return ret;
 	__raw_writel(format, ctx->smfc->reg + REG_MAIN_IMAGE_FORMAT);
-	ret = smfc_hwconfigure_jpeg_base(ctx, vb2buf_jpg,
+	ret = smfc_hwconfigure_jpeg_base(ctx, &vb2buf_jpg->vb2_buf,
 					 ctx->offset_of_sos, false,
 					 &stream_address);
 	if (ret)

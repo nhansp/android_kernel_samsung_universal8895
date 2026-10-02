@@ -21,6 +21,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <linux/mutex.h>
+#include <linux/timer.h>
 #include <linux/wait.h>
 #include <linux/dma-buf.h>
 
@@ -101,7 +102,7 @@ static irqreturn_t exynos_smfc_irq_handler(int irq, void *priv)
 
 			/* 6.18 vb2 timestamps are u64 ns (was timeval);
 			 * the driver reports the job latency here. */
-			vb->timestamp =
+			vb->vb2_buf.timestamp =
 				ktime_to_ns(ktime_sub(ktime, ctx->ktime_beg));
 			v4l2_m2m_buf_done(vb, state);
 
@@ -136,7 +137,7 @@ static irqreturn_t exynos_smfc_irq_handler(int irq, void *priv)
 
 static void smfc_timedout_handler(struct timer_list *t)
 {
-	struct smfc_dev *smfc = from_timer(smfc, t, timer);
+	struct smfc_dev *smfc = timer_container_of(smfc, t, timer);
 	struct smfc_ctx *ctx;
 	unsigned long flags;
 	bool suspending;
@@ -376,15 +377,15 @@ static void smfc_vb2_buf_queue(struct vb2_buffer *vb)
 
 static void smfc_vb2_stop_streaming(struct vb2_queue *vq)
 {
-	struct vb2_buffer *vb;
+	struct vb2_v4l2_buffer *vb;
 	struct smfc_ctx *ctx = vb2_get_drv_priv(vq);
 
 	if (V4L2_TYPE_IS_OUTPUT(vq->type)) {
 		while ((vb = v4l2_m2m_src_buf_remove(ctx->fh.m2m_ctx)))
-			vb2_buffer_done(vb, VB2_BUF_STATE_ERROR);
+			vb2_buffer_done(&vb->vb2_buf, VB2_BUF_STATE_ERROR);
 	} else {
 		while ((vb = v4l2_m2m_dst_buf_remove(ctx->fh.m2m_ctx)))
-			vb2_buffer_done(vb, VB2_BUF_STATE_ERROR);
+			vb2_buffer_done(&vb->vb2_buf, VB2_BUF_STATE_ERROR);
 	}
 
 	vb2_wait_for_all_buffers(vq);
@@ -483,7 +484,7 @@ static int exynos_smfc_open(struct file *filp)
 		goto err_m2m_ctx_init;
 	}
 
-	v4l2_fh_add(&ctx->fh);
+	v4l2_fh_add(&ctx->fh, filp);
 
 	filp->private_data = &ctx->fh;
 
@@ -525,7 +526,7 @@ err_clk:
 err_m2m_ctx_init:
 	v4l2_ctrl_handler_free(&ctx->v4l2_ctrlhdlr);
 err_control:
-	v4l2_fh_del(&ctx->fh);
+	v4l2_fh_del(&ctx->fh, filp);
 	v4l2_fh_exit(&ctx->fh);
 	kfree(ctx);
 	return ret;
@@ -537,7 +538,7 @@ static int exynos_smfc_release(struct file *filp)
 
 	v4l2_m2m_ctx_release(ctx->fh.m2m_ctx);
 	v4l2_ctrl_handler_free(&ctx->v4l2_ctrlhdlr);
-	v4l2_fh_del(&ctx->fh);
+	v4l2_fh_del(&ctx->fh, filp);
 	v4l2_fh_exit(&ctx->fh);
 
 	if (!IS_ERR(ctx->smfc->clk_gate)) {
