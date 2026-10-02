@@ -1717,6 +1717,14 @@ static int s3cfb_create(struct drm_device *drm)
 	s3cfb_fill_info(s->info);
 
 	exynos8895_decon_set_vsync_cb(s->h.dev, s3cfb_te, s);
+	/*
+	 * One-shot trigger (L6A REQ-L5-8): each commit sends its frame and the
+	 * HW trigger is masked after it, as the vendor driver runs after every
+	 * update (S:.../dpu/decon_core.c:2325-2326); the panel holds the frame
+	 * in its memory. Display hibernation needs it: only then does the pipe
+	 * idle between frames.
+	 */
+	exynos8895_decon_set_oneshot(s->h.dev, true);
 	/* the DECON's wakeup source the DOZE power mode holds (S:.../dpu/decon_core.c:4237) */
 	device_init_wakeup(s->h.dev, true);
 
