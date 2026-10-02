@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config VIDEO_EXYNOS_SMFC
+	bool "Samsung Exynos SMFC (Still MFC / H/W JPEG codec) driver"
+	depends on VIDEO_DEV
+	depends on ARCH_EXYNOS || COMPILE_TEST
+	select VIDEOBUF2_DMA_CONTIG
+	select V4L2_MEM2MEM_DEV
+	help
+	  This is a v4l2 driver for the Samsung Exynos SMFC H/W JPEG
+	  codec (spec L6B 5.9; stock CONFIG_VIDEO_EXYNOS_SMFC=y).

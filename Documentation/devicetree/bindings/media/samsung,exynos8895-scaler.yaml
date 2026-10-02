@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/samsung,exynos8895-scaler.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8895 MSCL M2M scaler
+
+maintainers:
+  - nhansp <nhan.094.vn@gmail.com>
+
+description:
+  Exynos 8895 MSCL M2M scaler, /dev/video50 plus the m2m1shot misc
+  device m2m1shot_scaler0 (spec L6B 4.8, 5.9). Not an IOMMU master of
+  its own: it maps through the SMFC proxy (one-master rule, 4.5).
+
+properties:
+  compatible:
+    const: samsung,exynos8895-scaler
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    items:
+      - const: gate
+
+  power-domains:
+    maxItems: 1
+
+  samsung,iommu-proxy:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      The SMFC device owning sysmmu_g2dd2, which the scaler's DMA
+      mappings and device link use.
+
+  dma-coherent: true
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+  - power-domains
+  - samsung,iommu-proxy
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/samsung,exynos8895.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    scaler: scaler@13b10000 {
+        compatible = "samsung,exynos8895-scaler";
+        dma-coherent;
+        reg = <0x13b10000 0x1300>;
+        interrupts = <GIC_SPI 226 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&cmu_g2d CLK_GOUT_G2D_M2MSCALER_ACLK>;
+        clock-names = "gate";
+        samsung,iommu-proxy = <&smfc>;
+        power-domains = <&pd_g2d>;
+    };

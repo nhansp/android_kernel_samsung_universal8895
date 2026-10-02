@@ -11,3 +11,7 @@ source "drivers/media/platform/samsung/s5p-mfc/Kconfig"
 
 # WP-6L
 source "drivers/media/platform/samsung/g2d1shot/Kconfig"
+
+# WP-l6m
+source "drivers/media/platform/samsung/smfc-exynos/Kconfig"
+source "drivers/media/platform/samsung/scaler-exynos/Kconfig"

@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config VIDEO_EXYNOS_SCALER
+	bool "Samsung Exynos MSCL (M2M scaler) driver"
+	depends on VIDEO_DEV
+	depends on ARCH_EXYNOS || COMPILE_TEST
+	select VIDEOBUF2_DMA_CONTIG
+	select V4L2_MEM2MEM_DEV
+	select SYNC_FILE
+	select MEDIA_M2M1SHOT
+	help
+	  This is a v4l2 driver for the Samsung Exynos MSCL M2M scaler,
+	  with USE_SYNC acquire/release fences (spec L6B 5.9, L6A
+	  REQ-L6B-6A-1; stock CONFIG_VIDEO_EXYNOS_SCALER=y).

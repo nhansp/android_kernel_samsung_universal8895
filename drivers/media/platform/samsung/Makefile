@@ -8,3 +8,7 @@ obj-y += s5p-mfc/
 
 # WP-6L
 obj-$(CONFIG_VIDEO_EXYNOS_G2D1SHOT) += g2d1shot/
+
+# WP-l6m
+obj-$(CONFIG_VIDEO_EXYNOS_SMFC) += smfc-exynos/
+obj-$(CONFIG_VIDEO_EXYNOS_SCALER) += scaler-exynos/

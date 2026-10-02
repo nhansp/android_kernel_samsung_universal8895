@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config MEDIA_M2M1SHOT
+	bool "The non-streaming m2m media processing (m2m1shot) API"
+	help
+	  Enables support for the non-streaming m2m media processing API
+	  for the Exynos MSCL scaler driver (spec L6B 5.9; stock
+	  CONFIG_MEDIA_M2M1SHOT=y).
