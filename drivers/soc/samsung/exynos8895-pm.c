@@ -460,6 +460,29 @@ module_param(sleep_pdoff, bool, 0644);
 static u32 e8895_alloff_done;	/* DEBUG: e8895_pd_stat[] bits powered off by pdoff/alloff */
 
 /*
+ * DEBUG E6 control (l7re H3: sleep_psci=0x10000, i.e. C2, with the SLEEP PMU
+ * programming in place still hangs, so the trigger is in the shared part:
+ * CENTRAL_SEQ armed + cpu WFI, not mode-specific EL3 code): with
+ * sleep_noarm=1 the syscore suspend leaves the CENTRAL sequencer disarmed,
+ * so arm/no-arm can be compared without a real SLEEP.
+ *
+ * Which register/bit: CENTRAL_SEQ_CONFIGURATION 0x0200 bit16 and its MIF
+ * pair CENTRAL_SEQ_MIF_CONFIGURATION 0x0240 bit16. The SLEEP enter list
+ * clears both (CAL:pmucal_system_exynos8895.h:918-919; same pair in the SICD
+ * enter list at :348-349); the exit and early-wakeup lists set both
+ * (:1516-1517, :1581-1582). Clearing is the arming step: the exit/earlywkup
+ * value (set) is the run-time idle state EL3/the PMU return to, while the
+ * enter value (clear) is what the WFI-time sequence runs under. EL3 performs
+ * its own arming on top (cluster pairs at SB:0x74cd4, CENTRAL ORs at
+ * SB:0x751c8, MIF gate at SB:0x76628); this param touches only the kernel
+ * side, restoring each bit to its pre-enter value so no polarity is assumed.
+ * The resume path needs no change: the early-wakeup/exit lists set bit16
+ * themselves. Default 0, no behaviour change.
+ */
+static bool sleep_noarm;
+module_param(sleep_noarm, bool, 0644);
+
+/*
  * DEBUG (image 0120: dpu1/g2d/vts/srdz power-off times out with STATUS still 0xf,
  * i.e. the PMU never starts the sequence). Runtime probes, no suspend needed:
  *   echo <pmu off> > /sys/module/exynos8895_pm/parameters/pd_poke
@@ -936,6 +959,7 @@ static int e8895_pm_syscore_suspend(void)
 	struct e8895_tabs *t;
 	const char *why;
 	unsigned int i;
+	u32 arm0, arm1;		/* DEBUG sleep_noarm: pre-enter CENTRAL bits */
 	int ret;
 
 	e8895_sleep_armed = false;
@@ -1001,6 +1025,8 @@ static int e8895_pm_syscore_suspend(void)
 		pmu_raw_writel(sleep_wkmask0, e8895_wkmask_off[0]);
 	t = e8895_tab(e8895_mode);
 	e8895_save(t->t[1], t->n[1]);			/* S:drivers/soc/samsung/cal-if/pmucal_system.c:31 */
+	arm0 = pmu_raw_readl(0x0200);			/* DEBUG sleep_noarm */
+	arm1 = pmu_raw_readl(0x0240);
 	if (e8895_handle(t->t[0], t->n[0])) {		/* :33-39; only the VTS_ON list has a WAIT */
 		/* deviation: stock drops this error and enters SLEEP anyway
 		 * (S:drivers/soc/samsung/exynos-pm.c:241-248); here the half-programmed
@@ -1026,6 +1052,12 @@ static int e8895_pm_syscore_suspend(void)
 	e8895_early = true;
 	e8895_sleep_armed = true;
 	pr_info("exynos8895-pm: SLEEP mode=%d\n", e8895_mode);
+	if (sleep_noarm) {					/* DEBUG E6 */
+		pmu_raw_writel((pmu_raw_readl(0x0200) & ~BIT(16)) | (arm0 & BIT(16)), 0x0200);
+		pmu_raw_writel((pmu_raw_readl(0x0240) & ~BIT(16)) | (arm1 & BIT(16)), 0x0240);
+		pr_info("exynos8895-pm: DEBUG noarm: CENTRAL_SEQ %08x MIF %08x (pre-enter %08x %08x)\n",
+			pmu_raw_readl(0x0200), pmu_raw_readl(0x0240), arm0, arm1);
+	}
 	if (sleep_trace) {					/* DEBUG */
 		e8895_verify(t->t[0], t->n[0]);
 		e8895_sleep_dump();
