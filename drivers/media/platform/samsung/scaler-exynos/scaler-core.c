@@ -84,10 +84,28 @@ static const char *sc_fence_get_timeline_name(struct dma_fence *fence)
 	return "scaler-m2m";
 }
 
+/*
+ * A USE_SYNC release fence outlives the sc_ctx that created it whenever
+ * userspace (the HWC) still holds the sync_file fd after the context is
+ * released, so the fence must not reference the context in any way: it
+ * carries its own lock, which the dma_fence core takes on every status
+ * query (dma_fence_get_status() from SYNC_IOC_FILE_INFO), and both fence
+ * ops callbacks return static strings. The pattern of the tree's m2m1shot2
+ * port (wp/l6f 125193625). dma_fence_free() frees the whole object.
+ */
+struct sc_fence {
+	struct dma_fence base;	/* first: dma_fence_free() frees the whole object */
+	spinlock_t lock;
+};
+
 static const struct dma_fence_ops sc_fence_ops = {
 	.get_driver_name = sc_fence_get_driver_name,
 	.get_timeline_name = sc_fence_get_timeline_name,
+	.release = dma_fence_free,
 };
+
+/* Defined with the job-finish paths below; buf_cleanup uses it too. */
+static void sc_signal_buffer_fence(struct vb2_v4l2_buffer *vb2_v4l2);
 
 static const struct sc_fmt sc_formats[] = {
 	{
@@ -843,29 +861,50 @@ static int sc_v4l2_qbuf(struct file *file, void *fh,
 	/* Create the release fence on the context timeline and hand
 	 * userspace a sync_file fd for it, or -1 on failure (stock did the
 	 * same through its sw_sync timeline, S:.../videobuf2-v4l2.c:140-143).
-	 * The fence is signalled at job completion in sc_irq_handler(). */
+	 * The fence carries its own lock (struct sc_fence above), never the
+	 * context lock, and is signalled at job completion in
+	 * sc_irq_handler(). */
 	{
+		struct sc_fence *sfence;
 		struct dma_fence *fence;
 		struct sync_file *sync_file;
 		unsigned long flags;
 		int fd;
 
-		fence = kzalloc(sizeof(*fence), GFP_KERNEL);
-		if (!fence) {
+		sfence = kzalloc(sizeof(*sfence), GFP_KERNEL);
+		if (!sfence) {
 			buf->reserved = (u32)-1;
 			return 0;
 		}
+		fence = &sfence->base;
+		spin_lock_init(&sfence->lock);
+		/* The context is alive here (the file holds it through the
+		 * vfd lock serialising this ioctl); fence_lock only hands
+		 * out sequence numbers, the fence itself uses sfence->lock. */
 		spin_lock_irqsave(&ctx->fence_lock, flags);
 		ctx->fence_seqno++;
-		dma_fence_init(fence, &sc_fence_ops, &ctx->fence_lock,
+		dma_fence_init(fence, &sc_fence_ops, &sfence->lock,
 			       ctx->fence_context, ctx->fence_seqno);
 		spin_unlock_irqrestore(&ctx->fence_lock, flags);
 
 		if (svb->out_fence) {
 			WARN_ON_ONCE(1);
-			dma_fence_put(svb->out_fence);
+			/* Never leave a waiter hanging on the replaced fence.
+			 * Under sc->slock so the IRQ/job-finish signal paths
+			 * cannot signal+put the same pointer concurrently. */
+			spin_lock_irqsave(&ctx->sc_dev->slock, flags);
+			if (svb->out_fence) {
+				dma_fence_signal(svb->out_fence);
+				dma_fence_put(svb->out_fence);
+				svb->out_fence = NULL;
+			}
+			svb->out_fence = fence;
+			spin_unlock_irqrestore(&ctx->sc_dev->slock, flags);
+		} else {
+			spin_lock_irqsave(&ctx->sc_dev->slock, flags);
+			svb->out_fence = fence;
+			spin_unlock_irqrestore(&ctx->sc_dev->slock, flags);
 		}
-		svb->out_fence = fence;
 
 		sync_file = sync_file_create(fence);
 		if (!sync_file) {
@@ -1765,13 +1804,24 @@ static void sc_vb2_buf_queue(struct vb2_buffer *vb)
 
 static void sc_vb2_buf_cleanup(struct vb2_buffer *vb)
 {
+	struct sc_ctx *ctx = vb2_get_drv_priv(vb->vb2_queue);
 	struct vb2_sc_buffer *svb = to_vb2_sc_buffer(vb);
+	unsigned long flags;
 
 	flush_work(&svb->work);
 	if (svb->in_fence) {
 		dma_fence_put(svb->in_fence);
 		svb->in_fence = NULL;
 	}
+	/* Release with queued buffers but no STREAMOFF (no stop_streaming
+	 * ran): signal and drop any still-pending release fence here so its
+	 * waiter never hangs and the fence is signalled exactly once. After
+	 * stop_streaming every out_fence is already NULL, so this is a no-op
+	 * on the streaming teardown path. Serialised with the IRQ/job-finish
+	 * signal paths by sc->slock. */
+	spin_lock_irqsave(&ctx->sc_dev->slock, flags);
+	sc_signal_buffer_fence(to_vb2_v4l2_buffer(vb));
+	spin_unlock_irqrestore(&ctx->sc_dev->slock, flags);
 }
 
 static void sc_vb2_lock(struct vb2_queue *vq)
@@ -2968,6 +3018,19 @@ static void sc_m2m_device_run(void *priv)
 				v4l2_m2m_src_buf_remove(ctx->m2m_ctx);
 		struct vb2_v4l2_buffer *dst_vb =
 				v4l2_m2m_dst_buf_remove(ctx->m2m_ctx);
+		unsigned long flags;
+
+		/* Job error before the HW ran: the release fences must still
+		 * be signalled exactly once, or their waiter hangs. The
+		 * buffers are off the m2m queue, so the IRQ cannot complete
+		 * them as well; sc->slock keeps this serialised with the
+		 * IRQ/job-finish signal paths. */
+		spin_lock_irqsave(&sc->slock, flags);
+		if (src_vb)
+			sc_signal_buffer_fence(src_vb);
+		if (dst_vb)
+			sc_signal_buffer_fence(dst_vb);
+		spin_unlock_irqrestore(&sc->slock, flags);
 
 		if (src_vb)
 			v4l2_m2m_buf_done(src_vb, VB2_BUF_STATE_ERROR);

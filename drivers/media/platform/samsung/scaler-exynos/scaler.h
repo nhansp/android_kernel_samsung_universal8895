@@ -443,7 +443,9 @@ enum SC_CONTEXT_TYPE {
  * @ktime:		start time of a task of m2m1shot
  * @fence_context:	USE_SYNC release-fence timeline (5.9)
  * @fence_seqno:	next release-fence sequence number
- * @fence_lock:		serializes release-fence allocation
+ * @fence_lock:		serializes release-fence sequence numbers only; each
+ *			fence carries its own lock (struct sc_fence) so no
+ *			fence op ever dereferences the context
  * @flip_rot_cfg:	rotation and flip configuration
  * @bl_op:		image blend mode
  * @dith:		image dithering mode
