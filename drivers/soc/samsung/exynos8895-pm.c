@@ -689,6 +689,88 @@ static void e8895_pd_dump(void)
 		pr_info("exynos8895-pm: DEBUG pre-SMC pd%s\n", buf);
 }
 
+/*
+ * DEBUG E1 (l7re H1: EL3's SLEEP gates read PMU words that are in no kernel
+ * PMUCAL list and were never dumped, so a divergence is invisible to the
+ * 145-entry verify): print those words right before the SLEEP SMC, next to
+ * the existing DEBUG pre-SMC lines, and on demand at late boot through
+ * sleep_dump (runtime-vs-pre-SMC comparison). All reads use pmu_raw_readl(),
+ * the driver's existing PMU accessor. Default off, no behaviour change.
+ */
+static void e8895_sleep_regs(const char *tag)
+{
+	/*
+	 * EL3 SLEEP gate inputs (l7re REPORT section 4): 0x400 bit16
+	 * (SB:0xab838), 0x404 == 0x10000000 with bits 24/23/20 clear
+	 * (SB:0xab6a0, SB:0xab02c, SB:0xab838), 0x420 bit4 selects the SLEEP
+	 * variant (SB:0x75a80), 0x500 (0xF01 on enter, bit0 required;
+	 * SB:0x75390, SB:0x75a08), 0x808 == 0xAC9E (SB:0xab02c),
+	 * 0x2604 & 7 == 7 (SB:0x76628).
+	 */
+	pr_info("exynos8895-pm: DEBUG %s el3=%08x %08x %08x %08x %08x %08x\n", tag,
+		pmu_raw_readl(0x0400), pmu_raw_readl(0x0404), pmu_raw_readl(0x0420),
+		pmu_raw_readl(0x0500), pmu_raw_readl(0x0808), pmu_raw_readl(0x2604));
+	/*
+	 * Sequencer words EL3 programs itself: [0x2008] = 0x10A with
+	 * [0x2000] &= ~0xF (same pairs 0x2080/0x2088, 0x2100/0x2108,
+	 * 0x2180/0x2188) at SB:0x74cd4; 0x200C/0x208C/0x210C/0x218C |= 0x1300,
+	 * [0x244C] |= 0x2040000, [0x240C] |= 0x80010000 at SB:0x751c8.
+	 */
+	pr_info("exynos8895-pm: DEBUG %s seq0=%08x %08x %08x %08x %08x %08x %08x %08x\n",
+		tag, pmu_raw_readl(0x2000), pmu_raw_readl(0x2004),
+		pmu_raw_readl(0x2008), pmu_raw_readl(0x200C),
+		pmu_raw_readl(0x2080), pmu_raw_readl(0x2084),
+		pmu_raw_readl(0x2088), pmu_raw_readl(0x208C));
+	pr_info("exynos8895-pm: DEBUG %s seq1=%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
+		tag, pmu_raw_readl(0x2100), pmu_raw_readl(0x2108), pmu_raw_readl(0x210C),
+		pmu_raw_readl(0x2180), pmu_raw_readl(0x2188), pmu_raw_readl(0x218C),
+		pmu_raw_readl(0x2400), pmu_raw_readl(0x240C),
+		pmu_raw_readl(0x2440), pmu_raw_readl(0x244C));
+	/*
+	 * Per-CPU CONFIGURATION/STATUS of every cluster CPU (l7re H6: an
+	 * offline CPU must read 0/0): 0x2000 + pc * 0x80, STATUS + 4
+	 * (CAL:pmucal_cpu_exynos8895.h:3,11 for pc 0, same shape pc 1-7:
+	 * 0x2080/0x2084 ... 0x2380/0x2384).
+	 */
+	pr_info("exynos8895-pm: DEBUG %s cpu0=%x/%x %x/%x %x/%x %x/%x\n", tag,
+		pmu_raw_readl(0x2000) & 0xf, pmu_raw_readl(0x2004) & 0xf,
+		pmu_raw_readl(0x2080) & 0xf, pmu_raw_readl(0x2084) & 0xf,
+		pmu_raw_readl(0x2100) & 0xf, pmu_raw_readl(0x2104) & 0xf,
+		pmu_raw_readl(0x2180) & 0xf, pmu_raw_readl(0x2184) & 0xf);
+	pr_info("exynos8895-pm: DEBUG %s cpu1=%x/%x %x/%x %x/%x %x/%x\n", tag,
+		pmu_raw_readl(0x2200) & 0xf, pmu_raw_readl(0x2204) & 0xf,
+		pmu_raw_readl(0x2280) & 0xf, pmu_raw_readl(0x2284) & 0xf,
+		pmu_raw_readl(0x2300) & 0xf, pmu_raw_readl(0x2304) & 0xf,
+		pmu_raw_readl(0x2380) & 0xf, pmu_raw_readl(0x2384) & 0xf);
+	/* WAKEUP_STAT, EINT mask, WAKEUP_MASK (S:exynos-pm.c:52-53, FDT:4445) */
+	pr_info("exynos8895-pm: DEBUG %s wake=%08x %08x %08x\n", tag,
+		pmu_raw_readl(E8895_WAKEUP_STAT), pmu_raw_readl(E8895_EINT_WAKEUP_MASK),
+		pmu_raw_readl(0x0610));
+}
+
+/*
+ * DEBUG E1 boot half: echo 1 > /sys/module/exynos8895_pm/parameters/sleep_dump
+ * prints the same set at late boot / run time, for runtime-vs-pre-SMC
+ * comparison without suspending.
+ */
+static int e8895_sleep_dump_set(const char *val, const struct kernel_param *kp)
+{
+	u32 v;
+	int ret = kstrtou32(val, 0, &v);
+
+	if (ret)
+		return ret;
+	if (v) {
+		if (!pmu_base_addr)
+			return -ENODEV;
+		e8895_sleep_regs("boot");
+	}
+	return 0;
+}
+
+static const struct kernel_param_ops e8895_sleep_dump_ops = { .set = e8895_sleep_dump_set };
+module_param_cb(sleep_dump, &e8895_sleep_dump_ops, NULL, 0200);
+
 static void e8895_sleep_dump(void)
 {
 	pr_info("exynos8895-pm: DEBUG pre-SMC mode=%d wk=%08x %08x %08x %08x eint=%08x cp=%08x abox=%x vts=%x\n",
@@ -700,6 +782,7 @@ static void e8895_sleep_dump(void)
 	pr_info("exynos8895-pm: DEBUG pre-SMC seq=%08x opt=%08x mif=%08x ipi3=%08x cpu0=%x/%x\n",
 		pmu_raw_readl(0x0200), pmu_raw_readl(0x0208), pmu_raw_readl(0x0240),
 		pmu_raw_readl(E8895_IDLE_IP(3)), pmu_raw_readl(0x2200) & 0xf, pmu_raw_readl(0x2204) & 0xf);
+	e8895_sleep_regs("pre-SMC");			/* DEBUG E1 */
 	e8895_pd_dump();
 }
 
