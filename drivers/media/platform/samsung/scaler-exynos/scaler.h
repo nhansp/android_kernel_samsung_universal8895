@@ -4,10 +4,12 @@
  *
  * Header file for Exynos Scaler driver
  *
+ * MSCL (M2M scaler) driver, ported to Linux 6.18 (spec L6B 5.9).
+ *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
-*/
+ */
 
 #ifndef SCALER__H_
 #define SCALER__H_
@@ -17,19 +19,16 @@
 #include <linux/spinlock.h>
 #include <linux/types.h>
 #include <linux/videodev2.h>
-#include <linux/videodev2_exynos_media.h>
 #include <linux/io.h>
-#include <linux/pm_qos.h>
 #include <linux/dma-buf.h>
+#include <linux/workqueue.h>
 #include <media/videobuf2-core.h>
+#include <media/videobuf2-dma-contig.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-mem2mem.h>
 #include <media/v4l2-ctrls.h>
-#if defined(CONFIG_VIDEOBUF2_CMA_PHYS)
-#include <media/videobuf2-cma-phys.h>
-#elif defined(CONFIG_VIDEOBUF2_ION)
-#include <media/videobuf2-ion.h>
-#endif
+
+#include "scaler-exynos-media.h"
 
 extern int sc_log_level;
 #define sc_dbg(fmt, args...)						\
@@ -45,8 +44,6 @@ extern int sc_log_level;
 #define SC_WDT_CNT		3
 #define SC_MAX_CTRL_NUM		11
 #define SC_QCH_SIZE		(sizeof(u32) * 21)
-#define SC_DEBUG_MAX_NUM	16
-#define G2D_QCH_NUM		21
 
 #define SC_MAX_PLANES		3
 /* Address index */
@@ -59,7 +56,6 @@ extern int sc_log_level;
 /* Scaler hardware device state */
 #define DEV_RUN		1
 #define DEV_SUSPEND	2
-#define DEV_CP		4 /* contents path protection */
 
 /* Scaler m2m context state */
 #define CTX_PARAMS	1
@@ -117,13 +113,19 @@ extern int sc_log_level;
 #define SC_M2M1SHOT_OP_FILTER_SHIFT	(28)
 #define SC_M2M1SHOT_OP_FILTER_MASK	(0xf << 28)
 
-#ifdef CONFIG_VIDEOBUF2_ION
-#define sc_buf_sync_prepare vb2_ion_buf_prepare
-#define sc_buf_sync_finish vb2_ion_buf_finish
-#else
+/*
+ * USE_SYNC acquire/release fence protocol (spec L6B 5.9, L6A REQ-L6B-6A-1):
+ * stock V4L2_BUF_FLAG_USE_SYNC (S:include/uapi/linux/videodev2.h:905);
+ * 0x8000 lies inside 6.18 V4L2_BUF_FLAG_TIMESTAMP_MASK
+ * (A:include/uapi/linux/videodev2.h:1244), so vb2 strips it: the driver
+ * reads the flag and the acquire fd (buf->reserved) before vb2_qbuf()
+ * and writes the release fd back after it. The HWC passes the release fd
+ * on as the window fence (SLSI:.../libhwc2/libdevice/ExynosDisplay.cpp:1308-1309).
+ */
+#define SC_USE_SYNC_FLAG		0x8000
+
 void sc_buf_sync_finish(struct vb2_buffer *vb);
 int sc_buf_sync_prepare(struct vb2_buffer *vb);
-#endif
 
 enum sc_csc_idx {
 	NO_CSC,
@@ -311,13 +313,13 @@ struct sc_frame {
 
 struct sc_int_frame {
 	struct sc_frame			frame;
-	struct ion_client		*client;
-	struct ion_handle		*handle[3];
+	/* 6.18: coherent scratch buffers on the IOMMU proxy device
+	 * (was an ION client + handles, S:.../scaler/scaler.h:312-321). */
+	void				*cpu_addr[3];
+	dma_addr_t			dma_addr[3];
+	size_t				size[3];
 	struct sc_addr			src_addr;
 	struct sc_addr			dst_addr;
-	struct sg_table			*sgt[3];
-	struct dma_buf			*dma_buf[3];
-	struct dma_buf_attachment	*attachment[3];
 };
 
 /*
@@ -370,11 +372,6 @@ struct sc_dnoise_filter {
 	u32			h;
 };
 
-struct sc_qch_dbg {
-	unsigned long long time;
-	u32 log[G2D_QCH_NUM];
-};
-
 struct sc_ctx;
 
 /*
@@ -391,7 +388,8 @@ struct sc_ctx;
  * @wait:	interrupt handler waitqueue
  * @ws:		work struct
  * @state:	device state flags
- * @alloc_ctx:	videobuf2 memory allocator context
+ * @proxy_dev:	the IOMMU master (SMFC) every DMA mapping uses (4.5, 5.9)
+ * @proxy_link:	runtime-PM device link to the proxy
  * @slock:	the spinlock pscecting this data structure
  * @lock:	the mutex pscecting this data structure
  * @wdt:	watchdog timer information
@@ -409,12 +407,11 @@ struct sc_dev {
 	struct clk			*clk_chld;
 	struct clk			*clk_parn;
 	void __iomem			*regs;
-	void __iomem			*q_reg;
 	struct resource			*regs_res;
-	struct workqueue_struct		*qosclr_int_wq;
 	wait_queue_head_t		wait;
 	unsigned long			state;
-	struct vb2_alloc_ctx		*alloc_ctx;
+	struct device			*proxy_dev;
+	struct device_link		*proxy_link;
 	spinlock_t			slock;
 	struct mutex			lock;
 	struct workqueue_struct		*fence_wq;
@@ -422,14 +419,10 @@ struct sc_dev {
 	spinlock_t			ctxlist_lock;
 	struct sc_ctx			*current_ctx;
 	struct list_head		context_list; /* for sc_ctx_abs.node */
-	struct pm_qos_request		qosreq_int;
-	s32				qosreq_int_level;
 	int				dev_id;
 	u32				version;
 	bool				pb_disable;
 	u32				cfw;
-	int				dbg_idx;
-	struct sc_qch_dbg		*qch_dbg;
 };
 
 enum SC_CONTEXT_TYPE {
@@ -448,6 +441,9 @@ enum SC_CONTEXT_TYPE {
  * @ctrl_handler:	v4l2 controls handler
  * @fh:			v4l2 file handle
  * @ktime:		start time of a task of m2m1shot
+ * @fence_context:	USE_SYNC release-fence timeline (5.9)
+ * @fence_seqno:	next release-fence sequence number
+ * @fence_lock:		serializes release-fence allocation
  * @flip_rot_cfg:	rotation and flip configuration
  * @bl_op:		image blend mode
  * @dith:		image dithering mode
@@ -473,6 +469,9 @@ struct sc_ctx {
 		struct v4l2_fh		fh;
 		ktime_t			ktime_m2m1shot;
 	};
+	u64				fence_context;
+	u64				fence_seqno;
+	spinlock_t			fence_lock;
 	u32				flip_rot_cfg; /* SCALER_ROT_CFG */
 	enum sc_blend_op		bl_op;
 	u32				dith;
@@ -531,22 +530,4 @@ void sc_hwset_vcoef(struct sc_dev *sc, unsigned int coef);
 
 void sc_hwregs_dump(struct sc_dev *sc);
 
-#ifdef CONFIG_VIDEOBUF2_ION
-static inline int sc_get_dma_address(void *cookie, dma_addr_t *addr)
-{
-	return vb2_ion_dma_address(cookie, addr);
-}
-
-#define sc_get_kernel_address vb2_ion_private_vaddr
-#else
-static inline int sc_get_dma_address(void *cookie, dma_addr_t *addr)
-{
-	return -ENOSYS;
-}
-
-static inline void *sc_get_kernel_address(void *cookie)
-{
-	return NULL;
-}
-#endif
 #endif /* SCALER__H_ */

@@ -4,10 +4,12 @@
  *
  * Core file for Samsung EXYNOS Scaler driver
  *
+ * MSCL (M2M scaler) driver, ported to Linux 6.18 (spec L6B 5.9).
+ *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
-*/
+ */
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -19,20 +21,22 @@
 #include <linux/clk.h>
 #include <linux/slab.h>
 #include <linux/pm_runtime.h>
-#include <linux/exynos_iovmm.h>
-#include <linux/smc.h>
+#include <linux/preempt.h>
+#include <linux/timer.h>
+#include <linux/workqueue.h>
+#include <linux/dma-fence.h>
+#include <linux/sync_file.h>
+#include <linux/file.h>
+#include <linux/fcntl.h>
+#include <linux/dma-mapping.h>
 
 #include <media/v4l2-ioctl.h>
 #include <media/m2m1shot.h>
 #include <media/m2m1shot-helper.h>
 
-#include <video/videonode.h>
-
 #include "scaler.h"
 #include "scaler-regs.h"
-
-/* Protection IDs of Scaler are 1 and 2. */
-#define SC_SMC_PROTECTION_ID(instance)	(1 + (instance))
+#include "scaler-exynos-media.h"
 
 int sc_log_level;
 module_param_named(sc_log_level, sc_log_level, uint, 0644);
@@ -54,6 +58,34 @@ struct vb2_sc_buffer {
 	struct sc_ctx *ctx;
 	ktime_t ktime;
 	struct work_struct work;
+	/* USE_SYNC fences (spec L6B 5.9): acquire fence waited in sc_fence_work,
+	 * release fence signalled at job completion. */
+	struct dma_fence *in_fence;
+	struct dma_fence *out_fence;
+};
+
+static inline struct vb2_sc_buffer *to_vb2_sc_buffer(struct vb2_buffer *vb)
+{
+	struct vb2_v4l2_buffer *vb2_v4l2 = to_vb2_v4l2_buffer(vb);
+	struct v4l2_m2m_buffer *mb =
+		container_of(vb2_v4l2, struct v4l2_m2m_buffer, vb);
+
+	return container_of(mb, struct vb2_sc_buffer, mb);
+}
+
+static const char *sc_fence_get_driver_name(struct dma_fence *fence)
+{
+	return "exynos-scaler";
+}
+
+static const char *sc_fence_get_timeline_name(struct dma_fence *fence)
+{
+	return "scaler-m2m";
+}
+
+static const struct dma_fence_ops sc_fence_ops = {
+	.get_driver_name = sc_fence_get_driver_name,
+	.get_timeline_name = sc_fence_get_timeline_name,
 };
 
 static const struct sc_fmt sc_formats[] = {
@@ -479,13 +511,18 @@ static const struct sc_fmt *sc_find_format(struct sc_dev *sc,
 static int sc_v4l2_querycap(struct file *file, void *fh,
 			     struct v4l2_capability *cap)
 {
+	struct sc_dev *sc = video_drvdata(file);
+
 	strncpy(cap->driver, MODULE_NAME, sizeof(cap->driver) - 1);
 	strncpy(cap->card, MODULE_NAME, sizeof(cap->card) - 1);
+	strncpy(cap->bus_info, dev_name(sc->dev),
+		sizeof(cap->bus_info) - 1);
 
-	cap->capabilities = V4L2_CAP_STREAMING |
-		V4L2_CAP_VIDEO_CAPTURE_MPLANE | V4L2_CAP_VIDEO_OUTPUT_MPLANE;
-	cap->capabilities |= V4L2_CAP_DEVICE_CAPS;
-	cap->device_caps = 0x0100 ;
+	/* capabilities/device_caps come from videodev->device_caps (set before
+	 * registration, spec L6B B-V4); 6.18 querycap warns on driver
+	 * rewrites, so the stock device_caps write
+	 * (S:.../scaler/scaler-core.c:488) is dropped.
+	 */
 
 	return 0;
 }
@@ -508,7 +545,7 @@ static int sc_v4l2_enum_fmt_mplane(struct file *file, void *fh,
 static int sc_v4l2_g_fmt_mplane(struct file *file, void *fh,
 			  struct v4l2_format *f)
 {
-	struct sc_ctx *ctx = fh_to_sc_ctx(fh);
+	struct sc_ctx *ctx = fh_to_sc_ctx(file->private_data);
 	const struct sc_fmt *sc_fmt;
 	struct sc_frame *frame;
 	struct v4l2_pix_format_mplane *pixm = &f->fmt.pix_mp;
@@ -553,7 +590,7 @@ static int sc_v4l2_g_fmt_mplane(struct file *file, void *fh,
 static int sc_v4l2_try_fmt_mplane(struct file *file, void *fh,
 			    struct v4l2_format *f)
 {
-	struct sc_ctx *ctx = fh_to_sc_ctx(fh);
+	struct sc_ctx *ctx = fh_to_sc_ctx(file->private_data);
 	const struct sc_fmt *sc_fmt;
 	struct v4l2_pix_format_mplane *pixm = &f->fmt.pix_mp;
 	const struct sc_size_limit *limit;
@@ -621,7 +658,7 @@ static int sc_v4l2_s_fmt_mplane(struct file *file, void *fh,
 				 struct v4l2_format *f)
 
 {
-	struct sc_ctx *ctx = fh_to_sc_ctx(fh);
+	struct sc_ctx *ctx = fh_to_sc_ctx(file->private_data);
 	struct vb2_queue *vq = v4l2_m2m_get_vq(ctx->m2m_ctx, f->type);
 	struct sc_frame *frame;
 	struct v4l2_pix_format_mplane *pixm = &f->fmt.pix_mp;
@@ -713,101 +750,165 @@ static void sc_fence_work(struct work_struct *work)
 	struct vb2_sc_buffer *svb =
 			container_of(work, struct vb2_sc_buffer, work);
 	struct sc_ctx *ctx = vb2_get_drv_priv(svb->mb.vb.vb2_buf.vb2_queue);
-	struct sync_fence *fence;
+	struct dma_fence *fence;
 	int ret;
 
-	/* Buffers do not have acquire_fence are never pushed to workqueue */
-	BUG_ON(svb->mb.vb.vb2_buf.acquire_fence == NULL);
-	BUG_ON(!ctx->m2m_ctx);
+	/* Buffers without an acquire_fence never reach the workqueue. */
+	if (WARN_ON_ONCE(!svb->in_fence))
+		return;
+	if (WARN_ON_ONCE(!ctx->m2m_ctx))
+		return;
 
-	fence = svb->mb.vb.vb2_buf.acquire_fence;
-	svb->mb.vb.vb2_buf.acquire_fence = NULL;
+	fence = svb->in_fence;
+	svb->in_fence = NULL;
 
-	ret = sync_fence_wait(fence, 1000);
-	if (ret == -ETIME) {
-		dev_warn(ctx->sc_dev->dev, "sync_fence_wait() timeout\n");
-		ret = sync_fence_wait(fence, 10 * MSEC_PER_SEC);
+	/* Stock waited 1 s then retried with 10 s
+	 * (S:.../scaler/scaler-core.c:726-730). */
+	ret = dma_fence_wait_timeout(fence, false, msecs_to_jiffies(1000));
+	if (ret == 0) {
+		dev_warn(ctx->sc_dev->dev, "dma_fence_wait_timeout() timeout\n");
+		ret = dma_fence_wait_timeout(fence, false,
+					     msecs_to_jiffies(10 * MSEC_PER_SEC));
 
-		if (ret)
+		if (ret < 0)
 			dev_warn(ctx->sc_dev->dev,
-					"sync_fence_wait() error (%d)\n", ret);
+					"dma_fence_wait_timeout() error (%d)\n",
+					ret);
+	} else if (ret < 0) {
+		dev_warn(ctx->sc_dev->dev,
+				"dma_fence_wait_timeout() error (%d)\n", ret);
 	}
 
-	sync_fence_put(fence);
+	dma_fence_put(fence);
 
-	/* OK to preceed the timed out buffers: It does not harm the system */
+	/* OK to proceed the timed out buffers: It does not harm the system */
 	v4l2_m2m_buf_queue(ctx->m2m_ctx, &svb->mb.vb);
 	v4l2_m2m_try_schedule(ctx->m2m_ctx);
-}
-
-static int sc_v4l2_reqbufs(struct file *file, void *fh,
-			    struct v4l2_requestbuffers *reqbufs)
-{
-	struct sc_ctx *ctx = fh_to_sc_ctx(fh);
-	struct vb2_queue *vq = v4l2_m2m_get_vq(ctx->m2m_ctx, reqbufs->type);
-	unsigned int i;
-	int ret;
-
-	ret = v4l2_m2m_reqbufs(file, ctx->m2m_ctx, reqbufs);
-	if (ret)
-		return ret;
-
-	for (i = 0; i < vq->num_buffers; i++) {
-		struct vb2_buffer *vb;
-		struct vb2_v4l2_buffer *vb2_v4l2;
-		struct v4l2_m2m_buffer *mb;
-		struct vb2_sc_buffer *svb;
-
-		vb = vq->bufs[i];
-		vb2_v4l2 = container_of(vb, typeof(*vb2_v4l2), vb2_buf);
-		mb = container_of(vb2_v4l2, typeof(*mb), vb);
-		svb = container_of(mb, typeof(*svb), mb);
-
-		INIT_WORK(&svb->work, sc_fence_work);
-	}
-	return 0;
 }
 
 static int sc_v4l2_querybuf(struct file *file, void *fh,
 			     struct v4l2_buffer *buf)
 {
-	struct sc_ctx *ctx = fh_to_sc_ctx(fh);
+	struct sc_ctx *ctx = fh_to_sc_ctx(file->private_data);
 	return v4l2_m2m_querybuf(file, ctx->m2m_ctx, buf);
 }
 
+/*
+ * QBUF with the USE_SYNC fence protocol (spec L6B 5.9, L6A REQ-L6B-6A-1).
+ * 0x8000 lies in V4L2_BUF_FLAG_TIMESTAMP_MASK and vb2's fill overwrites
+ * buf->reserved (A:.../videobuf2/videobuf2-v4l2.c:47-52,498), so the flag
+ * and the acquire fd are read BEFORE v4l2_m2m_qbuf() and the release fd
+ * is written back AFTER it. Userspace contract:
+ * SLSI:graphics/base/libscaler/libscaler-v4l2.cpp:371-372,399.
+ */
 static int sc_v4l2_qbuf(struct file *file, void *fh,
 			 struct v4l2_buffer *buf)
 {
-	struct sc_ctx *ctx = fh_to_sc_ctx(fh);
+	struct sc_ctx *ctx = fh_to_sc_ctx(file->private_data);
+	struct vb2_queue *vq = v4l2_m2m_get_vq(ctx->m2m_ctx, buf->type);
+	struct vb2_sc_buffer *svb = NULL;
+	struct dma_fence *in_fence = NULL;
+	int ret;
 
-	return v4l2_m2m_qbuf(file, ctx->m2m_ctx, buf);
+	if ((buf->flags & SC_USE_SYNC_FLAG) && vq) {
+		struct vb2_buffer *vb = vb2_get_buffer(vq, buf->index);
+
+		if (vb)
+			svb = to_vb2_sc_buffer(vb);
+		if ((int)buf->reserved >= 0) {
+			in_fence = sync_file_get_fence(buf->reserved);
+			if (!in_fence)
+				return -EINVAL;
+		}
+		if (svb && in_fence) {
+			if (svb->in_fence)
+				dma_fence_put(svb->in_fence);
+			svb->in_fence = in_fence;
+			in_fence = NULL;
+		}
+	}
+	if (in_fence)
+		dma_fence_put(in_fence);
+
+	ret = v4l2_m2m_qbuf(file, ctx->m2m_ctx, buf);
+	if (ret || !(buf->flags & SC_USE_SYNC_FLAG) || !svb) {
+		if (ret && svb && svb->in_fence) {
+			dma_fence_put(svb->in_fence);
+			svb->in_fence = NULL;
+		}
+		return ret;
+	}
+
+	/* Create the release fence on the context timeline and hand
+	 * userspace a sync_file fd for it, or -1 on failure (stock did the
+	 * same through its sw_sync timeline, S:.../videobuf2-v4l2.c:140-143).
+	 * The fence is signalled at job completion in sc_irq_handler(). */
+	{
+		struct dma_fence *fence;
+		struct sync_file *sync_file;
+		unsigned long flags;
+		int fd;
+
+		fence = kzalloc(sizeof(*fence), GFP_KERNEL);
+		if (!fence) {
+			buf->reserved = (u32)-1;
+			return 0;
+		}
+		spin_lock_irqsave(&ctx->fence_lock, flags);
+		ctx->fence_seqno++;
+		dma_fence_init(fence, &sc_fence_ops, &ctx->fence_lock,
+			       ctx->fence_context, ctx->fence_seqno);
+		spin_unlock_irqrestore(&ctx->fence_lock, flags);
+
+		if (svb->out_fence) {
+			WARN_ON_ONCE(1);
+			dma_fence_put(svb->out_fence);
+		}
+		svb->out_fence = fence;
+
+		sync_file = sync_file_create(fence);
+		if (!sync_file) {
+			buf->reserved = (u32)-1;
+			return 0;
+		}
+		fd = get_unused_fd_flags(O_CLOEXEC);
+		if (fd < 0) {
+			fput(sync_file->file);
+			buf->reserved = (u32)-1;
+			return 0;
+		}
+		fd_install(fd, sync_file->file);
+		buf->reserved = fd;
+	}
+
+	return 0;
 }
 
 static int sc_v4l2_dqbuf(struct file *file, void *fh,
 			  struct v4l2_buffer *buf)
 {
-	struct sc_ctx *ctx = fh_to_sc_ctx(fh);
+	struct sc_ctx *ctx = fh_to_sc_ctx(file->private_data);
 	return v4l2_m2m_dqbuf(file, ctx->m2m_ctx, buf);
 }
 
 static int sc_v4l2_streamon(struct file *file, void *fh,
 			     enum v4l2_buf_type type)
 {
-	struct sc_ctx *ctx = fh_to_sc_ctx(fh);
+	struct sc_ctx *ctx = fh_to_sc_ctx(file->private_data);
 	return v4l2_m2m_streamon(file, ctx->m2m_ctx, type);
 }
 
 static int sc_v4l2_streamoff(struct file *file, void *fh,
 			      enum v4l2_buf_type type)
 {
-	struct sc_ctx *ctx = fh_to_sc_ctx(fh);
+	struct sc_ctx *ctx = fh_to_sc_ctx(file->private_data);
 	return v4l2_m2m_streamoff(file, ctx->m2m_ctx, type);
 }
 
 static int sc_v4l2_cropcap(struct file *file, void *fh,
 			    struct v4l2_cropcap *cr)
 {
-	struct sc_ctx *ctx = fh_to_sc_ctx(fh);
+	struct sc_ctx *ctx = fh_to_sc_ctx(file->private_data);
 	struct sc_frame *frame;
 
 	frame = ctx_get_frame(ctx, cr->type);
@@ -825,7 +926,7 @@ static int sc_v4l2_cropcap(struct file *file, void *fh,
 
 static int sc_v4l2_g_crop(struct file *file, void *fh, struct v4l2_crop *cr)
 {
-	struct sc_ctx *ctx = fh_to_sc_ctx(fh);
+	struct sc_ctx *ctx = fh_to_sc_ctx(file->private_data);
 	struct sc_frame *frame;
 
 	frame = ctx_get_frame(ctx, cr->type);
@@ -894,7 +995,7 @@ static int sc_get_fract_val(struct v4l2_rect *rect, struct sc_ctx *ctx)
 static int sc_v4l2_s_crop(struct file *file, void *fh,
 		const struct v4l2_crop *cr)
 {
-	struct sc_ctx *ctx = fh_to_sc_ctx(fh);
+	struct sc_ctx *ctx = fh_to_sc_ctx(file->private_data);
 	struct sc_dev *sc = ctx->sc_dev;
 	struct sc_frame *frame;
 	struct v4l2_rect rect = cr->c;
@@ -975,7 +1076,7 @@ static const struct v4l2_ioctl_ops sc_v4l2_ioctl_ops = {
 	.vidioc_s_fmt_vid_cap_mplane	= sc_v4l2_s_fmt_mplane,
 	.vidioc_s_fmt_vid_out_mplane	= sc_v4l2_s_fmt_mplane,
 
-	.vidioc_reqbufs			= sc_v4l2_reqbufs,
+	.vidioc_reqbufs			= v4l2_m2m_ioctl_reqbufs,
 	.vidioc_querybuf		= sc_v4l2_querybuf,
 
 	.vidioc_qbuf			= sc_v4l2_qbuf,
@@ -1076,39 +1177,26 @@ static void free_intermediate_frame(struct sc_ctx *ctx)
 	if (ctx->i_frame == NULL)
 		return;
 
-	if (!ctx->i_frame->handle[0])
+	if (!ctx->i_frame->cpu_addr[0])
 		return;
 
-	if (ctx->i_frame->src_addr.y)
-		ion_iovmm_unmap(ctx->i_frame->attachment[0],
-				ctx->i_frame->src_addr.y);
-	if (ctx->i_frame->src_addr.cb)
-		ion_iovmm_unmap(ctx->i_frame->attachment[1],
-				ctx->i_frame->src_addr.cb);
-	if (ctx->i_frame->src_addr.cr)
-		ion_iovmm_unmap(ctx->i_frame->attachment[2],
-				ctx->i_frame->src_addr.cr);
-	if (ctx->i_frame->dst_addr.y)
-		ion_iovmm_unmap(ctx->i_frame->attachment[0],
-				ctx->i_frame->dst_addr.y);
-	if (ctx->i_frame->dst_addr.cb)
-		ion_iovmm_unmap(ctx->i_frame->attachment[1],
-				ctx->i_frame->dst_addr.cb);
-	if (ctx->i_frame->dst_addr.cr)
-		ion_iovmm_unmap(ctx->i_frame->attachment[2],
-				ctx->i_frame->dst_addr.cr);
-
-	for(i = 0; i < 3; i++) {
-		if (ctx->i_frame->handle[i]) {
-			dma_buf_unmap_attachment(ctx->i_frame->attachment[i],
-					ctx->i_frame->sgt[i], DMA_BIDIRECTIONAL);
-			dma_buf_detach(ctx->i_frame->dma_buf[i], ctx->i_frame->attachment[i]);
-			dma_buf_put(ctx->i_frame->dma_buf[i]);
-			ion_free(ctx->i_frame->client, ctx->i_frame->handle[i]);
+	/*
+	 * 6.18: coherent scratch on the IOMMU proxy device (was ION +
+	 * ion_iovmm_map, S:.../scaler/scaler-core.c:1072-1114). One mapping
+	 * serves both directions, so src and dst share the address.
+	 */
+	for (i = 0; i < 3; i++) {
+		if (ctx->i_frame->cpu_addr[i]) {
+			dma_free_coherent(ctx->sc_dev->proxy_dev,
+					   ctx->i_frame->size[i],
+					   ctx->i_frame->cpu_addr[i],
+					   ctx->i_frame->dma_addr[i]);
+			ctx->i_frame->cpu_addr[i] = NULL;
+			ctx->i_frame->dma_addr[i] = 0;
+			ctx->i_frame->size[i] = 0;
 		}
 	}
 
-	memset(&ctx->i_frame->handle, 0, sizeof(struct ion_handle *) * 3);
 	memset(&ctx->i_frame->src_addr, 0, sizeof(ctx->i_frame->src_addr));
 	memset(&ctx->i_frame->dst_addr, 0, sizeof(ctx->i_frame->dst_addr));
 }
@@ -1117,18 +1205,46 @@ static void destroy_intermediate_frame(struct sc_ctx *ctx)
 {
 	if (ctx->i_frame) {
 		free_intermediate_frame(ctx);
-		ion_client_destroy(ctx->i_frame->client);
 		kfree(ctx->i_frame);
 		ctx->i_frame = NULL;
 		clear_bit(CTX_INT_FRAME, &ctx->flags);
 	}
 }
 
+static bool alloc_int_plane(struct sc_ctx *ctx, int idx, size_t size,
+			    dma_addr_t *src, dma_addr_t *dst)
+{
+	struct sc_dev *sc = ctx->sc_dev;
+	void *cpu;
+	dma_addr_t dma;
+
+	if (!size) {
+		*src = 0;
+		*dst = 0;
+		return true;
+	}
+
+	cpu = dma_alloc_coherent(sc->proxy_dev, size, &dma, GFP_KERNEL);
+	if (!cpu) {
+		dev_err(sc->dev,
+			"Failed to allocate intermediate buffer %d (err %zu)",
+			idx, size);
+		return false;
+	}
+
+	ctx->i_frame->cpu_addr[idx] = cpu;
+	ctx->i_frame->dma_addr[idx] = dma;
+	ctx->i_frame->size[idx] = size;
+	*src = dma;
+	*dst = dma;
+
+	return true;
+}
+
 static bool initialize_initermediate_frame(struct sc_ctx *ctx)
 {
 	struct sc_frame *frame;
 	struct sc_dev *sc = ctx->sc_dev;
-	int ion_mask, flag;
 
 	frame = &ctx->i_frame->frame;
 
@@ -1143,214 +1259,43 @@ static bool initialize_initermediate_frame(struct sc_ctx *ctx)
 	 * needed to be initialized because image setting is never changed
 	 * while streaming continues.
 	 */
-	if (ctx->i_frame->handle[0])
+	if (ctx->i_frame->cpu_addr[0])
 		return true;
 
 	sc_calc_intbufsize(sc, ctx->i_frame);
 
-	if(test_bit(CTX_INT_FRAME_CP, &sc->state)) {
-		ion_mask = EXYNOS_ION_HEAP_VIDEO_SCALER_MASK;
-		flag = ION_FLAG_PROTECTED;
-	} else {
-		ion_mask = ION_HEAP_SYSTEM_MASK;
-		flag = 0;
-	}
-
+	/*
+	 * Stock chose a protected ION heap when CTX_INT_FRAME_CP was set
+	 * (S:.../scaler/scaler-core.c:1151-1157); content protection is off
+	 * (spec L6B D-13), so the scratch is always normal coherent memory.
+	 */
 	if (frame->addr.ysize) {
-		ctx->i_frame->handle[0] = ion_alloc(ctx->i_frame->client,
-				frame->addr.ysize, 0, ion_mask, flag);
-		if (IS_ERR(ctx->i_frame->handle[0])) {
-			dev_err(sc->dev,
-			"Failed to allocate intermediate y buffer (err %ld)",
-				PTR_ERR(ctx->i_frame->handle[0]));
-			ctx->i_frame->handle[0] = NULL;
-			goto err_ion_alloc;
-		}
-
-		ctx->i_frame->dma_buf[0] = ion_share_dma_buf(ctx->i_frame->client,
-				ctx->i_frame->handle[0]);
-		if (IS_ERR(ctx->i_frame->dma_buf[0])) {
-			dev_err(sc->dev,
-			"Failed to get dma_buf from ion_handle of y (err %ld)",
-			PTR_ERR(ctx->i_frame->dma_buf[0]));
-			ctx->i_frame->dma_buf[0] = NULL;
-			goto err_ion_alloc;
-		}
-
-		ctx->i_frame->attachment[0] = dma_buf_attach(ctx->i_frame->dma_buf[0],
-				sc->dev);
-		if (IS_ERR(ctx->i_frame->attachment[0])) {
-			dev_err(sc->dev,
-			"Failed to get dma_buf_attach from dma_buf of y (err %ld)",
-			PTR_ERR(ctx->i_frame->attachment[0]));
-			ctx->i_frame->attachment[0] = NULL;
-			goto err_ion_alloc;
-		}
-
-		ctx->i_frame->sgt[0] = dma_buf_map_attachment(ctx->i_frame->attachment[0],
-				DMA_BIDIRECTIONAL);
-		if (IS_ERR(ctx->i_frame->sgt[0])) {
-			dev_err(sc->dev,
-			"Failed to get sgt from dma_buf_attach of y (err %ld)",
-			PTR_ERR(ctx->i_frame->sgt[0]));
-			ctx->i_frame->sgt[0] = NULL;
-			goto err_ion_alloc;
-		}
-
-		ctx->i_frame->src_addr.y = ion_iovmm_map(ctx->i_frame->attachment[0], 0,
-					frame->addr.ysize, DMA_TO_DEVICE, 0);
-		if (IS_ERR_VALUE(ctx->i_frame->src_addr.y)) {
-			dev_err(sc->dev,
-				"Failed to allocate iova of y (err %pa)",
-				&ctx->i_frame->src_addr.y);
-			ctx->i_frame->src_addr.y = 0;
-			goto err_ion_alloc;
-		}
-
-		ctx->i_frame->dst_addr.y = ion_iovmm_map(ctx->i_frame->attachment[0], 0,
-					frame->addr.ysize, DMA_FROM_DEVICE, 0);
-		if (IS_ERR_VALUE(ctx->i_frame->dst_addr.y)) {
-			dev_err(sc->dev,
-				"Failed to allocate iova of y (err %pa)",
-				&ctx->i_frame->dst_addr.y);
-			ctx->i_frame->dst_addr.y = 0;
-			goto err_ion_alloc;
-		}
-
+		if (!alloc_int_plane(ctx, 0, frame->addr.ysize,
+				     &ctx->i_frame->src_addr.y,
+				     &ctx->i_frame->dst_addr.y))
+			goto err_int_alloc;
 		frame->addr.y = ctx->i_frame->dst_addr.y;
 	}
 
 	if (frame->addr.cbsize) {
-		ctx->i_frame->handle[1] = ion_alloc(ctx->i_frame->client,
-				frame->addr.cbsize, 0, ion_mask, flag);
-		if (IS_ERR(ctx->i_frame->handle[1])) {
-			dev_err(sc->dev,
-			"Failed to allocate intermediate cb buffer (err %ld)",
-				PTR_ERR(ctx->i_frame->handle[1]));
-			ctx->i_frame->handle[1] = NULL;
-			goto err_ion_alloc;
-		}
-
-		ctx->i_frame->dma_buf[1] = ion_share_dma_buf(ctx->i_frame->client,
-				ctx->i_frame->handle[1]);
-		if (IS_ERR(ctx->i_frame->dma_buf[1])) {
-			dev_err(sc->dev,
-			"Failed to get dma_buf from ion_handle of cb (err %ld)",
-			PTR_ERR(ctx->i_frame->dma_buf[1]));
-			ctx->i_frame->dma_buf[1] = NULL;
-			goto err_ion_alloc;
-		}
-
-		ctx->i_frame->attachment[1] = dma_buf_attach(ctx->i_frame->dma_buf[1],
-				sc->dev);
-		if (IS_ERR(ctx->i_frame->attachment[1])) {
-			dev_err(sc->dev,
-			"Failed to get dma_buf_attach from dma_buf of cb (err %ld)",
-			PTR_ERR(ctx->i_frame->attachment[1]));
-			ctx->i_frame->attachment[1] = NULL;
-			goto err_ion_alloc;
-		}
-
-		ctx->i_frame->sgt[1] = dma_buf_map_attachment(ctx->i_frame->attachment[1],
-				DMA_BIDIRECTIONAL);
-		if (IS_ERR(ctx->i_frame->sgt[1])) {
-			dev_err(sc->dev,
-			"Failed to get sgt from dma_buf_attach of cb (err %ld)",
-			PTR_ERR(ctx->i_frame->sgt[1]));
-			ctx->i_frame->sgt[1] = NULL;
-			goto err_ion_alloc;
-		}
-
-		ctx->i_frame->src_addr.cb = ion_iovmm_map(ctx->i_frame->attachment[1], 0,
-					frame->addr.cbsize, DMA_TO_DEVICE, 0);
-		if (IS_ERR_VALUE(ctx->i_frame->src_addr.cb)) {
-			dev_err(sc->dev,
-				"Failed to allocate iova of cb (err %pa)",
-				&ctx->i_frame->src_addr.cb);
-			ctx->i_frame->src_addr.cb = 0;
-			goto err_ion_alloc;
-		}
-
-		ctx->i_frame->dst_addr.cb = ion_iovmm_map(ctx->i_frame->attachment[1], 0,
-					frame->addr.cbsize, DMA_FROM_DEVICE, 0);
-		if (IS_ERR_VALUE(ctx->i_frame->dst_addr.cb)) {
-			dev_err(sc->dev,
-				"Failed to allocate iova of cb (err %pa)",
-				&ctx->i_frame->dst_addr.cb);
-			ctx->i_frame->dst_addr.cb = 0;
-			goto err_ion_alloc;
-		}
-
+		if (!alloc_int_plane(ctx, 1, frame->addr.cbsize,
+				     &ctx->i_frame->src_addr.cb,
+				     &ctx->i_frame->dst_addr.cb))
+			goto err_int_alloc;
 		frame->addr.cb = ctx->i_frame->dst_addr.cb;
 	}
 
 	if (frame->addr.crsize) {
-		ctx->i_frame->handle[2] = ion_alloc(ctx->i_frame->client,
-				frame->addr.crsize, 0, ion_mask, flag);
-		if (IS_ERR(ctx->i_frame->handle[2])) {
-			dev_err(sc->dev,
-			"Failed to allocate intermediate cr buffer (err %ld)",
-				PTR_ERR(ctx->i_frame->handle[2]));
-			ctx->i_frame->handle[2] = NULL;
-			goto err_ion_alloc;
-		}
-
-		ctx->i_frame->dma_buf[2] = ion_share_dma_buf(ctx->i_frame->client,
-				ctx->i_frame->handle[2]);
-		if (IS_ERR(ctx->i_frame->dma_buf[2])) {
-			dev_err(sc->dev,
-			"Failed to get dma_buf from ion_handle of cr (err %ld)",
-			PTR_ERR(ctx->i_frame->dma_buf[2]));
-			ctx->i_frame->dma_buf[2] = NULL;
-			goto err_ion_alloc;
-		}
-
-		ctx->i_frame->attachment[2] = dma_buf_attach(ctx->i_frame->dma_buf[2],
-				sc->dev);
-		if (IS_ERR(ctx->i_frame->attachment[2])) {
-			dev_err(sc->dev,
-			"Failed to get dma_buf_attach from dma_buf of cr (err %ld)",
-			PTR_ERR(ctx->i_frame->attachment[2]));
-			ctx->i_frame->attachment[2] = NULL;
-			goto err_ion_alloc;
-		}
-
-		ctx->i_frame->sgt[2] = dma_buf_map_attachment(ctx->i_frame->attachment[2],
-				DMA_BIDIRECTIONAL);
-		if (IS_ERR(ctx->i_frame->sgt[2])) {
-			dev_err(sc->dev,
-			"Failed to get sgt from dma_buf_attach of cr (err %ld)",
-			PTR_ERR(ctx->i_frame->sgt[2]));
-			ctx->i_frame->sgt[2] = NULL;
-			goto err_ion_alloc;
-		}
-
-		ctx->i_frame->src_addr.cr = ion_iovmm_map(ctx->i_frame->attachment[2], 0,
-					frame->addr.crsize, DMA_TO_DEVICE, 0);
-		if (IS_ERR_VALUE(ctx->i_frame->src_addr.cr)) {
-			dev_err(sc->dev,
-				"Failed to allocate iova of cr (err %pa)",
-				&ctx->i_frame->src_addr.cr);
-			ctx->i_frame->src_addr.cr = 0;
-			goto err_ion_alloc;
-		}
-
-		ctx->i_frame->dst_addr.cr = ion_iovmm_map(ctx->i_frame->attachment[2], 0,
-					frame->addr.crsize, DMA_FROM_DEVICE, 0);
-		if (IS_ERR_VALUE(ctx->i_frame->dst_addr.cr)) {
-			dev_err(sc->dev,
-				"Failed to allocate iova of cr (err %pa)",
-				&ctx->i_frame->dst_addr.cr);
-			ctx->i_frame->dst_addr.cr = 0;
-			goto err_ion_alloc;
-		}
-
+		if (!alloc_int_plane(ctx, 2, frame->addr.crsize,
+				     &ctx->i_frame->src_addr.cr,
+				     &ctx->i_frame->dst_addr.cr))
+			goto err_int_alloc;
 		frame->addr.cr = ctx->i_frame->dst_addr.cr;
 	}
 
 	return true;
 
-err_ion_alloc:
+err_int_alloc:
 	free_intermediate_frame(ctx);
 	return false;
 }
@@ -1362,17 +1307,6 @@ static bool allocate_intermediate_frame(struct sc_ctx *ctx)
 		if (ctx->i_frame == NULL) {
 			dev_err(ctx->sc_dev->dev,
 				"Failed to allocate intermediate frame\n");
-			return false;
-		}
-
-		ctx->i_frame->client = exynos_ion_client_create("scaler-int");
-		if (IS_ERR(ctx->i_frame->client)) {
-			dev_err(ctx->sc_dev->dev,
-			"Failed to create ION client for int.buf.(err %ld)\n",
-				PTR_ERR(ctx->i_frame->client));
-			ctx->i_frame->client = NULL;
-			kfree(ctx->i_frame);
-			ctx->i_frame = NULL;
 			return false;
 		}
 	}
@@ -1539,7 +1473,7 @@ static int sc_prepare_denoise_filter(struct sc_ctx *ctx)
 	}
 
 	if (ctx->sc_dev->variant->prescale) {
-		BUG_ON(sc_down_min != SCALE_RATIO_CONST(16, 1));
+		WARN_ON_ONCE(sc_down_min != SCALE_RATIO_CONST(16, 1));
 
 		if (ctx->h_ratio > SCALE_RATIO_CONST(8, 1))
 			ctx->pre_h_ratio = 2;
@@ -1632,7 +1566,7 @@ static int sc_find_scaling_ratio(struct sc_ctx *ctx)
 	}
 
 	if (sc->variant->prescale) {
-		BUG_ON(sc_down_min != SCALE_RATIO_CONST(16, 1));
+		WARN_ON_ONCE(sc_down_min != SCALE_RATIO_CONST(16, 1));
 
 		if (h_ratio > SCALE_RATIO_CONST(8, 1)) {
 			ctx->pre_h_ratio = 2;
@@ -1696,9 +1630,9 @@ static int sc_find_scaling_ratio(struct sc_ctx *ctx)
 }
 
 static int sc_vb2_queue_setup(struct vb2_queue *vq,
-		const void *parg, unsigned int *num_buffers,
+		unsigned int *num_buffers,
 		unsigned int *num_planes, unsigned int sizes[],
-		void *allocators[])
+		struct device *alloc_devs[])
 {
 	struct sc_ctx *ctx = vb2_get_drv_priv(vq);
 	struct sc_frame *frame;
@@ -1713,7 +1647,9 @@ static int sc_vb2_queue_setup(struct vb2_queue *vq,
 	*num_planes = frame->sc_fmt->num_planes;
 	for (i = 0; i < frame->sc_fmt->num_planes; i++) {
 		sizes[i] = frame->bytesused[i];
-		allocators[i] = ctx->sc_dev->alloc_ctx;
+		/* 6.18 vb2_dma_contig allocates on the IOMMU master device:
+		 * the scaler maps through the SMFC proxy (spec L6B 5.9). */
+		alloc_devs[i] = ctx->sc_dev->proxy_dev;
 	}
 
 	ret = sc_find_scaling_ratio(ctx);
@@ -1724,7 +1660,60 @@ static int sc_vb2_queue_setup(struct vb2_queue *vq,
 	if (ret)
 		return ret;
 
-	return vb2_queue_init(vq);
+	return 0;
+}
+
+/*
+ * Cache maintenance for DMABUF planes (spec L6B B-V9): dma_buf_end_cpu_access()
+ * before the device uses a plane (buf_prepare), dma_buf_begin_cpu_access()
+ * after (buf_finish), served by L6A's ION exporter. MMAP/USERPTR planes are
+ * synced by vb2_dma_contig itself.
+ */
+int sc_buf_sync_prepare(struct vb2_buffer *vb)
+{
+	unsigned int i;
+	enum dma_data_direction dir = V4L2_TYPE_IS_OUTPUT(vb->vb2_queue->type) ?
+					DMA_TO_DEVICE : DMA_FROM_DEVICE;
+
+	if (vb->memory != VB2_MEMORY_DMABUF)
+		return 0;
+
+	for (i = 0; i < vb->num_planes; i++) {
+		struct dma_buf *dbuf = vb->planes[i].dbuf;
+
+		if (dbuf)
+			dma_buf_end_cpu_access(dbuf, dir);
+	}
+
+	return 0;
+}
+
+void sc_buf_sync_finish(struct vb2_buffer *vb)
+{
+	unsigned int i;
+	enum dma_data_direction dir = V4L2_TYPE_IS_OUTPUT(vb->vb2_queue->type) ?
+					DMA_TO_DEVICE : DMA_FROM_DEVICE;
+
+	if (vb->memory != VB2_MEMORY_DMABUF)
+		return;
+
+	for (i = 0; i < vb->num_planes; i++) {
+		struct dma_buf *dbuf = vb->planes[i].dbuf;
+
+		if (dbuf)
+			dma_buf_begin_cpu_access(dbuf, dir);
+	}
+}
+
+static int sc_vb2_buf_init(struct vb2_buffer *vb)
+{
+	struct vb2_sc_buffer *svb = to_vb2_sc_buffer(vb);
+
+	svb->in_fence = NULL;
+	svb->out_fence = NULL;
+	INIT_WORK(&svb->work, sc_fence_work);
+
+	return 0;
 }
 
 static int sc_vb2_buf_prepare(struct vb2_buffer *vb)
@@ -1753,26 +1742,26 @@ static void sc_vb2_buf_finish(struct vb2_buffer *vb)
 static void sc_vb2_buf_queue(struct vb2_buffer *vb)
 {
 	struct sc_ctx *ctx = vb2_get_drv_priv(vb->vb2_queue);
-	struct vb2_v4l2_buffer *v4l2_buf = to_vb2_v4l2_buffer(vb);
+	struct vb2_sc_buffer *svb = to_vb2_sc_buffer(vb);
 
-	if (vb->acquire_fence) {
-		struct vb2_v4l2_buffer *vb2_v4l2 = container_of(vb, typeof(*vb2_v4l2), vb2_buf);
-		struct v4l2_m2m_buffer *mb = container_of(vb2_v4l2, typeof(*mb), vb);
-		struct vb2_sc_buffer *svb = container_of(mb, typeof(*svb), mb);
+	if (svb->in_fence) {
 		queue_work(ctx->sc_dev->fence_wq, &svb->work);
 	} else {
-	if (ctx->m2m_ctx)
-			v4l2_m2m_buf_queue(ctx->m2m_ctx, v4l2_buf);
+		if (ctx->m2m_ctx)
+			v4l2_m2m_buf_queue(ctx->m2m_ctx,
+					   to_vb2_v4l2_buffer(vb));
 	}
 }
 
 static void sc_vb2_buf_cleanup(struct vb2_buffer *vb)
 {
-	struct vb2_v4l2_buffer *vb2_v4l2 = container_of(vb, typeof(*vb2_v4l2), vb2_buf);
-	struct v4l2_m2m_buffer *mb = container_of(vb2_v4l2, typeof(*mb), vb);
-	struct vb2_sc_buffer *svb = container_of(mb, typeof(*svb), mb);
+	struct vb2_sc_buffer *svb = to_vb2_sc_buffer(vb);
 
 	flush_work(&svb->work);
+	if (svb->in_fence) {
+		dma_fence_put(svb->in_fence);
+		svb->in_fence = NULL;
+	}
 }
 
 static void sc_vb2_lock(struct vb2_queue *vq)
@@ -1798,17 +1787,50 @@ static int sc_vb2_start_streaming(struct vb2_queue *vq, unsigned int count)
 static void sc_vb2_stop_streaming(struct vb2_queue *vq)
 {
 	struct sc_ctx *ctx = vb2_get_drv_priv(vq);
+	struct sc_dev *sc = ctx->sc_dev;
+	unsigned int i;
+	unsigned long flags;
 	int ret;
 
 	ret = sc_ctx_stop_req(ctx);
 	if (ret < 0)
 		dev_err(ctx->sc_dev->dev, "wait timeout\n");
 
+	/* On STREAMOFF put every pending fence (spec L6B 5.9): signal any
+	 * unsignalled release fence first so its waiter does not hang,
+	 * then drop any acquire fence that never reached the work item. */
+	for (i = 0; i < vq->num_buffers; i++) {
+		struct vb2_buffer *vb = vq->bufs[i];
+
+		if (vb)
+			flush_work(&to_vb2_sc_buffer(vb)->work);
+	}
+	spin_lock_irqsave(&sc->slock, flags);
+	for (i = 0; i < vq->num_buffers; i++) {
+		struct vb2_buffer *vb = vq->bufs[i];
+		struct vb2_sc_buffer *svb;
+
+		if (!vb)
+			continue;
+		svb = to_vb2_sc_buffer(vb);
+		if (svb->out_fence) {
+			dma_fence_signal(svb->out_fence);
+			dma_fence_put(svb->out_fence);
+			svb->out_fence = NULL;
+		}
+		if (svb->in_fence) {
+			dma_fence_put(svb->in_fence);
+			svb->in_fence = NULL;
+		}
+	}
+	spin_unlock_irqrestore(&sc->slock, flags);
+
 	clear_bit(CTX_STREAMING, &ctx->flags);
 }
 
 static struct vb2_ops sc_vb2_ops = {
 	.queue_setup		= sc_vb2_queue_setup,
+	.buf_init		= sc_vb2_buf_init,
 	.buf_prepare		= sc_vb2_buf_prepare,
 	.buf_finish		= sc_vb2_buf_finish,
 	.buf_queue		= sc_vb2_buf_queue,
@@ -1829,7 +1851,7 @@ static int queue_init(void *priv, struct vb2_queue *src_vq,
 	src_vq->type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
 	src_vq->io_modes = VB2_MMAP | VB2_USERPTR | VB2_DMABUF;
 	src_vq->ops = &sc_vb2_ops;
-	src_vq->mem_ops = &vb2_ion_memops;
+	src_vq->mem_ops = &vb2_dma_contig_memops;
 	src_vq->drv_priv = ctx;
 	src_vq->buf_struct_size = sizeof(struct vb2_sc_buffer);
 	src_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
@@ -1842,7 +1864,7 @@ static int queue_init(void *priv, struct vb2_queue *src_vq,
 	dst_vq->type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 	dst_vq->io_modes = VB2_MMAP | VB2_USERPTR | VB2_DMABUF;
 	dst_vq->ops = &sc_vb2_ops;
-	dst_vq->mem_ops = &vb2_ion_memops;
+	dst_vq->mem_ops = &vb2_dma_contig_memops;
 	dst_vq->drv_priv = ctx;
 	dst_vq->buf_struct_size = sizeof(struct vb2_sc_buffer);
 	dst_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
@@ -2107,22 +2129,6 @@ static void sc_clk_power_disable(struct sc_dev *sc)
 	pm_runtime_put(sc->dev);
 }
 
-#ifdef CONFIG_EXYNOS_CONTENT_PATH_PROTECTION
-static int sc_ctrl_protection(struct sc_dev *sc, struct sc_ctx *ctx, bool en)
-{
-	int ret;
-
-	ret = exynos_smc(SMC_PROTECTION_SET, 0,
-			SC_SMC_PROTECTION_ID(sc->dev_id),
-			(en ? SMC_PROTECTION_ENABLE : SMC_PROTECTION_DISABLE));
-	if (ret != 0) {
-		dev_err(sc->dev,
-			"fail to protection enable (%d)\n", ret);
-	}
-	return ret;
-}
-#endif
-
 static int sc_open(struct file *file)
 {
 	struct sc_dev *sc = video_drvdata(file);
@@ -2140,6 +2146,10 @@ static int sc_open(struct file *file)
 	ctx->context_type = SC_CTX_V4L2_TYPE;
 	INIT_LIST_HEAD(&ctx->node);
 	ctx->sc_dev = sc;
+	/* USE_SYNC release-fence timeline (spec L6B 5.9) */
+	spin_lock_init(&ctx->fence_lock);
+	ctx->fence_seqno = 0;
+	ctx->fence_context = dma_fence_context_alloc(1);
 
 	v4l2_fh_init(&ctx->fh, sc->m2m.vfd);
 	ret = sc_add_ctrls(ctx);
@@ -2247,6 +2257,24 @@ static const struct v4l2_file_operations sc_v4l2_fops = {
 	.mmap		= sc_mmap,
 };
 
+/*
+ * Signal a queued buffer's USE_SYNC release fence, if any (spec L6B 5.9).
+ * Called with sc->slock held, including from the IRQ handler.
+ */
+static void sc_signal_buffer_fence(struct vb2_v4l2_buffer *vb2_v4l2)
+{
+	struct v4l2_m2m_buffer *mb =
+		container_of(vb2_v4l2, struct v4l2_m2m_buffer, vb);
+	struct vb2_sc_buffer *svb =
+		container_of(mb, struct vb2_sc_buffer, mb);
+
+	if (svb->out_fence) {
+		dma_fence_signal(svb->out_fence);
+		dma_fence_put(svb->out_fence);
+		svb->out_fence = NULL;
+	}
+}
+
 static void sc_job_finish(struct sc_dev *sc, struct sc_ctx *ctx)
 {
 	unsigned long flags;
@@ -2264,17 +2292,16 @@ static void sc_job_finish(struct sc_dev *sc, struct sc_ctx *ctx)
 		}
 		clear_bit(CTX_RUN, &ctx->flags);
 
-#ifdef CONFIG_EXYNOS_CONTENT_PATH_PROTECTION
-		if (test_bit(DEV_CP, &sc->state)) {
-			sc_ctrl_protection(sc, ctx, false);
-			clear_bit(DEV_CP, &sc->state);
-		}
-#endif
 		src_vb = v4l2_m2m_src_buf_remove(ctx->m2m_ctx);
 		dst_vb = v4l2_m2m_dst_buf_remove(ctx->m2m_ctx);
 
-		BUG_ON(!src_vb || !dst_vb);
+		if (WARN_ON_ONCE(!src_vb || !dst_vb)) {
+			spin_unlock_irqrestore(&sc->slock, flags);
+			return;
+		}
 
+		sc_signal_buffer_fence(src_vb);
+		sc_signal_buffer_fence(dst_vb);
 		v4l2_m2m_buf_done(src_vb, VB2_BUF_STATE_ERROR);
 		v4l2_m2m_buf_done(dst_vb, VB2_BUF_STATE_ERROR);
 
@@ -2283,7 +2310,10 @@ static void sc_job_finish(struct sc_dev *sc, struct sc_ctx *ctx)
 		struct m2m1shot_task *task =
 			m2m1shot_get_current_task(sc->m21dev);
 
-		BUG_ON(ctx->context_type != SC_CTX_M2M1SHOT_TYPE);
+		if (WARN_ON_ONCE(ctx->context_type != SC_CTX_M2M1SHOT_TYPE)) {
+			spin_unlock_irqrestore(&sc->slock, flags);
+			return;
+		}
 
 		m2m1shot_task_finish(sc->m21dev, task, true);
 	}
@@ -2291,9 +2321,9 @@ static void sc_job_finish(struct sc_dev *sc, struct sc_ctx *ctx)
 	spin_unlock_irqrestore(&sc->slock, flags);
 }
 
-static void sc_watchdog(unsigned long arg)
+static void sc_watchdog(struct timer_list *t)
 {
-	struct sc_dev *sc = (struct sc_dev *)arg;
+	struct sc_dev *sc = from_timer(sc, t, wdt.timer);
 	struct sc_ctx *ctx;
 	unsigned long flags;
 
@@ -2309,7 +2339,10 @@ static void sc_watchdog(unsigned long arg)
 		sc->current_ctx = NULL;
 		spin_unlock_irqrestore(&sc->ctxlist_lock, flags);
 
-		BUG_ON(!ctx);
+		if (WARN_ON_ONCE(!ctx)) {
+			sc_clk_power_disable(sc);
+			return;
+		}
 		sc_job_finish(sc, ctx);
 		sc_clk_power_disable(sc);
 		return;
@@ -2317,7 +2350,6 @@ static void sc_watchdog(unsigned long arg)
 
 	if (test_bit(DEV_RUN, &sc->state)) {
 		sc_hwregs_dump(sc);
-		exynos_sysmmu_show_status(sc->dev);
 		atomic_inc(&sc->wdt.cnt);
 		dev_err(sc->dev, "scaler is still running\n");
 		mod_timer(&sc->wdt.timer, jiffies + SC_TIMEOUT);
@@ -2394,8 +2426,9 @@ static bool sc_process_2nd_stage(struct sc_dev *sc, struct sc_ctx *ctx)
 
 	if (!sc->variant->ratio_20bit) {
 		/* No prescaler, 1/4 precision */
-		BUG_ON(h_ratio > SCALE_RATIO(4, 1));
-		BUG_ON(v_ratio > SCALE_RATIO(4, 1));
+		if (WARN_ON_ONCE(h_ratio > SCALE_RATIO(4, 1) ||
+				 v_ratio > SCALE_RATIO(4, 1)))
+			return false;
 
 		h_ratio >>= 4;
 		v_ratio >>= 4;
@@ -2523,9 +2556,14 @@ static int sc_run_next_job(struct sc_dev *sc)
 
 	/*
 	 * sc_run_next_job() must not reenter while sc->state is DEV_RUN.
-	 * DEV_RUN is cleared when an operation is finished.
+	 * DEV_RUN is cleared when an operation is finished. The queued
+	 * context stays on the list; the running job's completion calls
+	 * sc_run_next_job() again.
 	 */
-	BUG_ON(test_bit(DEV_RUN, &sc->state));
+	if (WARN_ON_ONCE(test_bit(DEV_RUN, &sc->state))) {
+		spin_unlock_irqrestore(&sc->ctxlist_lock, flags);
+		return 0;
+	}
 
 	set_bit(DEV_RUN, &sc->state);
 
@@ -2600,8 +2638,8 @@ static int sc_run_next_job(struct sc_dev *sc)
 	if (!sc->variant->ratio_20bit) {
 
 		/* No prescaler, 1/4 precision */
-		BUG_ON(h_ratio > SCALE_RATIO(4, 1));
-		BUG_ON(v_ratio > SCALE_RATIO(4, 1));
+		WARN_ON_ONCE(h_ratio > SCALE_RATIO(4, 1));
+		WARN_ON_ONCE(v_ratio > SCALE_RATIO(4, 1));
 
 		h_ratio >>= 4;
 		v_ratio >>= 4;
@@ -2682,13 +2720,6 @@ static int sc_run_next_job(struct sc_dev *sc)
 			ctx->ktime_m2m1shot = ktime_get();
 		}
 	}
-#ifdef CONFIG_EXYNOS_CONTENT_PATH_PROTECTION
-	if (ctx->cp_enabled) {
-		ret = sc_ctrl_protection(sc, ctx, true);
-		if (!ret)
-			set_bit(DEV_CP, &sc->state);
-	}
-#endif
 	sc_hwset_start(sc);
 
 	return 0;
@@ -2725,21 +2756,18 @@ static irqreturn_t sc_irq_handler(int irq, void *priv)
 	 */
 	ctx = sc->current_ctx;
 
-	BUG_ON(!ctx);
+	if (WARN_ON_ONCE(!ctx)) {
+		spin_unlock(&sc->slock);
+		return IRQ_HANDLED;
+	}
 
 	irq_status = sc_hwget_and_clear_irq_status(sc);
 
 	if (SCALER_INT_OK(irq_status) && sc_process_2nd_stage(sc, ctx))
 		goto isr_unlock;
 
-	del_timer(&sc->wdt.timer);
+	timer_delete(&sc->wdt.timer);
 
-#ifdef CONFIG_EXYNOS_CONTENT_PATH_PROTECTION
-	if (test_bit(DEV_CP, &sc->state)) {
-		sc_ctrl_protection(sc, ctx, false);
-		clear_bit(DEV_CP, &sc->state);
-	}
-#endif
 	if (!SCALER_INT_OK(irq_status))
 		sc_hwset_soft_reset(sc);
 
@@ -2747,12 +2775,18 @@ static irqreturn_t sc_irq_handler(int irq, void *priv)
 	clear_bit(CTX_RUN, &ctx->flags);
 
 	if (ctx->context_type == SC_CTX_V4L2_TYPE) {
-		BUG_ON(ctx != v4l2_m2m_get_curr_priv(sc->m2m.m2m_dev));
+		if (WARN_ON_ONCE(ctx != v4l2_m2m_get_curr_priv(sc->m2m.m2m_dev))) {
+			spin_unlock(&sc->slock);
+			return IRQ_HANDLED;
+		}
 
 		src_vb = v4l2_m2m_src_buf_remove(ctx->m2m_ctx);
 		dst_vb = v4l2_m2m_dst_buf_remove(ctx->m2m_ctx);
 
-		BUG_ON(!src_vb || !dst_vb);
+		if (WARN_ON_ONCE(!src_vb || !dst_vb)) {
+			spin_unlock(&sc->slock);
+			return IRQ_HANDLED;
+		}
 
 		if (__measure_hw_latency) {
 			struct v4l2_m2m_buffer *mb =
@@ -2760,10 +2794,15 @@ static irqreturn_t sc_irq_handler(int irq, void *priv)
 			struct vb2_sc_buffer *svb =
 					container_of(mb, typeof(*svb), mb);
 
-			dst_vb->timestamp.tv_usec =
-				(__u32)ktime_us_delta(ktime_get(), svb->ktime);
+			/* 6.18 vb2 timestamps are u64 ns (was timeval) */
+			dst_vb->timestamp =
+				ktime_to_ns(ktime_sub(ktime_get(), svb->ktime));
 		}
 
+		/* Signal the USE_SYNC release fences before completing
+		 * the buffers (spec L6B 5.9). */
+		sc_signal_buffer_fence(src_vb);
+		sc_signal_buffer_fence(dst_vb);
 		v4l2_m2m_buf_done(src_vb,
 			SCALER_INT_OK(irq_status) ?
 				VB2_BUF_STATE_DONE : VB2_BUF_STATE_ERROR);
@@ -2779,7 +2818,10 @@ static irqreturn_t sc_irq_handler(int irq, void *priv)
 		struct m2m1shot_task *task =
 					m2m1shot_get_current_task(sc->m21dev);
 
-		BUG_ON(ctx->context_type != SC_CTX_M2M1SHOT_TYPE);
+		if (WARN_ON_ONCE(ctx->context_type != SC_CTX_M2M1SHOT_TYPE)) {
+			spin_unlock(&sc->slock);
+			return IRQ_HANDLED;
+		}
 
 		if (__measure_hw_latency)
 			task->task.reserved[1] =
@@ -2808,20 +2850,14 @@ isr_unlock:
 static int sc_get_bufaddr(struct sc_dev *sc, struct vb2_buffer *vb2buf,
 		struct sc_frame *frame)
 {
-	int ret;
 	unsigned int pixsize, bytesize;
-	void *cookie;
 
 	pixsize = frame->width * frame->height;
 	bytesize = (pixsize * frame->sc_fmt->bitperpixel[0]) >> 3;
 
-	cookie = vb2_plane_cookie(vb2buf, 0);
-	if (!cookie)
-		return -EINVAL;
-
-	ret = sc_get_dma_address(cookie, &frame->addr.y);
-	if (ret != 0)
-		return ret;
+	frame->addr.y = vb2_dma_contig_plane_dma_addr(vb2buf, 0);
+	if (!frame->addr.y)
+		return -ENODEV;
 
 	frame->addr.cb = 0;
 	frame->addr.cr = 0;
@@ -2854,13 +2890,10 @@ static int sc_get_bufaddr(struct sc_dev *sc, struct vb2_buffer *vb2buf,
 				frame->addr.cbsize = bytesize - pixsize;
 			}
 		} else if (frame->sc_fmt->num_planes == 2) {
-			cookie = vb2_plane_cookie(vb2buf, 1);
-			if (!cookie)
-				return -EINVAL;
-
-			ret = sc_get_dma_address(cookie, &frame->addr.cb);
-			if (ret != 0)
-				return ret;
+			frame->addr.cb =
+				vb2_dma_contig_plane_dma_addr(vb2buf, 1);
+			if (!frame->addr.cb)
+				return -ENODEV;
 			frame->addr.ysize =
 				pixsize * frame->sc_fmt->bitperpixel[0] >> 3;
 			frame->addr.cbsize =
@@ -2896,18 +2929,14 @@ static int sc_get_bufaddr(struct sc_dev *sc, struct vb2_buffer *vb2buf,
 				frame->addr.cr = frame->addr.cb + frame->addr.cbsize;
 			}
 		} else if (frame->sc_fmt->num_planes == 3) {
-			cookie = vb2_plane_cookie(vb2buf, 1);
-			if (!cookie)
-				return -EINVAL;
-			ret = sc_get_dma_address(cookie, &frame->addr.cb);
-			if (ret != 0)
-				return ret;
-			cookie = vb2_plane_cookie(vb2buf, 2);
-			if (!cookie)
-				return -EINVAL;
-			ret = sc_get_dma_address(cookie, &frame->addr.cr);
-			if (ret != 0)
-				return ret;
+			frame->addr.cb =
+				vb2_dma_contig_plane_dma_addr(vb2buf, 1);
+			if (!frame->addr.cb)
+				return -ENODEV;
+			frame->addr.cr =
+				vb2_dma_contig_plane_dma_addr(vb2buf, 2);
+			if (!frame->addr.cr)
+				return -ENODEV;
 			frame->addr.ysize =
 				pixsize * frame->sc_fmt->bitperpixel[0] >> 3;
 			frame->addr.cbsize =
@@ -2945,8 +2974,27 @@ static void sc_m2m_device_run(void *priv)
 	s_frame = &ctx->s_frame;
 	d_frame = &ctx->d_frame;
 
-	sc_get_bufaddr(sc, v4l2_m2m_next_src_buf(ctx->m2m_ctx), s_frame);
-	sc_get_bufaddr(sc, v4l2_m2m_next_dst_buf(ctx->m2m_ctx), d_frame);
+	/* 6.18 next_src/dst_buf return the v4l2 wrapper; the address helper
+	 * takes the vb2_buffer. A missing DMA address fails the job instead
+	 * of programming garbage. */
+	if (sc_get_bufaddr(sc,
+			   &v4l2_m2m_next_src_buf(ctx->m2m_ctx)->vb2_buf,
+			   s_frame) ||
+	    sc_get_bufaddr(sc,
+			   &v4l2_m2m_next_dst_buf(ctx->m2m_ctx)->vb2_buf,
+			   d_frame)) {
+		struct vb2_v4l2_buffer *src_vb =
+				v4l2_m2m_src_buf_remove(ctx->m2m_ctx);
+		struct vb2_v4l2_buffer *dst_vb =
+				v4l2_m2m_dst_buf_remove(ctx->m2m_ctx);
+
+		if (src_vb)
+			v4l2_m2m_buf_done(src_vb, VB2_BUF_STATE_ERROR);
+		if (dst_vb)
+			v4l2_m2m_buf_done(dst_vb, VB2_BUF_STATE_ERROR);
+		v4l2_m2m_job_finish(sc->m2m.m2m_dev, ctx->m2m_ctx);
+		return;
+	}
 
 	sc_add_context_and_run(sc, ctx);
 }
@@ -3004,6 +3052,8 @@ static int sc_register_m2m_device(struct sc_dev *sc, int dev_id)
 	vfd->lock	= &sc->lock;
 	vfd->vfl_dir	= VFL_DIR_M2M;
 	vfd->v4l2_dev	= v4l2_dev;
+	/* 6.18 requires device_caps before registration (spec L6B B-V4) */
+	vfd->device_caps = V4L2_CAP_VIDEO_M2M_MPLANE | V4L2_CAP_STREAMING;
 	scnprintf(vfd->name, sizeof(vfd->name), "%s:m2m", MODULE_NAME);
 
 	video_set_drvdata(vfd, sc);
@@ -3016,7 +3066,7 @@ static int sc_register_m2m_device(struct sc_dev *sc, int dev_id)
 		goto err_dev_alloc;
 	}
 
-	ret = video_register_device(vfd, VFL_TYPE_GRABBER,
+	ret = video_register_device(vfd, VFL_TYPE_VIDEO,
 				EXYNOS_VIDEONODE_SCALER(dev_id));
 	if (ret) {
 		dev_err(sc->dev, "failed to register video device\n");
@@ -3080,6 +3130,7 @@ err_aclk:
 	if (!IS_ERR(sc->pclk))
 		clk_unprepare(sc->pclk);
 err_pclk:
+	atomic_dec(&sc->m2m.in_use);
 	kfree(ctx);
 	return ret;
 }
@@ -3093,7 +3144,13 @@ static int sc_m2m1shot_free_context(struct m2m1shot_context *m21ctx)
 		clk_unprepare(ctx->sc_dev->aclk);
 	if (!IS_ERR(ctx->sc_dev->pclk))
 		clk_unprepare(ctx->sc_dev->pclk);
-	BUG_ON(!list_empty(&ctx->node));
+	if (WARN_ON_ONCE(!list_empty(&ctx->node))) {
+		unsigned long flags;
+
+		spin_lock_irqsave(&ctx->sc_dev->ctxlist_lock, flags);
+		list_del_init(&ctx->node);
+		spin_unlock_irqrestore(&ctx->sc_dev->ctxlist_lock, flags);
+	}
 	destroy_intermediate_frame(ctx);
 	kfree(ctx);
 	return 0;
@@ -3411,21 +3468,13 @@ static const struct m2m1shot_devops sc_m2m1shot_ops = {
 	.timeout_task = sc_m2m1shot_timeout_task,
 };
 
-static int __attribute__((unused)) sc_sysmmu_fault_handler(struct iommu_domain *domain,
-	struct device *dev, unsigned long iova, int flags, void *token)
-{
-	struct sc_dev *sc = dev_get_drvdata(dev);
-
-	if (test_bit(DEV_RUN, &sc->state)) {
-		dev_info(dev, "System MMU fault called for IOVA %#lx\n", iova);
-		sc_hwregs_dump(sc);
-	}
-
-	return 0;
-}
-
 static int sc_clk_get(struct sc_dev *sc)
 {
+	/* Stock got "gate", "gate2", "mux_user"/"mux_src" here
+	 * (S:.../scaler/scaler-core.c:3473-3517); 6.18 DT carries only the
+	 * single "gate" clock (spec L6B 4.8). The missing names stay
+	 * -ENOENT and their users skip them. All clocks are devm-managed,
+	 * so there is no clk_put path (cf. smfc_init_clock). */
 	sc->aclk = devm_clk_get(sc->dev, "gate");
 	if (IS_ERR(sc->aclk)) {
 		if (PTR_ERR(sc->aclk) != -ENOENT) {
@@ -3470,21 +3519,6 @@ static int sc_clk_get(struct sc_dev *sc)
 	return 0;
 }
 
-static void sc_clk_put(struct sc_dev *sc)
-{
-	if (!IS_ERR(sc->clk_parn))
-		clk_put(sc->clk_parn);
-
-	if (!IS_ERR(sc->clk_chld))
-		clk_put(sc->clk_chld);
-
-	if (!IS_ERR(sc->pclk))
-		clk_put(sc->pclk);
-
-	if (!IS_ERR(sc->aclk))
-		clk_put(sc->aclk);
-}
-
 #ifdef CONFIG_PM_SLEEP
 static int sc_suspend(struct device *dev)
 {
@@ -3527,27 +3561,11 @@ static int sc_runtime_resume(struct device *dev)
 		}
 	}
 
-	if (sc->qosreq_int_level > 0)
-		pm_qos_update_request(&sc->qosreq_int, sc->qosreq_int_level);
-
 	return 0;
 }
 
 static int sc_runtime_suspend(struct device *dev)
 {
-	struct sc_dev *sc = dev_get_drvdata(dev);
-	const int *ptr = sc->q_reg;
-	int i, idx;
-
-	idx = sc->dbg_idx % SC_DEBUG_MAX_NUM;
-	sc->qch_dbg[idx].time = sched_clock();
-	for (i = 0; i < G2D_QCH_NUM; i++)
-		sc->qch_dbg[idx].log[i] = ptr[i];
-
-	sc->dbg_idx++;
-
-	if (sc->qosreq_int_level > 0)
-		pm_qos_update_request(&sc->qosreq_int, 0);
 	return 0;
 }
 #endif
@@ -3598,7 +3616,7 @@ static int sc_probe(struct platform_device *pdev)
 	}
 
 	atomic_set(&sc->wdt.cnt, 0);
-	setup_timer(&sc->wdt.timer, sc_watchdog, (unsigned long)sc);
+	timer_setup(&sc->wdt.timer, sc_watchdog, 0);
 
 	ret = sc_clk_get(sc);
 	if (ret)
@@ -3609,20 +3627,49 @@ static int sc_probe(struct platform_device *pdev)
 	else
 		sc->dev_id = pdev->id;
 
-	sc->m21dev = m2m1shot_create_device(&pdev->dev, &sc_m2m1shot_ops,
+	/*
+	 * The scaler is not an IOMMU master of its own (spec L6B 4.5, 4.8):
+	 * SMFC owns sysmmu_g2dd2, so every vb2 alloc_devs[] and m2m1shot DMA
+	 * mapping uses the proxy device. Defer until SMFC is bound and hold
+	 * a runtime-PM link to it, the camera pattern of spec L6B 5.6.5.
+	 * of_find_device_by_node() takes a reference that is kept in
+	 * sc->proxy_dev and dropped in sc_remove().
+	 */
+	{
+		struct device_node *np;
+		struct device *proxy;
+
+		np = of_parse_phandle(pdev->dev.of_node,
+				      "samsung,iommu-proxy", 0);
+		if (!np) {
+			dev_err(&pdev->dev, "missing samsung,iommu-proxy\n");
+			return -EINVAL;
+		}
+		proxy = of_find_device_by_node(np);
+		of_node_put(np);
+		if (!proxy || !dev_get_drvdata(proxy)) {
+			if (proxy)
+				put_device(proxy);
+			return -EPROBE_DEFER;
+		}
+		sc->proxy_link = device_link_add(&pdev->dev, proxy,
+						 DL_FLAG_PM_RUNTIME |
+						 DL_FLAG_RPM_ACTIVE);
+		sc->proxy_dev = proxy;
+		if (!sc->proxy_link) {
+			dev_err(&pdev->dev, "failed to link to iommu proxy\n");
+			put_device(proxy);
+			return -EINVAL;
+		}
+	}
+
+	sc->m21dev = m2m1shot_create_device(sc->proxy_dev, &sc_m2m1shot_ops,
 						"scaler", sc->dev_id, -1);
 	if (IS_ERR(sc->m21dev)) {
 		dev_err(&pdev->dev, "%s: Failed to create m2m1shot_device\n",
 			__func__);
-		return PTR_ERR(sc->m21dev);
-	}
-
-	sc->alloc_ctx = vb2_ion_create_context(sc->dev, SZ_4K,
-		VB2ION_CTX_VMCONTIG | VB2ION_CTX_IOMMU | VB2ION_CTX_UNCACHED);
-
-	if (IS_ERR(sc->alloc_ctx)) {
-		ret = PTR_ERR(sc->alloc_ctx);
-		goto err_ctx;
+		ret = PTR_ERR(sc->m21dev);
+		goto err_proxy;
 	}
 
 	platform_set_drvdata(pdev, sc);
@@ -3633,41 +3680,31 @@ static int sc_probe(struct platform_device *pdev)
 	if (!sc->fence_wq) {
 		dev_err(&pdev->dev, "Failed to create workqueue for fence\n");
 		ret = -ENOMEM;
-		goto err_wq;
+		goto err_m21dev;
 	}
 
 	ret = sc_register_m2m_device(sc, sc->dev_id);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to register m2m device\n");
-		goto err_m2m;
+		goto err_wq;
 	}
 
-#if defined(CONFIG_PM_DEVFREQ)
-	if (!of_property_read_u32(pdev->dev.of_node, "mscl,int_qos_minlock",
-				(u32 *)&sc->qosreq_int_level)) {
-		if (sc->qosreq_int_level > 0) {
-			pm_qos_add_request(&sc->qosreq_int,
-						PM_QOS_DEVICE_THROUGHPUT, 0);
-			dev_info(&pdev->dev, "INT Min.Lock Freq. = %u\n",
-						sc->qosreq_int_level);
-		}
-	}
-#endif
+	/* Stock QoS votes (pm_qos + BTS, S:.../scaler/scaler-core.c:3713-3723)
+	 * are deferred as L6L did (job brief); no vote in this image. */
 	if (of_property_read_u32(pdev->dev.of_node, "mscl,cfw",
 				(u32 *)&sc->cfw))
 		sc->cfw = 0;
 
-	ret = vb2_ion_attach_iommu(sc->alloc_ctx);
-	if (ret) {
-		dev_err(&pdev->dev, "failed to vb2 ion attach iommu\n");
-		goto err_iommu;
-	}
+	/* Stock attached a vb2 ION IOMMU context and a vendor SysMMU fault
+	 * handler here (S:.../scaler/scaler-core.c:3728,3798): dropped,
+	 * exynos-iommu owns sysmmu_g2dd2 through the SMFC master, and all
+	 * buffers are vb2_dma_contig on sc->proxy_dev. */
 
 	ret = pm_runtime_get_sync(&pdev->dev);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "%s: failed to local power on (err %d)\n",
 			__func__, ret);
-		goto err_ver_rpm_get;
+		goto err_m2m;
 	}
 
 	if (!IS_ERR(sc->pclk)) {
@@ -3690,18 +3727,9 @@ static int sc_probe(struct platform_device *pdev)
 		}
 	}
 
-	sc->q_reg = ioremap(0x13a07000, 0x100);
-	if (sc->q_reg == NULL) {
-		dev_err(&pdev->dev, "failed to ioremap address region\n");
-		ret = -ENOENT;
-		goto err_qch_reg;
-	}
-
-	sc->qch_dbg = kzalloc(sizeof(struct sc_qch_dbg) * SC_DEBUG_MAX_NUM, GFP_KERNEL);
-	if (sc->qch_dbg == NULL) {
-		ret = -ENOENT;
-		goto err_qch_dbg;
-	}
+	/* Stock also ioremapped the G2D CMU QCH window at the hardcoded
+	 * 0x13a07000 for a suspend-time debug log (S:.../scaler-core.c:3761):
+	 * dropped, the address is a CMU register, not scaler IO. */
 
 	sc->version = SCALER_VERSION(2, 0, 0);
 
@@ -3734,53 +3762,40 @@ static int sc_probe(struct platform_device *pdev)
 		hwver, sc->version);
 
 	return 0;
-err_qch_dbg:
-	iounmap(sc->q_reg);
-err_qch_reg:
-	if (!IS_ERR(sc->aclk))
-		clk_disable_unprepare(sc->aclk);
 err_ver_aclk_get:
 	if (!IS_ERR(sc->pclk))
 		clk_disable_unprepare(sc->pclk);
 err_ver_pclk_get:
 	pm_runtime_put(&pdev->dev);
-err_ver_rpm_get:
-	vb2_ion_detach_iommu(sc->alloc_ctx);
-err_iommu:
-	if (sc->qosreq_int_level > 0)
-		pm_qos_remove_request(&sc->qosreq_int);
-	sc_unregister_m2m_device(sc);
 err_m2m:
-	destroy_workqueue(sc->fence_wq);
+	pm_runtime_disable(&pdev->dev);
+	sc_unregister_m2m_device(sc);
 err_wq:
-	vb2_ion_destroy_context(sc->alloc_ctx);
-err_ctx:
+	destroy_workqueue(sc->fence_wq);
+err_m21dev:
 	m2m1shot_destroy_device(sc->m21dev);
+err_proxy:
+	device_link_del(sc->proxy_link);
+	put_device(sc->proxy_dev);
 
 	return ret;
 }
 
-static int sc_remove(struct platform_device *pdev)
+static void sc_remove(struct platform_device *pdev)
 {
 	struct sc_dev *sc = platform_get_drvdata(pdev);
 
-	iounmap(sc->q_reg);
-	kfree(sc->qch_dbg);
+	sc_unregister_m2m_device(sc);
 	destroy_workqueue(sc->fence_wq);
 
-	vb2_ion_destroy_context(sc->alloc_ctx);
-
-	sc_clk_put(sc);
-
-	if (timer_pending(&sc->wdt.timer))
-		del_timer(&sc->wdt.timer);
+	timer_delete_sync(&sc->wdt.timer);
 
 	m2m1shot_destroy_device(sc->m21dev);
 
-	if (sc->qosreq_int_level > 0)
-		pm_qos_remove_request(&sc->qosreq_int);
+	device_link_del(sc->proxy_link);
+	put_device(sc->proxy_dev);
 
-	return 0;
+	pm_runtime_disable(&pdev->dev);
 }
 
 static void sc_shutdown(struct platform_device *pdev)
@@ -3791,11 +3806,15 @@ static void sc_shutdown(struct platform_device *pdev)
 
 	wait_event(sc->wait,
 			!test_bit(DEV_RUN, &sc->state));
-
-	vb2_ion_detach_iommu(sc->alloc_ctx);
 }
 
 static const struct of_device_id exynos_sc_match[] = {
+	{
+		/* NEW (was only "samsung,exynos5-scaler",
+		 * S:.../scaler/scaler-core.c:3866-3871); DT carries
+		 * "samsung,exynos8895-scaler" (spec L6B 5.9). */
+		.compatible = "samsung,exynos8895-scaler",
+	},
 	{
 		.compatible = "samsung,exynos5-scaler",
 	},
