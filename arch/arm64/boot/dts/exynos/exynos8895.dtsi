@@ -26,6 +26,7 @@
 		pinctrl5 = &pinctrl_busc;
 		pinctrl6 = &pinctrl_peric0;
 		pinctrl7 = &pinctrl_peric1;
+		scaler0 = &scaler;	/* WP-l6m, FDT:4233 (spec L6B 4.8) */
 	};
 
 	cpus {
@@ -2195,6 +2196,47 @@
 				 <&cmu_g2d CLK_GOUT_G2D_SMMU_G2DD1_PCLK_NONSECURE>;	/* id 44; :1293 */
 			clock-names = "aclk", "pclk";
 			power-domains = <&pd_g2d>;			/* QCH_CON_SMMU_G2DD1_QCH (WT:.../clk-exynos8895.c:4699) */
+			#iommu-cells = <0>;
+			status = "disabled";
+		};
+
+		/* WP-l6m: SMFC JPEG codec, MSCL scaler and their SysMMU
+		 * (spec L6B 4.8, 5.9). Disabled here, enabled in
+		 * exynos8895-greatlte-l6m.dtsi. */
+		smfc: jpeg@13b00000 {
+			compatible = "samsung,exynos8895-jpeg";		/* NEW; stock "samsung,exynos8890-jpeg" (FDT:7603) */
+			dma-coherent;					/* FDT:7604 */
+			reg = <0x13b00000 0x1000>;			/* FDT:7605 */
+			interrupts = <GIC_SPI 225 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:7606 <0x00 0xe1 0x00> */
+			clocks = <&cmu_g2d CLK_GOUT_G2D_JPEG_I_SMFC_CLK>;	/* id 20; stock "gate" GATE_JPEG 0x259 (FDT:7607-7608) */
+			clock-names = "gate";
+			iommus = <&sysmmu_g2dd2>;			/* FDT:7609 */
+			power-domains = <&pd_g2d>;			/* FDT:7610 <0x17> */
+			status = "disabled";
+		};
+
+		scaler: scaler@13b10000 {
+			compatible = "samsung,exynos8895-scaler";	/* NEW; stock "samsung,exynos5-scaler" (FDT:7628) */
+			dma-coherent;					/* FDT:7629 */
+			reg = <0x13b10000 0x1300>;			/* FDT:7630 */
+			interrupts = <GIC_SPI 226 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:7631 <0x00 0xe2 0x00> */
+			clocks = <&cmu_g2d CLK_GOUT_G2D_M2MSCALER_ACLK>;	/* id 25; stock "gate" GATE_M2MSCALER 0x25a (FDT:7632-7633) */
+			clock-names = "gate";
+			/* DEVIATION: stock iommus = <0xdc> (FDT:7634); one-master rule (4.5) */
+			samsung,iommu-proxy = <&smfc>;
+			power-domains = <&pd_g2d>;			/* FDT:7635 */
+			status = "disabled";
+		};
+
+		sysmmu_g2dd2: iommu@13b50000 {
+			compatible = "samsung,exynos-sysmmu";
+			reg = <0x13b50000 0x3000>;			/* FDT:7666 "Scaler, SMFC" */
+			interrupts = <GIC_SPI 221 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:7667 <0x00 0xdd 0x00>; 0xde secure */
+			clocks = <&cmu_g2d CLK_GOUT_G2D_SMMU_G2DD2_ACLK>,	/* id 46; stock "aclk" 0x267 GATE_SMMU_G2DD2 (FDT:7668-7669) */
+				 <&cmu_g2d CLK_GOUT_G2D_SMMU_G2DD2_PCLK_NONSECURE>;	/* id 47 */
+			clock-names = "aclk", "pclk";			/* DEVIATION as the G2DD0 node above */
+			power-domains = <&pd_g2d>;			/* DEVIATION as above; QCH_CON_SMMU_G2DD2_QCH in g2d_save
+									 * (CAL:pmucal_local_exynos8895.h:324) */
 			#iommu-cells = <0>;
 			status = "disabled";
 		};
