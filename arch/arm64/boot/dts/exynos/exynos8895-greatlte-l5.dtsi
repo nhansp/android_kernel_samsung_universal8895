@@ -134,6 +134,17 @@
 	pinctrl-0 = <&decon_f_te_on>;		/* vendor "hw_te_on" FDT:7534-7535 */
 	pinctrl-1 = <&decon_f_te_off>;		/* vendor "hw_te_off" FDT:7536 */
 	status = "okay";
+
+	/*
+	 * CAM running status for the hibernation enter check (stock "cam-stat"
+	 * child of decon_f, FDT:7555-7557, S:drivers/video/fbdev/exynos/dpu/
+	 * decon_core.c:3869-3876; PMU bit, always readable): hibernation
+	 * engages only with bits [3:0] clear. The unit address silences
+	 * unit_address_vs_reg; of_get_child_by_name() ignores it.
+	 */
+	cam-stat@16484024 {
+		reg = <0x00 0x16484024 0x04>;
+	};
 };
 
 /* DSIM0 link values of the panel's DDI node (FDT:10079-10114) */

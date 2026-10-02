@@ -32,6 +32,7 @@
 #include <drm/display/drm_dsc.h>
 #include <drm/drm_panel.h>
 #include <drm/drm_print.h>
+#include <drm/exynos8895_hiber.h>
 
 /* DEBUG: greatlte heartbeat counters (greatlte-hb-l5.c), only when built in */
 #define GL5_ON	IS_BUILTIN(CONFIG_DRM_SAMSUNG_DSIM)
@@ -2605,6 +2606,28 @@ int samsung_dsim_exit_ulps(struct samsung_dsim *dsi)
 }
 EXPORT_SYMBOL_GPL(samsung_dsim_exit_ulps);
 
+/* kCFI-exact wrappers for the DECON hibernation hooks (exynos8895_hiber.h) */
+static int samsung_dsim_ulps_enter_cb(void *data)
+{
+	return samsung_dsim_enter_ulps(data);
+}
+
+static int samsung_dsim_ulps_exit_cb(void *data)
+{
+	return samsung_dsim_exit_ulps(data);
+}
+
+/* one DSIM0 on this SoC; registered once at probe, stays valid */
+static struct exynos8895_dsim_hooks dsim8895_hiber_hooks;
+
+static void samsung_dsim_register_hiber_hooks(struct samsung_dsim *dsi)
+{
+	dsim8895_hiber_hooks.enter_ulps = samsung_dsim_ulps_enter_cb;
+	dsim8895_hiber_hooks.exit_ulps = samsung_dsim_ulps_exit_cb;
+	dsim8895_hiber_hooks.data = dsi;
+	exynos8895_decon_set_dsim_hooks(&dsim8895_hiber_hooks);
+}
+
 /*
  * One packet in flight, as the vendor driver ("Single Packet Transmission",
  * dsim_drv.c:168-187): clear PH_FIFO_EMPTY, payload words, header, wait for
@@ -3408,6 +3431,8 @@ int samsung_dsim_probe(struct platform_device *pdev)
 		greatlte_l5_set(GL5_ON, dsim_regs, dsi->reg_base);
 		greatlte_l5_set(GL5_ON, dsim_state, &dsi->state);
 		greatlte_l5_set(GL5_ON, dsim_dev, dev);
+		/* display hibernation: the DECON powers the link down between frames */
+		samsung_dsim_register_hiber_hooks(dsi);
 	}
 
 	if (dsi->driver_data->handover_hold)

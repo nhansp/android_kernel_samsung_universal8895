@@ -43,6 +43,7 @@
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_panic.h>
 #include <drm/drm_vblank.h>
+#include <drm/exynos8895_hiber.h>
 #include <drm/exynos8895_panel.h>
 
 #include <soc/samsung/bts.h>
@@ -397,6 +398,15 @@ struct decon8895_ctx {
 	bool handover;		/* S-Boot left the DECON running */
 	bool rpm_held;		/* runtime-PM reference of an enabled CRTC */
 	bool needs_init;	/* run the full init before the next start */
+	bool hiber_init;	/* hibernation workqueue and CAM status are ready */
+	bool hiber_on;		/* DECON + DSIM powered down between frames */
+	bool hiber_timeout;	/* DECON timeout IRQ since the last commit */
+	void __iomem *hiber_cam;	/* CAM running status for the enter check */
+	struct mutex hiber_lock;	/* serialises a hibernation enter and exit */
+	struct work_struct hiber_work;	/* the TE-queued enter check */
+	struct workqueue_struct *hiber_wq;
+	atomic_t hiber_trig;	/* TEs since the last frame done */
+	atomic_t hiber_block;	/* enters blocked while > 0 */
 	bool irqs_on;
 	bool vblank_on;
 	bool first_frame_done;
@@ -1289,6 +1299,224 @@ static void d8895_panel_frame_done(void)
 	spin_unlock(&d8895_panel_hooks_lock);
 }
 
+/* ---- display hibernation (DESIGN 2.5; S:.../dpu/decon_dsi.c:1037-1250) --- */
+
+#define D8895_HIBER_ON	IS_ENABLED(CONFIG_DRM_EXYNOS8895_DECON_HIBER)
+#define D8895_ENTER_HIBER_CNT	3	/* decon.h:59 DECON_ENTER_HIBER_CNT */
+
+/* the DSIM's ULPS entry points (include/drm/exynos8895_hiber.h); one DECON0 */
+static DEFINE_SPINLOCK(d8895_dsim_hooks_lock);
+static const struct exynos8895_dsim_hooks *d8895_dsim_hooks;
+
+void exynos8895_decon_set_dsim_hooks(const struct exynos8895_dsim_hooks *hooks)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&d8895_dsim_hooks_lock, flags);
+	d8895_dsim_hooks = hooks;
+	spin_unlock_irqrestore(&d8895_dsim_hooks_lock, flags);
+}
+EXPORT_SYMBOL_GPL(exynos8895_decon_set_dsim_hooks);
+
+/* the one DECON0 context, for the hibernation exports below */
+static struct decon8895_ctx *d8895_hiber_ctx;
+
+static void d8895_bts_off(struct decon8895_ctx *ctx);
+
+static void d8895_hiber_block(struct decon8895_ctx *ctx)
+{
+	atomic_inc(&ctx->hiber_block);
+}
+
+static bool d8895_hiber_blocked(struct decon8895_ctx *ctx)
+{
+	return atomic_read(&ctx->hiber_block) > 0;
+}
+
+static void d8895_hiber_unblock(struct decon8895_ctx *ctx)
+{
+	if (d8895_hiber_blocked(ctx))
+		atomic_dec(&ctx->hiber_block);
+}
+
+/* decon_hiber_trig_reset() (decon.h:1476-1480) */
+static void d8895_hiber_trig_reset(struct decon8895_ctx *ctx)
+{
+	atomic_set(&ctx->hiber_trig, 0);
+}
+
+/*
+ * decon_hiber_enter_cond() (decon.h:1514-1529): 3 counted TEs without a frame
+ * done, no blocker, the CAM PD idle (cam-stat 0x16484024, FDT:7555-7557),
+ * no timeout IRQ since the last commit, the panel not in HMD mode. The DSR
+ * (!dsr_on) term of stock is omitted: s->dsr_on is stored but unused in this
+ * tree (L6A:909); hibernation during self-refresh is safe, the exit re-inits
+ * the pipe while the panel holds its frame memory.
+ */
+static bool d8895_hiber_enter_cond(struct decon8895_ctx *ctx)
+{
+	u32 cam = ctx->hiber_cam ? readl(ctx->hiber_cam) : 0xf;
+
+	if (d8895_hiber_blocked(ctx))
+		return false;
+	if (cam & 0xf)
+		return false;
+	if (READ_ONCE(ctx->hiber_timeout))
+		return false;
+	if (atomic_inc_return(&ctx->hiber_trig) <= D8895_ENTER_HIBER_CNT)
+		return false;
+	if (d8895_panel_hmd_on())
+		return false;
+	return true;
+}
+
+/*
+ * decon_enter_hiber() (decon_dsi.c:1113-1199): stop the DECON, power the DPPs
+ * and the DISP vote down, enter DSIM ULPS and put both runtime-PM references
+ * so pd_dpu0 and pd_dpu1 can power off. The full register init is deferred to
+ * the next commit (needs_init); the exit only powers the pipe back on.
+ */
+static int d8895_hiber_enter(struct decon8895_ctx *ctx)
+{
+	const struct exynos8895_dsim_hooks *hooks;
+	unsigned long flags;
+	int ret = 0, ch;
+
+	if (!D8895_HIBER_ON || !READ_ONCE(ctx->hiber_init))
+		return 0;
+	mutex_lock(&ctx->hiber_lock);
+	if (!ctx->rpm_held || READ_ONCE(ctx->hiber_on) || d8895_hiber_blocked(ctx))
+		goto out;
+
+	spin_lock_irqsave(&d8895_dsim_hooks_lock, flags);
+	hooks = d8895_dsim_hooks;
+	spin_unlock_irqrestore(&d8895_dsim_hooks_lock, flags);
+	if (!hooks || !hooks->enter_ulps || !hooks->exit_ulps)
+		goto out;
+
+	d8895_hiber_block(ctx);
+	if (atomic_read(&ctx->oneshot_state) != 0)
+		goto unblock;	/* a frame is armed or started: try the next TE */
+
+	d8895_hiber_trig_reset(ctx);
+
+	d8895_int_disable(ctx);	/* decon_reg_set_int(..., 0) */
+	/* the frame IRQs must not run on gated clocks */
+	disable_irq(ctx->irq_fs);
+	disable_irq(ctx->irq_fd);
+	disable_irq(ctx->irq_extra);
+
+	ret = d8895_stop(ctx);
+	if (ret)
+		dev_err(ctx->dev, "hibernation enter with the DECON not stopped\n");
+	d8895_clear_int_all(ctx);
+
+	/* cur_using_dpp = 0, decon_dpp_stop(false): every channel off */
+	for (ch = 0; ch < D8895_NR_CH; ch++)
+		if (ctx->ch_on & BIT(ch))
+			d8895_dpp_deinit(ctx, ch, false);
+
+	/* dpu_bts_release_bw() once the DPPs are stopped (decon_core.c:896-901) */
+	d8895_bts_off(ctx);
+
+	WRITE_ONCE(ctx->hiber_on, true);
+	ret = hooks->enter_ulps(hooks->data);
+	if (ret)
+		dev_warn(ctx->dev, "DSIM ULPS enter failed: %d\n", ret);
+
+	ctx->needs_init = true;
+	pm_runtime_put_sync(ctx->dev);
+unblock:
+	d8895_hiber_unblock(ctx);
+out:
+	mutex_unlock(&ctx->hiber_lock);
+	return ret;
+}
+
+/*
+ * decon_exit_hiber() (decon_dsi.c:1037-1111): power the DECON back on, leave
+ * ULPS with a re-initialised link and re-enable the interrupts; the register
+ * init runs with the next commit (needs_init). Stays hibernating on a resume
+ * failure so the next commit retries.
+ */
+static int d8895_hiber_exit(struct decon8895_ctx *ctx)
+{
+	const struct exynos8895_dsim_hooks *hooks;
+	unsigned long flags;
+	int ret = 0;
+
+	if (!D8895_HIBER_ON || !READ_ONCE(ctx->hiber_init))
+		return 0;
+	d8895_hiber_block(ctx);
+	/* a queued enter runs first (decon_dsi.c:1048, flush before the lock) */
+	flush_workqueue(ctx->hiber_wq);
+	mutex_lock(&ctx->hiber_lock);
+	if (!READ_ONCE(ctx->hiber_on))
+		goto out;
+
+	ret = pm_runtime_get_sync(ctx->dev);
+	if (ret < 0) {
+		dev_err(ctx->dev, "hibernation exit without the DECON: %d\n", ret);
+		goto out;
+	}
+	ret = 0;	/* already active (1) is success too */
+
+	spin_lock_irqsave(&d8895_dsim_hooks_lock, flags);
+	hooks = d8895_dsim_hooks;
+	spin_unlock_irqrestore(&d8895_dsim_hooks_lock, flags);
+	if (hooks && hooks->exit_ulps) {
+		ret = hooks->exit_ulps(hooks->data);
+		if (ret)
+			dev_warn(ctx->dev, "DSIM ULPS exit failed: %d\n", ret);
+	}
+
+	enable_irq(ctx->irq_fs);
+	enable_irq(ctx->irq_fd);
+	enable_irq(ctx->irq_extra);
+	d8895_int_enable(ctx);
+
+	WRITE_ONCE(ctx->hiber_on, false);
+	d8895_hiber_trig_reset(ctx);
+out:
+	d8895_hiber_unblock(ctx);
+	mutex_unlock(&ctx->hiber_lock);
+	return ret;
+}
+
+static void d8895_hiber_work(struct work_struct *work)
+{
+	struct decon8895_ctx *ctx = container_of(work, struct decon8895_ctx, hiber_work);
+
+	if (!D8895_HIBER_ON || !READ_ONCE(ctx->hiber_init))
+		return;
+	if (d8895_hiber_enter_cond(ctx))
+		d8895_hiber_enter(ctx);
+}
+
+/* decon_hiber_block_exit() (decon_dsi.c:1201-1212) */
+int exynos8895_decon_hiber_block_exit(void)
+{
+	struct decon8895_ctx *ctx = READ_ONCE(d8895_hiber_ctx);
+	int ret = 0;
+
+	if (!D8895_HIBER_ON || !ctx || !READ_ONCE(ctx->hiber_init))
+		return 0;
+	d8895_hiber_block(ctx);
+	ret = d8895_hiber_exit(ctx);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(exynos8895_decon_hiber_block_exit);
+
+void exynos8895_decon_hiber_unblock(void)
+{
+	struct decon8895_ctx *ctx = READ_ONCE(d8895_hiber_ctx);
+
+	if (!D8895_HIBER_ON || !ctx || !READ_ONCE(ctx->hiber_init))
+		return;
+	d8895_hiber_unblock(ctx);
+}
+EXPORT_SYMBOL_GPL(exynos8895_decon_hiber_unblock);
+
 /* ---- BTS / DISP DVFS (S:.../dpu/bts.c, DECON0) ---------------------------- */
 
 #define D8895_BTS_DISP_FACTOR		100UL	/* bts.c:17-20 */
@@ -1608,6 +1836,12 @@ static void d8895_atomic_enable(struct exynos_drm_crtc *crtc)
 		}
 		ctx->rpm_held = true;
 	}
+	/* a failed disable may have left hibernation on: leave it first */
+	d8895_hiber_block(ctx);
+	d8895_hiber_exit(ctx);
+	d8895_hiber_unblock(ctx);
+	if (READ_ONCE(ctx->hiber_on))
+		return;	/* the begin/flush below retry the exit */
 
 	pinctrl_pm_select_default_state(ctx->dev);	/* hw_te_on */
 
@@ -1634,6 +1868,16 @@ static void d8895_atomic_disable(struct exynos_drm_crtc *crtc)
 {
 	struct decon8895_ctx *ctx = crtc->ctx;
 	int ch;
+
+	/* blanking leaves hibernation first; the pipe is reachable below */
+	d8895_hiber_block(ctx);
+	d8895_hiber_exit(ctx);
+	if (READ_ONCE(ctx->hiber_on)) {
+		dev_err(ctx->dev, "disable while hibernating: pipe left on\n");
+		d8895_hiber_unblock(ctx);
+		return;
+	}
+	d8895_hiber_unblock(ctx);
 
 	if (ctx->rpm_held)
 		d8895_int_disable(ctx);
@@ -1852,6 +2096,15 @@ static void d8895_atomic_begin(struct exynos_drm_crtc *crtc)
 
 	if (!ctx->rpm_held)	/* atomic_enable could not resume: never touch the block */
 		return;
+	/*
+	 * Every commit leaves hibernation first (decon_set_win_info(),
+	 * S:.../dpu/decon_dsi.c:761); the block is held to the end of the
+	 * flush, so a TE cannot power the pipe down under the new frame.
+	 */
+	d8895_hiber_block(ctx);
+	d8895_hiber_exit(ctx);
+	if (READ_ONCE(ctx->hiber_on))	/* the exit failed: touch nothing below */
+		return;
 	if (readl_poll_timeout(ctx->regs + D8895_SHADOW_REG_UPDATE_REQ, val, !val, 100,
 			       D8895_SHADOW_TIMEOUT_US)) {
 		dev_warn(ctx->dev, "shadow update request not cleared (0x%08x)\n", val);
@@ -1912,6 +2165,11 @@ static void d8895_atomic_flush(struct exynos_drm_crtc *crtc)
 
 	if (!ctx->rpm_held)
 		goto out_event;
+	if (READ_ONCE(ctx->hiber_on))	/* begin could not leave hibernation: no hardware */
+		goto out_unblock;
+	/* a programmed update clears the timeout (decon_core.c:2013, 2028) */
+	if (D8895_HIBER_ON)
+		WRITE_ONCE(ctx->hiber_timeout, false);
 
 	if (ctx->needs_init) {
 		d8895_hw_init(ctx, &cs->adjusted_mode, crtc->dsc);
@@ -2001,6 +2259,8 @@ static void d8895_atomic_flush(struct exynos_drm_crtc *crtc)
 	/* falling votes after the hardware update (S:dpu/bts.c:292-307) */
 	d8895_bts_update(ctx, true);
 
+out_unblock:
+	d8895_hiber_unblock(ctx);
 out_event:
 	spin_lock_irqsave(&ctx->vblank_lock, flags);
 	exynos_crtc_handle_event(crtc);
@@ -2039,6 +2299,13 @@ static void d8895_te_handler(struct exynos_drm_crtc *crtc)
 	if (ctx->vsync_cb)
 		ctx->vsync_cb(ctx->vsync_data, ts);
 	spin_unlock_irqrestore(&ctx->vsync_lock, flags);
+	/*
+	 * Hibernation: every TE queues the enter check while the CRTC is on
+	 * (decon_dsi.c:518-523); the check counts TEs without a frame done.
+	 */
+	if (D8895_HIBER_ON && ctx->rpm_held && READ_ONCE(ctx->hiber_init) &&
+	    !d8895_hiber_blocked(ctx))
+		queue_work(ctx->hiber_wq, &ctx->hiber_work);
 }
 
 static enum drm_mode_status d8895_mode_valid(struct exynos_drm_crtc *crtc,
@@ -2209,6 +2476,13 @@ static void d8895_panic_flush(struct drm_plane *plane)
 	};
 	unsigned int win;
 
+	/*
+	 * Best effort only: with the pipe hibernating the clocks are gated
+	 * and every register access below would hang the crashing CPU.
+	 */
+	if (D8895_HIBER_ON && READ_ONCE(ctx->hiber_init) && READ_ONCE(ctx->hiber_on))
+		return;
+
 	/* the panic screen out of the write-combining buffer before the fetch */
 	wmb();
 
@@ -2369,6 +2643,9 @@ static irqreturn_t d8895_irq(int irq, void *dev_id)
 		d_write(ctx, D8895_INTERRUPT_PENDING, D8895_DPU_FRAME_DONE_INT_PEND);
 		atomic_inc(&ctx->fd_cnt);
 		greatlte_l5_inc(GL5_ON, fd);
+		/* a frame went out: hibernation counts from here (decon_dsi.c:63) */
+		if (D8895_HIBER_ON && READ_ONCE(ctx->hiber_init))
+			d8895_hiber_trig_reset(ctx);
 		/*
 		 * One-shot: mask the HW trigger once the updated frame is out, as
 		 * the vendor does after each update (S:.../dpu/decon_core.c:
@@ -2413,6 +2690,9 @@ static irqreturn_t d8895_irq(int irq, void *dev_id)
 			d_write(ctx, D8895_EXTRA_INTERRUPT_PENDING, D8895_DPU_TIME_OUT_INT_PEND);
 			atomic_inc(&ctx->to_cnt);
 			greatlte_l5_inc(GL5_ON, to);
+			/* hibernation stays off until the next programmed update */
+			if (D8895_HIBER_ON && READ_ONCE(ctx->hiber_init))
+				WRITE_ONCE(ctx->hiber_timeout, true);
 			dev_err_ratelimited(ctx->dev, "timeout irq\n");
 		}
 		if (ext & D8895_DPU_ERROR_INT_PEND) {
@@ -2800,6 +3080,35 @@ static int d8895_probe(struct platform_device *pdev)
 		goto err_rpm;
 	ctx->rpm_held = true;
 
+	/*
+	 * 4b. hibernation (DESIGN 2.5; decon_register_hiber_work(),
+	 * S:.../dpu/decon_dsi.c:1231-1250): the lock, counters and work before
+	 * any IRQ that queues it; the workqueue fails the probe like stock.
+	 */
+	if (D8895_HIBER_ON) {
+		struct device_node *cam;
+
+		mutex_init(&ctx->hiber_lock);
+		INIT_WORK(&ctx->hiber_work, d8895_hiber_work);
+		atomic_set(&ctx->hiber_trig, 0);
+		atomic_set(&ctx->hiber_block, 0);
+		ctx->hiber_wq = alloc_ordered_workqueue("decon_hiber", 0);
+		if (!ctx->hiber_wq) {
+			ret = -ENOMEM;
+			goto err_put;
+		}
+		/* CAM running status for the enter check (decon_core.c:3869-3876) */
+		cam = of_get_child_by_name(dev->of_node, "cam-stat");
+		if (!cam) {
+			dev_info(dev, "no cam-stat node: hibernation stays off\n");
+		} else {
+			ctx->hiber_cam = of_iomap(cam, 0);
+			of_node_put(cam);
+			if (!ctx->hiber_cam)
+				dev_info(dev, "no cam-stat mapping: hibernation stays off\n");
+		}
+	}
+
 	/* 5. IRQs, requested disabled */
 	ret = d8895_get_irq(ctx, "frame_start", d8895_irq, false);
 	if (ret < 0)
@@ -2843,6 +3152,11 @@ static int d8895_probe(struct platform_device *pdev)
 	greatlte_l5_set(GL5_ON, ho, ctx->handover);
 	greatlte_l5_set(GL5_ON, decon_dev, dev);
 
+	if (D8895_HIBER_ON && ctx->hiber_wq && ctx->hiber_cam) {
+		WRITE_ONCE(ctx->hiber_init, true);
+		WRITE_ONCE(d8895_hiber_ctx, ctx);
+	}
+
 	return 0;
 
 err_put:
@@ -2850,6 +3164,8 @@ err_put:
 	pm_runtime_put_sync(dev);
 err_rpm:
 	pm_runtime_disable(dev);
+	if (D8895_HIBER_ON && ctx->hiber_wq)
+		destroy_workqueue(ctx->hiber_wq);
 	return ret;
 }
 
@@ -2857,6 +3173,13 @@ static void d8895_remove(struct platform_device *pdev)
 {
 	struct decon8895_ctx *ctx = platform_get_drvdata(pdev);
 
+	if (D8895_HIBER_ON && READ_ONCE(ctx->hiber_init)) {
+		WRITE_ONCE(ctx->hiber_init, false);
+		WRITE_ONCE(d8895_hiber_ctx, NULL);
+		cancel_work_sync(&ctx->hiber_work);
+		destroy_workqueue(ctx->hiber_wq);
+		iounmap(ctx->hiber_cam);
+	}
 	greatlte_l5_set(GL5_ON, decon_dev, NULL);
 	greatlte_l5_set(GL5_ON, decon_regs, NULL);
 	greatlte_l5_set(GL5_ON, decon_dma, NULL);

@@ -56,6 +56,16 @@ config DRM_EXYNOS8895_DECON
 	  DPP/IDMA channels for DRM, as one CRTC with DSC for a MIPI DSI
 	  command-mode panel.
 
+config DRM_EXYNOS8895_DECON_HIBER
+	bool "Hibernate DECON0 and DSIM0 between frames on Exynos8895"
+	depends on DRM_EXYNOS8895_DECON
+	help
+	  Power the DECON and the DSIM down between frames on a static
+	  screen and power them back on for the next frame, as the vendor
+	  DECON hibernation does (stock CONFIG_DECON_HIBER). Needs the
+	  one-shot trigger of the S3CFB front-end; without it the pipe
+	  never idles and hibernation never engages.
+
 config DRM_EXYNOS8895_S3CFB
 	bool "S3CFB fbdev front-end of the stock composer on the Exynos8895 DECON0"
 	depends on DRM_EXYNOS8895_DECON && FB && FB_DEVICE
