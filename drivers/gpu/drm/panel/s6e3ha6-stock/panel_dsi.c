@@ -13,6 +13,7 @@
 #include <linux/minmax.h>
 #include <linux/string.h>
 #include <drm/drm_mipi_dsi.h>
+#include <drm/exynos8895_hiber.h>
 #include <video/mipi_display.h>
 
 #include "panel_dpu.h"
@@ -293,11 +294,23 @@ static int mipi_write_cmd(u32 id, u8 cmd_id, const u8 *cmd, int size)
 		pr_err("ERR:DSIM:%s:dsim is NULL\n", __func__);
 		return -ENODEV;
 	}
+
+	/*
+	 * Every command leaves hibernation first, as dsim_write_data() takes
+	 * the DECON hibernation block around the packet (dsim_drv.c:199,
+	 * decon_hiber_block_exit): the link is up for the transfer below.
+	 */
+	ret = exynos8895_decon_hiber_block_exit();
+	if (ret) {
+		pr_err("ERR:DSIM:%s:hibernation exit failed: %d\n", __func__, ret);
+		return ret;
+	}
 	dsi = panel->dsi;
 
 	if (!panel->link_on) {
 		pr_warn("DSIM:WARN:%s:dsim is not on\n", __func__);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto err_write_cmd;
 	}
 
 	switch (cmd_id) {
@@ -338,6 +351,7 @@ static int mipi_write_cmd(u32 id, u8 cmd_id, const u8 *cmd, int size)
 	ret = size;
 
 err_write_cmd:
+	exynos8895_decon_hiber_unblock();
 	return ret;
 }
 
@@ -373,6 +387,13 @@ static int mipi_read_cmd(u32 id, u8 addr, u8 *buf, int size)
 		return -ENODEV;
 	}
 
+	/* as the write path above (dsim_read_data(), dsim_drv.c:276) */
+	ret = exynos8895_decon_hiber_block_exit();
+	if (ret) {
+		pr_err("ERR:%s:hibernation exit failed: %d\n", __func__, ret);
+		return ret;
+	}
+
 read_command:
 	/* the vendor dsim_read_data() refuses a DSIM that is not on (:293-297) */
 	if (!panel->link_on) {
@@ -389,6 +410,7 @@ read_command:
 			goto read_command;
 		}
 	}
+	exynos8895_decon_hiber_unblock();
 	return ret;
 }
 
