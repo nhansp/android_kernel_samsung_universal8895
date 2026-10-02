@@ -3,3 +3,20 @@
  * Samsung Galaxy Note 8 (greatlte, SM-N950N) board DT, part "l6m":
  * Exynos 8895 JPEG codec (SMFC), M2M scaler (MSCL) and their SysMMU (spec L6B 4.8, 5.9).
  */
+
+/* The scaler0 alias (REQUIRED, FDT:4233) lives in exynos8895.dtsi:
+ * dev_id = of_alias_get_id(np, "scaler")
+ * (S:drivers/media/platform/exynos/scaler/scaler-core.c:3607-3608)
+ * -> /dev/video50 and m2m1shot_scaler0. */
+
+&sysmmu_g2dd2 {
+	status = "okay";
+};
+
+&smfc {
+	status = "okay";
+};
+
+&scaler {
+	status = "okay";
+};
