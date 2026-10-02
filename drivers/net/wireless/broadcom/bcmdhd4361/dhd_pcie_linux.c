@@ -732,7 +732,11 @@ static int dhdpcie_suspend_dev(struct pci_dev *dev)
 		DHD_ERROR(("%s: pci_set_power_state error %d\n",
 			__FUNCTION__, ret));
 	}
-	dev->state_saved = FALSE;
+	/* L6FIX: stock cleared dev->state_saved here (S:dhd_pcie_linux.c:735); on 6.18
+	 * pci_pm_suspend WARNs "State of device not saved" when the driver's suspend
+	 * changes the power state with the flag clear (A:drivers/pci/pci-driver.c:831-835).
+	 * The state above IS saved (pci_save_state + pch->state), so keep the flag set.
+	 */
 	return ret;
 }
 
