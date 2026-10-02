@@ -527,6 +527,10 @@ void sc_hwset_src_addr(struct sc_dev *sc, struct sc_addr *addr);
 void sc_hwset_dst_addr(struct sc_dev *sc, struct sc_addr *addr);
 void sc_hwset_hcoef(struct sc_dev *sc, unsigned int coef);
 void sc_hwset_vcoef(struct sc_dev *sc, unsigned int coef);
+/* Defined in scaler-regs.c but currently unused (as in stock
+ * S:drivers/media/platform/exynos/scaler/scaler-regs.c:905); declared
+ * here so -Wmissing-prototypes stays clean. */
+void sc_hwset_intsrc_imgsize(struct sc_dev *sc, int num_comp, __u32 width);
 
 void sc_hwregs_dump(struct sc_dev *sc);
 

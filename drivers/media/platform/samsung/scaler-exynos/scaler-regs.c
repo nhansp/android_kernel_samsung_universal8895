@@ -627,7 +627,7 @@ void sc_hwset_pre_multi_format(struct sc_dev *sc, bool src, bool dst)
 	}
 }
 
-void get_blend_value(unsigned int *cfg, u32 val, bool pre_multi)
+static void get_blend_value(unsigned int *cfg, u32 val, bool pre_multi)
 {
 	unsigned int tmp;
 

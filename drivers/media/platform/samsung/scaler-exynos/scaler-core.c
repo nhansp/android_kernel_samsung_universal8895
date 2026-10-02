@@ -17,6 +17,7 @@
 #include <linux/version.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/interrupt.h>
 #include <linux/clk.h>
 #include <linux/slab.h>
@@ -2207,7 +2208,7 @@ err_aclk_prepare:
 	if (!IS_ERR(sc->pclk))
 		clk_unprepare(sc->pclk);
 err_pclk_prepare:
-	v4l2_fh_del(&ctx->fh);
+	v4l2_fh_del(&ctx->fh, file);
 err_fh:
 	v4l2_ctrl_handler_free(&ctx->ctrl_handler);
 	v4l2_fh_exit(&ctx->fh);
@@ -2235,7 +2236,7 @@ static int sc_release(struct file *file)
 	if (!IS_ERR(sc->pclk))
 		clk_unprepare(sc->pclk);
 	v4l2_ctrl_handler_free(&ctx->ctrl_handler);
-	v4l2_fh_del(&ctx->fh);
+	v4l2_fh_del(&ctx->fh, file);
 	v4l2_fh_exit(&ctx->fh);
 	kfree(ctx);
 
@@ -2491,46 +2492,17 @@ static void sc_set_dithering(struct sc_ctx *ctx)
 /*
  * 'Prefetch' is not required by Scaler
  * because fetch larger region is more beneficial for rotation
+ *
+ * Stock fills a local sysmmu_prefbuf array here and never programs it
+ * (S:drivers/media/platform/exynos/scaler/scaler-core.c:2458-2490); the
+ * vendor iovmm prefetch API (S:include/linux/exynos_iovmm.h:54-99) has no
+ * 6.18 counterpart (spec L6B 5.9: vendor iovmm is a dropped break family),
+ * so this stays a no-op. The call site is kept to match stock flow.
  */
-#define SC_SRC_PBCONFIG	(SYSMMU_PBUFCFG_TLB_UPDATE |		\
-			SYSMMU_PBUFCFG_ASCENDING | SYSMMU_PBUFCFG_READ)
-#define SC_DST_PBCONFIG	(SYSMMU_PBUFCFG_TLB_UPDATE |		\
-			SYSMMU_PBUFCFG_ASCENDING | SYSMMU_PBUFCFG_WRITE)
-
 static void sc_set_prefetch_buffers(struct device *dev, struct sc_ctx *ctx)
 {
-	struct sc_frame *s_frame = &ctx->s_frame;
-	struct sc_frame *d_frame = &ctx->d_frame;
-	struct sysmmu_prefbuf pb_reg[6];
-	unsigned int i = 0;
-
-	pb_reg[i].base = s_frame->addr.y;
-	pb_reg[i].size = s_frame->addr.ysize;
-	pb_reg[i++].config = SC_SRC_PBCONFIG;
-	if (s_frame->sc_fmt->num_comp >= 2) {
-		pb_reg[i].base = s_frame->addr.cb;
-		pb_reg[i].size = s_frame->addr.cbsize;
-		pb_reg[i++].config = SC_SRC_PBCONFIG;
-	}
-	if (s_frame->sc_fmt->num_comp >= 3) {
-		pb_reg[i].base = s_frame->addr.cr;
-		pb_reg[i].size = s_frame->addr.crsize;
-		pb_reg[i++].config = SC_SRC_PBCONFIG;
-	}
-
-	pb_reg[i].base = d_frame->addr.y;
-	pb_reg[i].size = d_frame->addr.ysize;
-	pb_reg[i++].config = SC_DST_PBCONFIG;
-	if (d_frame->sc_fmt->num_comp >= 2) {
-		pb_reg[i].base = d_frame->addr.cb;
-		pb_reg[i].size = d_frame->addr.cbsize;
-		pb_reg[i++].config = SC_DST_PBCONFIG;
-	}
-	if (d_frame->sc_fmt->num_comp >= 3) {
-		pb_reg[i].base = d_frame->addr.cr;
-		pb_reg[i].size = d_frame->addr.crsize;
-		pb_reg[i++].config = SC_DST_PBCONFIG;
-	}
+	(void)dev;
+	(void)ctx;
 }
 
 static void sc_set_initial_phase(struct sc_ctx *ctx)
@@ -2804,7 +2776,7 @@ static irqreturn_t sc_irq_handler(int irq, void *priv)
 					container_of(mb, typeof(*svb), mb);
 
 			/* 6.18 vb2 timestamps are u64 ns (was timeval) */
-			dst_vb->timestamp =
+			dst_vb->vb2_buf.timestamp =
 				ktime_to_ns(ktime_sub(ktime_get(), svb->ktime));
 		}
 
@@ -3450,7 +3422,11 @@ static void sc_m2m1shot_timeout_task(struct m2m1shot_context *m21ctx,
 	unsigned long flags;
 
 	sc_hwregs_dump(sc);
-	exynos_sysmmu_show_status(sc->dev);
+	/* Stock also dumps the SysMMU state here
+	 * (S:drivers/media/platform/exynos/scaler/scaler-core.c:3387), but
+	 * exynos_sysmmu_show_status() is a vendor iovmm debug helper with no
+	 * 6.18 counterpart (spec L6B 5.9: vendor iovmm is a dropped break
+	 * family); the register dump above stays. */
 
 	sc_hwset_soft_reset(sc);
 
@@ -3646,6 +3622,7 @@ static int sc_probe(struct platform_device *pdev)
 	 */
 	{
 		struct device_node *np;
+		struct platform_device *ppdev;
 		struct device *proxy;
 
 		np = of_parse_phandle(pdev->dev.of_node,
@@ -3654,13 +3631,17 @@ static int sc_probe(struct platform_device *pdev)
 			dev_err(&pdev->dev, "missing samsung,iommu-proxy\n");
 			return -EINVAL;
 		}
-		proxy = of_find_device_by_node(np);
+		/* 6.18 of_find_device_by_node() returns the platform device
+		 * (A:include/linux/of_platform.h:60); keep the struct device
+		 * ref in sc->proxy_dev as stock flow intends. */
+		ppdev = of_find_device_by_node(np);
 		of_node_put(np);
-		if (!proxy || !dev_get_drvdata(proxy)) {
-			if (proxy)
-				put_device(proxy);
+		if (!ppdev || !dev_get_drvdata(&ppdev->dev)) {
+			if (ppdev)
+				put_device(&ppdev->dev);
 			return -EPROBE_DEFER;
 		}
+		proxy = &ppdev->dev;
 		sc->proxy_link = device_link_add(&pdev->dev, proxy,
 						 DL_FLAG_PM_RUNTIME |
 						 DL_FLAG_RPM_ACTIVE);
@@ -3764,7 +3745,11 @@ static int sc_probe(struct platform_device *pdev)
 		clk_disable_unprepare(sc->pclk);
 	pm_runtime_put(&pdev->dev);
 
-	iovmm_set_fault_handler(&pdev->dev, sc_sysmmu_fault_handler, sc);
+	/* Stock registers a vendor iovmm SysMMU fault handler here
+	 * (S:drivers/media/platform/exynos/scaler/scaler-core.c:3730); the
+	 * iovmm API has no 6.18 counterpart and fault reporting belongs to
+	 * exynos-iommu (spec L6B 5.9: vendor iovmm is a dropped break
+	 * family), so the call is dropped. */
 
 	dev_info(&pdev->dev,
 		"Driver probed successfully(version: %08x(%x))\n",

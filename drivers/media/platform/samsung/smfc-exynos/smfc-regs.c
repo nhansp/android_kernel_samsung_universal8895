@@ -448,7 +448,7 @@ int smfc_hwconfigure_image(struct smfc_ctx *ctx,
 	if (ret)
 		return ret;
 	if (!(ctx->flags & SMFC_CTX_COMPRESS)) {
-		u32 streamsize = vb2_plane_size(vb2buf_jpg, 0);
+		u32 streamsize = vb2_plane_size(&vb2buf_jpg->vb2_buf, 0);
 
 		streamsize -= ctx->offset_of_sos;
 		streamsize += stream_address & SMFC_ADDR_ALIGN_MASK(burstlen);
