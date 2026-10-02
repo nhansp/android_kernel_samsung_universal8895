@@ -26,6 +26,9 @@
 #include <linux/slab.h>
 #include <linux/soc/samsung/greatlte-l5.h>
 
+#include <soc/samsung/bts.h>
+#include <soc/samsung/exynos8895-bus-qos.h>
+
 #include <drm/display/drm_dsc.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
@@ -65,6 +68,13 @@
 #define D8895_RUN_TIMEOUT_US	(20 * 1000)	/* decon_reg.c:2105,2199 */
 #define D8895_ACLK_KHZ_DEFAULT	630000		/* decon_core.c:1640 */
 #define D8895_INIT_RCV_NUM	630000		/* S:.../dpu/dpp.h:45 */
+
+/* bus-vote arithmetic (S:drivers/video/fbdev/exynos/dpu/bts.c, REQ-2B-L5-1) */
+#define D8895_BTS_BUS_UTIL	75	/* S:dpu/bts.c:91 BUS_UTIL */
+#define D8895_BTS_LCD_REFRESH	63	/* S:dpu/bts.c:19 LCD_REFRESH_RATE */
+#define D8895_BTS_PPC		2	/* S:dpu/bts.c:34-38 PPC, dsc_cnt == 2 */
+#define D8895_BTS_MULT		(1UL << 10)	/* S:dpu/bts.c:20 MULTI_FACTOR */
+#define D8895_BTS_DFACTOR	100UL	/* S:dpu/bts.c:17 DISP_FACTOR */
 
 /* S:.../dpu/decon.h:208-225 (8895 enum decon_win_func), :248-268 */
 #define D8895_PD_FUNC_COPY		0x1
@@ -403,6 +413,26 @@ struct decon8895_ctx {
 	spinlock_t cw_lock;
 	u8 cw_on;
 	struct exynos8895_color_win cw[D8895_NR_WIN];
+
+	/*
+	 * Bus votes (spec L2b REQ-2B-L5-1, S:drivers/video/fbdev/exynos/dpu/
+	 * bts.c): the DISP floor of every frame plus the MIF/INT floors the
+	 * BTS core derives from the frame bandwidth. DECON0 only
+	 * (BTS_BW_DECON0); channel N is BTS_DPP N (S:.../dpu/decon.h:310
+	 * IDMA_G0 = 0, same order as d8895_ch[]). The other DECONs do not
+	 * exist in this tree, so the cross-DECON sums of stock
+	 * (dpu_bts_sum_all_decon_bw(), dpu_bts_share_bw_info()) are no-ops.
+	 */
+	struct exynos_bus_qos_request disp_req;
+	bool disp_qos_added;
+	u32 bts_xres, bts_yres;		/* panel size of the last hw_init */
+	u32 bts_resol_clk;		/* kHz (S:dpu/bts.c:410-421) */
+	u32 bts_total_bw;		/* KB/s of the last computed frame */
+	u32 bts_peak;
+	u32 bts_max_disp_freq;		/* kHz */
+	u32 bts_prev_total_bw;
+	u32 bts_prev_max_disp_freq;
+	u32 bts_bw[BTS_DPP_MAX];	/* per-DPP KB/s */
 
 	/* counters (heartbeat / debugfs) */
 	atomic_t fd_cnt, fs_cnt, to_cnt, rc_cnt, er_cnt, ude_cnt, dpe_cnt, te_cnt;
@@ -901,6 +931,15 @@ static void d8895_hw_init(struct decon8895_ctx *ctx, const struct drm_display_mo
 	struct d8895_dsc d;
 	int i;
 
+	/*
+	 * Resolution clock for the bus votes (S:dpu/bts.c:410-421
+	 * dpu_bts_init(), non-DP branch: xres * yres * 63 * 11 / 10 / 1000 + 1).
+	 */
+	ctx->bts_xres = xres;
+	ctx->bts_yres = yres;
+	ctx->bts_resol_clk = (u32)((u64)xres * (u64)yres * D8895_BTS_LCD_REFRESH *
+				   11 / 10 / 1000 + 1);
+
 	/* TE from GPIO for TE0..2 (:678-688) */
 	regmap_write(ctx->sysreg, D8895_SS(D8895_DISP_DPU_TE_SEL),
 		     D8895_SEL_TE_PATH(0, D8895_TE_FROM_GPIO) |
@@ -1144,6 +1183,9 @@ static int d8895_atomic_check(struct exynos_drm_crtc *crtc, struct drm_crtc_stat
 	return d8895_assign_windows(ctx, state);
 }
 
+/* bus votes released at disable; defined with the other vote helpers below */
+static void d8895_bts_release(struct decon8895_ctx *ctx);
+
 static void d8895_atomic_enable(struct exynos_drm_crtc *crtc)
 {
 	struct decon8895_ctx *ctx = crtc->ctx;
@@ -1198,11 +1240,192 @@ static void d8895_atomic_disable(struct exynos_drm_crtc *crtc)
 		if (ctx->ch_on & BIT(ch))
 			d8895_dpp_deinit(ctx, ch, false);
 
+	d8895_bts_release(ctx);	/* S:dpu/bts.c:368-379: votes to 0, BTS to 0 */
+
 	pinctrl_pm_select_sleep_state(ctx->dev);	/* hw_te_off */
 	if (ctx->rpm_held) {
 		ctx->rpm_held = false;
 		pm_runtime_put_sync(ctx->dev);
 	}
+}
+
+/*
+ * Bus votes, per frame (spec L2b REQ-2B-L5-1; S:drivers/video/fbdev/exynos/dpu/
+ * bts.c:93-154 dpu_bts_find_max_disp_freq(), :22-45 dpu_bts_calc_aclk_disp(),
+ * :224-273 dpu_bts_calc_bw(), :275-310 dpu_bts_update_bw()). The DISP floor is
+ * the bandwidth term over the DPU ports, raised to the widest scaled window's
+ * aclk need; MIF/INT go through the BTS core (spec L2b C-1). Rising votes run
+ * before the hardware update, falling ones after it; both may sleep (bus class
+ * mutex, BTS media_mutex), so they run in the commit path outside any spinlock
+ * (spec L2b 5.1 rule 5). Stated deviations: DECON2-only paths dropped
+ * (dpu_bts_update_qos_{mif,int,disp,scen}, disp_freq_minlock, the DP fps: L6G
+ * REQ-2B-L6G-1 owns them); ppc is 2, the dual-DSC panel (FDT:10095,10113
+ * dsc_cnt = <0x02>; this driver only accepts 2-slice DSC, d8895_atomic_check);
+ * refresh is LCD_REFRESH_RATE; resol_clk has no comp_ratio
+ * or ppc divisor, verbatim (S:dpu/bts.c:410-421).
+ */
+static u32 d8895_bpp_of(u32 fourcc)
+{
+	switch (fourcc) {
+	case DRM_FORMAT_ARGB8888:
+	case DRM_FORMAT_ABGR8888:
+	case DRM_FORMAT_RGBA8888:
+	case DRM_FORMAT_BGRA8888:
+	case DRM_FORMAT_XRGB8888:
+	case DRM_FORMAT_XBGR8888:
+	case DRM_FORMAT_RGBX8888:
+	case DRM_FORMAT_BGRX8888:
+		return 32;
+	case DRM_FORMAT_RGB565:
+		return 16;
+	case DRM_FORMAT_NV12:
+	case DRM_FORMAT_NV21:
+		return 12;
+	default:
+		return 0;
+	}
+}
+
+/* aclk need of one scaled window (S:dpu/bts.c:22-45 dpu_bts_calc_aclk_disp) */
+static u64 d8895_bts_aclk(u32 src_w, u32 src_h, u32 dst_w, u32 dst_h,
+			  u64 resol_clk, u32 xres)
+{
+	u64 s_ratio_h, s_ratio_v, aclk;
+
+	s_ratio_h = (src_w <= dst_w) ?
+		D8895_BTS_MULT : D8895_BTS_MULT * (u64)src_w / (u64)dst_w;
+	s_ratio_v = (src_h <= dst_h) ?
+		D8895_BTS_MULT : D8895_BTS_MULT * (u64)src_h / (u64)dst_h;
+
+	aclk = resol_clk * s_ratio_h * s_ratio_v * D8895_BTS_DFACTOR / 100UL
+		/ D8895_BTS_PPC * (D8895_BTS_MULT * (u64)dst_w / (u64)xres)
+		/ (D8895_BTS_MULT * D8895_BTS_MULT * D8895_BTS_MULT);
+
+	return aclk;
+}
+
+/*
+ * Per-frame bandwidth and DISP floor (S:dpu/bts.c:224-273 dpu_bts_calc_bw(),
+ * :93-154 dpu_bts_find_max_disp_freq()). Only windows a plane scans out count,
+ * same condition as the programming loop of d8895_atomic_flush().
+ */
+static void d8895_bts_calc(struct decon8895_ctx *ctx, struct drm_crtc_state *cs)
+{
+	struct bts_decon_info info;
+	struct drm_plane *plane;
+	u32 disp_ch_bw[BTS_DPU_MAX], max_ch, op_freq = 0, freq;
+	u64 resol = ctx->bts_resol_clk;
+	int i;
+
+	memset(&info, 0, sizeof(info));
+	drm_for_each_plane_mask(plane, ctx->drm, cs->plane_mask) {
+		struct drm_plane_state *st = plane->state;
+		struct bts_dpp_info *dpp;
+		unsigned int ch;
+		int win;
+
+		if (!st->visible || !st->fb)
+			continue;
+		win = to_d8895_pstate(st)->hw_win;
+		if (win < 0)
+			continue;
+		ch = to_d8895_plane(plane)->ch;
+		if (ch >= BTS_DPP_MAX)
+			continue;
+		dpp = &info.dpp[ch];
+		dpp->used = true;
+		dpp->bpp = d8895_bpp_of(st->fb->format->format);
+		dpp->src_w = drm_rect_width(&st->src) >> 16;
+		dpp->src_h = drm_rect_height(&st->src) >> 16;
+		dpp->dst.x1 = st->dst.x1;
+		dpp->dst.x2 = st->dst.x2;
+		dpp->dst.y1 = st->dst.y1;
+		dpp->dst.y2 = st->dst.y2;
+	}
+
+	info.vclk = ctx->bts_resol_clk;
+	info.lcd_w = ctx->bts_xres;
+	info.lcd_h = ctx->bts_yres;
+	ctx->bts_total_bw = bts_calc_bw(BTS_BW_DECON0, &info);
+	for (i = 0; i < BTS_DPP_MAX; i++)
+		ctx->bts_bw[i] = info.dpp[i].bw;
+
+	/* S:dpu/bts.c:106-108: the DPU ports each DPP pair drains through */
+	disp_ch_bw[BTS_DPU0] = ctx->bts_bw[BTS_DPP4] + ctx->bts_bw[BTS_DPP5];
+	disp_ch_bw[BTS_DPU1] = ctx->bts_bw[BTS_DPP0] + ctx->bts_bw[BTS_DPP2];
+	disp_ch_bw[BTS_DPU2] = ctx->bts_bw[BTS_DPP1] + ctx->bts_bw[BTS_DPP3];
+
+	max_ch = disp_ch_bw[0];
+	for (i = 1; i < BTS_DPU_MAX; i++)
+		if (max_ch < disp_ch_bw[i])
+			max_ch = disp_ch_bw[i];
+	ctx->bts_peak = max_ch;
+	ctx->bts_max_disp_freq = max_ch * 100 / (16 * D8895_BTS_BUS_UTIL) + 1;
+
+	drm_for_each_plane_mask(plane, ctx->drm, cs->plane_mask) {
+		struct drm_plane_state *st = plane->state;
+		u32 sw, sh, dw, dh;
+		int win;
+
+		if (!st->visible || !st->fb)
+			continue;
+		win = to_d8895_pstate(st)->hw_win;
+		if (win < 0)
+			continue;
+		sw = drm_rect_width(&st->src) >> 16;
+		sh = drm_rect_height(&st->src) >> 16;
+		dw = drm_rect_width(&st->dst);
+		dh = drm_rect_height(&st->dst);
+		if (!dw || !dh || !ctx->bts_xres)
+			continue;
+		freq = (u32)d8895_bts_aclk(sw, sh, dw, dh, resol, ctx->bts_xres);
+		if (op_freq < freq)
+			op_freq = freq;
+	}
+
+	if (ctx->bts_max_disp_freq < op_freq)
+		ctx->bts_max_disp_freq = op_freq;
+}
+
+/* rising/falling votes around the hardware update (S:dpu/bts.c:275-310) */
+static void d8895_bts_update(struct decon8895_ctx *ctx, bool after)
+{
+	struct bts_bw bw = {
+		.peak = ctx->bts_peak,
+		.read = ctx->bts_total_bw,
+	};
+
+	if (bw.read == 0)
+		bw.peak = 0;
+
+	if (after) {
+		if (ctx->bts_total_bw <= ctx->bts_prev_total_bw)
+			bts_update_bw(BTS_BW_DECON0, bw);
+		if (ctx->bts_max_disp_freq <= ctx->bts_prev_max_disp_freq)
+			exynos_bus_qos_update_request(&ctx->disp_req,
+						      ctx->bts_max_disp_freq);
+		ctx->bts_prev_total_bw = ctx->bts_total_bw;
+		ctx->bts_prev_max_disp_freq = ctx->bts_max_disp_freq;
+	} else {
+		if (ctx->bts_total_bw > ctx->bts_prev_total_bw)
+			bts_update_bw(BTS_BW_DECON0, bw);
+		if (ctx->bts_max_disp_freq > ctx->bts_prev_max_disp_freq)
+			exynos_bus_qos_update_request(&ctx->disp_req,
+						      ctx->bts_max_disp_freq);
+	}
+}
+
+/* votes released when the DECON stops (S:dpu/bts.c:368-379 dpu_bts_release_bw) */
+static void d8895_bts_release(struct decon8895_ctx *ctx)
+{
+	struct bts_bw bw = { 0, };
+
+	if (!ctx->disp_qos_added)
+		return;
+	bts_update_bw(BTS_BW_DECON0, bw);
+	ctx->bts_prev_total_bw = 0;
+	exynos_bus_qos_update_request(&ctx->disp_req, 0);
+	ctx->bts_prev_max_disp_freq = 0;
 }
 
 /* wait for the shadow update, then mask the trigger (decon_core.c:1663-1672) */
@@ -1332,16 +1555,26 @@ static void d8895_atomic_flush(struct exynos_drm_crtc *crtc)
 			d8895_dpp_deinit(ctx, ch, false);
 	ctx->ch_used = used_ch;
 
-	/* aclk_khz * (1000 / 60) * 2 ms (decon_core.c:1638-1652,1724-1731) */
+ 	/* aclk_khz * (1000 / 60) * 2 ms (decon_core.c:1638-1652,1724-1731) */
 	aclk_khz = clk_get_rate(ctx->clks[0].clk) / 1000;
 	if (!aclk_khz)
 		aclk_khz = D8895_ACLK_KHZ_DEFAULT;
 	d_write(ctx, D8895_TIME_OUT_VALUE, aclk_khz * ((1000 / 60) * 2));
 
+	/*
+	 * Rising bus votes before the hardware takes the new frame
+	 * (S:dpu/bts.c:290-306, is_after = 0).
+	 */
+	d8895_bts_calc(ctx, cs);
+	d8895_bts_update(ctx, false);
+
 	/* decon_reg_all_win_shadow_update_req() (decon_reg.c:825-838) */
 	d_mask(ctx, D8895_SHADOW_REG_UPDATE_REQ, ~0, D8895_SHADOW_REG_UPDATE_REQ_FOR_DECON0);
 	if (!d8895_start(ctx) && READ_ONCE(ctx->oneshot))
 		atomic_set(&ctx->oneshot_state, 1);
+
+	/* falling votes after the hardware update (S:dpu/bts.c:292-307) */
+	d8895_bts_update(ctx, true);
 
 out_event:
 	spin_lock_irqsave(&ctx->vblank_lock, flags);
@@ -1781,6 +2014,14 @@ static int d8895_bind(struct device *dev, struct device *master, void *data)
 	ctx->crtc->i80_mode = true;	/* FDT:10081 mode = <0x02> (command mode) */
 
 	/*
+	 * Bus votes (S:dpu/bts.c:425-427 dpu_bts_init(): the three pm_qos
+	 * requests at 0; only the DISP one exists here, MIF/INT go through
+	 * the BTS core, and the DP-only requests are L6G's). The class lists
+	 * are static, so binding before the bus driver probed is safe.
+	 */
+	exynos_bus_qos_add_request(&ctx->disp_req, EXYNOS_BUS_QOS_DISP, 0);
+	ctx->disp_qos_added = true;
+	/*
 	 * No channel clearing on handover: the trigger is already masked and
 	 * clearing would blank S-Boot's logo in the panel's frame memory.
 	 * Hand the boot framebuffer's aperture over from simplefb, if any.
@@ -1789,7 +2030,12 @@ static int d8895_bind(struct device *dev, struct device *master, void *data)
 		aperture_remove_conflicting_devices(ctx->fb_res.start,
 						    resource_size(&ctx->fb_res), "exynos");
 
-	return exynos_drm_register_dma(drm, dev, &ctx->dma_priv);
+	ret = exynos_drm_register_dma(drm, dev, &ctx->dma_priv);
+	if (ret) {
+		exynos_bus_qos_remove_request(&ctx->disp_req);
+		ctx->disp_qos_added = false;
+	}
+	return ret;
 }
 
 static void d8895_unbind(struct device *dev, struct device *master, void *data)
@@ -1798,6 +2044,10 @@ static void d8895_unbind(struct device *dev, struct device *master, void *data)
 
 	if (ctx->rpm_held)
 		d8895_atomic_disable(ctx->crtc);
+	if (ctx->disp_qos_added) {	/* S:dpu/bts.c:429-435 dpu_bts_deinit() */
+		exynos_bus_qos_remove_request(&ctx->disp_req);
+		ctx->disp_qos_added = false;
+	}
 	exynos_drm_unregister_dma(ctx->drm, ctx->dev, &ctx->dma_priv);
 	ctx->crtc = NULL;	/* the client interface refuses an unbound DECON */
 }
