@@ -43,6 +43,9 @@
 #include <linux/workqueue.h>
 #include <linux/usb/s2mm005.h>
 #include <linux/power/idt_mfc_wpc.h>
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC)
+#include <linux/power/max77865_muic_hv.h>
+#endif
 
 /* float voltage: CNFG_04 CV = (V[0.1 mV] - 40500) / 125, read reg * 125 + 40500 (CHG:201-228) */
 #define CV_CODE_NORMAL		0x18	/* 43500: battery,chg_float_voltage 0xa9ec FDT:12281 */
@@ -106,6 +109,14 @@ static inline int max77865_mix_input_ma(int in_mv)
 #define CHG_HIGH_TEMP_DEFAULT_IN 1800	/* battery,default_input_current 0x708 */
 #define CHG_HIGH_TEMP_DEFAULT_CC 2100	/* battery,default_charging_current 0x834 */
 #define CHG_HIGH_TEMP_PWR_THR	14500	/* battery,pd_charging_charge_power 15000 - 500 mW */
+
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC)
+/* pre-AFC input step */
+#define PRE_AFC_IN		1000	/* battery,pre_afc_input_current */
+#define PRE_AFC_DELAY_MS	2000	/* battery,pre_afc_work_delay */
+#define PRE_AFC_WC_IN		500	/* battery,pre_wc_afc_input_current */
+#define PRE_AFC_WC_DELAY_MS	4000	/* battery,pre_wc_afc_work_delay */
+#endif
 
 /* full / recharge, mV and % */
 #define FULL_COND_VCELL		4250	/* full_condition_vcell 0x109a FDT:12270 */
@@ -362,6 +373,14 @@ struct max77865_charger {
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC) || IS_ENABLED(CONFIG_CHARGER_MAX77865_QC) || \
     IS_ENABLED(CONFIG_CHARGER_MAX77865_TYPEC_RP) || IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
 	bool chg_high_temp_limit;
+#endif
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC)
+	/* AFC/QC policy: the MUIC HV module's last event */
+	struct notifier_block hv_nb;
+	int hv_event;			/* enum max77865_hv_event, NONE when detached */
+	bool hv_ready_sent;		/* max77865_hv_charger_ready() called once */
+	unsigned long pre_afc_until;	/* pre-AFC input step deadline (jiffies), 0 = none */
+	u32 hv_mv_dbg;			/* last HV voltage in mV (debugfs) */
 #endif
 
 #if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
@@ -859,6 +878,11 @@ static void max77865_cable_event(struct max77865_charger *chg, bool attach)
 		chg->cv_want = max77865_cv_normal(chg);	/* swelling_normal_float_voltage */
 		max77865_set_events(chg, 0, EV_SWELLING_MODE);
 		chg->mix_limit = false;			/* :3946 */
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC)
+		/* HV state and the pre-AFC step end at detach */
+		chg->hv_event = MAX77865_HV_EV_NONE;
+		chg->pre_afc_until = 0;
+#endif
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_USB_SS)
 		chg->usb_ss = false;			/* USB back to HIGH_SPEED */
 #endif
@@ -880,6 +904,13 @@ static void max77865_policy(struct max77865_charger *chg, struct max77865_sample
 	if (chg->input == INPUT_NONE && s->input != INPUT_NONE) {
 		max77865_cable_event(chg, true);
 		chg->cable_tries = 0;
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC)
+		/* pre-AFC step armed on every attach */
+		if (s->input == INPUT_WIRED)
+			chg->pre_afc_until = jiffies + msecs_to_jiffies(PRE_AFC_DELAY_MS);
+		else if (s->input == INPUT_WCIN)
+			chg->pre_afc_until = jiffies + msecs_to_jiffies(PRE_AFC_WC_DELAY_MS);
+#endif
 	} else if (chg->input != INPUT_NONE && s->input == INPUT_NONE) {
 		max77865_cable_event(chg, false);
 	}
@@ -1238,6 +1269,21 @@ static void max77865_currents(struct max77865_charger *chg, const struct max7786
 			*in = 1500;
 			*cc = 1500;
 		}
+	}
+#endif
+
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC)
+	/*
+	 * Pre-AFC input step (stock battery,pre_afc_input_current): lowers only, so
+	 * a min() over the class value; the pass re-queues at the deadline below.
+	 */
+	if (chg->pre_afc_until && time_before(jiffies, chg->pre_afc_until)) {
+		if (s->input == INPUT_WIRED &&
+		    (s->cable == CABLE_DCP || s->cable == CABLE_AFC_PREPARE ||
+		     s->cable == CABLE_HV9))
+			*in = min(*in, PRE_AFC_IN);
+		else if (s->input == INPUT_WCIN)
+			*in = min(*in, PRE_AFC_WC_IN);
 	}
 #endif
 
@@ -1600,6 +1646,70 @@ static void max77865_wls_hv_decide(struct max77865_charger *chg, const struct ma
 }
 #endif
 
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC)
+/*
+ * (12) the AFC/QC 9 V grant: every pass after
+ * the apply step so that no early return of the policy skips a withdrawal.
+ * Request 9 V only on a DCP cable with the HV module at 5 V, CHARGING, H GOOD, no
+ * swelling event, NTC valid, not fault mode, charger NTC below chg_high_temp 490
+ * and OTG off; anything else requests 5 V first (stock did this only
+ * by SIOP). While the chg_high_temp limit holds the raise is withheld.
+ * set_voltage() itself re-checks Rp_56K, afc_disable and water.
+ */
+static void max77865_hv_decide(struct max77865_charger *chg, const struct max77865_sample *s)
+{
+	int hv = READ_ONCE(chg->hv_event);
+	bool grant;
+
+	if (s->input != INPUT_WIRED)
+		return;
+	grant = (s->cable == CABLE_DCP || s->cable == CABLE_AFC_PREPARE ||
+		 s->cable == CABLE_HV9) &&
+		(hv == MAX77865_HV_EV_5V || hv == MAX77865_HV_EV_PREPARE ||
+		 hv == MAX77865_HV_EV_9V || hv == MAX77865_HV_EV_ERR_V) &&
+		chg->status == POWER_SUPPLY_STATUS_CHARGING && chg->health == H_GOOD &&
+		chg->swelling == SWELLING_NONE && !(chg->events & EV_SWELLING_MODE) &&
+		chg->ntc_seen && s->ntc_valid && !chg->fault && !chg->otg_on &&
+		s->tc <= CHG_HIGH_TEMP && !chg->chg_high_temp_limit;
+
+	if (grant) {
+		/*
+		 * Kick only from 5V: set_voltage(9000) runs connect_start(), which
+		 * itself notifies PREPARE and re-queues the pass, so kicking on
+		 * PREPARE would reset afc_count and re-ping every pass and the
+		 * handshake could never finish. PREPARE is only entered through
+		 * the kick, so nothing is lost.
+		 */
+		if (hv == MAX77865_HV_EV_5V)
+			max77865_hv_set_voltage(9000);
+	} else {
+		if (hv == MAX77865_HV_EV_9V || hv == MAX77865_HV_EV_ERR_V)
+			max77865_hv_set_voltage(5000);
+	}
+}
+
+/*
+ * MUIC HV notifications: store the event (single int, no lock;
+ * the pass reads it) and run the pass at once. Never sleeps.
+ */
+static int max77865_hv_notify(struct notifier_block *nb, unsigned long action, void *data)
+{
+	struct max77865_charger *chg = container_of(nb, struct max77865_charger, hv_nb);
+
+	WRITE_ONCE(chg->hv_event, (int)action);
+	if (!chg->stopping)
+		mod_delayed_work(system_freezable_wq, &chg->pass_dwork, 0);
+	return NOTIFY_OK;
+}
+
+static void max77865_hv_unregister(void *data)
+{
+	struct max77865_charger *chg = data;
+
+	max77865_hv_unregister_notifier(&chg->hv_nb);
+}
+#endif
+
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
 #define PD_CHARGE_POWER		15000	/* mW, battery,pd_charging_charge_power 0x3a98 */
 #define PD_MAX_INPUT_MV		12000	/* battery,max_input_voltage 0x2ee0 */
@@ -1840,6 +1950,28 @@ static void max77865_pass_work(struct work_struct *work)
 	if (s.input == INPUT_WIRED)
 		max77865_read_pd(chg, &s);
 #endif
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC)
+	/*
+	 * (2) the MUIC HV state (stock sec_bat_set_charging_current() cable map):
+	 * 9 V (AFC or QC) and ERR_V share current_group_4,
+	 * PREPARE is PREPARE_TA; anything else stays DCP.
+	 */
+	if (chg->charge_control && s.input == INPUT_WIRED && s.cable == CABLE_DCP) {
+		int hv = READ_ONCE(chg->hv_event);
+
+		if (hv == MAX77865_HV_EV_9V || hv == MAX77865_HV_EV_ERR_V) {
+			s.cable = CABLE_HV9;
+			s.hv_mv = 9000;
+		} else if (hv == MAX77865_HV_EV_PREPARE) {
+			s.cable = CABLE_AFC_PREPARE;
+			s.hv_mv = 5000;
+		} else if (hv == MAX77865_HV_EV_5V) {
+			s.hv_mv = 5000;
+		}
+	}
+	if (chg->charge_control)
+		chg->hv_mv_dbg = s.hv_mv;
+#endif
 
 #if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
 	/* (2) the receiver's pad and class */
@@ -1905,6 +2037,13 @@ static void max77865_pass_work(struct work_struct *work)
 	}
 
 	if (chg->charge_control) {
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC)
+		/* charger gate for the HV module, once (stock AFC_CHARGER_MODE set_property) */
+		if (!chg->hv_ready_sent) {
+			chg->hv_ready_sent = true;
+			max77865_hv_charger_ready();
+		}
+#endif
 		/* (3)-(9) */
 		max77865_policy(chg, &s);
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
@@ -1922,6 +2061,10 @@ static void max77865_pass_work(struct work_struct *work)
 #if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_HV)
 		/* (12) */
 		max77865_wls_hv_decide(chg, &s);
+#endif
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC)
+		/* (12) */
+		max77865_hv_decide(chg, &s);
 #endif
 	} else {
 		if (chg->input == INPUT_NONE && s.input != INPUT_NONE)
@@ -2059,6 +2202,12 @@ rearm:
 			chg->cable_tries++;
 			delay = CABLE_RETRY;
 		}
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC)
+		/* end the pre-AFC step on time */
+		if (plugged && chg->pre_afc_until &&
+		    time_before(jiffies, chg->pre_afc_until))
+			delay = min(delay, chg->pre_afc_until - jiffies);
+#endif
 		queue_delayed_work(system_freezable_wq, &chg->pass_dwork, delay);
 	}
 	if (chg->wake_held)
@@ -2788,6 +2937,9 @@ static int max77865_debugfs_init(struct max77865_charger *chg)
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_PD)
 	debugfs_create_file("pd_list", 0400, d, chg, &max77865_pd_list_fops);
 #endif
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC)
+	debugfs_create_u32("hv_mv", 0400, d, &chg->hv_mv_dbg);
+#endif
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_TEST) && IS_ENABLED(CONFIG_CHARGER_MAX77865_HV_GUARD)
 	debugfs_create_u32("override_pd_mv", 0600, d, &chg->override_pd_mv);
 #endif
@@ -3069,6 +3221,20 @@ static int max77865_charger_probe(struct i2c_client *client)
 		if (ret)
 			return ret;
 	}
+#endif
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC)
+	/* after the pass work exists; the callback only stores and re-queues.
+	 * The HV module's notifier chain is static, so this succeeds in any probe order
+	 * (and when the HV module never binds: no MUIC HV DT properties); events only
+	 * flow after it binds.
+	 */
+	chg->hv_nb.notifier_call = max77865_hv_notify;
+	ret = max77865_hv_register_notifier(&chg->hv_nb);
+	if (ret)
+		return dev_err_probe(dev, ret, "MUIC HV notifier\n");
+	ret = devm_add_action_or_reset(dev, max77865_hv_unregister, chg);
+	if (ret)
+		return ret;
 #endif
 
 	reg_cfg.dev = dev;
