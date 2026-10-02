@@ -1420,6 +1420,7 @@ static int d8895_hiber_enter(struct decon8895_ctx *ctx)
 	d8895_bts_off(ctx);
 
 	WRITE_ONCE(ctx->hiber_on, true);
+	greatlte_l5_inc(GL5_ON, he);
 	ret = hooks->enter_ulps(hooks->data);
 	if (ret)
 		dev_warn(ctx->dev, "DSIM ULPS enter failed: %d\n", ret);
@@ -1476,6 +1477,7 @@ static int d8895_hiber_exit(struct decon8895_ctx *ctx)
 	d8895_int_enable(ctx);
 
 	WRITE_ONCE(ctx->hiber_on, false);
+	greatlte_l5_inc(GL5_ON, hx);
 	d8895_hiber_trig_reset(ctx);
 out:
 	d8895_hiber_unblock(ctx);

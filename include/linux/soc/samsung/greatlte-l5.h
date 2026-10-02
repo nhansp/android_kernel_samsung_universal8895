@@ -24,6 +24,7 @@ struct greatlte_l5_stats {
 	void __iomem *decon_dma;	/* DPU_DMA, 0x128b0000 */
 	atomic_t fd, fs, to, rc, er, ude, dpe, tec;
 	bool ho;			/* S-Boot handover not yet replaced by a modeset */
+	atomic_t he, hx;		/* hibernation enters, exits */
 
 	/* DSIM0 (drivers/gpu/drm/bridge/samsung-dsim.c, Exynos 8895 path) */
 	struct device *dsim_dev;
