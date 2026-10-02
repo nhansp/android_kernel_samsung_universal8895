@@ -54,7 +54,8 @@ obj-$(CONFIG_SEC_SIPC_MODEM_IF)	+= exynos8895-pmu-cp.o
 
 # L6C modem + sensor hub heartbeat
 obj-$(CONFIG_GREATLTE_HB_L6C)	+= greatlte-hb-l6c.o
-# L7 (power management)
+# L6M SMFC/MSCL heartbeat (WP l6m, DEBUG)
+obj-$(CONFIG_GREATLTE_HB_L6M)	+= greatlte-hb-l6m.o# L7 (power management)
 obj-$(CONFIG_EXYNOS8895_PM)		+= exynos8895-pm.o
 # L7 heartbeat printers
 obj-$(CONFIG_GREATLTE_HB_L7)		+= greatlte-hb-l7.o

@@ -377,3 +377,13 @@ config GREATLTE_HB_L6L
 	  Registers the L6L heartbeat rows: the G2D driver binding (/soc@0/g2d@13a30000),
 	  jobs finished (g2dj), error interrupts (g2de), timeouts (g2dt), and NV12
 	  flip-flop runs (g2dff). Never enable in a release build.
+
+# L6M (SMFC JPEG + MSCL scaler) heartbeat rows (WP l6m, DEBUG, spec L6B 5.10)
+config GREATLTE_HB_L6M
+	bool "greatlte heartbeat: L6M SMFC/MSCL (debug only)"
+	depends on GREATLTE_HB && VIDEO_EXYNOS_SCALER
+	default GREATLTE_HB
+	help
+	  Registers the L6M heartbeat rows: the SMFC driver binding
+	  (/soc@0/jpeg@13b00000) and the MSCL scaler binding
+	  (/soc@0/scaler@13b10000). Never enable in a release build.
