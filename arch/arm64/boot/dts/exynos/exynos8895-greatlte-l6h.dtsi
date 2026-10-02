@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
  * Samsung Galaxy Note 8 (greatlte, SM-N950N) board DT, part "l6h":
- * charging extras: IDT wireless receiver and fuel-gauge time-to-full data.
+ * charging extras: IDT wireless receiver, fuel-gauge time-to-full data and the
+ * MUIC high-voltage charger properties.
  *
  * &usi12 is shared with the S2MM005 on hsi2c_30 (part "l6g") and is written
  * identically in both parts. Everything stays off by default: the receiver node
@@ -106,4 +107,10 @@
 				     0x19e 0x3db 0xd3 0x19b 0x3dc 0xc7 0x195 0x3dd 0xbf 0x18d 0x3de 0xab
 				     0x187 0x3df 0x8c 0x183 0x3e0 0x7e 0x180 0x3e1 0x6b 0x174 0x3e3 0x54
 				     0x16c 0x3e5 0x36 0x164 0x3e6 0x1a 0x164 0x3e6 0x0d 0x00 0x3e8 0x00>;
+};
+
+/* MUIC HV properties, read only with CONFIG_CHARGER_MAX77865_AFC (label from "l6g") */
+&max77865_muic {				/* stock /muic */
+	maxim,afc-initial-tx = /bits/ 8 <0x08>;	/* muic,afcmode-tx = [08] (MUIC_HV_5V) */
+	maxim,qc-hv = /bits/ 8 <9>;		/* muic,qc-hv = [09] = HV_SUPPORT_QC_9V */
 };

@@ -129,3 +129,4 @@ obj-$(CONFIG_FUEL_GAUGE_MM8013)	+= mm8013.o
 
 # MAX77865 charging extras
 obj-$(CONFIG_WIRELESS_CHARGER_IDT_MFC)	+= idt_mfc_wpc.o
+obj-$(CONFIG_CHARGER_MAX77865_AFC)	+= max77865_muic_hv.o

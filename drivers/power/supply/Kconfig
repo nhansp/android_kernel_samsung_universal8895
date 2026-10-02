@@ -1211,12 +1211,9 @@ config WIRELESS_CHARGER_IDT_MFC_HV
 config CHARGER_MAX77865_AFC
 	bool "Maxim MAX77865 Adaptive Fast Charging (AFC)"
 	depends on CHARGER_MAX77865_CHARGE_CONTROL && AUXILIARY_BUS && TYPEC_MAX77865_MUIC && TYPEC_S2MM005=y
-	# the MUIC HV module and the charger's AFC/QC policy are not in the tree yet
-	depends on BROKEN
 	default n
 	help
 	  Adaptive Fast Charging (AFC) support for MAX77865 MUIC.
-	  Not selectable yet: the MUIC HV module is not ported.
 	  Enable only on a bench image with the user present.
 
 config CHARGER_MAX77865_QC
