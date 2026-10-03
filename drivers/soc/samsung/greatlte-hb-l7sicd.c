@@ -32,16 +32,9 @@ static int l7sicd_hb_nb(char *buf, size_t size)
 	return scnprintf(buf, size, "%u", atomic_read(&e8895_stats.sicd_nb));
 }
 
-/* s2idle rounds whose SICD exit was still running at platform_s2idle_ops::restore_early */
-static int l7sicd_hb_wait(char *buf, size_t size)
-{
-	return scnprintf(buf, size, "%u", atomic_read(&e8895_stats.sicd_wait));
-}
-
 static const struct greatlte_hb_item l7sicd_rows[] = {
 	{ .layer = 7, .tag = "sicds2", .kind = GREATLTE_HB_FN, .fn = l7sicd_hb_s2 },
 	{ .layer = 7, .tag = "sicdnb", .kind = GREATLTE_HB_FN, .fn = l7sicd_hb_nb },
-	{ .layer = 7, .tag = "sicdw",  .kind = GREATLTE_HB_FN, .fn = l7sicd_hb_wait },
 };
 
 static int __init l7sicd_hb_init(void)

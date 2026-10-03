@@ -30,7 +30,6 @@ struct e8895_idle_stats {		/* read by the L7 heartbeat printer */
 	atomic_t sicd_veto;		/* candidate refused by a veto */
 	atomic_t sicd_s2;		/* SICD states armed from the s2idle path (l7sicd) */
 	atomic_t sicd_nb;		/* candidate refused: the last CPU was not in the boot cluster */
-	atomic_t sicd_wait;		/* s2idle rounds whose SICD exit was still running at ->restore_early */
 	atomic_t conf_fix;		/* core CONFIGURATION/DD found off after a successful C2 */
 	atomic_t ubt;			/* UART_BT pad releases */
 };
@@ -41,7 +40,6 @@ int e8895_psci_suspend(u32 power_state);	/* 0 after a real power-down and wake, 
 int e8895_sicd_prepare(void);			/* 0: armed, caller passes E8895_PSCI_SICD; <0: vetoed */
 void e8895_sicd_exit(bool early_wakeup);
 const char *e8895_sicd_last_veto(void);
-bool e8895_sicd_armed(void);			/* SICD armed and not exited yet (cpuidle-exynos8895.c) */
 
 /* exynos8895-pmu.c (CPU and cluster power hooks) */
 void e8895_pmu_cpu_down(unsigned int cpu);

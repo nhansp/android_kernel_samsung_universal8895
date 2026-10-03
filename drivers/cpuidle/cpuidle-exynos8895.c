@@ -27,7 +27,6 @@
 #include <linux/smp.h>
 #include <linux/soc/samsung/exynos8895-pm.h>
 #include <linux/spinlock.h>
-#include <linux/suspend.h>
 #include <linux/workqueue.h>
 #include <asm/cpuidle.h>
 #include <asm/proc-fns.h>
@@ -278,17 +277,6 @@ static void e8895_c2_finish(unsigned int cpu, bool failed)
 	raw_spin_unlock(&c2_lock);
 }
 
-/* sicd_entered is written with c2_lock held, so read it the same way */
-bool e8895_sicd_armed(void)
-{
-	bool armed;
-
-	raw_spin_lock(&c2_lock);
-	armed = sicd_entered;
-	raw_spin_unlock(&c2_lock);
-	return armed;
-}
-
 static __cpuidle int e8895_enter_wfi(struct cpuidle_device *dev,
 				     struct cpuidle_driver *drv, int idx)
 {
@@ -408,53 +396,40 @@ static __cpuidle int e8895_enter_c2_s2idle(struct cpuidle_device *dev,
 }
 
 /*
- * The SICD exit runs on the first CPU that leaves the idle state (stock: the first CPU
- * that calls exynos_cpu_pm_exit(), :564-570). No barrier is needed between it and the
- * resume of s2idle, because no CPU can run the wakeup that ends the round before it:
- *  - while sicd_entered is set, every CPU is inside ->enter_s2idle with IRQs masked (the
- *    callback may not re-enable them, A:drivers/cpuidle/cpuidle.c:167-169, and the irq
- *    restore happens after it returned, A:drivers/cpuidle/cpuidle.c:204). The CPU that arms
- *    the state has IRQs masked too, and it runs nothing at all between arming it and
- *    e8895_c2_finish(): what it does run in between is the PSCI call, which returns only when
- *    that CPU was woken - and every exit from the state goes through e8895_c2_finish(), the
- *    one place that runs e8895_sicd_exit().
- *  - s2idle_enter() returns only after s2idle_state became S2IDLE_STATE_WAKE
- *    (A:kernel/power/suspend.c:117-118), which only s2idle_wake() sets
- *    (A:kernel/power/suspend.c:167-177), and its only caller is pm_system_wakeup()
- *    (A:drivers/base/power/wakeup.c:939-944) from a wakeup_source's hard event
- *    (:586-598) - so that call needs a CPU that has already left the idle state.
- *  - s2idle_loop() then returns (A:kernel/power/suspend.c:148-162) and only after it does
- *    platform_resume_noirq() run this hook (A:kernel/power/suspend.c:289-297,498).
- * SLEEP does not need the argument either: syscore_resume() runs the PMUCAL exit list on
- * the CPU that issued the SLEEP SMC, before dpm_resume_noirq()
+ * No platform_s2idle_ops in this driver, and why that is deliberate.
+ *
+ * Review round 1, item 2: the ->restore_early barrier of e6c350fbc is gone, because under
+ * the corrected model (every online CPU inside ->enter_s2idle with IRQs masked) no CPU can
+ * run kernel code while the SICD enter list is programmed, so no device resume can overtake
+ * the SICD exit:
+ *  - the enter list runs only from e8895_c2_prepare(), i.e. only after e8895_s2idle_last()
+ *    proved every other online CPU is in c2_mask, and the arming CPU is inside the state
+ *    callback with IRQs masked (A:kernel/sched/idle.c:330, A:kernel/cpu_pm.c:100-104). What
+ *    it runs after arming is the PSCI call, which does not return before a wakeup woke that
+ *    CPU;
+ *  - every CPU leaves the state through e8895_c2_finish(), which runs e8895_sicd_exit() and
+ *    clears sicd_entered under c2_lock (stock's first-CPU-out rule,
+ *    S:drivers/soc/samsung/exynos-powermode.c:564-570), and the callback may not re-enable
+ *    IRQs (A:drivers/cpuidle/cpuidle.c:167-169) - they come back after it returned
+ *    (:204), i.e. after the exit list has run;
+ *  - so "PMU is in SICD" implies "no CPU is executing kernel code", and the task that runs
+ *    s2idle_enter() must itself have left the idle state to be running again - which is
+ *    exactly what runs the exit list. That covers a round aborted by an already pending
+ *    wakeup (A:kernel/power/suspend.c:107-109) too: no CPU could have registered a wakeup
+ *    event in the meantime, because the only sources are an interrupt handler and a running
+ *    thread (A:drivers/base/power/wakeup.c:939-944).
+ *
+ * SLEEP never needed a barrier either: syscore_resume() runs the PMUCAL exit list on the CPU
+ * that issued the SLEEP SMC, before dpm_resume_noirq()
  * (A:kernel/power/suspend.c:471-484,498).
  *
- * The check below is therefore expected never to fire; it stays as the one place that
- * would report it if that reasoning is wrong. Only ->prepare and ->restore_early were ever
- * filled in, so platform_suspend_begin() falls through to suspend_ops->begin()
- * (A:kernel/power/suspend.c:311-319) and our platform_suspend_ops has no .begin
- * (drivers/soc/samsung/exynos8895-pm.c:1646-1649), as before this driver existed.
+ * The driver therefore installs no platform_s2idle_ops at all. Before this work package the
+ * tree had none, so platform_suspend_begin() falls through to suspend_ops->begin()
+ * (A:kernel/power/suspend.c:311-319) as it did, and our platform_suspend_ops has no .begin
+ * (drivers/soc/samsung/exynos8895-pm.c:1646-1649).
  */
-static void e8895_s2idle_restore_early(void)
-{
-	unsigned int t;
 
-	if (!READ_ONCE(sicd_s2idle))
-		return;
-	/* 1000 x udelay(1), the bound stock's PMUCAL WAIT gives up after
-	 * (S:drivers/soc/samsung/cal-if/pmucal_rae.c:84-103) */
-	for (t = 0; t < 1000 && e8895_sicd_armed(); t++)
-		udelay(1);
-	if (e8895_sicd_armed()) {
-		atomic_inc(&e8895_stats.sicd_wait);
-		pr_err("exynos8895_idle: SICD still armed 1000 us after the s2idle CPUs were kicked\n");
-	}
-}
-
-static struct platform_s2idle_ops e8895_s2idle_ops = {
-	.restore_early = e8895_s2idle_restore_early,
-};
-
+/* DEBUG (c2_trace=2): the smp_call_function_single() target of the cpufreq callback */
 static void e8895_nop(void *info)
 {
 }
@@ -611,8 +586,6 @@ static int __init e8895_idle_init(void)
 	cpuidle_cooling_register(&e8895_drv[1]);
 	cpufreq_register_notifier(&e8895_cpufreq_nb, CPUFREQ_TRANSITION_NOTIFIER);
 	register_reboot_notifier(&e8895_reboot_nb);
-	/* inert while sicd_s2idle is off; no callback is needed, see above */
-	s2idle_set_ops(&e8895_s2idle_ops);		/* A:include/linux/suspend.h:317 */
 	pr_info("exynos8895_idle: C2 on 8 CPUs, cpd=%d sicd=%d sicd_s2idle=%d\n",
 		cpd_enabled, sicd_enabled, sicd_s2idle);
 	if (c2_trace >= 2)						/* DEBUG */
