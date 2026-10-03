@@ -16,6 +16,7 @@
 #include <linux/cpu_pm.h>
 #include <linux/cpufreq.h>
 #include <linux/cpuidle.h>
+#include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/ktime.h>
 #include <linux/minmax.h>
@@ -26,6 +27,7 @@
 #include <linux/smp.h>
 #include <linux/soc/samsung/exynos8895-pm.h>
 #include <linux/spinlock.h>
+#include <linux/suspend.h>
 #include <linux/workqueue.h>
 #include <asm/cpuidle.h>
 #include <asm/proc-fns.h>
@@ -44,6 +46,14 @@ static bool sicd_enabled = true;	/* FDT:4428 sicd_enabled = <0x01> */
  */
 module_param(cpd_enabled, bool, 0644);
 module_param(sicd_enabled, bool, 0644);
+/*
+ * sicd_s2idle: let the ->enter_s2idle state take SICD (l7sicd). Off by default:
+ * the combination is new (stock had no s2idle at all) and the bring-up images
+ * keep the state that reached them. The normal idle path (stock's own SICD
+ * entry) is not affected by this switch.
+ */
+static bool sicd_s2idle;
+module_param(sicd_s2idle, bool, 0644);
 
 /*
  * DEBUG (bring-up of image 0074, which hung ~7 ms after this driver registered):
@@ -80,6 +90,7 @@ static atomic_t c2_dbg_in[8], c2_dbg_out[8];
 
 static DEFINE_RAW_SPINLOCK(c2_lock);		/* S:drivers/soc/samsung/exynos-powermode.c:374 */
 static struct cpumask c2_mask;			/* :46, update_c2_state() :376-382 */
+static int e8895_s2idle_cpu = -1;		/* the CPU that runs s2idle_enter(), ->prepare below */
 static bool cluster_down[2];			/* cluster_idle_state, :497-507 */
 static bool sicd_entered;			/* :52 */
 static bool cpd_blocking;			/* :49 */
@@ -127,8 +138,43 @@ static void e8895_cluster_cpus(unsigned int cpu, struct cpumask *m)
 			cpumask_set_cpu(c, m);
 }
 
+/*
+ * s2idle: is this CPU the last one that is still awake?
+ *
+ * stock tests is_cpus_busy(sicd_residency, cpu_online_mask) (:389-411): every online
+ * CPU must be in c2_mask and have at least sicd_residency before its next event.
+ * The second half cannot be made in s2idle - there is no next event to compare, the
+ * state is entered by every idle CPU and left only by a wakeup - so this tests the
+ * first half only, which in s2idle is exactly the same moment: the CPU that enters the
+ * state while every other online CPU is already inside it is the last CPU awake.
+ *
+ * One online CPU is awake by construction and is not in an idle state: the one that runs
+ * the s2idle transition. s2idle_enter() pushes the other CPUs into the idle loop and then
+ * parks itself in swait_event_exclusive() (A:kernel/power/suspend.c:113-120), and a
+ * sleeping task never reaches the idle loop - only the idle task does, schedule_idle()'s
+ * WARN_ON_ONCE(current->__state) (A:kernel/sched/core.c:7968-7980) - so that CPU never
+ * sets its c2_mask bit. It is e8895_s2idle_cpu, recorded by e8895_s2idle_prepare(), and it
+ * is skipped here: it is the CPU the wakeup returns to, exactly as one CPU is awake in
+ * stock's own SICD entry. Tested under c2_lock, so no CPU can leave or enter c2_mask in
+ * between: the decision is the same instant stock's is_cpus_busy() takes.
+ */
+static bool e8895_s2idle_last(unsigned int cpu)
+{
+	unsigned int c;
+
+	if (e8895_s2idle_cpu < 0)		/* no ->prepare ran: never arm SICD here */
+		return false;
+	for_each_online_cpu(c) {
+		if (c == cpu || c == (unsigned int)e8895_s2idle_cpu)
+			continue;
+		if (!cpumask_test_cpu(c, &c2_mask))
+			return false;
+	}
+	return true;
+}
+
 /* S:drivers/soc/samsung/exynos-powermode.c:513-550 exynos_cpu_pm_enter() */
-static u32 e8895_c2_prepare(unsigned int cpu, bool upgrades)
+static u32 e8895_c2_prepare(unsigned int cpu, bool s2idle)
 {
 	struct cpuidle_device *self = per_cpu(cpuidle_devices, cpu);
 	u32 state = E8895_PSCI_C2;
@@ -140,12 +186,31 @@ static u32 e8895_c2_prepare(unsigned int cpu, bool upgrades)
 	raw_spin_lock(&c2_lock);
 	cpumask_set_cpu(cpu, &c2_mask);				/* :518 */
 
-	/*
-	 * s2idle (upgrades == false) must not read the clock: the last CPU froze
-	 * timekeeping before ->enter_s2idle (A:kernel/time/tick-common.c:520-549)
-	 * and ktime_get() warns then (A:kernel/time/timekeeping.c:814-821).
-	 */
-	if (!upgrades || !self)
+	if (s2idle) {
+		/*
+		 * No clock read here: enter_s2idle_proper() froze the tick before
+		 * calling us (A:drivers/cpuidle/cpuidle.c:155,167) and the freeze of
+		 * the last online CPU suspends timekeeping
+		 * (A:kernel/time/tick-common.c:525-545), which ktime_get() warns
+		 * about (A:kernel/time/timekeeping.c:814-821). That same freeze is
+		 * also why the residency half of stock's test has no meaning here.
+		 */
+		if (READ_ONCE(sicd_enabled) && READ_ONCE(sicd_s2idle) &&
+		    e8895_s2idle_last(cpu)) {
+			atomic_inc(&e8895_stats.sicd_try);
+			if (!e8895_boot_cluster(cpu))	/* :473-479, kept as stock */
+				atomic_inc(&e8895_stats.sicd_nb);
+			else if (!e8895_sicd_prepare()) {	/* :536-537 */
+				sicd_entered = true;
+				state = E8895_PSCI_SICD;		/* :544 */
+			} else {
+				atomic_inc(&e8895_stats.sicd_veto);
+			}
+		}
+		goto out;
+	}
+
+	if (!self)
 		goto out;
 	now = ktime_get();
 	if (ktime_to_ns(ktime_sub(READ_ONCE(self->next_hrtimer), now)) <	/* :524-526 */
@@ -208,6 +273,17 @@ static void e8895_c2_finish(unsigned int cpu, bool failed)
 	raw_spin_unlock(&c2_lock);
 }
 
+/* sicd_entered is written with c2_lock held, so read it the same way */
+bool e8895_sicd_armed(void)
+{
+	bool armed;
+
+	raw_spin_lock(&c2_lock);
+	armed = sicd_entered;
+	raw_spin_unlock(&c2_lock);
+	return armed;
+}
+
 static __cpuidle int e8895_enter_wfi(struct cpuidle_device *dev,
 				     struct cpuidle_driver *drv, int idx)
 {
@@ -233,7 +309,7 @@ static __cpuidle void e8895_dbg_wfi(void)
 	ct_cpuidle_exit();
 }
 
-static __cpuidle int __e8895_enter_c2(struct cpuidle_device *dev, int idx, bool upgrades)
+static __cpuidle int __e8895_enter_c2(struct cpuidle_device *dev, int idx, bool s2idle)
 {
 	unsigned int cpu = dev->cpu;
 	unsigned int mode = READ_ONCE(c2_mode);
@@ -251,7 +327,7 @@ static __cpuidle int __e8895_enter_c2(struct cpuidle_device *dev, int idx, bool 
 	if (mode == 2) {
 		state = E8895_PSCI_C2;
 	} else {
-		state = e8895_c2_prepare(cpu, upgrades);
+		state = e8895_c2_prepare(cpu, s2idle);
 	}
 	if (c2_trace && cpu < 8)
 		atomic_inc(&c2_dbg_in[cpu]);
@@ -277,19 +353,99 @@ static __cpuidle int __e8895_enter_c2(struct cpuidle_device *dev, int idx, bool 
 static __cpuidle int e8895_enter_c2(struct cpuidle_device *dev,
 				    struct cpuidle_driver *drv, int idx)
 {
-	return __e8895_enter_c2(dev, idx, true);
+	/* the normal idle path (stock's own CPD/SICD upgrades), not s2idle */
+	return __e8895_enter_c2(dev, idx, false);
 }
 
 /*
- * s2idle: dt_idle_states would reuse ->enter (A:drivers/cpuidle/dt_idle_states.c:33-38);
- * CPD/SICD depend on the tick-based wake times, which are frozen in s2idle,
- * so s2idle gets plain C2.
+ * s2idle: dt_idle_states gives every DT state ->enter and ->enter_s2idle
+ * (A:drivers/cpuidle/dt_idle_states.c:32,38), so states[1] is the one cpuidle_enter_s2idle()
+ * finds (A:drivers/cpuidle/cpuidle.c:101,201). CPD stays out of s2idle: it is decided from
+ * the tick-based wake times, which are frozen there. SICD is taken when sicd_s2idle is on,
+ * see e8895_c2_prepare().
+ *
+ * Why this is not the PSCI context that hangs (deep suspend, job l7el3):
+ *  - the SMC below is the per-CPU CPU_SUSPEND of an ordinary cpuidle state, issued from the
+ *    idle loop with the RCU-idle, tick-freeze and cpu_pm bookkeeping of that state
+ *    (enter_s2idle_proper(), A:drivers/cpuidle/cpuidle.c:145-179). That is the same context
+ *    that already issues power_state 0x00010000 (= E8895_PSCI_C2, FDT:4363
+ *    arm,psci-suspend-param) on every idle entry of this device and that woke up on the s2idle
+ *    cycles of image 0143, so the SMC path itself is known good here.
+ *  - the only additions are the power_state value 0x00000001 - stock's PSCI_SYSTEM_IDLE,
+ *    psci_power_state_pack(1,0,0) (S:arch/arm64/kernel/psci.c:212-220,236-239) - and the
+ *    PMUCAL SICD enter/exit lists, which stock runs from this same per-CPU path
+ *    (exynos_prepare_sys_powerdown(SYS_SICD) inside exynos_cpu_pm_enter(),
+ *    S:drivers/soc/samsung/exynos-powermode.c:536-537).
+ *  - none of the system-wide PSCI SLEEP steps runs here: for s2idle
+ *    e8895_pm_syscore_suspend() returns before its first register write unless
+ *    pm_suspend_target_state is PM_SUSPEND_MEM (drivers/soc/samsung/exynos8895-pm.c:1458-1463),
+ *    suspend_enter() takes the s2idle_loop() branch (A:kernel/power/suspend.c:454-458) and so
+ *    never reaches pm_sleep_disable_secondary_cpus()/arch_suspend_disable_irqs()
+ *    (:460-467), no secondary CPU is taken offline, and the SICD enter/exit lists are undone
+ *    by the first CPU that leaves the state (e8895_c2_finish()).
  */
 static __cpuidle int e8895_enter_c2_s2idle(struct cpuidle_device *dev,
 					   struct cpuidle_driver *drv, int idx)
 {
-	return __e8895_enter_c2(dev, idx, false);
+	return __e8895_enter_c2(dev, idx, true);
 }
+
+/*
+ * platform_s2idle_ops::prepare() runs on the CPU that will run s2idle_enter(): the PM
+ * core calls it in that task, before dpm_suspend_noirq() and before s2idle_loop()
+ * (A:kernel/power/suspend.c:274-278,434-455). This is how the idle side learns which one
+ * online CPU stays awake (see e8895_s2idle_last()). Should that task migrate between
+ * here and s2idle_enter(), the recorded CPU is an idle one and e8895_s2idle_last()
+ * refuses - the safe direction, no SICD.
+ *
+ * What this combination adds to stock, and why sicd_s2idle therefore defaults to 0: the
+ * recorded CPU stays awake in swait_event_exclusive() with its IRQs **enabled**, while in
+ * stock's own SICD entry every other CPU is inside C2 with IRQs masked. The SICD enter
+ * list blocks the CENTRAL interrupt path of every core (DIS_IRQ_*_CENTRAL = 1,
+ * CLKSTOP_CMU_TOP/CMU_MIF, DISABLE_PLL_*, TOP_BUS_MIF/PSCDC_MIF,
+ * CAL:pmucal_system_exynos8895.h:203-249), so an interrupt serviced on that CPU inside
+ * the armed window is the one hazard no test here can rule out.
+ */
+static int e8895_s2idle_prepare(void)
+{
+	WRITE_ONCE(e8895_s2idle_cpu, (int)smp_processor_id());
+	return 0;
+}
+
+/*
+ * The SICD exit runs on the first CPU that leaves the idle state (stock: the first
+ * CPU that calls exynos_cpu_pm_exit(), :564-570). The CPU that ran s2idle_enter() is
+ * not one of them and does not wait for it - s2idle_enter() only kicks the idle CPUs
+ * (A:kernel/power/suspend.c:117-124) and returns - so without a barrier it would
+ * resume devices while the PMU is still in the SICD state. SLEEP needs the same
+ * barrier and gets it for free: syscore_resume() runs the PMUCAL exit list on the CPU
+ * that issued the SLEEP SMC, before dpm_resume_noirq() (A:kernel/power/suspend.c:471-498).
+ * platform_s2idle_ops::restore_early() is the one hook that runs in that gap for s2idle
+ * (platform_resume_noirq(), A:kernel/power/suspend.c:289-297,498). Only ->prepare and
+ * ->restore_early are filled in: the other six hooks stay NULL, so platform_suspend_begin()
+ * still falls through to suspend_ops->begin() (A:kernel/power/suspend.c:310-317) and our
+ * platform_suspend_ops has no .begin (drivers/soc/samsung/exynos8895-pm.c:1646).
+ */
+static void e8895_s2idle_restore_early(void)
+{
+	unsigned int t;
+
+	if (!READ_ONCE(sicd_s2idle))
+		return;
+	/* 1000 x udelay(1), the bound stock's PMUCAL WAIT gives up after
+	 * (S:drivers/soc/samsung/cal-if/pmucal_rae.c:84-103) */
+	for (t = 0; t < 1000 && e8895_sicd_armed(); t++)
+		udelay(1);
+	if (e8895_sicd_armed()) {
+		atomic_inc(&e8895_stats.sicd_wait);
+		pr_err("exynos8895_idle: SICD still armed 1000 us after the s2idle CPUs were kicked\n");
+	}
+}
+
+static struct platform_s2idle_ops e8895_s2idle_ops = {
+	.prepare = e8895_s2idle_prepare,
+	.restore_early = e8895_s2idle_restore_early,
+};
 
 static void e8895_nop(void *info)
 {
@@ -447,7 +603,10 @@ static int __init e8895_idle_init(void)
 	cpuidle_cooling_register(&e8895_drv[1]);
 	cpufreq_register_notifier(&e8895_cpufreq_nb, CPUFREQ_TRANSITION_NOTIFIER);
 	register_reboot_notifier(&e8895_reboot_nb);
-	pr_info("exynos8895_idle: C2 on 8 CPUs, cpd=%d sicd=%d\n", cpd_enabled, sicd_enabled);
+	/* the SICD exit barrier for s2idle; inert while sicd_s2idle is off */
+	s2idle_set_ops(&e8895_s2idle_ops);		/* A:include/linux/suspend.h:317 */
+	pr_info("exynos8895_idle: C2 on 8 CPUs, cpd=%d sicd=%d sicd_s2idle=%d\n",
+		cpd_enabled, sicd_enabled, sicd_s2idle);
 	if (c2_trace >= 2)						/* DEBUG */
 		queue_delayed_work(system_unbound_wq, &e8895_c2_watch, 2 * HZ);
 	if (c2_mode || c2_cpus != 0xff || !timer_stop || c2_trace || c2_recycle)	/* DEBUG */
