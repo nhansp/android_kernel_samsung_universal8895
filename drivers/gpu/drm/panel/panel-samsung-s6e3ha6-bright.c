@@ -451,7 +451,7 @@ static int s6e3ha6_dcs_write(struct s6e3ha6_bright *b, const u8 *buf, size_t len
 }
 
 /*
- * The stock panel_rx_nbytes() (panel.c:1135-1192) reads a register at a byte
+ * The stock panel_rx_nbytes() (panel.c:1135-1190) reads a register at a byte
  * offset by first programming the 0xB0 general-parameter register, and splits a
  * read at MAX_READ_BYTES = 40 (panel.c:1134); every read below is shorter, so
  * one DCS read each is enough.
@@ -643,7 +643,7 @@ static int s6e3ha6_bright_set(struct s6e3ha6_bright *b, int brightness, bool for
 		 * init_gamma_table() left behind, and that maptbl is the plain
 		 * static array great_a3_sa_gamma_table[]
 		 * (S:.../s6e3ha6/s6e3ha6_great_a3_sa_panel.h:73, filled by
-		 * s6e3ha6.c:154-156) - an all zero gamma payload for the panel.
+		 * s6e3ha6.c:150-157) - an all zero gamma payload for the panel.
 		 * The properties are still updated above as in stock; only the
 		 * sequence is held back, once loudly and then rate limited.
 		 */
