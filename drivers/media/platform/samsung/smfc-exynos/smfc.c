@@ -900,7 +900,7 @@ static int exynos_smfc_probe(struct platform_device *pdev)
 	struct smfc_dev *smfc;
 	struct resource *res;
 	const struct of_device_id *of_id;
-	int ret;
+	int irq, ret;
 
 	atomic_set(&smfc_hwfc_state, SMFC_HWFC_STANDBY);
 	init_waitqueue_head(&smfc_hwfc_sync_wq);
@@ -925,13 +925,17 @@ static int exynos_smfc_probe(struct platform_device *pdev)
 	of_id = of_match_node(exynos_smfc_match, pdev->dev.of_node);
 	smfc->devdata = of_id->data;
 
-	res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (res == NULL) {
-		dev_err(&pdev->dev, "Failed to get IRQ resource");
-		return -ENOENT;
+	/* Since 5.x DT interrupts are no longer IORESOURCE_IRQ resources, use
+	 * platform_get_irq() (stock S:smfc/smfc.c:885 used
+	 * platform_get_resource(..., IORESOURCE_IRQ, 0) on 4.4). DT carries
+	 * interrupts = <GIC_SPI 225 ...> (FDT:7606). */
+	irq = platform_get_irq(pdev, 0);
+	if (irq < 0) {
+		dev_err(&pdev->dev, "Failed to get IRQ resource: %d", irq);
+		return irq;
 	}
 
-	ret = devm_request_irq(&pdev->dev, res->start, exynos_smfc_irq_handler,
+	ret = devm_request_irq(&pdev->dev, irq, exynos_smfc_irq_handler,
 				0, pdev->name, smfc);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to install IRQ handler");

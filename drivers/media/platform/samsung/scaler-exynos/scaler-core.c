@@ -3627,7 +3627,7 @@ static int sc_probe(struct platform_device *pdev)
 {
 	struct sc_dev *sc;
 	struct resource *res;
-	int ret = 0;
+	int irq, ret = 0;
 	size_t ivar;
 	u32 hwver;
 
@@ -3650,13 +3650,17 @@ static int sc_probe(struct platform_device *pdev)
 	if (IS_ERR(sc->regs))
 		return PTR_ERR(sc->regs);
 
-	res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (!res) {
-		dev_err(&pdev->dev, "failed to get IRQ resource\n");
-		return -ENOENT;
+	/* Since 5.x DT interrupts are no longer IORESOURCE_IRQ resources, use
+	 * platform_get_irq() (stock S:scaler/scaler-core.c:3587 used
+	 * platform_get_resource(..., IORESOURCE_IRQ, 0) on 4.4). DT carries
+	 * interrupts = <GIC_SPI 226 ...> (FDT:7631). */
+	irq = platform_get_irq(pdev, 0);
+	if (irq < 0) {
+		dev_err(&pdev->dev, "failed to get IRQ resource: %d\n", irq);
+		return irq;
 	}
 
-	ret = devm_request_irq(&pdev->dev, res->start, sc_irq_handler, 0,
+	ret = devm_request_irq(&pdev->dev, irq, sc_irq_handler, 0,
 			pdev->name, sc);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to install irq\n");
