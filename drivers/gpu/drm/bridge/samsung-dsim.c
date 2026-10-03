@@ -2305,19 +2305,59 @@ static void samsung_dsim_stop_exynos8895(struct samsung_dsim *dsi)
 }
 
 /*
+ * One packet: payload words, header, wait for PH_FIFO_EMPTY. The completion is
+ * re-armed for every packet, as the vendor driver re-inits ph_wr_comp and clears
+ * DSIM_INTSRC_SFR_PH_FIFO_EMPTY in dsim_write_data() (dsim_drv.c:209-210).
+ */
+static int samsung_dsim_8895_send(struct samsung_dsim *dsi, u32 hdr,
+				  const void *payload, size_t len)
+{
+	const u8 *p = payload;
+	u32 reg;
+	int i;
+
+	reinit_completion(&dsi->ph_empty);
+
+	while (len >= 4) {
+		dsim8895_write(dsi, 0x5c, get_unaligned_le32(p));
+		p += 4;
+		len -= 4;
+	}
+	if (len) {
+		reg = 0;
+		for (i = 0; i < len; i++)
+			reg |= p[i] << (8 * i);
+		dsim8895_write(dsi, 0x5c, reg);
+	}
+
+	dsim8895_mask(dsi, 0x58, hdr, 0x1ffffff);
+
+	if (!wait_for_completion_timeout(&dsi->ph_empty,
+					 msecs_to_jiffies(DSIM8895_WR_TIMEOUT_MS))) {
+		/* a timeout with an empty header FIFO is success (dsim_drv.c:131-136) */
+		if (!(dsim8895_read(dsi, 0x68) & DSIM8895_EMPTY_PH_SFR)) {
+			dev_err(dsi->dev, "cmd write timeout, INTSRC=0x%08x FIFOCTRL=0x%08x\n",
+				dsim8895_read(dsi, 0x50), dsim8895_read(dsi, 0x68));
+			return -ETIMEDOUT;
+		}
+		dsim8895_write(dsi, 0x50, DSIM8895_INT_SFR_PH_FIFO_EMPTY);
+	}
+
+	return 0;
+}
+
+/*
  * One packet in flight, as the vendor driver ("Single Packet Transmission",
  * dsim_drv.c:168-187): clear PH_FIFO_EMPTY, payload words, header, wait for
  * PH_FIFO_EMPTY; a read then waits for RX_DATA_DONE.
  */
-static ssize_t samsung_dsim_transfer_exynos8895(struct samsung_dsim *dsi,
-						const struct mipi_dsi_msg *msg)
+static ssize_t samsung_dsim_xfer_exynos8895(struct samsung_dsim *dsi,
+					  const struct mipi_dsi_msg *msg)
 {
 	struct mipi_dsi_msg m = *msg;
 	struct samsung_dsim_transfer xfer = { };
-	const u8 *payload;
-	u32 hdr, reg;
-	int ret, i;
-	size_t len;
+	u32 hdr;
+	int ret;
 
 	/*
 	 * "When send TE_ON(35h) command with 1 para type, DSI goes to BTA. To
@@ -2335,42 +2375,35 @@ static ssize_t samsung_dsim_transfer_exynos8895(struct samsung_dsim *dsi,
 
 	mutex_lock(&dsi->cmd_lock);
 
-	reinit_completion(&dsi->ph_empty);
-	if (m.rx_len)
-		reinit_completion(&dsi->rx_done);
 	dsim8895_write(dsi, 0x50, DSIM8895_INT_SFR_PH_FIFO_EMPTY |
 		       (m.rx_len ? DSIM8895_INT_RX_DATA_DONE : 0));
 
-	payload = xfer.packet.payload;
-	len = xfer.packet.payload_length;
-	while (len >= 4) {
-		dsim8895_write(dsi, 0x5c, get_unaligned_le32(payload));
-		payload += 4;
-		len -= 4;
+	/*
+	 * dsim_read_data() writes the "set maximum return packet size" packet
+	 * before the read itself (dsim_drv.c:312-313), with the same header
+	 * builder as the read request below (dsim_reg.c:1026-1033,
+	 * regs-dsim.h:196-201): data type 0x37 (video/mipi_display.h:42),
+	 * data0 = size & 0xff, data1 = size >> 8, no BTA. Without it the DDI
+	 * answers the read request with its previous maximum return packet size
+	 * (one byte after reset) and mipi_dsi_dcs_read() returns a short read.
+	 */
+	if (m.rx_len) {
+		hdr = MIPI_DSI_SET_MAXIMUM_RETURN_PACKET_SIZE |
+		      (m.rx_len & 0xff) << 8 | ((m.rx_len >> 8) & 0xff) << 16;
+		ret = samsung_dsim_8895_send(dsi, hdr, NULL, 0);
+		if (ret)
+			goto out;
 	}
-	if (len) {
-		reg = 0;
-		for (i = 0; i < len; i++)
-			reg |= payload[i] << (8 * i);
-		dsim8895_write(dsi, 0x5c, reg);
-	}
+
+	reinit_completion(&dsi->rx_done);
 
 	hdr = get_unaligned_le32(xfer.packet.header) & 0xffffff;
 	if (m.rx_len)
 		hdr |= DSIM8895_PKTHDR_BTA;	/* dsim_drv.c:250 bta_type = true */
-	dsim8895_mask(dsi, 0x58, hdr, 0x1ffffff);
-
-	if (!wait_for_completion_timeout(&dsi->ph_empty,
-					 msecs_to_jiffies(DSIM8895_WR_TIMEOUT_MS))) {
-		/* a timeout with an empty header FIFO is success (dsim_drv.c:131-136) */
-		if (!(dsim8895_read(dsi, 0x68) & DSIM8895_EMPTY_PH_SFR)) {
-			dev_err(dsi->dev, "cmd write timeout, INTSRC=0x%08x FIFOCTRL=0x%08x\n",
-				dsim8895_read(dsi, 0x50), dsim8895_read(dsi, 0x68));
-			ret = -ETIMEDOUT;
-			goto out;
-		}
-		dsim8895_write(dsi, 0x50, DSIM8895_INT_SFR_PH_FIFO_EMPTY);
-	}
+	ret = samsung_dsim_8895_send(dsi, hdr, xfer.packet.payload,
+				     xfer.packet.payload_length);
+	if (ret)
+		goto out;
 
 	ret = xfer.packet.payload_length;
 	if (!m.rx_len)
@@ -2391,6 +2424,33 @@ static ssize_t samsung_dsim_transfer_exynos8895(struct samsung_dsim *dsi,
 out:
 	mutex_unlock(&dsi->cmd_lock);
 	return ret;
+}
+
+/*
+ * mipi_read_cmd() (dsim_drv.c:780-806) is the only read entry point of the
+ * vendor DSIM: it runs the read above again up to five times when the number of
+ * bytes it got is not the requested one. Retries are for reads only.
+ */
+static ssize_t samsung_dsim_transfer_exynos8895(struct samsung_dsim *dsi,
+						const struct mipi_dsi_msg *msg)
+{
+	ssize_t ret;
+	int retry = 5;
+
+	if (!msg->rx_len)
+		return samsung_dsim_xfer_exynos8895(dsi, msg);
+
+	for (;;) {
+		ret = samsung_dsim_xfer_exynos8895(dsi, msg);
+		if (ret >= 0 && (size_t)ret == msg->rx_len)
+			return ret;
+		if (!retry) {
+			dev_err(dsi->dev, "failed to read addr 0x%02x, %zd of %zu bytes\n",
+				((const u8 *)msg->tx_buf)[0], ret, msg->rx_len);
+			return ret;
+		}
+		retry--;
+	}
 }
 
 /* dsim_irq_handler() (dsim_drv.c:941-992); INTMSK is never rewritten here */
