@@ -32,6 +32,7 @@
 #include <drm/display/drm_dsc.h>
 #include <drm/drm_panel.h>
 #include <drm/drm_print.h>
+#include <drm/exynos8895_hiber.h>
 
 /* DEBUG: greatlte heartbeat counters (greatlte-hb-l5.c), only when built in */
 #define GL5_ON	IS_BUILTIN(CONFIG_DRM_SAMSUNG_DSIM)
@@ -2025,6 +2026,14 @@ static void samsung_dsim_disable_irq(struct samsung_dsim *dsi)
 #define DSIM8895_LPMUX_VAL		0x1201	/* decon_reg.c:667-670 */
 /* SYSREG +0x200 BUS_COMPONENT_DRCG_EN (pmucal_local_exynos8895.h:267) */
 #define DSIM8895_SYSREG_DRCG_EN		0x200
+/* ULPS (regs-dsim.h:42-47 DPHY_STATUS, :77-87 ESCMODE, at 0x1c/0x2c above) */
+#define DSIM8895_ESCMODE_REG		0x2c
+#define DSIM8895_TX_ULPS_DATA		BIT(3)
+#define DSIM8895_TX_ULPS_DATA_EXIT	BIT(2)
+#define DSIM8895_TX_ULPS_CLK		BIT(1)
+#define DSIM8895_TX_ULPS_CLK_EXIT	BIT(0)
+#define DSIM8895_DPHY_ULPS_CLK		BIT(9)
+#define DSIM8895_DPHY_ULPS_DATA_MASK	(0xf << 4)
 
 static void dsim8895_write(struct samsung_dsim *dsi, u32 ofs, u32 val)
 {
@@ -2286,12 +2295,16 @@ static void samsung_dsim_stop_exynos8895(struct samsung_dsim *dsi)
 
 	dsim8895_write(dsi, 0x50, 0xffffffff);
 	dsim8895_mask(dsi, 0x54, DSIM8895_INTMSK_RUN, DSIM8895_INTMSK_RUN);
-	/* HS clock off, wait for the clock lane to be in LP (:924-929, :986-1003) */
+	/* HS clock off, wait for the clock lane to be in LP (:924-929, :986-1003).
+	 * After a ULPS enter the lane is in ULPS, not LP: the wait cannot pass.
+	 */
 	dsim8895_mask(dsi, 0x20, 0, DSIM8895_TX_REQUEST_HSCLK);
-	while (DSIM8895_CLK_LANE_STATUS(dsim8895_read(dsi, DSIM8895_LINK_STATUS2)) && --cnt)
-		udelay(10);
-	if (!cnt)
-		dev_err(dsi->dev, "clock lane did not return to LP\n");
+	if (!(dsi->state & DSIM_STATE_ULPS)) {
+		while (DSIM8895_CLK_LANE_STATUS(dsim8895_read(dsi, DSIM8895_LINK_STATUS2)) && --cnt)
+			udelay(10);
+		if (!cnt)
+			dev_err(dsi->dev, "clock lane did not return to LP\n");
+	}
 	dsim8895_mask(dsi, 0x4c, 0, DSIM8895_LANES_EN_MASK);
 	udelay(400);
 	dsim8895_mask(dsi, 0x20, 0, DSIM8895_LANE_ESCCLK_EN_MASK);
@@ -2344,6 +2357,277 @@ static int samsung_dsim_8895_send(struct samsung_dsim *dsi, u32 hdr,
 	}
 
 	return 0;
+}
+
+/*
+ * ULPS enter/exit for display hibernation (S:drivers/video/fbdev/exynos/dpu/
+ * dsim_reg.c:1704-1819): the link and the D-PHY go to ultra-low-power while
+ * the panel keeps its power and frame memory. The greatlte panel is an
+ * SM-DDI (FDT type_of_ddi = 0, TYPE_OF_SM_DDI in ../panel/s6e3ha6-stock/
+ * decon_lcd.h:32), so the enter/exit handshake is the SM-DDI one.
+ */
+static int samsung_dsim_init(struct samsung_dsim *dsi);
+
+/* dsim_reg_is_ulps_state() (dsim_reg.c:1063-1072); lanes = the data-lane bits */
+static u32 dsim8895_is_ulps(struct samsung_dsim *dsi, u32 lanes)
+{
+	u32 val = dsim8895_read(dsi, 0x1c);
+
+	if (((val & DSIM8895_DPHY_ULPS_DATA_MASK) >> 4) == lanes &&
+	    (val & DSIM8895_DPHY_ULPS_CLK))
+		return 1;
+	return 0;
+}
+
+/* dsim_reg_wait_enter_ulps_state() (dsim_reg.c:1214-1229) */
+static int dsim8895_wait_enter_ulps(struct samsung_dsim *dsi, u32 lanes)
+{
+	u32 cnt = 1000;
+
+	while (!dsim8895_is_ulps(dsi, lanes) && --cnt)
+		udelay(10);
+	if (!cnt) {
+		dev_err(dsi->dev, "lanes did not enter ULPS\n");
+		return -EBUSY;
+	}
+	return 0;
+}
+
+/* dsim_reg_wait_exit_ulps_state() (dsim_reg.c:1246-1262) */
+static int dsim8895_wait_exit_ulps(struct samsung_dsim *dsi)
+{
+	u32 cnt = 1000;
+
+	while (((dsim8895_read(dsi, 0x1c) & DSIM8895_DPHY_ULPS_DATA_MASK) ||
+		(dsim8895_read(dsi, 0x1c) & DSIM8895_DPHY_ULPS_CLK)) && --cnt)
+		udelay(10);
+	if (!cnt) {
+		dev_err(dsi->dev, "lanes did not leave ULPS\n");
+		return -EBUSY;
+	}
+	return 0;
+}
+
+/* dsim_reg_enter_ulps() / dsim_reg_exit_ulps() (dsim_reg.c:1040-1054) */
+static void dsim8895_enter_ulps_req(struct samsung_dsim *dsi, u32 enter)
+{
+	dsim8895_mask(dsi, DSIM8895_ESCMODE_REG, enter ? ~0 : 0,
+		      DSIM8895_TX_ULPS_CLK | DSIM8895_TX_ULPS_DATA);
+}
+
+static void dsim8895_exit_ulps_req(struct samsung_dsim *dsi, u32 exit)
+{
+	dsim8895_mask(dsi, DSIM8895_ESCMODE_REG, exit ? ~0 : 0,
+		      DSIM8895_TX_ULPS_CLK_EXIT | DSIM8895_TX_ULPS_DATA_EXIT);
+}
+
+/* dsim_reg_set_hs_clock(en = 0) (dsim_reg.c:1568-1582): the link is noncont */
+static int dsim8895_set_hs_clock_off(struct samsung_dsim *dsi)
+{
+	u32 cnt = 1000;
+
+	dsim8895_mask(dsi, 0x20, 0, DSIM8895_TX_REQUEST_HSCLK);
+	while (DSIM8895_CLK_LANE_STATUS(dsim8895_read(dsi, DSIM8895_LINK_STATUS2)) && --cnt)
+		udelay(10);
+	if (!cnt) {
+		dev_err(dsi->dev, "clock lane did not return to LP\n");
+		return -EBUSY;
+	}
+	return 0;
+}
+
+/* dsim_reg_set_smddi_ulps() (dsim_reg.c:1704-1733) */
+static int dsim8895_set_smddi_ulps(struct samsung_dsim *dsi, u32 lanes, u32 en)
+{
+	int ret = 0;
+
+	if (en) {
+		dsim8895_enter_ulps_req(dsi, 1);
+		ret = dsim8895_wait_enter_ulps(dsi, lanes);
+		if (ret)
+			return ret;
+		dsim8895_enter_ulps_req(dsi, 0);
+	} else {
+		dsim8895_enter_ulps_req(dsi, 1);
+		ret = dsim8895_wait_enter_ulps(dsi, lanes);
+		if (ret)
+			return ret;
+		dsim8895_exit_ulps_req(dsi, 1);
+		ret = dsim8895_wait_exit_ulps(dsi);
+		if (ret)
+			return ret;
+		/* at least 1 ms Twakeup for the MARK1 state */
+		udelay(1000);
+		dsim8895_exit_ulps_req(dsi, 0);
+		dsim8895_enter_ulps_req(dsi, 0);
+	}
+	return ret;
+}
+
+/* dsim_reg_set_ulps() (dsim_reg.c:1651-1681) */
+static int dsim8895_set_ulps(struct samsung_dsim *dsi, u32 lanes, u32 en)
+{
+	int ret = 0;
+
+	if (en) {
+		dsim8895_enter_ulps_req(dsi, 1);
+		ret = dsim8895_wait_enter_ulps(dsi, lanes);
+	} else {
+		dsim8895_exit_ulps_req(dsi, 1);
+		ret = dsim8895_wait_exit_ulps(dsi);
+		if (ret)
+			return ret;
+		/* at least 1 ms Twakeup for the MARK1 state */
+		udelay(1000);
+		dsim8895_exit_ulps_req(dsi, 0);
+		dsim8895_enter_ulps_req(dsi, 0);
+	}
+	return ret;
+}
+
+/*
+ * dsim_reg_set_ulps_by_ddi() (dsim_reg.c:1735-1759): MAGNA supports no ULPS.
+ * lanes = the data-lane bits, (BIT(dsi->lanes) - 1): dsim.h:110-114,
+ * dsim_drv.c:1800-1812 (0x1f >> DSIM_LANE_CLOCK = 0xf for 4 lanes).
+ */
+static int dsim8895_set_ulps_by_ddi(struct samsung_dsim *dsi, u32 en)
+{
+	u32 lanes = BIT(dsi->lanes) - 1;
+
+	switch (dsi->ddi_type) {
+	case 0:	/* TYPE_OF_SM_DDI, ../panel/s6e3ha6-stock/decon_lcd.h:32 */
+		return dsim8895_set_smddi_ulps(dsi, lanes, en);
+	case 1:	/* TYPE_OF_MAGNA_DDI: no ULPS */
+		dev_err(dsi->dev, "this DDI does not support ULPS\n");
+		return -EINVAL;
+	default: /* TYPE_OF_NORMAL_DDI */
+		return dsim8895_set_ulps(dsi, lanes, en);
+	}
+}
+
+/* dsim_reg_exit_ulps_and_start() (dsim_reg.c:1773-1789) */
+static int dsim8895_exit_ulps_and_start(struct samsung_dsim *dsi)
+{
+	int ret;
+
+	ret = dsim8895_set_ulps_by_ddi(dsi, 0);
+	dsim8895_start(dsi);
+	return ret;
+}
+
+/* dsim_reg_stop_and_enter_ulps() (dsim_reg.c:1792-1819) */
+static int dsim8895_stop_and_enter_ulps(struct samsung_dsim *dsi)
+{
+	int ret = 0;
+
+	ret = dsim8895_set_hs_clock_off(dsi);
+	if (ret)
+		dev_err(dsi->dev, "the clock lane did not switch to LP mode\n");
+	dsim8895_set_ulps_by_ddi(dsi, 1);
+	dsim8895_mask(dsi, 0x4c, 0, DSIM8895_LANES_EN_MASK);
+	udelay(400);
+	dsim8895_mask(dsi, 0x20, 0, DSIM8895_LANE_ESCCLK_EN_MASK);
+	dsim8895_mask(dsi, 0x20, 0, DSIM8895_WORDCLK_EN);
+	/* dsim_reg_set_clocks(en = 0) (dsim_reg.c:1543-1548) */
+	dsim8895_write(dsi, DSIM8895_PLL_CTRL1, 0);
+	dsim8895_write(dsi, DSIM8895_PLL_CTRL1 + 4, 0);
+	dsim8895_mask(dsi, 0x20, 0xff, DSIM8895_ESCCLK_EN | 0xff);
+	dsim8895_mask(dsi, 0xa0, 0, DSIM_PLL_EN);
+	dsim8895_sw_reset(dsi);
+	return ret;
+}
+
+/*
+ * dsim_enter_ulps() (dsim_drv.c:1368-1411) for display hibernation: the link
+ * goes to ULPS and the runtime-PM put powers the DSIM (and pd_dpu1) off. The
+ * PHY and the bulk clocks stay to samsung_dsim_suspend(), which owns them;
+ * every panel transfer takes the DECON hibernation block first, so no packet
+ * is in flight here.
+ */
+int samsung_dsim_enter_ulps(struct samsung_dsim *dsi)
+{
+	int ret = 0;
+
+	if (!dsi->driver_data->has_8895_link)
+		return -ENODEV;
+	mutex_lock(&dsi->cmd_lock);
+	if (!(dsi->state & DSIM_STATE_ENABLED) ||
+	    !(dsi->state & DSIM_STATE_INITIALIZED) ||
+	    (dsi->state & DSIM_STATE_ULPS)) {
+		ret = -EBUSY;
+		goto out;
+	}
+	dsi->state |= DSIM_STATE_ULPS;
+	mutex_unlock(&dsi->cmd_lock);
+
+	/* dsim_reg_set_int(en = 0) (dsim_reg.c:1584-1601) */
+	dsim8895_mask(dsi, 0x54, DSIM8895_INTMSK_RUN, DSIM8895_INTMSK_RUN);
+	ret = dsim8895_stop_and_enter_ulps(dsi);
+	if (ret)
+		dev_err(dsi->dev, "ULPS enter with the clock lane not in LP\n");
+
+	pm_runtime_put_sync(dsi->dev);
+	return 0;
+
+out:
+	mutex_unlock(&dsi->cmd_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(samsung_dsim_enter_ulps);
+
+/*
+ * dsim_exit_ulps() (dsim_drv.c:1413-1447) for display hibernation: the
+ * runtime-PM get powers the DSIM back on, the link is re-initialised as in
+ * dsim_reg_ready() (dsim_drv.c:1041-1100) and the ULPS exit handshake
+ * restarts it. Called with the DECON already resumed.
+ */
+int samsung_dsim_exit_ulps(struct samsung_dsim *dsi)
+{
+	int ret;
+
+	if (!dsi->driver_data->has_8895_link)
+		return -ENODEV;
+	if (!(dsi->state & DSIM_STATE_ULPS))
+		return -EBUSY;
+
+	ret = pm_runtime_get_sync(dsi->dev);
+	if (ret < 0)
+		return ret;
+
+	ret = samsung_dsim_init(dsi);
+	if (ret)
+		dev_err(dsi->dev, "failed to re-init the link: %d\n", ret);
+
+	ret = dsim8895_exit_ulps_and_start(dsi);
+	if (ret)
+		dev_err(dsi->dev, "failed to exit ULPS\n");
+
+	dsi->state &= ~DSIM_STATE_ULPS;
+	/* like dsim_exit_ulps() (dsim_drv.c:1441-1445): warn, but report success */
+	return 0;
+}
+EXPORT_SYMBOL_GPL(samsung_dsim_exit_ulps);
+
+/* kCFI-exact wrappers for the DECON hibernation hooks (exynos8895_hiber.h) */
+static int samsung_dsim_ulps_enter_cb(void *data)
+{
+	return samsung_dsim_enter_ulps(data);
+}
+
+static int samsung_dsim_ulps_exit_cb(void *data)
+{
+	return samsung_dsim_exit_ulps(data);
+}
+
+/* one DSIM0 on this SoC; registered once at probe, stays valid */
+static struct exynos8895_dsim_hooks dsim8895_hiber_hooks;
+
+static void samsung_dsim_register_hiber_hooks(struct samsung_dsim *dsi)
+{
+	dsim8895_hiber_hooks.enter_ulps = samsung_dsim_ulps_enter_cb;
+	dsim8895_hiber_hooks.exit_ulps = samsung_dsim_ulps_exit_cb;
+	dsim8895_hiber_hooks.data = dsi;
+	exynos8895_decon_set_dsim_hooks(&dsim8895_hiber_hooks);
 }
 
 /*
@@ -3036,6 +3320,13 @@ static int samsung_dsim_parse_dt_exynos8895(struct samsung_dsim *dsi)
 
 	of_property_read_u32(np, "samsung,cmd-underrun-lp-ref", &dsi->cmd_underrun_lp_ref);
 
+	/*
+	 * The ULPS handshake depends on the panel DDI (S:panel/panel_drv.c:1678
+	 * "type_of_ddi", values in ../panel/s6e3ha6-stock/decon_lcd.h:32-34);
+	 * greatlte panels are all SM-DDI (FDT type_of_ddi = 0).
+	 */
+	of_property_read_u32(np, "type_of_ddi", &dsi->ddi_type);
+
 	mutex_init(&dsi->cmd_lock);
 	init_completion(&dsi->ph_empty);
 	init_completion(&dsi->rx_done);
@@ -3142,6 +3433,8 @@ int samsung_dsim_probe(struct platform_device *pdev)
 		greatlte_l5_set(GL5_ON, dsim_regs, dsi->reg_base);
 		greatlte_l5_set(GL5_ON, dsim_state, &dsi->state);
 		greatlte_l5_set(GL5_ON, dsim_dev, dev);
+		/* display hibernation: the DECON powers the link down between frames */
+		samsung_dsim_register_hiber_hooks(dsi);
 	}
 
 	if (dsi->driver_data->handover_hold)

@@ -820,6 +820,24 @@ config DRM_PANEL_SAMSUNG_S6E3HA6
 	  a MIPI DSI command-mode panel with VESA DSC. It registers the
 	  backlight device "panel" and the lcd class device "panel".
 
+config DRM_PANEL_SAMSUNG_S6E3HA6_STOCK
+	bool "Samsung S6E3HA6 vendor panel framework (greatlte)"
+	depends on DRM_PANEL_SAMSUNG_S6E3HA6=y
+	depends on BACKLIGHT_CLASS_DEVICE=y
+	depends on SPI=y
+	depends on !DRM_EXYNOS8895_DECON || DRM_EXYNOS=y
+	# not "select": DRM_PANEL_SAMSUNG_S6E3HA6 above already depends on it, and kconfig rejects a
+	# selected symbol that one of the selecting symbol's own dependencies depends on
+	# (gki_defconfig: "recursive dependency detected"). DRM_PANEL_SAMSUNG_S6E3HA6=y=y implies it.
+	depends on LCD_CLASS_DEVICE=y
+	help
+	  Drive the S6E3HA6 panel through the vendor panel framework of the
+	  SM-N950N 4.4 kernel: the panel's own sequence tables, AID dimming
+	  with the "panel" backlight device, mDNIe, COPR (read over the
+	  panel's spi-gpio port), active clock, POC, the lcd class "panel"
+	  device and its sysfs nodes. Without it the S6E3HA6 driver sends
+	  its fixed sequences only.
+
 config DRM_PANEL_SAMSUNG_S6E3HA8
 	tristate "Samsung S6E3HA8 DSI video mode panel"
 	depends on OF

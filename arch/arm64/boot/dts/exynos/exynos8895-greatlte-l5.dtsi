@@ -134,6 +134,17 @@
 	pinctrl-0 = <&decon_f_te_on>;		/* vendor "hw_te_on" FDT:7534-7535 */
 	pinctrl-1 = <&decon_f_te_off>;		/* vendor "hw_te_off" FDT:7536 */
 	status = "okay";
+
+	/*
+	 * CAM running status for the hibernation enter check (stock "cam-stat"
+	 * child of decon_f, FDT:7555-7557, S:drivers/video/fbdev/exynos/dpu/
+	 * decon_core.c:3869-3876; PMU bit, always readable): hibernation
+	 * engages only with bits [3:0] clear. The unit address silences
+	 * unit_address_vs_reg; of_get_child_by_name() ignores it.
+	 */
+	cam-stat@16484024 {
+		reg = <0x00 0x16484024 0x04>;
+	};
 };
 
 /* DSIM0 link values of the panel's DDI node (FDT:10079-10114) */
@@ -171,6 +182,34 @@
 			panel_from_dsi: endpoint {
 				remote-endpoint = <&dsi_to_panel>;
 			};
+		};
+	};
+};
+
+/*
+ * The panel's SPI port, bit-banged on gpe5 (spi_gpio + panel_spi@0,
+ * FDT:10268-10284; L5 9.4 e, l5-ext DESIGN 2.2): the vendor COPR reads go
+ * over it. The vendor gpio-sck/gpio-miso/gpio-mosi properties are the 6.18
+ * spi-gpio binding's sck-/miso-/mosi-gpios; gpe5 = phandle 0x58 (FDT:2062-2069),
+ * flags 0 = active high. hsi2c13/14, the other users of gpe5-0..3, are
+ * disabled (FDT:5468, 5485).
+ */
+/ {
+	spi_gpio: spi {
+		compatible = "spi-gpio";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		sck-gpios = <&gpe5 3 GPIO_ACTIVE_HIGH>;
+		miso-gpios = <&gpe5 0 GPIO_ACTIVE_HIGH>;
+		mosi-gpios = <&gpe5 1 GPIO_ACTIVE_HIGH>;
+		cs-gpios = <&gpe5 2 GPIO_ACTIVE_HIGH>;
+		num-chipselects = <1>;
+
+		panel_spi@0 {
+			compatible = "panel_spi";
+			reg = <0>;
+			spi-max-frequency = <1200000>;	/* FDT:10281 0x124f80 */
+			bits-per-word = <8>;
 		};
 	};
 };

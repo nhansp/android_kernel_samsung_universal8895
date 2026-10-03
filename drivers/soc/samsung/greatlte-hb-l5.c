@@ -24,7 +24,7 @@
  *
  * "dpuc" every greatlte_hb_l5.dpuc_ms (default 30000): the drivers' counters
  * (include/linux/soc/samsung/greatlte-l5.h), live only for built-in drivers:
- *   fd fs to rc er ude dpe tec ho rpm gc tr g0y d0 m1c m1f | ur ecc st ls3 dps |
+ *   fd fs to rc er ude dpe tec he hx ho rpm gc tr g0y d0 m1c m1f | ur ecc st ls3 dps |
  *   bt pw dd lt var
  */
 #include <linux/init.h>
@@ -238,6 +238,8 @@ static int l5_dpuc_fmt(char *buf, size_t size)
 	len += l5_cnt(buf + len, size - len, "ude", &s->ude);
 	len += l5_cnt(buf + len, size - len, "dpe", &s->dpe);
 	len += l5_cnt(buf + len, size - len, "tec", &s->tec);
+	len += l5_cnt(buf + len, size - len, "he", &s->he);
+	len += l5_cnt(buf + len, size - len, "hx", &s->hx);
 	if (dev) {
 		len += scnprintf(buf + len, size - len, " ho=%d rpm=%s", READ_ONCE(s->ho),
 				 pm_runtime_active(dev) ? "active" : "suspended");

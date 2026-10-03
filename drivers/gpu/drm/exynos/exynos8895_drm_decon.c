@@ -13,9 +13,11 @@
 #include <linux/clk.h>
 #include <linux/component.h>
 #include <linux/delay.h>
+#include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/iopoll.h>
 #include <linux/mfd/syscon.h>
+#include <linux/moduleparam.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
@@ -39,7 +41,10 @@
 #include <drm/drm_encoder.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
+#include <drm/drm_panic.h>
 #include <drm/drm_vblank.h>
+#include <drm/exynos8895_hiber.h>
+#include <drm/exynos8895_panel.h>
 
 #include "exynos_drm_crtc.h"
 #include "exynos_drm_drv.h"
@@ -390,6 +395,16 @@ struct decon8895_ctx {
 	bool handover;		/* S-Boot left the DECON running */
 	bool rpm_held;		/* runtime-PM reference of an enabled CRTC */
 	bool needs_init;	/* run the full init before the next start */
+	bool hiber_init;	/* hibernation workqueue and CAM status are ready */
+	bool hiber_on;		/* DECON + DSIM powered down between frames */
+	bool hiber_ulps;	/* hiber_on with the DSIM link in ULPS */
+	bool hiber_timeout;	/* DECON timeout IRQ since the last commit */
+	void __iomem *hiber_cam;	/* CAM running status for the enter check */
+	struct mutex hiber_lock;	/* serialises a hibernation enter and exit */
+	struct work_struct hiber_work;	/* the TE-queued enter check */
+	struct workqueue_struct *hiber_wq;
+	atomic_t hiber_trig;	/* TEs since the last frame done */
+	atomic_t hiber_block;	/* enters blocked while > 0 */
 	bool irqs_on;
 	bool vblank_on;
 	bool first_frame_done;
@@ -433,6 +448,15 @@ struct decon8895_ctx {
 	u32 bts_prev_total_bw;
 	u32 bts_prev_max_disp_freq;
 	u32 bts_bw[BTS_DPP_MAX];	/* per-DPP KB/s */
+
+	/*
+	 * drm_panic scanout buffer: XRGB8888 of the mode size, allocated at
+	 * atomic_enable; the pointers change under drm_panic_lock().
+	 */
+	void *panic_vaddr;
+	dma_addr_t panic_dma;
+	size_t panic_size;
+	u32 panic_w, panic_h;
 
 	/* counters (heartbeat / debugfs) */
 	atomic_t fd_cnt, fs_cnt, to_cnt, rc_cnt, er_cnt, ude_cnt, dpe_cnt, te_cnt;
@@ -553,13 +577,10 @@ static int d8895_stop(struct decon8895_ctx *ctx)
 
 /* ---- DPP / IDMA channel (S:.../dpu/dpp_reg.c) ---------------------------- */
 
-/* dpp_reg_init() (dpp_reg.c:1522-1540) + enable_irq (dpp_drv.c:558-563) */
-static void d8895_dpp_init(struct decon8895_ctx *ctx, unsigned int ch)
+/* dpp_reg_init() (dpp_reg.c:1522-1540) */
+static void d8895_dpp_init_regs(struct decon8895_ctx *ctx, unsigned int ch)
 {
 	void __iomem *dma = d_dma(ctx, ch), *dpp = d_dpp(ctx, ch);
-
-	if (ctx->ch_on & BIT(ch))
-		return;
 
 	io_mask(dma + D8895_IDMA_IRQ, 0, D8895_IDMA_ALL_IRQ_MASK);
 	io_mask(dpp + D8895_DPP_IRQ, 0, D8895_DPP_ALL_IRQ_MASK);
@@ -584,7 +605,15 @@ static void d8895_dpp_init(struct decon8895_ctx *ctx, unsigned int ch)
 	/* recovery number (:719-726) */
 	io_mask(dma + D8895_IDMA_RECOVERY_CTRL, D8895_IDMA_RECOVERY_NUM(D8895_INIT_RCV_NUM),
 		D8895_IDMA_RECOVERY_NUM_MASK);
+}
 
+/* dpp_reg_init() + enable_irq (S:.../dpu/dpp_drv.c:558-563), once per enable */
+static void d8895_dpp_init(struct decon8895_ctx *ctx, unsigned int ch)
+{
+	if (ctx->ch_on & BIT(ch))
+		return;
+
+	d8895_dpp_init_regs(ctx, ch);
 	if (ctx->irq_dma[ch] > 0)
 		enable_irq(ctx->irq_dma[ch]);
 	if (ctx->irq_dpp[ch] > 0)
@@ -712,6 +741,19 @@ static void d8895_dpp_set_csc(struct decon8895_ctx *ctx, unsigned int ch,
 	io_mask(dpp + D8895_DPP_CSC_COEF4, D8895_DPP_CSC_COEF_L(c[2][2]), D8895_DPP_CSC_COEF_L_MASK);
 }
 
+/* the input of one DPP channel: from a plane state, or the panic buffer */
+struct d8895_dpp_cfg {
+	const struct d8895_fmt *fmt;
+	dma_addr_t y, c;	/* base addresses; C = Y for AFBC, 0 for one-plane RGB */
+	u32 sx, sy, sw, sh;	/* source rectangle in the buffer */
+	u32 fw, fh;		/* buffer size in pixels (pitch / cpp, height) */
+	u32 dw, dh;		/* window size */
+	u32 flip;		/* D8895_DPP_FLIP_X | D8895_DPP_FLIP_Y */
+	bool afbc;
+	enum drm_color_encoding enc;
+	enum drm_color_range range;
+};
+
 /*
  * dpp_reg_configure_params() (S:.../dpu/dpp_reg.c:1565-1577), in its order:
  * CSC (VG/VGF, :937-966), scale ratio and coefficients (every channel,
@@ -720,54 +762,76 @@ static void d8895_dpp_set_csc(struct decon8895_ctx *ctx, unsigned int ch,
  * (:1379-1384; the composer's block area is a bandwidth hint only), format,
  * alpha select, RGB/YUV, AFBC, HW recovery off (:1266-1344).
  */
-static void d8895_dpp_configure(struct decon8895_ctx *ctx, unsigned int ch,
-				struct drm_plane_state *st)
+static void d8895_dpp_program(struct decon8895_ctx *ctx, unsigned int ch,
+			      const struct d8895_dpp_cfg *cfg)
 {
 	void __iomem *dma = d_dma(ctx, ch), *dpp = d_dpp(ctx, ch);
-	struct d8895_plane_state *ps = to_d8895_pstate(st);
-	struct drm_framebuffer *fb = st->fb;
-	const struct d8895_fmt *f = d8895_find_fmt(fb->format->format);
-	u32 sx = st->src.x1 >> 16, sy = st->src.y1 >> 16;
-	u32 sw = drm_rect_width(&st->src) >> 16, sh = drm_rect_height(&st->src) >> 16;
-	u32 dw = drm_rect_width(&st->dst), dh = drm_rect_height(&st->dst);
-	u32 cpp = fb->format->cpp[0], flip = 0;
-	dma_addr_t y = exynos_drm_fb_dma_addr(fb, 0), c = 0;
+	const struct d8895_fmt *f = cfg->fmt;
 
 	if (d8895_ch[ch].yuv)
-		d8895_dpp_set_csc(ctx, ch, st->color_encoding, st->color_range);
+		d8895_dpp_set_csc(ctx, ch, cfg->enc, cfg->range);
 
 	/* ratio = (src << 20) / dst (S:.../dpu/dpp_drv.c:335-336) */
-	d8895_dpp_set_scale(ctx, ch, (u32)(((u64)sw << 20) / dw), (u32)(((u64)sh << 20) / dh));
+	d8895_dpp_set_scale(ctx, ch, (u32)(((u64)cfg->sw << 20) / cfg->dw),
+			    (u32)(((u64)cfg->sh << 20) / cfg->dh));
 
-	writel(D8895_IDMA_SRC_OFFSET_Y(sy) | D8895_IDMA_SRC_OFFSET_X(sx),
+	writel(D8895_IDMA_SRC_OFFSET_Y(cfg->sy) | D8895_IDMA_SRC_OFFSET_X(cfg->sx),
 	       dma + D8895_IDMA_SRC_OFFSET);
-	writel(D8895_IDMA_SRC_HEIGHT(fb->height) | D8895_IDMA_SRC_WIDTH(fb->pitches[0] / cpp),
+	writel(D8895_IDMA_SRC_HEIGHT(cfg->fh) | D8895_IDMA_SRC_WIDTH(cfg->fw),
 	       dma + D8895_IDMA_SRC_SIZE);
-	writel(D8895_IDMA_IMG_HEIGHT(sh) | D8895_IDMA_IMG_WIDTH(sw), dma + D8895_IDMA_IMG_SIZE);
-	writel(D8895_DPP_IMG_HEIGHT(sh) | D8895_DPP_IMG_WIDTH(sw), dpp + D8895_DPP_IMG_SIZE);
+	writel(D8895_IDMA_IMG_HEIGHT(cfg->sh) | D8895_IDMA_IMG_WIDTH(cfg->sw),
+	       dma + D8895_IDMA_IMG_SIZE);
+	writel(D8895_DPP_IMG_HEIGHT(cfg->sh) | D8895_DPP_IMG_WIDTH(cfg->sw),
+	       dpp + D8895_DPP_IMG_SIZE);
 	if (d8895_ch[ch].scale)
-		writel(D8895_DPP_SCALED_IMG_HEIGHT(dh) | D8895_DPP_SCALED_IMG_WIDTH(dw),
+		writel(D8895_DPP_SCALED_IMG_HEIGHT(cfg->dh) | D8895_DPP_SCALED_IMG_WIDTH(cfg->dw),
 		       dpp + D8895_DPP_SCALED_IMG_SIZE);
 
-	if (st->rotation & DRM_MODE_REFLECT_X)
-		flip |= D8895_DPP_FLIP_X;
-	if (st->rotation & DRM_MODE_REFLECT_Y)
-		flip |= D8895_DPP_FLIP_Y;
-	io_mask(dma + D8895_IDMA_IN_CON, D8895_IDMA_IN_FLIP(flip), D8895_IDMA_IN_FLIP_MASK);
+	io_mask(dma + D8895_IDMA_IN_CON, D8895_IDMA_IN_FLIP(cfg->flip), D8895_IDMA_IN_FLIP_MASK);
 
-	if (ps->afbc)
-		c = y;
-	else if (f->yuv)
-		c = exynos_drm_fb_dma_addr(fb, 1);
-	writel(lower_32_bits(y), dma + D8895_IDMA_IN_BASE_ADDR_Y);
-	writel(lower_32_bits(c), dma + D8895_IDMA_IN_BASE_ADDR_C);
+	writel(lower_32_bits(cfg->y), dma + D8895_IDMA_IN_BASE_ADDR_Y);
+	writel(lower_32_bits(cfg->c), dma + D8895_IDMA_IN_BASE_ADDR_C);
 	io_mask(dma + D8895_IDMA_IN_CON, 0, D8895_IDMA_BLOCK_EN);
 
 	io_mask(dma + D8895_IDMA_IN_CON, D8895_IDMA_IMG_FORMAT(f->idma), D8895_IDMA_IMG_FORMAT_MASK);
 	io_mask(dpp + D8895_DPP_IN_CON, D8895_DPP_ALPHA_SEL(f->alpha), D8895_DPP_ALPHA_SEL_MASK);
 	io_mask(dpp + D8895_DPP_IN_CON, D8895_DPP_IMG_FORMAT(f->yuv), D8895_DPP_IMG_FORMAT_MASK);
-	io_mask(dma + D8895_IDMA_IN_CON, ps->afbc ? D8895_IDMA_AFBC_EN : 0, D8895_IDMA_AFBC_EN);
+	io_mask(dma + D8895_IDMA_IN_CON, cfg->afbc ? D8895_IDMA_AFBC_EN : 0, D8895_IDMA_AFBC_EN);
 	io_mask(dma + D8895_IDMA_RECOVERY_CTRL, 0, D8895_IDMA_RECOVERY_EN);
+}
+
+/* d8895_dpp_program() with the input of a checked plane state */
+static void d8895_dpp_configure(struct decon8895_ctx *ctx, unsigned int ch,
+				struct drm_plane_state *st)
+{
+	struct d8895_plane_state *ps = to_d8895_pstate(st);
+	struct drm_framebuffer *fb = st->fb;
+	struct d8895_dpp_cfg cfg = {
+		.fmt	= d8895_find_fmt(fb->format->format),
+		.y	= exynos_drm_fb_dma_addr(fb, 0),
+		.sx	= st->src.x1 >> 16,
+		.sy	= st->src.y1 >> 16,
+		.sw	= drm_rect_width(&st->src) >> 16,
+		.sh	= drm_rect_height(&st->src) >> 16,
+		.fw	= fb->pitches[0] / fb->format->cpp[0],
+		.fh	= fb->height,
+		.dw	= drm_rect_width(&st->dst),
+		.dh	= drm_rect_height(&st->dst),
+		.afbc	= ps->afbc,
+		.enc	= st->color_encoding,
+		.range	= st->color_range,
+	};
+
+	if (st->rotation & DRM_MODE_REFLECT_X)
+		cfg.flip |= D8895_DPP_FLIP_X;
+	if (st->rotation & DRM_MODE_REFLECT_Y)
+		cfg.flip |= D8895_DPP_FLIP_Y;
+	if (cfg.afbc)
+		cfg.c = cfg.y;
+	else if (cfg.fmt->yuv)
+		cfg.c = exynos_drm_fb_dma_addr(fb, 1);
+
+	d8895_dpp_program(ctx, ch, &cfg);
 }
 
 /* ---- DSC encoders (S:.../dpu/decon_reg.c:1391-1662, 1879-1900) ---------- */
@@ -1083,6 +1147,430 @@ static void d8895_win_program_plane(struct decon8895_ctx *ctx, unsigned int win,
 			  st->pixel_blend_mode, f->alpha, false, 0);
 }
 
+/* ---- drm_panic buffer ---------------------------------------------------- */
+
+/*
+ * The planes carry the composer's buffers (several overlapping windows,
+ * possibly AFBC), so the panic screen is not drawn into them: it goes into
+ * a dedicated XRGB8888 buffer of the mode size (XRGB8888 is the format whose
+ * IDMA code was measured on hardware, see d8895_formats), which the panic
+ * flush scans out on G0 alone. Sleepable; reallocated only when the size
+ * changes.
+ */
+static void d8895_panic_alloc(struct decon8895_ctx *ctx, const struct drm_display_mode *m)
+{
+	struct device *dma_dev = to_dma_dev(ctx->drm);
+	size_t size = (size_t)m->hdisplay * m->vdisplay * 4;
+	void *vaddr = NULL, *old_vaddr;
+	dma_addr_t dma = 0, old_dma;
+	unsigned long flags = 0;
+	size_t old_size;
+
+	if (!IS_ENABLED(CONFIG_DRM_PANIC))
+		return;
+
+	if (ctx->panic_vaddr && ctx->panic_size == size) {
+		drm_panic_lock(ctx->drm, flags);
+		ctx->panic_w = m->hdisplay;
+		ctx->panic_h = m->vdisplay;
+		drm_panic_unlock(ctx->drm, flags);
+		return;
+	}
+
+	if (size) {
+		vaddr = dma_alloc_attrs(dma_dev, size, &dma, GFP_KERNEL, DMA_ATTR_WRITE_COMBINE);
+		if (!vaddr)
+			dev_warn(ctx->dev, "no panic buffer (%zu bytes)\n", size);
+	}
+
+	drm_panic_lock(ctx->drm, flags);
+	old_vaddr = ctx->panic_vaddr;
+	old_dma = ctx->panic_dma;
+	old_size = ctx->panic_size;
+	ctx->panic_vaddr = vaddr;
+	ctx->panic_dma = dma;
+	ctx->panic_size = vaddr ? size : 0;
+	ctx->panic_w = m->hdisplay;
+	ctx->panic_h = m->vdisplay;
+	drm_panic_unlock(ctx->drm, flags);
+
+	if (old_vaddr)
+		dma_free_attrs(dma_dev, old_size, old_vaddr, old_dma, DMA_ATTR_WRITE_COMBINE);
+}
+
+static void d8895_panic_free(struct decon8895_ctx *ctx)
+{
+	unsigned long flags = 0;
+	dma_addr_t dma;
+	size_t size;
+	void *vaddr;
+
+	drm_panic_lock(ctx->drm, flags);
+	vaddr = ctx->panic_vaddr;
+	dma = ctx->panic_dma;
+	size = ctx->panic_size;
+	ctx->panic_vaddr = NULL;
+	ctx->panic_size = 0;
+	drm_panic_unlock(ctx->drm, flags);
+
+	if (vaddr)
+		dma_free_attrs(to_dma_dev(ctx->drm), size, vaddr, dma, DMA_ATTR_WRITE_COMBINE);
+}
+
+/* ---- panel hooks (include/drm/exynos8895_panel.h) ---------------------- */
+
+/* the panel's DECON event hooks (include/drm/exynos8895_panel.h); one DECON0 */
+static DEFINE_SPINLOCK(d8895_panel_hooks_lock);
+static const struct exynos8895_panel_hooks *d8895_panel_hooks;
+
+void exynos8895_decon_set_panel_hooks(const struct exynos8895_panel_hooks *hooks)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&d8895_panel_hooks_lock, flags);
+	d8895_panel_hooks = hooks;
+	spin_unlock_irqrestore(&d8895_panel_hooks_lock, flags);
+}
+EXPORT_SYMBOL_GPL(exynos8895_decon_set_panel_hooks);
+
+/*
+ * A power request of the S3CFB front-end to the panel (the vendor DECON's
+ * DSIM/panel subdev calls, include/drm/exynos8895_panel.h); 0 without hook.
+ * The hooks, once set, are never cleared.
+ */
+int exynos8895_decon_panel_power(enum exynos8895_panel_power req, bool active)
+{
+	const struct exynos8895_panel_hooks *hooks;
+	unsigned long flags;
+
+	spin_lock_irqsave(&d8895_panel_hooks_lock, flags);
+	hooks = d8895_panel_hooks;
+	spin_unlock_irqrestore(&d8895_panel_hooks_lock, flags);
+
+	if (!hooks || !hooks->power)
+		return 0;
+	return hooks->power(hooks->data, req, active);
+}
+
+/* the panel is in HMD mode (include/drm/exynos8895_panel.h) */
+static bool d8895_panel_hmd_on(void)
+{
+	unsigned long flags;
+	bool on = false;
+
+	spin_lock_irqsave(&d8895_panel_hooks_lock, flags);
+	if (d8895_panel_hooks && d8895_panel_hooks->hmd_on)
+		on = d8895_panel_hooks->hmd_on(d8895_panel_hooks->data);
+	spin_unlock_irqrestore(&d8895_panel_hooks_lock, flags);
+
+	return on;
+}
+
+/*
+ * The vendor frame-done path: decon_irq_handler() stamps the frame done and
+ * wakes the decon0-fsync thread (S:.../dpu/decon_dsi.c:60-68), which sends
+ * V4L2_EVENT_DECON_FRAME_DONE (:1252-1272) and decon_notify() turns into
+ * the panel's PANEL_IOC_EVT_FRAME_DONE (decon_core.c:3475-3481). Here the
+ * panel's hook is called from the interrupt; it only counts and wakes.
+ */
+static void d8895_panel_frame_done(void)
+{
+	spin_lock(&d8895_panel_hooks_lock);
+	if (d8895_panel_hooks && d8895_panel_hooks->frame_done)
+		d8895_panel_hooks->frame_done(d8895_panel_hooks->data);
+	spin_unlock(&d8895_panel_hooks_lock);
+}
+
+/* ---- display hibernation (DESIGN 2.5; S:.../dpu/decon_dsi.c:1037-1250) --- */
+
+#define D8895_HIBER_ON	IS_ENABLED(CONFIG_DRM_EXYNOS8895_DECON_HIBER)
+#define D8895_ENTER_HIBER_CNT	3	/* decon.h:59 DECON_ENTER_HIBER_CNT */
+
+/* the DSIM's ULPS entry points (include/drm/exynos8895_hiber.h); one DECON0 */
+static DEFINE_SPINLOCK(d8895_dsim_hooks_lock);
+static const struct exynos8895_dsim_hooks *d8895_dsim_hooks;
+
+void exynos8895_decon_set_dsim_hooks(const struct exynos8895_dsim_hooks *hooks)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&d8895_dsim_hooks_lock, flags);
+	d8895_dsim_hooks = hooks;
+	spin_unlock_irqrestore(&d8895_dsim_hooks_lock, flags);
+}
+EXPORT_SYMBOL_GPL(exynos8895_decon_set_dsim_hooks);
+
+/* the one DECON0 context, for the hibernation exports below */
+static struct decon8895_ctx *d8895_hiber_ctx;
+
+/*
+ * Runtime kill switches for display hibernation, both at the stock setting:
+ * stock can only turn hibernation off with a rebuild (CONFIG_DECON_HIBER,
+ * S:drivers/video/fbdev/exynos/dpu/Kconfig:55-58, default n, used in
+ * decon_core.c:4194-4199) and its only other gate, decon->hiber.init_status
+ * (S:.../dpu/decon.h:1062), is set once at probe (decon_dsi.c:1231-1248);
+ * ULPS was reachable from userspace only through the vendor ioctl
+ * DSIM_IOC_ENTER_ULPS (S:.../dpu/dsim_drv.c:1456-1474). The parameters are
+ * writable so a display problem can be bisected without a rebuild, as
+ * decon_log_level is (module_param(decon_log_level, int, 0644),
+ * S:.../dpu/decon_core.c:50).
+ */
+static bool d8895_hiber_enabled = true;
+static bool d8895_ulps_enabled = true;
+
+static int d8895_hiber_enable_set(const char *val, const struct kernel_param *kp)
+{
+	struct decon8895_ctx *ctx = READ_ONCE(d8895_hiber_ctx);
+	bool off;
+	int ret;
+
+	ret = kstrtobool(val, &off);
+	if (ret)
+		return ret;
+
+	/*
+	 * Leave hibernation before the switch goes off: a store of 0 must not
+	 * leave the pipe powered down until the next panel command brings it
+	 * back. A refused exit keeps the switch on (the write fails), so the
+	 * enter stays armed and a later panel command can retry the exit.
+	 */
+	if (off && ctx && READ_ONCE(ctx->hiber_init)) {
+		ret = exynos8895_decon_hiber_block_exit();
+		exynos8895_decon_hiber_unblock();
+		if (ret) {
+			dev_warn(ctx->dev, "hibernation exit failed: %d, still enabled\n",
+				 ret);
+			return ret;
+		}
+	}
+
+	return param_set_bool(val, kp);
+}
+
+static const struct kernel_param_ops d8895_hiber_enable_ops = {
+	.set = d8895_hiber_enable_set,
+	.get = param_get_bool,
+};
+module_param_cb(hiber_enable, &d8895_hiber_enable_ops,
+		&d8895_hiber_enabled, 0644);
+MODULE_PARM_DESC(hiber_enable,
+		 "DECON display hibernation; 0 leaves hibernation and stops entering it (default: Y)");
+
+module_param_named(ulps_enable, d8895_ulps_enabled, bool, 0644);
+MODULE_PARM_DESC(ulps_enable,
+		 "put the DSIM link into ULPS together with display hibernation (default: Y)");
+
+/* the bus votes are released at the hibernation enter, defined below */
+static void d8895_bts_release(struct decon8895_ctx *ctx);
+
+static void d8895_hiber_block(struct decon8895_ctx *ctx)
+{
+	atomic_inc(&ctx->hiber_block);
+}
+
+static bool d8895_hiber_blocked(struct decon8895_ctx *ctx)
+{
+	return atomic_read(&ctx->hiber_block) > 0;
+}
+
+static void d8895_hiber_unblock(struct decon8895_ctx *ctx)
+{
+	if (d8895_hiber_blocked(ctx))
+		atomic_dec(&ctx->hiber_block);
+}
+
+/* decon_hiber_trig_reset() (decon.h:1476-1480) */
+static void d8895_hiber_trig_reset(struct decon8895_ctx *ctx)
+{
+	atomic_set(&ctx->hiber_trig, 0);
+}
+
+/*
+ * decon_hiber_enter_cond() (decon.h:1514-1529): 3 counted TEs without a frame
+ * done, no blocker, the CAM PD idle (cam-stat 0x16484024, FDT:7555-7557),
+ * no timeout IRQ since the last commit, the panel not in HMD mode. The DSR
+ * (!dsr_on) term of stock is omitted: s->dsr_on is stored but unused in this
+ * tree (L6A:909); hibernation during self-refresh is safe, the exit re-inits
+ * the pipe while the panel holds its frame memory.
+ */
+static bool d8895_hiber_enter_cond(struct decon8895_ctx *ctx)
+{
+	u32 cam = ctx->hiber_cam ? readl(ctx->hiber_cam) : 0xf;
+
+	if (d8895_hiber_blocked(ctx))
+		return false;
+	if (cam & 0xf)
+		return false;
+	if (READ_ONCE(ctx->hiber_timeout))
+		return false;
+	if (atomic_inc_return(&ctx->hiber_trig) <= D8895_ENTER_HIBER_CNT)
+		return false;
+	if (d8895_panel_hmd_on())
+		return false;
+	return true;
+}
+
+/*
+ * decon_enter_hiber() (decon_dsi.c:1113-1199): stop the DECON, power the DPPs
+ * and the DISP vote down, enter DSIM ULPS and put both runtime-PM references
+ * so pd_dpu0 and pd_dpu1 can power off. The full register init is deferred to
+ * the next commit (needs_init); the exit only powers the pipe back on.
+ */
+static int d8895_hiber_enter(struct decon8895_ctx *ctx)
+{
+	const struct exynos8895_dsim_hooks *hooks;
+	unsigned long flags;
+	int ret = 0, ch;
+
+	if (!D8895_HIBER_ON || !READ_ONCE(ctx->hiber_init) ||
+	    !READ_ONCE(d8895_hiber_enabled))
+		return 0;
+	mutex_lock(&ctx->hiber_lock);
+	if (!ctx->rpm_held || READ_ONCE(ctx->hiber_on) || d8895_hiber_blocked(ctx))
+		goto out;
+
+	spin_lock_irqsave(&d8895_dsim_hooks_lock, flags);
+	hooks = d8895_dsim_hooks;
+	spin_unlock_irqrestore(&d8895_dsim_hooks_lock, flags);
+	if (!hooks || (READ_ONCE(d8895_ulps_enabled) &&
+		       (!hooks->enter_ulps || !hooks->exit_ulps)))
+		goto out;
+
+	d8895_hiber_block(ctx);
+	if (atomic_read(&ctx->oneshot_state) != 0)
+		goto unblock;	/* a frame is armed or started: try the next TE */
+
+	d8895_hiber_trig_reset(ctx);
+
+	d8895_int_disable(ctx);	/* decon_reg_set_int(..., 0) */
+	/* the frame IRQs must not run on gated clocks */
+	disable_irq(ctx->irq_fs);
+	disable_irq(ctx->irq_fd);
+	disable_irq(ctx->irq_extra);
+
+	ret = d8895_stop(ctx);
+	if (ret)
+		dev_err(ctx->dev, "hibernation enter with the DECON not stopped\n");
+	d8895_clear_int_all(ctx);
+
+	/* cur_using_dpp = 0, decon_dpp_stop(false): every channel off */
+	for (ch = 0; ch < D8895_NR_CH; ch++)
+		if (ctx->ch_on & BIT(ch))
+			d8895_dpp_deinit(ctx, ch, false);
+
+	/* dpu_bts_release_bw() once the DPPs are stopped (decon_core.c:896-901) */
+	d8895_bts_release(ctx);
+
+	WRITE_ONCE(ctx->hiber_on, true);
+	greatlte_l5_inc(GL5_ON, he);
+	if (READ_ONCE(d8895_ulps_enabled)) {
+		ret = hooks->enter_ulps(hooks->data);
+		WRITE_ONCE(ctx->hiber_ulps, ret == 0);
+		if (ret)
+			dev_warn(ctx->dev, "DSIM ULPS enter failed: %d\n", ret);
+	}
+
+	ctx->needs_init = true;
+	pm_runtime_put_sync(ctx->dev);
+unblock:
+	d8895_hiber_unblock(ctx);
+out:
+	mutex_unlock(&ctx->hiber_lock);
+	return ret;
+}
+
+/*
+ * decon_exit_hiber() (decon_dsi.c:1037-1111): power the DECON back on, leave
+ * ULPS with a re-initialised link and re-enable the interrupts; the register
+ * init runs with the next commit (needs_init). Stays hibernating on a resume
+ * failure so the next commit retries.
+ */
+static int d8895_hiber_exit(struct decon8895_ctx *ctx)
+{
+	const struct exynos8895_dsim_hooks *hooks;
+	unsigned long flags;
+	int ret = 0;
+
+	/* the exit runs whatever hiber_enable says: the pipe must come back */
+	if (!D8895_HIBER_ON || !READ_ONCE(ctx->hiber_init))
+		return 0;
+	d8895_hiber_block(ctx);
+	/* a queued enter runs first (decon_dsi.c:1048, flush before the lock) */
+	flush_workqueue(ctx->hiber_wq);
+	mutex_lock(&ctx->hiber_lock);
+	if (!READ_ONCE(ctx->hiber_on))
+		goto out;
+
+	ret = pm_runtime_get_sync(ctx->dev);
+	if (ret < 0) {
+		dev_err(ctx->dev, "hibernation exit without the DECON: %d\n", ret);
+		goto out;
+	}
+	ret = 0;	/* already active (1) is success too */
+
+	spin_lock_irqsave(&d8895_dsim_hooks_lock, flags);
+	hooks = d8895_dsim_hooks;
+	spin_unlock_irqrestore(&d8895_dsim_hooks_lock, flags);
+	/*
+	 * hiber_ulps, not ulps_enable: the link is in ULPS whenever the enter
+	 * put it there, also when the switch was turned off in between.
+	 */
+	if (hooks && hooks->exit_ulps && READ_ONCE(ctx->hiber_ulps)) {
+		WRITE_ONCE(ctx->hiber_ulps, false);
+		ret = hooks->exit_ulps(hooks->data);
+		if (ret)
+			dev_warn(ctx->dev, "DSIM ULPS exit failed: %d\n", ret);
+	}
+
+	enable_irq(ctx->irq_fs);
+	enable_irq(ctx->irq_fd);
+	enable_irq(ctx->irq_extra);
+	d8895_int_enable(ctx);
+
+	WRITE_ONCE(ctx->hiber_on, false);
+	greatlte_l5_inc(GL5_ON, hx);
+	d8895_hiber_trig_reset(ctx);
+out:
+	d8895_hiber_unblock(ctx);
+	mutex_unlock(&ctx->hiber_lock);
+	return ret;
+}
+
+static void d8895_hiber_work(struct work_struct *work)
+{
+	struct decon8895_ctx *ctx = container_of(work, struct decon8895_ctx, hiber_work);
+
+	if (!D8895_HIBER_ON || !READ_ONCE(ctx->hiber_init) ||
+	    !READ_ONCE(d8895_hiber_enabled))
+		return;
+	if (d8895_hiber_enter_cond(ctx))
+		d8895_hiber_enter(ctx);
+}
+
+/* decon_hiber_block_exit() (decon_dsi.c:1201-1212) */
+int exynos8895_decon_hiber_block_exit(void)
+{
+	struct decon8895_ctx *ctx = READ_ONCE(d8895_hiber_ctx);
+	int ret = 0;
+
+	if (!D8895_HIBER_ON || !ctx || !READ_ONCE(ctx->hiber_init))
+		return 0;
+	d8895_hiber_block(ctx);
+	ret = d8895_hiber_exit(ctx);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(exynos8895_decon_hiber_block_exit);
+
+void exynos8895_decon_hiber_unblock(void)
+{
+	struct decon8895_ctx *ctx = READ_ONCE(d8895_hiber_ctx);
+
+	if (!D8895_HIBER_ON || !ctx || !READ_ONCE(ctx->hiber_init))
+		return;
+	d8895_hiber_unblock(ctx);
+}
+EXPORT_SYMBOL_GPL(exynos8895_decon_hiber_unblock);
+
 /* ---- CRTC ops ------------------------------------------------------------ */
 
 /*
@@ -1199,6 +1687,12 @@ static void d8895_atomic_enable(struct exynos_drm_crtc *crtc)
 		}
 		ctx->rpm_held = true;
 	}
+	/* a failed disable may have left hibernation on: leave it first */
+	d8895_hiber_block(ctx);
+	d8895_hiber_exit(ctx);
+	d8895_hiber_unblock(ctx);
+	if (READ_ONCE(ctx->hiber_on))
+		return;	/* the begin/flush below retry the exit */
 
 	pinctrl_pm_select_default_state(ctx->dev);	/* hw_te_on */
 
@@ -1216,12 +1710,25 @@ static void d8895_atomic_enable(struct exynos_drm_crtc *crtc)
 		enable_irq(ctx->irq_extra);
 		ctx->irqs_on = true;
 	}
+
+	/* the new CRTC state is current here */
+	d8895_panic_alloc(ctx, &crtc->base.state->adjusted_mode);
 }
 
 static void d8895_atomic_disable(struct exynos_drm_crtc *crtc)
 {
 	struct decon8895_ctx *ctx = crtc->ctx;
 	int ch;
+
+	/* blanking leaves hibernation first; the pipe is reachable below */
+	d8895_hiber_block(ctx);
+	d8895_hiber_exit(ctx);
+	if (READ_ONCE(ctx->hiber_on)) {
+		dev_err(ctx->dev, "disable while hibernating: pipe left on\n");
+		d8895_hiber_unblock(ctx);
+		return;
+	}
+	d8895_hiber_unblock(ctx);
 
 	if (ctx->rpm_held)
 		d8895_int_disable(ctx);
@@ -1436,6 +1943,15 @@ static void d8895_atomic_begin(struct exynos_drm_crtc *crtc)
 
 	if (!ctx->rpm_held)	/* atomic_enable could not resume: never touch the block */
 		return;
+	/*
+	 * Every commit leaves hibernation first (decon_set_win_info(),
+	 * S:.../dpu/decon_dsi.c:761); the block is held to the end of the
+	 * flush, so a TE cannot power the pipe down under the new frame.
+	 */
+	d8895_hiber_block(ctx);
+	d8895_hiber_exit(ctx);
+	if (READ_ONCE(ctx->hiber_on))	/* the exit failed: touch nothing below */
+		return;
 	if (readl_poll_timeout(ctx->regs + D8895_SHADOW_REG_UPDATE_REQ, val, !val, 100,
 			       D8895_SHADOW_TIMEOUT_US)) {
 		dev_warn(ctx->dev, "shadow update request not cleared (0x%08x)\n", val);
@@ -1495,6 +2011,11 @@ static void d8895_atomic_flush(struct exynos_drm_crtc *crtc)
 
 	if (!ctx->rpm_held)
 		goto out_event;
+	if (READ_ONCE(ctx->hiber_on))	/* begin could not leave hibernation: no hardware */
+		goto out_unblock;
+	/* a programmed update clears the timeout (decon_core.c:2013, 2028) */
+	if (D8895_HIBER_ON)
+		WRITE_ONCE(ctx->hiber_timeout, false);
 
 	if (ctx->needs_init) {
 		d8895_hw_init(ctx, &cs->adjusted_mode, crtc->dsc);
@@ -1570,12 +2091,21 @@ static void d8895_atomic_flush(struct exynos_drm_crtc *crtc)
 
 	/* decon_reg_all_win_shadow_update_req() (decon_reg.c:825-838) */
 	d_mask(ctx, D8895_SHADOW_REG_UPDATE_REQ, ~0, D8895_SHADOW_REG_UPDATE_REQ_FOR_DECON0);
-	if (!d8895_start(ctx) && READ_ONCE(ctx->oneshot))
-		atomic_set(&ctx->oneshot_state, 1);
+	/*
+	 * One-shot unless the panel is in HMD mode: the vendor then keeps the
+	 * trigger running ("video_emul", S:.../dpu/decon_core.c:2224-2228,
+	 * 2320-2323).
+	 */
+	if (!d8895_start(ctx)) {
+		if (READ_ONCE(ctx->oneshot) && !d8895_panel_hmd_on())
+			atomic_set(&ctx->oneshot_state, 1);
+	}
 
 	/* falling votes after the hardware update (S:dpu/bts.c:292-307) */
 	d8895_bts_update(ctx, true);
 
+out_unblock:
+	d8895_hiber_unblock(ctx);
 out_event:
 	spin_lock_irqsave(&ctx->vblank_lock, flags);
 	exynos_crtc_handle_event(crtc);
@@ -1614,6 +2144,13 @@ static void d8895_te_handler(struct exynos_drm_crtc *crtc)
 	if (ctx->vsync_cb)
 		ctx->vsync_cb(ctx->vsync_data, ts);
 	spin_unlock_irqrestore(&ctx->vsync_lock, flags);
+	/*
+	 * Hibernation: every TE queues the enter check while the CRTC is on
+	 * (decon_dsi.c:518-523); the check counts TEs without a frame done.
+	 */
+	if (D8895_HIBER_ON && ctx->rpm_held && READ_ONCE(ctx->hiber_init) &&
+	    READ_ONCE(d8895_hiber_enabled) && !d8895_hiber_blocked(ctx))
+		queue_work(ctx->hiber_wq, &ctx->hiber_work);
 }
 
 static enum drm_mode_status d8895_mode_valid(struct exynos_drm_crtc *crtc,
@@ -1734,6 +2271,93 @@ static const struct drm_plane_helper_funcs d8895_plane_helper_funcs = {
 	.atomic_update = d8895_plane_atomic_update,
 };
 
+static struct decon8895_ctx *d8895_ctx_of_primary(struct drm_plane *plane)
+{
+	return container_of(plane, struct decon8895_ctx, planes[D8895_CH_G0].base);
+}
+
+/*
+ * drm_panic (A:drivers/gpu/drm/drm_panic.c:874-902), with the panic lock
+ * held: the panic buffer, only while the CRTC is on and initialised.
+ */
+static int d8895_get_scanout_buffer(struct drm_plane *plane, struct drm_scanout_buffer *sb)
+{
+	struct decon8895_ctx *ctx = d8895_ctx_of_primary(plane);
+
+	if (!ctx->panic_vaddr || !READ_ONCE(ctx->rpm_held) || READ_ONCE(ctx->needs_init))
+		return -ENODEV;
+
+	sb->format = drm_format_info(DRM_FORMAT_XRGB8888);
+	sb->width = ctx->panic_w;
+	sb->height = ctx->panic_h;
+	sb->pitch[0] = ctx->panic_w * 4;
+	iosys_map_set_vaddr(&sb->map[0], ctx->panic_vaddr);
+
+	return 0;
+}
+
+/*
+ * Put the panic buffer on screen from a panic: no lock but the held panic
+ * lock (trig_lock may be held by a CPU the panic stopped), no IRQ
+ * enable/disable, no sleep, no allocation. G0 1:1 over the whole screen in
+ * window 5 with every other window off, then the start of d8895_atomic_flush()
+ * and d8895_start() (S:.../dpu/decon_reg.c:825-838, :2097-2111) without the
+ * RUN_STATUS poll.
+ */
+static void d8895_panic_flush(struct drm_plane *plane)
+{
+	struct decon8895_ctx *ctx = d8895_ctx_of_primary(plane);
+	u32 w = ctx->panic_w, h = ctx->panic_h;
+	const struct drm_rect full = DRM_RECT_INIT(0, 0, w, h);
+	const struct d8895_dpp_cfg cfg = {
+		.fmt	= d8895_find_fmt(DRM_FORMAT_XRGB8888),
+		.y	= ctx->panic_dma,
+		.sw	= w,
+		.sh	= h,
+		.fw	= w,
+		.fh	= h,
+		.dw	= w,
+		.dh	= h,
+	};
+	unsigned int win;
+
+	/*
+	 * Best effort only: with the pipe hibernating the clocks are gated
+	 * and every register access below would hang the crashing CPU.
+	 */
+	if (D8895_HIBER_ON && READ_ONCE(ctx->hiber_init) && READ_ONCE(ctx->hiber_on))
+		return;
+
+	/* the panic screen out of the write-combining buffer before the fetch */
+	wmb();
+
+	if (!(ctx->ch_on & BIT(D8895_CH_G0)))
+		d8895_dpp_init_regs(ctx, D8895_CH_G0);
+	d8895_dpp_program(ctx, D8895_CH_G0, &cfg);
+	for (win = 0; win < D8895_WIN_G0; win++)
+		d8895_win_disable(ctx, win);
+	d8895_win_program(ctx, D8895_WIN_G0, d8895_ch[D8895_CH_G0].chmap, &full,
+			  DRM_BLEND_ALPHA_OPAQUE, DRM_MODE_BLEND_PIXEL_NONE, false, false, 0);
+
+	d_mask(ctx, D8895_SHADOW_REG_UPDATE_REQ, ~0, D8895_SHADOW_REG_UPDATE_REQ_FOR_DECON0);
+	d_mask(ctx, D8895_GLOBAL_CONTROL, ~0,
+	       D8895_GLOBAL_CONTROL_DECON_EN | D8895_GLOBAL_CONTROL_DECON_EN_F);
+	d_mask(ctx, D8895_SHADOW_REG_UPDATE_REQ, ~0, D8895_SHADOW_REG_UPDATE_REQ_GLOBAL);
+	/* decon_reg_set_trigger() enable (S:.../dpu/decon_reg.c:1006-1024), without trig_lock */
+	d_mask(ctx, D8895_HW_SW_TRIG_CONTROL, D8895_HW_TRIG_EN,
+	       D8895_HW_TRIG_EN | D8895_HW_TRIG_MASK_DECON);
+	if (READ_ONCE(ctx->oneshot))
+		atomic_set(&ctx->oneshot_state, 1);
+}
+
+/* G0, the primary plane, also carries the drm_panic hooks */
+static const struct drm_plane_helper_funcs d8895_primary_helper_funcs = {
+	.atomic_check = d8895_plane_atomic_check,
+	.atomic_update = d8895_plane_atomic_update,
+	.get_scanout_buffer = d8895_get_scanout_buffer,
+	.panic_flush = d8895_panic_flush,
+};
+
 static void d8895_plane_reset(struct drm_plane *plane)
 {
 	struct d8895_plane_state *ps;
@@ -1802,7 +2426,8 @@ static int d8895_plane_init(struct decon8895_ctx *ctx, unsigned int ch)
 				       "%s", d8895_ch[ch].name);
 	if (ret)
 		return ret;
-	drm_plane_helper_add(&p->base, &d8895_plane_helper_funcs);
+	drm_plane_helper_add(&p->base, ch == D8895_CH_G0 ? &d8895_primary_helper_funcs :
+							   &d8895_plane_helper_funcs);
 	p->ch = ch;
 	ret = drm_plane_create_zpos_property(&p->base, zpos_default[ch], 0, D8895_NR_WIN - 1);
 	if (ret)
@@ -1862,6 +2487,9 @@ static irqreturn_t d8895_irq(int irq, void *dev_id)
 		d_write(ctx, D8895_INTERRUPT_PENDING, D8895_DPU_FRAME_DONE_INT_PEND);
 		atomic_inc(&ctx->fd_cnt);
 		greatlte_l5_inc(GL5_ON, fd);
+		/* a frame went out: hibernation counts from here (decon_dsi.c:63) */
+		if (D8895_HIBER_ON && READ_ONCE(ctx->hiber_init))
+			d8895_hiber_trig_reset(ctx);
 		/*
 		 * One-shot: mask the HW trigger once the updated frame is out, as
 		 * the vendor does after each update (S:.../dpu/decon_core.c:
@@ -1876,6 +2504,7 @@ static irqreturn_t d8895_irq(int irq, void *dev_id)
 			drm_crtc_handle_vblank(&ctx->crtc->base);
 			spin_unlock(&ctx->vblank_lock);
 		}
+		d8895_panel_frame_done();
 	}
 	if (pend & D8895_DPU_DQE_DIMMING_START_INT_PEND)
 		d_write(ctx, D8895_INTERRUPT_PENDING, D8895_DPU_DQE_DIMMING_START_INT_PEND);
@@ -1902,6 +2531,9 @@ static irqreturn_t d8895_irq(int irq, void *dev_id)
 			d_write(ctx, D8895_EXTRA_INTERRUPT_PENDING, D8895_DPU_TIME_OUT_INT_PEND);
 			atomic_inc(&ctx->to_cnt);
 			greatlte_l5_inc(GL5_ON, to);
+			/* hibernation stays off until the next programmed update */
+			if (D8895_HIBER_ON && READ_ONCE(ctx->hiber_init))
+				WRITE_ONCE(ctx->hiber_timeout, true);
 			dev_err_ratelimited(ctx->dev, "timeout irq\n");
 		}
 		if (ext & D8895_DPU_ERROR_INT_PEND) {
@@ -2044,10 +2676,11 @@ static void d8895_unbind(struct device *dev, struct device *master, void *data)
 
 	if (ctx->rpm_held)
 		d8895_atomic_disable(ctx->crtc);
-	if (ctx->disp_qos_added) {	/* S:dpu/bts.c:429-435 dpu_bts_deinit() */
+if (ctx->disp_qos_added) {	/* S:dpu/bts.c:429-435 dpu_bts_deinit() */
 		exynos_bus_qos_remove_request(&ctx->disp_req);
 		ctx->disp_qos_added = false;
 	}
+	d8895_panic_free(ctx);
 	exynos_drm_unregister_dma(ctx->drm, ctx->dev, &ctx->dma_priv);
 	ctx->crtc = NULL;	/* the client interface refuses an unbound DECON */
 }
@@ -2276,6 +2909,35 @@ static int d8895_probe(struct platform_device *pdev)
 		goto err_rpm;
 	ctx->rpm_held = true;
 
+	/*
+	 * 4b. hibernation (DESIGN 2.5; decon_register_hiber_work(),
+	 * S:.../dpu/decon_dsi.c:1231-1250): the lock, counters and work before
+	 * any IRQ that queues it; the workqueue fails the probe like stock.
+	 */
+	if (D8895_HIBER_ON) {
+		struct device_node *cam;
+
+		mutex_init(&ctx->hiber_lock);
+		INIT_WORK(&ctx->hiber_work, d8895_hiber_work);
+		atomic_set(&ctx->hiber_trig, 0);
+		atomic_set(&ctx->hiber_block, 0);
+		ctx->hiber_wq = alloc_ordered_workqueue("decon_hiber", 0);
+		if (!ctx->hiber_wq) {
+			ret = -ENOMEM;
+			goto err_put;
+		}
+		/* CAM running status for the enter check (decon_core.c:3869-3876) */
+		cam = of_get_child_by_name(dev->of_node, "cam-stat");
+		if (!cam) {
+			dev_info(dev, "no cam-stat node: hibernation stays off\n");
+		} else {
+			ctx->hiber_cam = of_iomap(cam, 0);
+			of_node_put(cam);
+			if (!ctx->hiber_cam)
+				dev_info(dev, "no cam-stat mapping: hibernation stays off\n");
+		}
+	}
+
 	/* 5. IRQs, requested disabled */
 	ret = d8895_get_irq(ctx, "frame_start", d8895_irq, false);
 	if (ret < 0)
@@ -2319,6 +2981,11 @@ static int d8895_probe(struct platform_device *pdev)
 	greatlte_l5_set(GL5_ON, ho, ctx->handover);
 	greatlte_l5_set(GL5_ON, decon_dev, dev);
 
+	if (D8895_HIBER_ON && ctx->hiber_wq && ctx->hiber_cam) {
+		WRITE_ONCE(ctx->hiber_init, true);
+		WRITE_ONCE(d8895_hiber_ctx, ctx);
+	}
+
 	return 0;
 
 err_put:
@@ -2326,6 +2993,8 @@ err_put:
 	pm_runtime_put_sync(dev);
 err_rpm:
 	pm_runtime_disable(dev);
+	if (D8895_HIBER_ON && ctx->hiber_wq)
+		destroy_workqueue(ctx->hiber_wq);
 	return ret;
 }
 
@@ -2333,6 +3002,13 @@ static void d8895_remove(struct platform_device *pdev)
 {
 	struct decon8895_ctx *ctx = platform_get_drvdata(pdev);
 
+	if (D8895_HIBER_ON && READ_ONCE(ctx->hiber_init)) {
+		WRITE_ONCE(ctx->hiber_init, false);
+		WRITE_ONCE(d8895_hiber_ctx, NULL);
+		cancel_work_sync(&ctx->hiber_work);
+		destroy_workqueue(ctx->hiber_wq);
+		iounmap(ctx->hiber_cam);
+	}
 	greatlte_l5_set(GL5_ON, decon_dev, NULL);
 	greatlte_l5_set(GL5_ON, decon_regs, NULL);
 	greatlte_l5_set(GL5_ON, decon_dma, NULL);

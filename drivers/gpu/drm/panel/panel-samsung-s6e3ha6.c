@@ -18,18 +18,27 @@
 
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
+#include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/regulator/consumer.h>
 #include <linux/soc/samsung/greatlte-l5.h>
 #include <linux/string.h>
+#include <linux/workqueue.h>
 
 #include <drm/display/drm_dsc.h>
+#include <drm/drm_bridge.h>
+#include <drm/drm_bridge_helper.h>
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_modes.h>
+#include <drm/drm_modeset_lock.h>
 #include <drm/drm_panel.h>
 #include <drm/drm_probe_helper.h>
+#include <drm/exynos8895_panel.h>
 
+/* the vendor panel framework (CONFIG_DRM_PANEL_SAMSUNG_S6E3HA6_STOCK) */
+#include "s6e3ha6-stock/panel_dpu.h"
+/* the standalone AID dimming engine, for the fixed sequences without it */
 #include "panel-samsung-s6e3ha6-bright.h"
 
 #define S6E3HA6_INIT_TRIES	3	/* the vendor retries up to 30 times (panel_drv.c:880-889) */
@@ -50,16 +59,60 @@ struct s6e3ha6 {
 	struct gpio_desc *reset_gpio;
 	struct gpio_desc *det_gpio;
 	struct regulator *supplies[S6E3HA6_NR_SUPPLIES];
+	/*
+	 * The AID dimming engine with its backlight device and its lcd class
+	 * device, for the fixed sequences below. NULL when the vendor
+	 * framework drives the panel: it registers the same two devices
+	 * itself (S:.../panel/panel_bl.c:552-559, panel_drv.c:673) and two
+	 * backlight devices cannot share the stock name "panel"
+	 * (A:drivers/video/backlight/backlight.c:384-401, device_register()
+	 * -> -EEXIST, after which stock's panel_bl_probe() writes through the
+	 * error pointer, panel_bl.c:544-545).
+	 */
 	struct s6e3ha6_bright *bright;
 	bool booted;		/* S-Boot left the panel on and initialised */
 	bool powered;		/* rails on (by S-Boot's boot reference or prepare) */
+	bool on;		/* initialised: the vendor PANEL_STATE_NORMAL */
+
+	/* ESD: disp-det falling edge (vendor panel_register_isr, disp_det_handler) */
+	int det_irq;
+	bool det_irq_on;
+	struct workqueue_struct *det_wq;
+	struct work_struct det_work;
 	u32 lcdtype;
 	const char *variant;
+
+	/*
+	 * The vendor panel framework (DESIGN 2.2): the DRM ops call it as the
+	 * vendor DSIM called the panel (S:.../dpu/dsim_drv.c:1102-1291). It is
+	 * probed (panel id, resources, lcd/backlight/mdnie/copr/poc devices) at
+	 * the first enable, when the link is up; if that fails the fixed
+	 * sequences below drive the panel.
+	 */
+	struct panel_device *stock;
+	bool stock_probed;
+	bool stock_failed;
+	struct exynos8895_panel_hooks decon_hooks;
+	/*
+	 * S3CFB DOZE / DOZE_SUSPEND (DESIGN 2.3), under stock_lock: DOZE with
+	 * the display off makes the next enable a PANEL_IOC_DOZE; DOZE_SUSPEND
+	 * of an active display makes the next disable/unprepare leave the panel
+	 * powered in its low-power mode.
+	 */
+	struct mutex stock_lock;
+	enum { S6E3HA6_DOZE_NONE, S6E3HA6_DOZE_ENTER, S6E3HA6_DOZE_SUSPEND } doze;
 };
 
 static inline struct s6e3ha6 *to_s6e3ha6(struct drm_panel *panel)
 {
 	return container_of(panel, struct s6e3ha6, panel);
+}
+
+static inline struct panel_device *s6e3ha6_stock(struct s6e3ha6 *ctx)
+{
+	if (!IS_ENABLED(CONFIG_DRM_PANEL_SAMSUNG_S6E3HA6_STOCK) || ctx->stock_failed)
+		return NULL;
+	return ctx->stock;
 }
 
 /*
@@ -176,9 +229,15 @@ static void s6e3ha6_power_off(struct s6e3ha6 *ctx)
 	greatlte_l5_set(GL5_ON, pw, false);
 }
 
+static int s6e3ha6_stock_set_power(struct s6e3ha6 *ctx, int power);
+
 static int s6e3ha6_prepare(struct drm_panel *panel)
 {
 	struct s6e3ha6 *ctx = to_s6e3ha6(panel);
+
+	/* dsim_enable(): PANEL_IOC_SET_POWER(1) before the link (S:.../dpu/dsim_drv.c:1169) */
+	if (s6e3ha6_stock(ctx))
+		return s6e3ha6_stock_set_power(ctx, 1);
 
 	/* S-Boot's rails are held by the boot references taken at probe */
 	if (ctx->booted || ctx->powered)
@@ -202,25 +261,221 @@ static bool s6e3ha6_det_ok(struct s6e3ha6 *ctx)
 	return false;
 }
 
+/*
+ * The disp-det interrupt is on while the panel is initialised: enabled after
+ * a good init (S:.../panel/panel_drv.c:223-225, after clear_disp_det_pend()),
+ * disabled before the exit sequence (:244). The vendor requests it enabled at
+ * probe (:1585-1586) for the panel S-Boot initialised; the flag keeps the depth
+ * balanced when an enable fails.
+ */
+static void s6e3ha6_det_irq(struct s6e3ha6 *ctx, bool on)
+{
+	if (ctx->det_irq <= 0 || ctx->det_irq_on == on)
+		return;
+	if (on)
+		enable_irq(ctx->det_irq);
+	else
+		disable_irq(ctx->det_irq);
+	ctx->det_irq_on = on;
+}
+
+/*
+ * The DSIM state the framework's command path checks (the vendor
+ * dsim->state == DSIM_STATE_ON), switched under the lock its sequences run
+ * under.
+ */
+static void s6e3ha6_stock_link(struct panel_device *stock, bool on)
+{
+	mutex_lock(&stock->op_lock);
+	stock->link_on = on;
+	mutex_unlock(&stock->op_lock);
+}
+
+/* the framework's disp-det interrupt calls (pad.disp_det_irq) */
+static void s6e3ha6_stock_det_irq(struct panel_device *stock, bool on)
+{
+	struct s6e3ha6 *ctx = dev_get_drvdata(stock->dev);
+
+	/* on after a good init, off before the exit sequence: the panel is initialised */
+	ctx->on = on;
+	s6e3ha6_det_irq(ctx, on);
+}
+
+static int s6e3ha6_stock_set_power(struct s6e3ha6 *ctx, int power)
+{
+	struct panel_device *stock = ctx->stock;
+	int ret;
+
+	ret = panel_drv_ioctl(stock, PANEL_IOC_SET_POWER, &power);
+	greatlte_l5_set(GL5_ON, pw, stock->state.power == PANEL_POWER_ON);
+
+	return ret;
+}
+
+/* the DECON's frame-done interrupt: PANEL_IOC_EVT_FRAME_DONE */
+static void s6e3ha6_stock_frame_done(void *data)
+{
+	struct s6e3ha6 *ctx = data;
+
+	panel_drv_frame_done(ctx->stock);
+}
+
+/* the DECON's HMD check: the vendor DECON read panel_state.hmd_on (decon_core.c:2226) */
+static bool s6e3ha6_stock_hmd_on(void *data)
+{
+	struct s6e3ha6 *ctx = data;
+
+	return READ_ONCE(ctx->stock->state.hmd_on) == PANEL_HMD_ON;
+}
+
+/*
+ * The S3CFB power requests, as the vendor DSIM passed them to the panel:
+ * - UNBLANK with the display on: decon_enable() -> dsim_enable() with the
+ *   DSIM on -> PANEL_IOC_SLEEP_OUT, which leaves ALPM (S:.../dpu/
+ *   decon_core.c:640-649, dsim_drv.c:1159-1166), plus the mDNIe unblank;
+ * - DOZE with the display on: dsim_doze() -> PANEL_IOC_DOZE (dsim_drv.c:
+ *   1300-1306); with it off, the next enable does it (dsim_drv.c:1308-1322);
+ * - DOZE_SUSPEND with the display on: the next disable is
+ *   dsim_doze_suspend() (dsim_drv.c:1332-1365: PANEL_IOC_DOZE, no SLEEP_IN,
+ *   no power off);
+ * - POWERDOWN, and UNBLANK or DOZE_SUSPEND with the display off, cancel a
+ *   pending DOZE: the next enable is a normal one.
+ */
+static int s6e3ha6_stock_power(void *data, enum exynos8895_panel_power req, bool active)
+{
+	struct s6e3ha6 *ctx = data;
+	struct panel_device *stock = s6e3ha6_stock(ctx);
+	int ret = 0;
+
+	if (!stock)
+		return 0;
+
+	mutex_lock(&ctx->stock_lock);
+	ctx->doze = S6E3HA6_DOZE_NONE;
+	switch (req) {
+	case EXYNOS8895_PANEL_UNBLANK:
+		if (active) {
+			ret = panel_drv_ioctl(stock, PANEL_IOC_SLEEP_OUT, NULL);
+			mdnie_unblank(&stock->mdnie);
+		}
+		break;
+	case EXYNOS8895_PANEL_DOZE:
+		if (active)
+			ret = panel_drv_ioctl(stock, PANEL_IOC_DOZE, NULL);
+		else
+			ctx->doze = S6E3HA6_DOZE_ENTER;
+		break;
+	case EXYNOS8895_PANEL_DOZE_SUSPEND:
+		if (active)
+			ctx->doze = S6E3HA6_DOZE_SUSPEND;
+		break;
+	case EXYNOS8895_PANEL_POWERDOWN:
+		break;
+	}
+	mutex_unlock(&ctx->stock_lock);
+
+	return ret;
+}
+
+/*
+ * PANEL_IOC_PANEL_PROBE, which the vendor DSIM probe issues once with the
+ * link up (S:.../dpu/dsim_drv.c:1978): panel id, resources, and the lcd,
+ * backlight, mdnie, copr, active clock and poc devices. Run at the first
+ * enable, when this panel's host can transfer. On failure the fixed
+ * sequences take over, from the power state the framework left.
+ */
+static bool s6e3ha6_stock_probe(struct s6e3ha6 *ctx)
+{
+	struct panel_device *stock = ctx->stock;
+	int ret;
+
+	if (ctx->stock_probed)
+		return true;
+
+	s6e3ha6_stock_link(stock, true);
+	ret = panel_drv_ioctl(stock, PANEL_IOC_PANEL_PROBE, NULL);
+	if (!ret) {
+		ctx->stock_probed = true;
+		/* the DECON's panel events, once the framework's COPR exists */
+		ctx->decon_hooks.frame_done = s6e3ha6_stock_frame_done;
+		ctx->decon_hooks.power = s6e3ha6_stock_power;
+		ctx->decon_hooks.hmd_on = s6e3ha6_stock_hmd_on;
+		ctx->decon_hooks.data = ctx;
+		exynos8895_decon_set_panel_hooks(&ctx->decon_hooks);
+		return true;
+	}
+
+	dev_err(&ctx->dsi->dev, "panel framework probe failed (%d), using the fixed sequences\n",
+		ret);
+	s6e3ha6_stock_link(stock, false);
+	ctx->stock_failed = true;
+	ctx->powered = stock->state.power == PANEL_POWER_ON;
+	return false;
+}
+
+/*
+ * dsim_enable(): the DSIM on, then PANEL_IOC_SLEEP_OUT (S:.../dpu/dsim_drv.c:
+ * 1242-1249); the DECON's PANEL_IOC_DISP_ON while the panel's display is off
+ * (decon_core.c:2307-2313); the vendor mDNIe unblank notifier (mdnie_unblank()).
+ */
+static int s6e3ha6_stock_enable(struct s6e3ha6 *ctx)
+{
+	struct panel_device *stock = ctx->stock;
+	int disp_on = 1;
+	bool doze;
+	int ret;
+
+	mutex_lock(&ctx->stock_lock);
+	doze = ctx->doze == S6E3HA6_DOZE_ENTER;
+	ctx->doze = S6E3HA6_DOZE_NONE;
+	mutex_unlock(&ctx->stock_lock);
+
+	s6e3ha6_stock_link(stock, true);
+	/* dsim_doze() from off: PANEL_IOC_DOZE after the link (S:.../dpu/dsim_drv.c:1308-1322) */
+	ret = panel_drv_ioctl(stock, doze ? PANEL_IOC_DOZE : PANEL_IOC_SLEEP_OUT, NULL);
+	if (ret)
+		return ret;
+
+	if (stock->state.disp_on == PANEL_DISPLAY_OFF) {
+		ret = panel_drv_ioctl(stock, PANEL_IOC_DISP_ON, &disp_on);
+		if (ret)
+			return ret;
+	}
+
+	/* the fb0 unblank of the vendor mDNIe notifier; DOZE is no unblank */
+	if (!doze)
+		mdnie_unblank(&stock->mdnie);
+	greatlte_l5_set(GL5_ON, bt, false);
+
+	return 0;
+}
+
 static int s6e3ha6_enable(struct drm_panel *panel)
 {
 	struct s6e3ha6 *ctx = to_s6e3ha6(panel);
 	struct mipi_dsi_multi_context dctx = { .dsi = ctx->dsi };
 	int try, ret;
 
+	if (s6e3ha6_stock(ctx) && s6e3ha6_stock_probe(ctx))
+		return s6e3ha6_stock_enable(ctx);
+
 	/*
 	 * The MTP / HBM_GAMMA registers the AID dimming table is built from are
 	 * only reachable over the DSI link, which is up here. Stock reads them
 	 * once at probe (S:.../panel/panel_drv.c:598,602-604).
 	 */
-	ret = s6e3ha6_bright_prepare(ctx->bright);
-	if (ret)
-		dev_err(&ctx->dsi->dev, "no AID gamma table: %d, brightness is not sent\n",
-			ret);
+	if (ctx->bright) {
+		ret = s6e3ha6_bright_prepare(ctx->bright);
+		if (ret)
+			dev_err(&ctx->dsi->dev,
+				"no AID gamma table: %d, brightness is not sent\n",
+				ret);
+	}
 
 	/* the first unblank after boot does not reach the panel (decon_core.c:634-639) */
 	if (ctx->booted)
 		return 0;
+	ctx->on = false;
 
 	for (try = 1; try <= S6E3HA6_INIT_TRIES; try++) {
 		dctx.accum_err = 0;
@@ -239,10 +494,15 @@ static int s6e3ha6_enable(struct drm_panel *panel)
 			return ret;
 	}
 
+	ctx->on = true;
+	s6e3ha6_det_irq(ctx, true);
+
 	/* row 27 of great_a3_sa_init_cmdtbl: the brightness sequence */
-	ret = s6e3ha6_bright_enable(ctx->bright);
-	if (ret)
-		dev_warn(&ctx->dsi->dev, "no AID brightness: %d\n", ret);
+	if (ctx->bright) {
+		ret = s6e3ha6_bright_enable(ctx->bright);
+		if (ret)
+			dev_warn(&ctx->dsi->dev, "no AID brightness: %d\n", ret);
+	}
 
 	/* great_a3_sa_display_on_cmdtbl (:2080-2084) */
 	dctx.accum_err = 0;
@@ -257,6 +517,32 @@ static int s6e3ha6_disable(struct drm_panel *panel)
 {
 	struct s6e3ha6 *ctx = to_s6e3ha6(panel);
 	struct mipi_dsi_multi_context dctx = { .dsi = ctx->dsi };
+	struct panel_device *stock = s6e3ha6_stock(ctx);
+	int ret;
+
+	/*
+	 * dsim_disable(): PANEL_IOC_SLEEP_IN, then the DSIM off (S:.../dpu/
+	 * dsim_drv.c:1262-1270); after DOZE_SUSPEND dsim_doze_suspend():
+	 * PANEL_IOC_DOZE, then the DSIM off, the panel staying in ALPM
+	 * (:1339-1347).
+	 */
+	if (stock) {
+		bool suspend;
+
+		mutex_lock(&ctx->stock_lock);
+		suspend = ctx->doze == S6E3HA6_DOZE_SUSPEND;
+		mutex_unlock(&ctx->stock_lock);
+
+		ret = panel_drv_ioctl(stock, suspend ? PANEL_IOC_DOZE : PANEL_IOC_SLEEP_IN, NULL);
+		s6e3ha6_stock_link(stock, false);
+		if (!suspend)
+			ctx->on = false;
+		return ret;
+	}
+
+	/* __panel_seq_exit(): disp-det off first (S:.../panel/panel_drv.c:240-244) */
+	s6e3ha6_det_irq(ctx, false);
+	ctx->on = false;
 
 	/* great_a3_sa_display_off_cmdtbl (:2086-2092) */
 	s6e3ha6_key1_on(&dctx);
@@ -280,12 +566,103 @@ static int s6e3ha6_unprepare(struct drm_panel *panel)
 {
 	struct s6e3ha6 *ctx = to_s6e3ha6(panel);
 
+	/*
+	 * dsim_disable(): PANEL_IOC_SET_POWER(0) (S:.../dpu/dsim_drv.c:1280); the
+	 * framework's first power off drops the boot references of probe.
+	 */
+	if (s6e3ha6_stock(ctx)) {
+		bool suspend;
+
+		greatlte_l5_set(GL5_ON, bt, false);
+		/* dsim_doze_suspend() does not power the panel off */
+		mutex_lock(&ctx->stock_lock);
+		suspend = ctx->doze == S6E3HA6_DOZE_SUSPEND;
+		ctx->doze = S6E3HA6_DOZE_NONE;
+		mutex_unlock(&ctx->stock_lock);
+		if (suspend)
+			return 0;
+		return s6e3ha6_stock_set_power(ctx, 0);
+	}
+
 	/* the first unprepare after boot drops the boot references of probe */
 	ctx->booted = false;
 	greatlte_l5_set(GL5_ON, bt, false);
 	s6e3ha6_power_off(ctx);
 
 	return 0;
+}
+
+/*
+ * decon_reset_panel() of the vendor DECON (S:drivers/video/fbdev/exynos/dpu/
+ * decon_dsi.c:300-394): the DSIM and the panel are switched off and on again
+ * (s_stream 0, 1: panel SLEEP_IN, link stop, power off; power on, link init,
+ * panel init) and the last frame is sent again. Here the same is a full
+ * modeset of the CRTC this panel is on (drm_bridge_helper_reset_crtc(), the
+ * pattern of A:drivers/gpu/drm/bridge/ti-sn65dsi83.c:372-400), which runs the
+ * bridge chain and the panel off and on and commits the current planes. An
+ * inactive CRTC is left alone, as the vendor ignores a powered-off panel
+ * (decon_dsi.c:309-312).
+ */
+static int s6e3ha6_reset_pipe(struct s6e3ha6 *ctx)
+{
+	struct drm_bridge *bridge = of_drm_find_bridge(ctx->dsi->dev.of_node);
+	struct drm_modeset_acquire_ctx actx;
+	int ret;
+
+	if (!bridge || !bridge->encoder)
+		return -ENODEV;
+
+	drm_modeset_acquire_init(&actx, 0);
+retry:
+	ret = drm_bridge_helper_reset_crtc(bridge, &actx);
+	if (ret == -EDEADLK) {
+		drm_modeset_backoff(&actx);
+		goto retry;
+	}
+	drm_modeset_drop_locks(&actx);
+	drm_modeset_acquire_fini(&actx);
+
+	return ret;
+}
+
+/*
+ * disp_det_handler() (S:.../panel/panel_drv.c:1890-1934): disp-det low while
+ * the panel is on is an ESD hit: interrupt off, 200 ms debounce, reset the
+ * display pipe, interrupt on again. A stale edge replayed when the interrupt
+ * is enabled again finds disp-det high and does nothing, which replaces the
+ * vendor's write to the pinctrl-owned EINT pend register (clear_disp_det_pend(),
+ * :86-98).
+ */
+static void s6e3ha6_det_work(struct work_struct *work)
+{
+	struct s6e3ha6 *ctx = container_of(work, struct s6e3ha6, det_work);
+	int det = gpiod_get_value_cansleep(ctx->det_gpio);
+	int ret;
+
+	dev_info(&ctx->dsi->dev, "disp_det: %d\n", det);
+	if (!ctx->on || det != 0)
+		return;
+
+	disable_irq(ctx->det_irq);
+	/* delay for disp_det debounce (:1908-1911) */
+	usleep_range(200000, 210000);
+	dev_err(&ctx->dsi->dev, "disp_det is abnormal state, resetting the display\n");
+	ret = s6e3ha6_reset_pipe(ctx);
+	if (ret)
+		dev_err(&ctx->dsi->dev, "failed to reset panel: %d\n", ret);
+	/* backlight_update_status() after the reset callback (:1924) */
+	if (s6e3ha6_stock(ctx) && ctx->stock_probed)
+		backlight_update_status(ctx->stock->panel_bl.bd);
+	enable_irq(ctx->det_irq);
+}
+
+static irqreturn_t s6e3ha6_det_irq_handler(int irq, void *data)
+{
+	struct s6e3ha6 *ctx = data;
+
+	/* panel_disp_det_irq() (:1564-1571) */
+	queue_work(ctx->det_wq, &ctx->det_work);
+	return IRQ_HANDLED;
 }
 
 /*
@@ -370,10 +747,41 @@ static const char *s6e3ha6_variant(u32 id)
 	return "a2_s3";
 }
 
+/*
+ * The framework's panel_device with the pads this driver took (the vendor
+ * panel_parse_gpio()/panel_parse_regulator(), rails in the same order) and
+ * its command path on this DSI device. Never freed once probed: the vendor
+ * framework registers class, misc and backlight devices and a kthread and
+ * has no teardown, so this driver cannot be unbound (suppress_bind_attrs).
+ */
+static int s6e3ha6_stock_init(struct s6e3ha6 *ctx, bool init_at_boot, bool connected)
+{
+	struct panel_device *stock;
+	int i;
+
+	stock = kzalloc(sizeof(*stock), GFP_KERNEL);
+	if (!stock)
+		return -ENOMEM;
+
+	stock->pad.gpio_reset = ctx->reset_gpio;
+	stock->pad.gpio_disp_det = ctx->det_gpio;
+	stock->pad.disp_det_irq = s6e3ha6_stock_det_irq;
+	for (i = 0; i < S6E3HA6_NR_SUPPLIES; i++)
+		stock->pad.regulator[i] = ctx->supplies[i];
+
+	panel_drv_init(stock, &ctx->dsi->dev, init_at_boot, connected);
+	panel_dsi_init(stock, ctx->dsi);
+	mutex_init(&ctx->stock_lock);
+	ctx->stock = stock;
+
+	return 0;
+}
+
 static int s6e3ha6_probe(struct mipi_dsi_device *dsi)
 {
 	struct device *dev = &dsi->dev;
 	struct s6e3ha6 *ctx;
+	bool init_at_boot, connected;
 	int i, ret;
 
 	ctx = devm_drm_panel_alloc(dev, struct s6e3ha6, panel, &s6e3ha6_panel_funcs,
@@ -401,7 +809,8 @@ static int s6e3ha6_probe(struct mipi_dsi_device *dsi)
 	 * (keep it running), low = not connected (hold it in reset). Reset low =
 	 * the kernel initialises the panel.
 	 */
-	if (gpiod_get_raw_value_cansleep(ctx->reset_gpio) == 1) {
+	init_at_boot = gpiod_get_raw_value_cansleep(ctx->reset_gpio) == 1;
+	if (init_at_boot) {
 		if (!ctx->det_gpio || gpiod_get_value_cansleep(ctx->det_gpio) == 1) {
 			ctx->booted = true;
 			gpiod_direction_output(ctx->reset_gpio, 0);
@@ -439,20 +848,64 @@ static int s6e3ha6_probe(struct mipi_dsi_device *dsi)
 
 	ctx->dsi = dsi;
 	mipi_dsi_set_drvdata(dsi, ctx);
+	ctx->on = ctx->booted;
+
+	/* the vendor panel_drv_probe() state: connected unless S-Boot left it off */
+	connected = ctx->booted || !init_at_boot;
+	if (IS_ENABLED(CONFIG_DRM_PANEL_SAMSUNG_S6E3HA6_STOCK)) {
+		ret = s6e3ha6_stock_init(ctx, init_at_boot, connected);
+		if (ret)
+			goto err_rails;
+	}
 
 	/*
 	 * The vendor backlight device and the lcd class device of this panel
 	 * (panel_bl.c:552-559 / panel_drv.c:673); the Samsung lights HAL and
-	 * the init rc of the stock rootfs use both.
+	 * the init rc of the stock rootfs use both. Only without the vendor
+	 * framework above, which registers the same two devices under the same
+	 * stock names at its own probe (struct s6e3ha6::bright).
 	 */
-	ctx->bright = s6e3ha6_bright_register(dev, dsi, ctx->variant);
-	if (IS_ERR(ctx->bright))
-		return dev_err_probe(dev, PTR_ERR(ctx->bright), "no backlight device\n");
-	ret = s6e3ha6_bright_register_lcd(ctx->bright);
-	if (ret) {
-		s6e3ha6_bright_unregister(ctx->bright);
-		ctx->bright = NULL;
-		return dev_err_probe(dev, ret, "no lcd device\n");
+	if (!IS_ENABLED(CONFIG_DRM_PANEL_SAMSUNG_S6E3HA6_STOCK)) {
+		ctx->bright = s6e3ha6_bright_register(dev, dsi, ctx->variant);
+		if (IS_ERR(ctx->bright)) {
+			ret = PTR_ERR(ctx->bright);
+			ctx->bright = NULL;
+			goto err_wq;
+		}
+		ret = s6e3ha6_bright_register_lcd(ctx->bright);
+		if (ret) {
+			s6e3ha6_bright_unregister(ctx->bright);
+			ctx->bright = NULL;
+			goto err_wq;
+		}
+	}
+
+	/*
+	 * ESD (panel_register_isr(), S:.../panel/panel_drv.c:1574-1592): the
+	 * disp_det workqueue (:2085-2087) exists before the falling-edge
+	 * interrupt is requested; the interrupt is requested off and switched
+	 * on while the panel is initialised (s6e3ha6_det_irq()).
+	 */
+	if (ctx->det_gpio) {
+		INIT_WORK(&ctx->det_work, s6e3ha6_det_work);
+		ctx->det_wq = alloc_ordered_workqueue("disp_det", 0);
+		if (!ctx->det_wq) {
+			ret = -ENOMEM;
+			goto err_rails;
+		}
+		ctx->det_irq = gpiod_to_irq(ctx->det_gpio);
+		if (ctx->det_irq < 0) {
+			ret = dev_err_probe(dev, ctx->det_irq, "no disp-det interrupt\n");
+			goto err_wq;
+		}
+		ret = request_irq(ctx->det_irq, s6e3ha6_det_irq_handler,
+				  IRQF_TRIGGER_FALLING | IRQF_NO_AUTOEN, "disp_det", ctx);
+		if (ret) {
+			dev_err_probe(dev, ret, "cannot request the disp-det interrupt\n");
+			goto err_wq;
+		}
+		if (ctx->on)
+			s6e3ha6_det_irq(ctx, true);
 	}
 
 	dsi->lanes = 4;			/* FDT:10098 data_lane = <0x04> */
@@ -479,16 +932,30 @@ static int s6e3ha6_probe(struct mipi_dsi_device *dsi)
 
 	ret = mipi_dsi_attach(dsi);
 	if (ret < 0) {
+		dev_err_probe(dev, ret, "cannot attach to the DSI host\n");
 		drm_panel_remove(&ctx->panel);
-		s6e3ha6_bright_unregister(ctx->bright);
-		ctx->bright = NULL;
-		if (ctx->booted)
-			for (i = S6E3HA6_NR_SUPPLIES - 1; i >= 0; i--)
-				regulator_disable(ctx->supplies[i]);
-		return dev_err_probe(dev, ret, "cannot attach to the DSI host\n");
+		goto err_irq;
 	}
 
 	return 0;
+
+err_irq:
+	if (ctx->det_irq > 0)
+		free_irq(ctx->det_irq, ctx);
+err_wq:
+	kfree(ctx->stock);
+	if (ctx->det_wq)
+		destroy_workqueue(ctx->det_wq);
+	/* every path above reaches err_rails, so the bright devices go here */
+err_rails:
+	if (ctx->bright) {
+		s6e3ha6_bright_unregister(ctx->bright);
+		ctx->bright = NULL;
+	}
+	if (ctx->booted)
+		for (i = S6E3HA6_NR_SUPPLIES - 1; i >= 0; i--)
+			regulator_disable(ctx->supplies[i]);
+	return ret;
 }
 
 static void s6e3ha6_remove(struct mipi_dsi_device *dsi)
@@ -497,10 +964,19 @@ static void s6e3ha6_remove(struct mipi_dsi_device *dsi)
 
 	greatlte_l5_set(GL5_ON, panel, false);
 	greatlte_l5_set(GL5_ON, det, NULL);
-	s6e3ha6_bright_unregister(ctx->bright);
-	ctx->bright = NULL;
+	/* the DECON must not call into this ctx once it is gone */
+	if (ctx->stock_probed)
+		exynos8895_decon_set_panel_hooks(NULL);
+	if (ctx->bright) {
+		s6e3ha6_bright_unregister(ctx->bright);
+		ctx->bright = NULL;
+	}
 	mipi_dsi_detach(dsi);
 	drm_panel_remove(&ctx->panel);
+	if (ctx->det_irq > 0)
+		free_irq(ctx->det_irq, ctx);
+	if (ctx->det_wq)
+		destroy_workqueue(ctx->det_wq);
 	s6e3ha6_power_off(ctx);
 }
 
@@ -516,6 +992,7 @@ static struct mipi_dsi_driver s6e3ha6_driver = {
 	.driver = {
 		.name = "panel-samsung-s6e3ha6",
 		.of_match_table = s6e3ha6_of_match,
+		.suppress_bind_attrs = IS_ENABLED(CONFIG_DRM_PANEL_SAMSUNG_S6E3HA6_STOCK),
 	},
 };
 module_mipi_dsi_driver(s6e3ha6_driver);
