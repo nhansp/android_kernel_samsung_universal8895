@@ -916,6 +916,7 @@ static void hv_change_afc_voltage(struct max77865_hv *hv, int tx_data)
 	}
 }
 
+/* stock is_hv_cable(): QC prepare is not an HV cable there */
 static bool hv_is_hv_dev(struct max77865_hv *hv)
 {
 	switch (hv->attached_dev) {
@@ -927,7 +928,6 @@ static bool hv_is_hv_dev(struct max77865_hv *hv)
 	case HV_DEV_AFC_9V_DUPLI:
 	case HV_DEV_AFC_ERR_V:
 	case HV_DEV_AFC_ERR_V_DUPLI:
-	case HV_DEV_QC_PREPARE:
 	case HV_DEV_QC_5V:
 	case HV_DEV_QC_9V:
 		return true;
@@ -967,6 +967,16 @@ void max77865_hv_set_voltage(int mv)
 			dev_info(hv->dev, "afc 5V request (%s)\n",
 				 hv->afc_disable ? "afc-disable" :
 				 water ? "water" : "rp-not-56k");
+			goto out;
+		}
+		if (hv->attached_dev == HV_DEV_QC_5V) {
+			/*
+			 * a QC adapter stepped back to 5 V: stock muic_afc_set_voltage(9)
+			 * = hv_muic_change_afc_voltage(MUIC_HV_9V), QC
+			 * branch HVCONTROL1 0x01, CONTROL2_BC 0x19; an
+			 * AFC connect_start() here would restart the AFC ping on it
+			 */
+			hv_change_afc_voltage(hv, HV_TX_9V);
 			goto out;
 		}
 		hv->tx_data = HV_TX_9V;
@@ -1328,12 +1338,18 @@ static int hv_handle_attach(struct max77865_hv *hv, const struct hv_step *step)
 		switch (new_dev) {
 		case HV_DEV_AFC_PREPARE:
 		case HV_DEV_AFC_PREPARE_DUPLI:
+		case HV_DEV_QC_PREPARE:
+			/*
+			 * stock sec_battery: AFC and QC prepare are both PREPARE_TA;
+			 * the QC adapter may already be on its way to 9 V
+			 * (hv_qc_charger())
+			 */
 			event = MAX77865_HV_EV_PREPARE;
 			mv = 5000;
 			break;
 		case HV_DEV_AFC_5V:
 		case HV_DEV_AFC_5V_DUPLI:
-		case HV_DEV_QC_PREPARE:
+		case HV_DEV_QC_5V:	/* TA for stock sec_battery */
 			event = MAX77865_HV_EV_5V;
 			mv = 5000;
 			dev_info(hv->dev, "afc 5V request (detect)\n");
