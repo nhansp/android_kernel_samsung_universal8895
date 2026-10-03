@@ -30,6 +30,7 @@
 #include <linux/string.h>
 
 #include <drm/drm_mipi_dsi.h>
+#include <drm/exynos8895_hiber.h>
 
 #include "panel-samsung-s6e3ha6-bright.h"
 #include "panel-samsung-s6e3ha6-great-a2-s3-dimming.h"
@@ -440,8 +441,25 @@ static void s6e3ha6_update_acl_state(struct s6e3ha6_bright *b)
 static int s6e3ha6_dcs_write(struct s6e3ha6_bright *b, const u8 *buf, size_t len)
 {
 	ssize_t ret;
+	int hret;
+
+	/*
+	 * Every packet leaves display hibernation first and blocks a new enter
+	 * while it is in flight, as dsim_write_data() does
+	 * (S:drivers/video/fbdev/exynos/dpu/dsim_drv.c:199 decon_hiber_
+	 * block_exit(), :276-277 decon_hiber_unblock()): while the DECON and
+	 * the DSIM are powered down the DSI registers are not reachable, so the
+	 * transfer would run into gated clocks instead of a panel. A refused
+	 * exit fails the packet, as mipi_write_cmd() does (panel_dsi.c:303-307).
+	 */
+	hret = exynos8895_decon_hiber_block_exit();
+	if (hret) {
+		dev_err(b->dev, "hibernation exit failed: %d\n", hret);
+		return hret;
+	}
 
 	ret = mipi_dsi_dcs_write_buffer(b->dsi, buf, len);
+	exynos8895_decon_hiber_unblock();
 	if (ret != len) {
 		dev_err(b->dev, "dcs write 0x%02x x%zu failed: %zd\n", buf[0], len, ret);
 		return ret < 0 ? (int)ret : -EIO;
@@ -461,6 +479,7 @@ static int s6e3ha6_dcs_read(struct s6e3ha6_bright *b, u8 reg, int ofs, u8 *buf,
 {
 	u8 gpara[2] = { 0xB0, 0x00 };
 	ssize_t ret;
+	int hret;
 
 	/* the general-parameter register is left alone when the offset is 0 */
 	if (ofs) {
@@ -470,7 +489,15 @@ static int s6e3ha6_dcs_read(struct s6e3ha6_bright *b, u8 reg, int ofs, u8 *buf,
 			return ret;
 	}
 
+	/* as s6e3ha6_dcs_write() above (dsim_read_data(), dsim_drv.c:288, 295) */
+	hret = exynos8895_decon_hiber_block_exit();
+	if (hret) {
+		dev_err(b->dev, "hibernation exit failed: %d\n", hret);
+		return hret;
+	}
+
 	ret = mipi_dsi_dcs_read(b->dsi, reg, buf, len);
+	exynos8895_decon_hiber_unblock();
 	if (ret != len) {
 		/* stock panel_rx_nbytes() returns 0 here (dev_err was int); 6.18
 		 * dev_err() is void, so report the read as a failure */
