@@ -6,7 +6,8 @@
  * APM owns the G3D rail). The rate is only sent while the GPU is runtime
  * active, i.e. with pd_g3d on, as stock did (K:platform/exynos/gpu_control.c:127-131;
  * K: = the stock drivers/gpu/arm/b_r16p0). Replaces Samsung's platform/exynos,
- * which is not ported (5.1.6).
+ * which is not ported (5.1.6) except for its sysfs, which gpu_sysfs.c ports
+ * (brief l6agpu: the LineageOS power HAL boost nodes).
  */
 
 #include <linux/clk.h>
@@ -19,28 +20,19 @@
 #include <linux/seq_file.h>
 
 #include <dt-bindings/clock/samsung,exynos8895-acpm.h>
-#include <soc/samsung/exynos8895-bus-qos.h>
 
 #include <mali_kbase.h>
 #include <mali_kbase_defs.h>
 #include <mali_kbase_config.h>
 #include "mali_kbase_config_platform.h"
 #include "mali_kbase_exynos8895.h"
+#include "exynos8895_gpu.h"
 
 /*
  * Start rate: FDT:4656 gpu_dvfs_start_clock = <0x3f7a0> (260000 kHz); the
  * ECT dvfs_g3d domain has no boot level (L6A 3.1 step 4).
  */
 #define EXYNOS8895_G3D_START_HZ		260000000UL
-
-struct exynos8895_gpu {
-	struct kbase_device *kbdev;
-	struct clk *clk;
-	struct mutex lock;		/* cur_rate, want_rate */
-	unsigned long cur_rate, want_rate;
-	u32 autosuspend_ms;
-	struct exynos_bus_qos_request mif_req;
-};
 
 /*
  * Stock gpu_dvfs_table column 4 (mem_freq) per GPU frequency (FDT:4648,
@@ -117,6 +109,7 @@ static int exynos8895_platform_init(struct kbase_device *kbdev)
 
 	gpu->kbdev = kbdev;
 	mutex_init(&gpu->lock);
+	mutex_init(&gpu->sysfs_lock);
 
 	/* taken by power_control_init() (of_clk_get(np, 0)) */
 	gpu->clk = kbdev->clock;
@@ -156,6 +149,20 @@ static int exynos8895_platform_init(struct kbase_device *kbdev)
 	 */
 	exynos_bus_qos_add_request(&gpu->mif_req, EXYNOS_BUS_QOS_MIF, 0);
 
+	/*
+	 * stock kbase_platform_exynos5_init() ends with
+	 * gpu_create_sysfs_file(kbdev->dev)
+	 * (S:drivers/gpu/arm/b_r16p0/platform/exynos/mali_kbase_platform.c:632-636,
+	 * gpu_custom_interface.c:1868-2044); the LineageOS power HAL writes
+	 * dvfs_min_lock / dvfs_max_lock there and gpu_min_clock / gpu_max_clock
+	 * under /sys/kernel/gpu (brief l6agpu)
+	 */
+	ret = exynos8895_gpu_create_sysfs(gpu);
+	if (ret) {
+		exynos_bus_qos_remove_request(&gpu->mif_req);
+		return ret;
+	}
+
 	dev_info(dev, "exynos8895: g3d %lu Hz via ACPM idx %d, %d OPPs, autosuspend %u ms\n",
 		 clk_get_rate(gpu->clk), EXYNOS8895_CLK_ACPM_DVFS_G3D,
 		 dev_pm_opp_get_opp_count(dev), gpu->autosuspend_ms);
@@ -167,8 +174,11 @@ static void exynos8895_platform_term(struct kbase_device *kbdev)
 {
 	struct exynos8895_gpu *gpu = kbdev->platform_context;
 
-	if (gpu)
+	if (gpu) {
+		/* stock gpu_remove_sysfs_file(kbdev->dev), mali_kbase_platform.c:672 */
+		exynos8895_gpu_delete_sysfs(gpu);
 		exynos_bus_qos_remove_request(&gpu->mif_req);
+	}
 	exynos8895_kbdev = NULL;
 	kbdev->platform_context = NULL;
 }
