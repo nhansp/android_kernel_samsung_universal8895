@@ -2358,6 +2358,8 @@ static int samsung_dsim_8895_send(struct samsung_dsim *dsi, u32 hdr,
 
 	return 0;
 }
+
+/*
  * ULPS enter/exit for display hibernation (S:drivers/video/fbdev/exynos/dpu/
  * dsim_reg.c:1704-1819): the link and the D-PHY go to ultra-low-power while
  * the panel keeps its power and frame memory. The greatlte panel is an
