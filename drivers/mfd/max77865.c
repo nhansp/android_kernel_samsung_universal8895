@@ -153,6 +153,21 @@ static int max77865_i2c_probe(struct i2c_client *i2c)
 		return dev_err_probe(dev, ret, "failed to add MFD cells\n");
 
 	/*
+	 * Wakeup source for the PMIC INT pad (gpa1-6, FDT:467-474/6166-6173 "max77865,wakeup";
+	 * the board spells it wakeup-source, arch/arm64/boot/dts/exynos/exynos8895-greatlte-l6f.dtsi:237):
+	 * stock arms it from the same DT flag, device_init_wakeup(max77865->dev, pdata->wakeup)
+	 * S:drivers/mfd/max77865.c:196,306. The I2C core only does this for a node with
+	 * interrupt-names = "wakeup" (A:drivers/i2c/i2c-core-base.c:547-569), which this node
+	 * has not, so the driver has to do it itself. Without it the whole max77865 interrupt
+	 * tree (the charger's CHGIN source, the detach trigger) is silent across suspend.
+	 */
+	if (of_property_read_bool(dev->of_node, "wakeup-source")) {
+		ret = devm_device_init_wakeup(dev);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to init wakeup\n");
+	}
+
+	/*
 	 * L6F 5.2 step 5a: 5.2 V boost on, stock order (after mfd_add_devices,
 	 * S:drivers/mfd/max77865.c:301-310 "Enable booster 5.2v for vibrator").
 	 * The haptic driver switches it off/on around suspend and at shutdown (L6F 5.7 item 7).
@@ -169,10 +184,19 @@ static int max77865_i2c_probe(struct i2c_client *i2c)
 	return 0;
 }
 
-/* as max77705 (A:drivers/mfd/max77705.c:137-160); wake arming is the I2C core's */
+/*
+ * The disable_irq() pair is ACK's max77705 (A:drivers/mfd/max77705.c:137-160); the wakeup
+ * half of that pattern, which max77705 also has, was missing here and is stock's:
+ * enable_irq_wake() before disable_irq() at suspend, disable_irq_wake() before enable_irq()
+ * at resume, S:drivers/mfd/max77865.c:351-364 and :366-379. Without it the PMIC INT pad
+ * cannot wake the system, so a charger/MUIC detach during suspend stays unreported.
+ */
 static int max77865_suspend(struct device *dev)
 {
 	struct i2c_client *i2c = to_i2c_client(dev);
+
+	if (device_may_wakeup(dev))
+		enable_irq_wake(i2c->irq);
 
 	disable_irq(i2c->irq);
 
@@ -182,6 +206,9 @@ static int max77865_suspend(struct device *dev)
 static int max77865_resume(struct device *dev)
 {
 	struct i2c_client *i2c = to_i2c_client(dev);
+
+	if (device_may_wakeup(dev))
+		disable_irq_wake(i2c->irq);
 
 	enable_irq(i2c->irq);
 
