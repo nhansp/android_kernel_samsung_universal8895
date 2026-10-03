@@ -15,7 +15,7 @@
 #include <linux/of_address.h>
 #include <linux/soc/samsung/greatlte-hb.h>
 
-#define L6A_GPU_PATH	"/soc@0/gpu@13900000"
+#define L6A_GPU_PATH	"/soc@0/mali@13900000"	/* stock FDT:4636 */
 #define L6A_PDG3D_PATH	"/soc@0/power-domain@164840e0"
 
 /*

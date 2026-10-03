@@ -2087,8 +2087,17 @@
 			status = "disabled";
 		};
 
-		/* L6A slice gpu: Mali-G71 MP20 for the vendor kbase r16p0 (spec L6A_graphics.md 4.1) */
-		gpu: gpu@13900000 {
+		/*
+		 * L6A slice gpu: Mali-G71 MP20 for the vendor kbase r16p0 (spec
+		 * L6A_graphics.md 4.1). Named mali@13900000, not gpu@13900000, as
+		 * the stock FDT does (FDT:4636): the power HAL writes
+		 * /sys/devices/platform/13900000.mali/dvfs_{min,max}_lock
+		 * (recon/trees/legacy8895/android_device_samsung_universal8895-common/
+		 * ramdisk/etc/init.samsungexynos8895.rc:310-315) and the platform
+		 * directory of a device takes its name from the DT node
+		 * (of_device_make_bus_id()).
+		 */
+		gpu: mali@13900000 {
 			/*
 			 * Stock "arm,mali" (FDT:4637); not "arm,mali-bifrost", whose
 			 * lower-case interrupt names (Documentation/devicetree/bindings/gpu/arm,mali-bifrost.yaml)
