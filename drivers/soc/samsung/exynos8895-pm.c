@@ -792,6 +792,9 @@ static void e8895_pd_dump(void)
  * in this tree, so the dump prints the whole range offset by offset - where the
  * first non-zero word sits on hardware is the answer.]
  */
+#define E8895_GICD_ENABLE_SPI(s)	(E8895_GICD_ISENABLER + ((32 + (s)) / 32) * 4)
+#define E8895_GICD_ENABLE_BIT(s)	BIT((32 + (s)) % 32)
+#define E8895_GICD_TARGET_SPI(s)	(E8895_GICD_ITARGETSR + 32 + (s))
 /* ITARGETSR words 0x800..0x840 = 17 words: the eight SGI/PPI words plus the nine
  * that hold SPI 0..19 under the map above, i.e. every word that either reading of
  * the carrier map can mean */
@@ -846,6 +849,16 @@ static u32 e8895_rd(void __iomem *base, u32 off)
 		return ~0U;
 	}
 	return readl(base + off);
+}
+
+/* the same check for the experiment writes below */
+static void e8895_wr(void __iomem *base, u32 off, u32 val)
+{
+	if (!base || off + 4 > e8895_map_size(base)) {
+		e8895_unmapped++;
+		return;
+	}
+	writel(val, base + off);
 }
 
 /* GPIO_ALIVE is the first exynos8895-pinctrl node (FDT:88) and the GIC the only
@@ -1116,6 +1129,161 @@ static int e8895_wake_dump_set(const char *val, const struct kernel_param *kp)
 
 static const struct kernel_param_ops e8895_wake_dump_ops = { .set = e8895_wake_dump_set };
 module_param_cb(wake_dump, &e8895_wake_dump_ops, NULL, 0200);
+/*
+ * DEBUG (l7wake) sleep_wakearm=<mask>: write the stock suspend-time hardware
+ * state of the two hops the kernel only reads today, then print the readback.
+ *
+ * Stock leaves every GIC SPI that the generic irq core does not touch hardware
+ * -enabled at suspend (S:kernel/irq/pm.c:88-98 masks only when the chip sets
+ * IRQCHIP_MASK_ON_SUSPEND; our chip does, S:drivers/irqchip/irq-gic.c:431-432,
+ * but the wake IRQs and the chained EINT carriers are skipped: :73-75) - so
+ * nothing forces them back. Bit 1 of the mask does, exactly that, for SPI 0-31
+ * (the EINT carriers: exynos8895-pinctrl.dtsi:37-91 for SPI 0-15, .dtsi:2635 for
+ * SPI 16), and pins every ITARGETSR word the dump prints to CPU0.
+ *
+ * Bit 2 re-asserts INT_ENABLE in the ALIVE EINT block for every pin whose
+ * EINT_WAKEUP_MASK (PMU 0x60C) bit is clear, i.e. exactly the pins that
+ * enable_irq_wake() armed (S:pinctrl-exynos.c:418-431 clears the bit). If the
+ * EINT block masked one of them at some point in suspend, this puts it back.
+ *
+ * Bit 4 forces GICC_PMR/BPR to "no priority mask" (0xff/0xff, the values
+ * gic_cpu_if_up() leaves behind) in case the CPU interface is masked.
+ *
+ * Default 0: no write at all. Everything is printed before and after, so a
+ * refused write is visible.
+ */
+#define E8895_WAKEARM_GIC	1
+#define E8895_WAKEARM_EINT	2
+#define E8895_WAKEARM_PMR	4
+static u32 sleep_wakearm;
+module_param(sleep_wakearm, uint, 0644);
+
+/*
+ * DEBUG (l7wake) sleep_bare=1: skip the whole PMU SLEEP program and issue only
+ * the PSCI call (see the use in e8895_pm_syscore_suspend()). sleep_bare is used
+ * together with sleep_psci=0x10000 so that the SMC asks for C2 (core only).
+ * sleep_swpend=<mask>: bits of the ALIVE banks' pins (see e8895_alive_banks[]):
+ * set INT_PEND_SET for that pin right before the SMC, i.e. raise an EINT from
+ * software (EXYNOS_GPIO_EPEND + 0x100, the next register after EPEND), and route
+ * it to CPU0. This asks the only question that matters for "does any interrupt
+ * reach CPU0 in this context" without any external hardware: EINT -> SPI 16 ->
+ * GIC -> CPU0. Bit 30 = gpa3-6 (the PMIC, what stock woke from), bit 20 =
+ * gpa2-4 (the power key). A wake means the whole chain is alive and the PMU SLEEP
+ * program is at fault; a hang means the chain is dead at the GIC or below.
+ */
+static bool sleep_bare;
+module_param(sleep_bare, bool, 0644);
+static u32 sleep_swpend;
+module_param(sleep_swpend, uint, 0644);
+
+/* power_state of the SMC: sleep_bare forces C2 (0x00010000), otherwise the
+ * stock SLEEP word unless sleep_psci overrides it */
+static unsigned int e8895_smc_state(void)
+{
+	if (sleep_bare)
+		return 0x00010000;
+	return sleep_psci ?: E8895_PSCI_SLEEP;
+}
+
+static void e8895_swpend(void)
+{
+	unsigned int i, p;
+
+	if (!sleep_swpend || !e8895_alive_base || !e8895_gicd_base)
+		return;
+	/* route the EINT carriers to CPU0 and make sure SPI 16 is enabled. The
+	 * whole ITARGETSR range the dump prints is written, so the carriers are
+	 * covered whether they sit at 0x800 + SPI or at 0x800 + 32 + SPI. */
+	for (i = 0; i < E8895_GICD_TARGET_WORDS; i++)
+		e8895_wr(e8895_gicd_base, E8895_GICD_ITARGETSR + i * 4, 0x11111111);
+	/* SPI 16 = INTID 48 = ISENABLER word 1 bit 16 (A:irq-gic.c:180-185).
+	 * Writing ISENABLER + 0 would enable INTID 16, a PPI, not the carrier. */
+	e8895_wr(e8895_gicd_base, E8895_GICD_ENABLE_SPI(16), E8895_GICD_ENABLE_BIT(16));
+	for (i = 0; i < ARRAY_SIZE(e8895_alive_banks); i++) {
+		u32 o = e8895_alive_banks[i].eint_offset;
+		u32 pend = 0;
+
+		for (p = 0; p < e8895_alive_banks[i].nr_pins; p++)
+			if (sleep_swpend & BIT(2 * e8895_alive_banks[i].eint_offset + p))
+				pend |= BIT(p);
+		if (pend)
+			e8895_wr(e8895_alive_base, E8895_EINT_EPEND_SET + o, pend);
+		pr_info("exynos8895-pm: DEBUG swpend %s pend=%08x en=%08x mask=%08x\n",
+			e8895_alive_banks[i].name, pend,
+			e8895_rd(e8895_alive_base, E8895_EINT_ENABLE + o),
+			e8895_rd(e8895_alive_base, E8895_EINT_EMASK + o));
+	}
+	pr_info("exynos8895-pm: DEBUG swpend: gicd en=%08x %08x\n",
+		e8895_rd(e8895_gicd_base, E8895_GICD_ISENABLER),
+		e8895_rd(e8895_gicd_base, E8895_GICD_ISENABLER + 4));
+}
+
+static void e8895_wakearm(void)
+{
+	u32 mask, en, i;
+
+	if (!sleep_wakearm)
+		return;
+	mask = exynos_pinctrl_get_eint_wake_mask();
+	pr_info("exynos8895-pm: DEBUG wakearm=%x eint_wake=%08x gicd=%p alive=%p\n",
+		sleep_wakearm, mask, e8895_gicd_base, e8895_alive_base);
+	if ((sleep_wakearm & E8895_WAKEARM_EINT) && e8895_alive_base) {
+		for (i = 0; i < ARRAY_SIZE(e8895_alive_banks); i++) {
+			u32 o = e8895_alive_banks[i].eint_offset;
+			u32 bits = 0;
+			unsigned int p;
+
+			for (p = 0; p < e8895_alive_banks[i].nr_pins; p++) {
+				unsigned int bit = 2 * e8895_alive_banks[i].eint_offset + p;
+
+				if (bit < 32 && !(mask & BIT(bit)))
+					bits |= BIT(p);
+			}
+			en = e8895_rd(e8895_alive_base, E8895_EINT_ENABLE + o);
+			if (en != bits)
+				e8895_wr(e8895_alive_base, E8895_EINT_ENABLE + o, bits);
+			pr_info("exynos8895-pm: DEBUG wakearm eint %s en=%08x -> %08x\n",
+				e8895_alive_banks[i].name, en,
+				e8895_rd(e8895_alive_base, E8895_EINT_ENABLE + o));
+		}
+	}
+	if ((sleep_wakearm & (E8895_WAKEARM_GIC | E8895_WAKEARM_PMR)) && e8895_gicd_base) {
+		if (sleep_wakearm & E8895_WAKEARM_GIC) {
+			for (i = 0; i < 2; i++) {
+				u32 v = e8895_rd(e8895_gicd_base, E8895_GICD_ISENABLER + i * 4);
+
+				e8895_wr(e8895_gicd_base, E8895_GICD_ISENABLER + i * 4, 0xffffffff);
+				pr_info("exynos8895-pm: DEBUG wakearm gicd en[%d]=%08x -> %08x\n",
+					(int)i, v,
+					e8895_rd(e8895_gicd_base, E8895_GICD_ISENABLER + i * 4));
+			}
+			/* ITARGETSR: 4 bits per INTID, one word per four INTIDs from
+			 * INTID 0, so SPI s is at E8895_GICD_TARGET_SPI(s) and the
+			 * carriers (SPI 0-16) are the words 0x820..0x840. The whole
+			 * range the dump prints is written, which covers the other
+			 * possible reading of the map as well. */
+			for (i = 0; i < E8895_GICD_TARGET_WORDS; i++)
+				e8895_wr(e8895_gicd_base, E8895_GICD_ITARGETSR + i * 4,
+					 0x11111111);
+			pr_info("exynos8895-pm: DEBUG wakearm gicd target words:");
+			for (i = 0; i < E8895_GICD_TARGET_WORDS; i++)
+				pr_info(" %x=%08x", E8895_GICD_ITARGETSR + i * 4,
+					e8895_rd(e8895_gicd_base, E8895_GICD_ITARGETSR + i * 4));
+			pr_info("\n");
+		}
+		if ((sleep_wakearm & E8895_WAKEARM_PMR) && e8895_gicc_base) {
+			u32 pmr = e8895_rd(e8895_gicc_base, E8895_GICC_PMR);
+			u32 bpr = e8895_rd(e8895_gicc_base, E8895_GICC_BPR);
+
+			e8895_wr(e8895_gicc_base, E8895_GICC_PMR, 0xff);
+			e8895_wr(e8895_gicc_base, E8895_GICC_BPR, 0xff);
+			pr_info("exynos8895-pm: DEBUG wakearm gicc pmr=%08x -> %08x bpr=%08x -> %08x\n",
+				pmr, e8895_rd(e8895_gicc_base, E8895_GICC_PMR),
+				bpr, e8895_rd(e8895_gicc_base, E8895_GICC_BPR));
+		}
+	}
+}
+
 
 
 static void e8895_sleep_dump(void)
@@ -1339,6 +1507,35 @@ static int e8895_pm_syscore_suspend(void)
 	}
 	eint = pmu_raw_readl(E8895_EINT_WAKEUP_MASK);
 
+	/*
+	 * DEBUG (l7wake) sleep_bare=1: run nothing but the PSCI call, i.e. skip
+	 * the IDLE_IP masks, the EINT/WAKEUP_MASK writes, the PMUCAL save and the
+	 * whole enter list, and go straight from the mode choice to the SMC with
+	 * power_state 0x00010000 (C2). The cluster stays powered and the PMU is
+	 * in its run-time state, so this is the same core-suspend the cpuidle C2
+	 * state does millions of times, only with the CPUs 1-7 offline, the
+	 * clockevents stopped and the non-wake IRQs suspended.
+	 *   wakes  => the PMU SLEEP programming (enter list, sequencer, wakeup
+	 *             masks) is what costs the wake-up; C2 + the suspend context
+	 *             are fine.
+	 *   hangs  => even a bare C2 does not wake from this context, so the
+	 *             break is in the irq/CPU state that suspend adds, not in the
+	 *             PMU program.
+	 * The refusal and resume paths below are skipped as well (nothing was
+	 * programmed, nothing to unwind), so e8895_sleep_armed stays false.
+	 */
+	if (sleep_bare) {
+		e8895_mode = E8895_SYS_SLEEP;		/* label only: t[] is unused below */
+		pr_info("exynos8895-pm: DEBUG bare: no PMU program, PSCI 0x%08x\n",
+			e8895_smc_state());
+		e8895_wakearm();				/* still available */
+		e8895_swpend();					/* still available */
+		if (sleep_trace)
+			e8895_sleep_dump();
+		e8895_early = true;
+		return 0;
+	}
+
 	/* only SYS_SICD has a ref-idle-ip node (FDT:4433-4439): the SLEEP masks are all-ones,
 	 * S:drivers/soc/samsung/exynos-powermode.c:171-182 */
 	for (i = 0; i < 4; i++)
@@ -1383,6 +1580,8 @@ static int e8895_pm_syscore_suspend(void)
 		pr_info("exynos8895-pm: DEBUG noarm: CENTRAL_SEQ %08x MIF %08x (pre-enter %08x %08x)\n",
 			pmu_raw_readl(0x0200), pmu_raw_readl(0x0240), arm0, arm1);
 	}
+	e8895_wakearm();					/* DEBUG l7wake */
+	e8895_swpend();					/* DEBUG l7wake */
 	if (sleep_trace) {					/* DEBUG */
 		e8895_verify(t->t[0], t->n[0]);
 		e8895_sleep_dump();
@@ -1433,8 +1632,8 @@ static int e8895_pm_enter(suspend_state_t state)
 	int ret;
 
 	if (sleep_trace)					/* DEBUG */
-		pr_info("exynos8895-pm: DEBUG SMC power_state=0x%08x\n", sleep_psci ?: E8895_PSCI_SLEEP);
-	ret = e8895_psci_suspend(sleep_psci ?: E8895_PSCI_SLEEP);	/* DEBUG sleep_psci */
+		pr_info("exynos8895-pm: DEBUG SMC power_state=0x%08x\n", e8895_smc_state());
+	ret = e8895_psci_suspend(e8895_smc_state());		/* DEBUG sleep_psci */
 	if (sleep_trace)					/* DEBUG: first code after a wake */
 		pr_info("exynos8895-pm: DEBUG back from SLEEP SMC: %d (finisher %d) WAKEUP_STAT=%08x\n",
 			ret, ret ? this_cpu_read(e8895_dbg_fin_ret) : 0, pmu_raw_readl(E8895_WAKEUP_STAT));
