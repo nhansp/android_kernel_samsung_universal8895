@@ -1772,7 +1772,8 @@ static int max77865_charger_probe(struct i2c_client *client)
 	if (ret)
 		return dev_err_probe(dev, ret, "CHG_INT_MASK write failed\n");
 
-	ret = devm_request_threaded_irq(dev, client->irq, NULL, max77865_chg_irq, IRQF_ONESHOT,
+	ret = devm_request_threaded_irq(dev, client->irq, NULL, max77865_chg_irq,
+					IRQF_ONESHOT,
 					"max77865-charger", chg);
 	if (ret) {
 		/* nothing will kick the watchdog: stock shutdown value (CHG:2109-2111) */
@@ -1780,6 +1781,24 @@ static int max77865_charger_probe(struct i2c_client *client)
 			regmap_write(chg->regmap, MAX77865_CHG_REG_CNFG_00, 0x04);
 		return dev_err_probe(dev, ret, "irq %d\n", client->irq);
 	}
+
+	/*
+	 * stock does this on the next line of the same if block
+	 * (S:drivers/battery_v2/max77865_charger.c:1968-1972), the port had dropped it.
+	 * There is no IRQF_WAKEUP on arm64 (6.18 keeps it for ppc64 only), so the wake
+	 * source is armed the way stock arms it.
+	 *
+	 * CHGIN_I is the only unmasked source (CHG_INT_MASK 0xBF above) and it is what
+	 * turns "usb online" off on a detach; without the wake source an unplug that
+	 * Android answers with a suspend is not seen at all, because the pass that clears
+	 * ONLINE is max77865_pass_work (:917-919), a delayed work on system_freezable_wq
+	 * (:1080), and is frozen for the whole suspend. The pad itself is armed by the
+	 * parent (mfd/max77865.c suspend: enable_irq_wake before disable_irq); the DT needs
+	 * no change, wakeup-source is already on pmic@66
+	 * (arch/arm64/boot/dts/exynos/exynos8895-greatlte-l6f.dtsi:237).
+	 */
+	if (enable_irq_wake(client->irq) < 0)
+		dev_warn(dev, "failed to enable wakeup source\n");
 
 	queue_delayed_work(system_freezable_wq, &chg->pass_dwork, 0);
 	return 0;
