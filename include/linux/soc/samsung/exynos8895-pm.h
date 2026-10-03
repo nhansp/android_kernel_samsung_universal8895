@@ -27,6 +27,7 @@ struct e8895_idle_stats {		/* read by the L7 heartbeat printer */
 	atomic_t sicd;			/* SICD entries completed */
 	atomic_t sicd_try;		/* SICD candidate (all CPUs idle long enough / in s2idle) */
 	atomic_t sicd_veto;		/* candidate refused by a veto */
+	atomic_t sicd_s2;		/* SICD states armed from the s2idle path (l7sicd) */
 	atomic_t sicd_nb;		/* candidate refused: the last CPU was not in the boot cluster */
 	atomic_t sicd_wait;		/* s2idle rounds whose SICD exit was still running at ->restore_early */
 	atomic_t conf_fix;		/* core CONFIGURATION/DD found off after a successful C2 */

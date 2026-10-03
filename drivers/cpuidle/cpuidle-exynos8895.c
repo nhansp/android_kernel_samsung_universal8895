@@ -203,6 +203,7 @@ static u32 e8895_c2_prepare(unsigned int cpu, bool s2idle)
 			else if (!e8895_sicd_prepare()) {	/* :536-537 */
 				sicd_entered = true;
 				state = E8895_PSCI_SICD;		/* :544 */
+				atomic_inc(&e8895_stats.sicd_s2);
 			} else {
 				atomic_inc(&e8895_stats.sicd_veto);
 			}
