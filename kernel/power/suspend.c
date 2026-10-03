@@ -189,6 +189,17 @@ static bool valid_state(suspend_state_t state)
 		suspend_ops->enter;
 }
 
+/*
+ * DEBUG (l7el3): skip dpm_suspend_noirq() (default off). This is the one
+ * bisect lever left for "what does a device's ->suspend_noirq take away that
+ * the EL3 CPU_SUSPEND handler needs": every device clock, regulator and power
+ * domain stays as it is at run time, i.e. the bare sleep_bare SMC then runs in
+ * the clock/power state a cpuidle C2 sees. Use with sleep_bare=1 + sleep_psci
+ * from exynos8895-pm; the resume side (dpm_resume_noirq) is left alone.
+ */
+static bool suspend_skip_noirq;
+module_param(suspend_skip_noirq, bool, 0644);
+
 void __init pm_states_init(void)
 {
 	/* "mem" and "freeze" are always present in /sys/power/state. */
@@ -435,7 +446,8 @@ static int suspend_enter(suspend_state_t state, bool *wakeup)
 	if (error)
 		goto Devices_early_resume;
 
-	error = dpm_suspend_noirq(PMSG_SUSPEND);
+	if (READ_ONCE(suspend_skip_noirq))
+		error = dpm_suspend_noirq(PMSG_SUSPEND);
 	if (error) {
 		last_dev = suspend_stats.last_failed_dev + REC_FAILED_NUM - 1;
 		last_dev %= REC_FAILED_NUM;
