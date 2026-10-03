@@ -12,7 +12,7 @@
  * handshake RX bytes <= 16, stop at 0).
  * Changed behaviour: TA_TO_PREPARE records "5V ready" and notifies the
  * charger; 9 V starts only through max77865_hv_set_voltage(9000) from the charger;
- * the QC branch runs only with CONFIG_CHARGER_MAX77865_QC.
+ * QC voltage writes happen only with CONFIG_CHARGER_MAX77865_QC (else qc_hv = 0).
  *
  * Lock order: hv->lock may nest over the MUIC lock (hv -> MUIC
  * only): set_voltage() and the IRQ work call the cc_rp/water/chgdet accessors
@@ -1071,10 +1071,6 @@ static int hv_handle_attach(struct max77865_hv *hv, const struct hv_step *step)
 		break;
 	case FUNC_PREPARE_TO_QC_PREPARE:
 		cancel_delayed_work(&hv->mping_miss_work);
-		if (!IS_ENABLED(CONFIG_CHARGER_MAX77865_QC)) {
-			noti = false;
-			break;
-		}
 		ret = hv_write(hv, MAX77865_MUIC_REG_HVCONTROL2, 0x03);
 		if (ret)
 			dev_err(hv->dev, "cannot write HVCONTROL2(%d)\n", ret);
@@ -1111,10 +1107,6 @@ static int hv_handle_attach(struct max77865_hv *hv, const struct hv_step *step)
 		hv_adcmode(hv, false);
 		break;
 	case FUNC_PREPARE_DUPLI_TO_QC_PREPARE:
-		if (!IS_ENABLED(CONFIG_CHARGER_MAX77865_QC)) {
-			noti = false;
-			break;
-		}
 		hv_qc_charger(hv);
 		hv_after_qc_prepare(hv);
 		break;
@@ -1146,10 +1138,6 @@ static int hv_handle_attach(struct max77865_hv *hv, const struct hv_step *step)
 		break;
 	case FUNC_AFC_5V_TO_QC_PREPARE:
 		cancel_delayed_work(&hv->mping_miss_work);
-		if (!IS_ENABLED(CONFIG_CHARGER_MAX77865_QC)) {
-			noti = false;
-			break;
-		}
 		hv_qc_charger(hv);
 		hv_after_qc_prepare(hv);
 		break;
@@ -1181,10 +1169,6 @@ static int hv_handle_attach(struct max77865_hv *hv, const struct hv_step *step)
 		hv_adcmode(hv, false);
 		break;
 	case FUNC_AFC_5V_DUPLI_TO_QC_PREPARE:
-		if (!IS_ENABLED(CONFIG_CHARGER_MAX77865_QC)) {
-			noti = false;
-			break;
-		}
 		hv_qc_charger(hv);
 		hv_after_qc_prepare(hv);
 		break;
@@ -1207,10 +1191,6 @@ static int hv_handle_attach(struct max77865_hv *hv, const struct hv_step *step)
 		hv_adcmode(hv, false);
 		break;
 	case FUNC_AFC_ERR_V_TO_QC_PREPARE:
-		if (!IS_ENABLED(CONFIG_CHARGER_MAX77865_QC)) {
-			noti = false;
-			break;
-		}
 		hv_qc_charger(hv);
 		hv_after_qc_prepare(hv);
 		break;
@@ -1233,10 +1213,6 @@ static int hv_handle_attach(struct max77865_hv *hv, const struct hv_step *step)
 		hv_adcmode(hv, false);
 		break;
 	case FUNC_AFC_ERR_V_DUPLI_TO_QC_PREPARE:
-		if (!IS_ENABLED(CONFIG_CHARGER_MAX77865_QC)) {
-			noti = false;
-			break;
-		}
 		hv_qc_charger(hv);
 		hv_after_qc_prepare(hv);
 		break;
@@ -1263,10 +1239,6 @@ static int hv_handle_attach(struct max77865_hv *hv, const struct hv_step *step)
 		hv_adcmode(hv, false);
 		break;
 	case FUNC_AFC_9V_TO_QC_PREPARE:
-		if (!IS_ENABLED(CONFIG_CHARGER_MAX77865_QC)) {
-			noti = false;
-			break;
-		}
 		hv_qc_charger(hv);
 		hv_after_qc_prepare(hv);
 		break;
@@ -1293,10 +1265,6 @@ static int hv_handle_attach(struct max77865_hv *hv, const struct hv_step *step)
 		}
 		break;
 	case FUNC_AFC_9V_DUPLI_TO_QC_PREPARE:
-		if (!IS_ENABLED(CONFIG_CHARGER_MAX77865_QC)) {
-			noti = false;
-			break;
-		}
 		hv_qc_charger(hv);
 		hv_after_qc_prepare(hv);
 		break;
@@ -1899,6 +1867,15 @@ static int hv_probe(struct auxiliary_device *adev, const struct auxiliary_device
 		return -ENODEV;
 	}
 	hv->qc_hv = qc_hv;
+	/*
+	 * Without CONFIG_CHARGER_MAX77865_QC the QC rows run as on a stock board whose
+	 * MUIC supports no QC voltage: hv_qc_charger() takes its "not support QC
+	 * Charger" branch and writes nothing, the device stays at
+	 * QC_PREPARE (PREPARE currents, never above 5 V) and, from PREPARE, the ping
+	 * is stopped as stock does.
+	 */
+	if (!IS_ENABLED(CONFIG_CHARGER_MAX77865_QC))
+		hv->qc_hv = 0;
 	hv->tx_data = afc_tx;
 	dev_info(dev, "qc-hv:0x%02x afc-tx:0x%02x\n", hv->qc_hv, hv->tx_data);
 
