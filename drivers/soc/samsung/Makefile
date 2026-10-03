@@ -59,6 +59,8 @@ obj-$(CONFIG_GREATLTE_HB_L6M)	+= greatlte-hb-l6m.o# L7 (power management)
 obj-$(CONFIG_EXYNOS8895_PM)		+= exynos8895-pm.o
 # L7 heartbeat printers
 obj-$(CONFIG_GREATLTE_HB_L7)		+= greatlte-hb-l7.o
+# L7 s2idle SICD heartbeat rows (WP l7sicd, DEBUG); same bool as the L7 printers
+obj-$(CONFIG_GREATLTE_HB_L7)		+= greatlte-hb-l7sicd.o
 # L2b bus DVFS heartbeat
 obj-$(CONFIG_GREATLTE_HB_L2B)		+= greatlte-hb-l2b.o
 # L2b: Exynos8895 bus traffic shaper

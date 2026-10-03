@@ -9,6 +9,7 @@
 #define __LINUX_SOC_SAMSUNG_EXYNOS8895_PM_H
 
 #include <linux/atomic.h>
+#include <linux/percpu.h>
 #include <linux/types.h>
 
 /*
@@ -25,8 +26,10 @@ struct e8895_idle_stats {		/* read by the L7 heartbeat printer */
 	atomic_t c2[8];			/* successful C2 (any flavour) per logical CPU */
 	atomic_t cpd;			/* cluster 0 power-downs completed */
 	atomic_t sicd;			/* SICD entries completed */
-	atomic_t sicd_try;		/* SICD candidate (all CPUs idle long enough) */
+	atomic_t sicd_try;		/* SICD candidate (all CPUs idle long enough / in s2idle) */
 	atomic_t sicd_veto;		/* candidate refused by a veto */
+	atomic_t sicd_s2;		/* SICD states armed from the s2idle path (l7sicd) */
+	atomic_t sicd_nb;		/* candidate refused: the last CPU was not in the boot cluster */
 	atomic_t conf_fix;		/* core CONFIGURATION/DD found off after a successful C2 */
 	atomic_t ubt;			/* UART_BT pad releases */
 };
@@ -43,7 +46,6 @@ void e8895_pmu_cpu_down(unsigned int cpu);
 void e8895_pmu_cpu_up(unsigned int cpu);
 bool e8895_pmu_cpu_conf_ok(unsigned int cpu);
 u32 e8895_pmu_cpu_status(unsigned int cpu);		/* DEBUG */
-#include <linux/percpu-defs.h>
 DECLARE_PER_CPU(int, e8895_dbg_fin_ret);		/* DEBUG */
 void e8895_pmu_cluster_down(unsigned int cpu);
 int e8895_pmu_cluster_up(unsigned int cpu);
