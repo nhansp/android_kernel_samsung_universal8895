@@ -35,9 +35,10 @@ struct exynos8895_gpu {
 	 * (recon/trees/legacy8895/android_device_samsung_universal8895-common/
 	 * configs/power/powerhint.json:101-121) are. */
 	struct mutex sysfs_lock;	/* the fields below only. Never held across a
-					 * PM QoS or a PM policy call: both run the
-					 * kbase devfreq target, which takes
-					 * gpu->lock (mali_kbase_config_exynos8895.c:84). */
+					 * PM QoS or a PM policy call: the PM QoS
+					 * notifier runs the kbase devfreq target,
+					 * which takes gpu->lock
+					 * (mali_kbase_config_exynos8895.c:76). */
 	unsigned int *level_khz;	/* the DVFS table, ascending */
 	int nlevels;			/* 0 = no OPP table, no sysfs */
 	int lock_min_khz;		/* stock min_lock, 0 = unlocked */

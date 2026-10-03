@@ -51,6 +51,15 @@
  *   - a rate is sent only while pd_g3d is on, so a lock taken while the GPU is
  *     runtime suspended is applied at the next resume, as stock did
  *     (K:platform/exynos/gpu_control.c:127-131, gpu_notifier.c:249-275).
+ *   - the thermal ceiling of this port, the gpu-thermal cooling map of spec L6A
+ *     4.1, is a third max-frequency PM QoS request on the same device
+ *     (A:drivers/thermal/devfreq_cooling.c:113-114 dev_pm_qos_update_request(
+ *     &dfc->req_max_freq, ...)), so it wins over a min_lock: PM QoS takes the
+ *     MIN over the maximum-frequency requests and devfreq then clamps the floor
+ *     down to that ceiling (A:drivers/devfreq/devfreq.c:149-152,155-156). A
+ *     min_lock can therefore never hold the GPU above its thermal state, the
+ *     same as in stock, where the DVFS ceiling and the max_lock both clamp the
+ *     target.
  *
  * Every clock here is in kHz, the unit of the stock DVFS table
  * (K:platform/exynos/gpu_dvfs_api.c:562-573 gpu_dvfs_get_clock(); FDT:4648
