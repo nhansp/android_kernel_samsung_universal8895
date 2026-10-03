@@ -1875,3 +1875,53 @@
 &sysmmu_mfc0 { status = "okay"; };
 &sysmmu_mfc1 { status = "okay"; };
 &mfc { status = "okay"; };
+
+/* ==== l6bcam part: ISP thermal trips and the camera cooling map (REQ-2B-L6B-2) ==== */
+
+/*
+ * The isp-thermal zone is interrupt driven (polling-delay = <0> on both the
+ * zone and the TMU), so the trip temperatures below are the ECT ISP ranges 2 and
+ * 3 of spec L2b 4.3: 100 degC = 15 fps, 105 degC = 5 fps
+ * (work/full/spec-usbc/tmp/L2b/ect_thermal.txt:19-24, ISP block at sboot
+ * 0x5097c: [2] lower=100 upper=104 max_freq=15, [3] lower=105 upper=109
+ * max_freq=5); the hysteresis is stock's isp-alert2 (FDT:9697, 0x1388).
+ * Range 4 (110 degC) is the zone's existing isp-crit trip, ranges 0 and 1
+ * (60 fps = no limit) change no limit and are not added (spec L2b 4.3).
+ *
+ * DUPLICATE OF WP-L2B: the two trips are L2b's K-11 board-DT commit (spec L2b
+ * 4.3, commit table row K-11, milestone MT), which is not in this base; they
+ * are here because the cooling maps below cannot be written without them.
+ * Identical to that commit - if it ever lands, drop these two nodes.
+ */
+&{/thermal-zones/isp-thermal} {
+	trips {
+		isp_t100: isp-100 {
+			temperature = <100000>;	/* ECT ISP range 2 (15 fps), SB:0x5097c */
+			hysteresis = <5000>;	/* FDT:9697 isp-alert2 */
+			type = "active";
+		};
+
+		isp_t105: isp-105 {
+			temperature = <105000>;	/* ECT ISP range 3 (5 fps), SB:0x5097c */
+			hysteresis = <5000>;
+			type = "active";
+		};
+	};
+
+	/*
+	 * The camera core's ISP cooling device (REQ-2B-L6B-2, state 1 = 15 fps,
+	 * state 2 = 5 fps; lower = upper, so step_wise goes straight to the
+	 * ECT limit, spec L2b V-17).
+	 */
+	cooling-maps {
+		map-100 {
+			trip = <&isp_t100>;
+			cooling-device = <&fimc_is 1 1>;
+		};
+
+		map-105 {
+			trip = <&isp_t105>;
+			cooling-device = <&fimc_is 2 2>;
+		};
+	};
+};
