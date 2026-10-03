@@ -30,6 +30,8 @@
 #include <drm/drm_panel.h>
 #include <drm/drm_probe_helper.h>
 
+#include "panel-samsung-s6e3ha6-bright.h"
+
 #define S6E3HA6_INIT_TRIES	3	/* the vendor retries up to 30 times (panel_drv.c:880-889) */
 
 /* DEBUG: greatlte heartbeat dpuc (greatlte-hb-l5.c), only when built in */
@@ -48,6 +50,7 @@ struct s6e3ha6 {
 	struct gpio_desc *reset_gpio;
 	struct gpio_desc *det_gpio;
 	struct regulator *supplies[S6E3HA6_NR_SUPPLIES];
+	struct s6e3ha6_bright *bright;
 	bool booted;		/* S-Boot left the panel on and initialised */
 	bool powered;		/* rails on (by S-Boot's boot reference or prepare) */
 	u32 lcdtype;
@@ -205,6 +208,15 @@ static int s6e3ha6_enable(struct drm_panel *panel)
 	struct mipi_dsi_multi_context dctx = { .dsi = ctx->dsi };
 	int try, ret;
 
+	/*
+	 * The MTP / HBM_GAMMA registers the AID dimming table is built from are
+	 * only reachable over the DSI link, which is up here. Stock reads them
+	 * once in panel_probe() (panel_drv.c:609-725).
+	 */
+	ret = s6e3ha6_bright_prepare(ctx->bright);
+	if (ret)
+		dev_warn(&ctx->dsi->dev, "no AID gamma table: %d\n", ret);
+
 	/* the first unblank after boot does not reach the panel (decon_core.c:634-639) */
 	if (ctx->booted)
 		return 0;
@@ -225,6 +237,11 @@ static int s6e3ha6_enable(struct drm_panel *panel)
 		if (ret)
 			return ret;
 	}
+
+	/* row 27 of great_a3_sa_init_cmdtbl: the brightness sequence */
+	ret = s6e3ha6_bright_enable(ctx->bright);
+	if (ret)
+		dev_warn(&ctx->dsi->dev, "no AID brightness: %d\n", ret);
 
 	/* great_a3_sa_display_on_cmdtbl (:2080-2084) */
 	dctx.accum_err = 0;
@@ -422,6 +439,16 @@ static int s6e3ha6_probe(struct mipi_dsi_device *dsi)
 	ctx->dsi = dsi;
 	mipi_dsi_set_drvdata(dsi, ctx);
 
+	/*
+	 * The vendor backlight device and the lcd class device of this panel
+	 * (panel_bl.c:552-559 / panel_drv.c:673); the Samsung lights HAL and
+	 * the init rc of the stock rootfs use both.
+	 */
+	ctx->bright = s6e3ha6_bright_register(dev, dsi, ctx->variant);
+	if (IS_ERR(ctx->bright))
+		return dev_err_probe(dev, PTR_ERR(ctx->bright), "no backlight device\n");
+	s6e3ha6_bright_register_lcd(ctx->bright);
+
 	dsi->lanes = 4;			/* FDT:10098 data_lane = <0x04> */
 	dsi->format = MIPI_DSI_FMT_RGB888;
 	/* command mode, non-continuous clock (S:.../dpu/dsim_reg.c:1317-1318) */
@@ -462,6 +489,7 @@ static void s6e3ha6_remove(struct mipi_dsi_device *dsi)
 
 	greatlte_l5_set(GL5_ON, panel, false);
 	greatlte_l5_set(GL5_ON, det, NULL);
+	s6e3ha6_bright_unregister(mipi_dsi_get_drvdata(dsi));
 	mipi_dsi_detach(dsi);
 	drm_panel_remove(&ctx->panel);
 	s6e3ha6_power_off(ctx);
