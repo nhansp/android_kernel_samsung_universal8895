@@ -451,6 +451,21 @@ static const struct regmap_range max77865_chg_volatile_ranges[] = {
 	regmap_reg_range(MAX77865_CHG_REG_INT, 0xB6),
 };
 
+/*
+ * CHG_INT is cleared by reading it (stock reads it once per interrupt and never writes it,
+ * Samsung's drivers/mfd/max77865-irq.c). Precious keeps it out of a debugfs register dump
+ * (drivers/base/regmap/regmap-debugfs.c), which would otherwise eat a pending
+ * CHGIN_I and delay the attach/detach pass to the next 10 s tick; driver reads are unchanged.
+ */
+static const struct regmap_range max77865_chg_precious_ranges[] = {
+	regmap_reg_range(MAX77865_CHG_REG_INT, MAX77865_CHG_REG_INT),
+};
+
+static const struct regmap_access_table max77865_chg_precious_table = {
+	.yes_ranges = max77865_chg_precious_ranges,
+	.n_yes_ranges = ARRAY_SIZE(max77865_chg_precious_ranges),
+};
+
 static const struct regmap_access_table max77865_chg_rd_table = {
 	.yes_ranges = max77865_chg_rd_ranges,
 	.n_yes_ranges = ARRAY_SIZE(max77865_chg_rd_ranges),
@@ -474,6 +489,7 @@ static const struct regmap_config max77865_chg_regmap_config = {
 	.rd_table = &max77865_chg_rd_table,
 	.wr_table = &max77865_chg_wr_table,
 	.volatile_table = &max77865_chg_volatile_table,
+	.precious_table = &max77865_chg_precious_table,
 	.cache_type = REGCACHE_NONE,
 };
 
