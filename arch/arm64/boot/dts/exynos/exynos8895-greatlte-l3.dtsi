@@ -67,6 +67,13 @@
 };
 
 &usbdrd_dwc3 {
-	dr_mode = "peripheral";		/* stock "otg" (FDT:7875); peripheral only in L3 (1.1) */
+	/*
+	 * stock "otg" (FDT:7875); peripheral only in L3 (1.1). L6G G2 (spec L6G 5.4,
+	 * REQ-L3-G2, V-3): the S2MM005 port controller owns the role through the dwc3
+	 * role switch that -l6g.dtsi adds, so the controller has to be dual-role.
+	 * role-switch-default-mode = "peripheral" keeps the behaviour L3 had before the
+	 * first cable attach.
+	 */
+	dr_mode = "otg";
 	maximum-speed = "super-speed";	/* FDT:7876 */
 };
