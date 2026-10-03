@@ -15,7 +15,10 @@ description: |
   binding (arm,mali-bifrost.yaml): the interrupt names are the upper-case
   names of the stock device tree. Power through the pd_g3d power domain,
   the core clock through the ACPM DVFS G3D domain, no supply (the power
-  management firmware owns the rail). Local binding of the greatlte port
+  management firmware owns the rail). The node is named mali@<reg>, not
+  gpu@<reg>, as the stock device tree does (FDT:4636): the platform device
+  directory the power HAL writes the DVFS locks in is
+  /sys/devices/platform/13900000.mali. Local binding of the greatlte port
   (spec L6A_graphics.md 4.1), not for upstream.
 
 properties:
@@ -72,7 +75,7 @@ examples:
   - |
     #include <dt-bindings/interrupt-controller/arm-gic.h>
 
-    gpu@13900000 {
+    mali@13900000 {
         compatible = "samsung,exynos8895-mali";
         reg = <0x13900000 0x5000>;
         interrupts = <GIC_SPI 60 IRQ_TYPE_LEVEL_HIGH>,
