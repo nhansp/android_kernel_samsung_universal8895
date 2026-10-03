@@ -75,3 +75,5 @@ obj-$(CONFIG_GREATLTE_HB_L6I)	+= greatlte-hb-l6i.o
 obj-$(CONFIG_GREATLTE_HB_L6E)	+= greatlte-hb-l6e.o
 # L6L (G2D blitter) heartbeat rows (WP l6l, DEBUG)
 obj-$(CONFIG_GREATLTE_HB_L6L)	+= greatlte-hb-l6l.o
+# L6B multimedia QoS shim
+obj-$(CONFIG_EXYNOS8895_MM_QOS)		+= exynos8895-mm-qos.o

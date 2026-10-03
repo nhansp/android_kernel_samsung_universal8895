@@ -26,12 +26,19 @@ properties:
               - samsung,exynos3-sysreg
               - samsung,exynos4-sysreg
               - samsung,exynos5-sysreg
+              - samsung,exynos8895-cam-sysreg
+              - samsung,exynos8895-dcam-sysreg
               - samsung,exynos8895-dpu0-sysreg
               - samsung,exynos8895-dpu1-sysreg
               - samsung,exynos8895-fsys0-sysreg
               - samsung,exynos8895-fsys1-sysreg
+              - samsung,exynos8895-g2d-sysreg
+              - samsung,exynos8895-isphq-sysreg
+              - samsung,exynos8895-isplp-sysreg
+              - samsung,exynos8895-mfc-sysreg
               - samsung,exynos8895-peric0-sysreg
               - samsung,exynos8895-peric1-sysreg
+              - samsung,exynos8895-srdz-sysreg
               - samsung,exynosautov920-hsi2-sysreg
               - samsung,exynosautov920-peric0-sysreg
               - samsung,exynosautov920-peric1-sysreg
