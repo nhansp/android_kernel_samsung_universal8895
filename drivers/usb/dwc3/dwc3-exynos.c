@@ -12,10 +12,16 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/platform_device.h>
+#include <linux/notifier.h>
 #include <linux/clk.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/regulator/consumer.h>
+#include <linux/usb/gadget.h>
+#include <linux/usb/role.h>
+
+#include "core.h"
+#include "glue.h"
 
 #define DWC3_EXYNOS_MAX_CLOCKS	4
 
@@ -23,6 +29,7 @@ struct dwc3_exynos_driverdata {
 	const char		*clk_names[DWC3_EXYNOS_MAX_CLOCKS];
 	int			num_clks;
 	int			suspend_clk_idx;
+	bool			vbus_session;	/* greatlte: Type-C owns the role */
 };
 
 struct dwc3_exynos {
@@ -35,7 +42,165 @@ struct dwc3_exynos {
 
 	struct regulator	*vdd33;
 	struct regulator	*vdd10;
+
+	/* greatlte: the bind notifier of the dwc3 core of_platform_populate() adds */
+	struct notifier_block	core_nb;
+	bool			watch_core;
 };
+
+/*
+ * greatlte (spec L6G 5.4, G-6): the S2MM005 port controller owns the USB role
+ * through the dwc3 role switch, and dwc3 maps USB_ROLE_NONE back to the default
+ * mode (A:drivers/usb/dwc3/drd.c:445-470), which in device mode leaves the gadget
+ * untouched: __dwc3_set_mode() returns as soon as the mode does not change
+ * (A:drivers/usb/dwc3/core.c:187-189). So a detach has to reach the gadget
+ * itself, exactly where stock did it: the CCIC/MUIC notifier called
+ * dwc3_exynos_vbus_event() (S:drivers/usb/notify/usb_notifier.c:326 ->
+ * S:drivers/usb/dwc3/dwc3-exynos.c:378-403), which ran the OTG FSM and
+ * dwc3_otg_start/stop_gadget() (S:drivers/usb/dwc3/otg.c:282-353). 6.18 hands a
+ * glue every role switch through dwc3_glue_ops.pre_set_role
+ * (A:drivers/usb/dwc3/core.h:1006-1014, :1651-1655), which
+ * dwc3_usb_role_switch_set() calls before dwc3_set_mode()
+ * (A:drivers/usb/dwc3/drd.c:467-468), so stock's sequence is reproduced with the
+ * 6.18 VBUS session API:
+ * - no cable (USB_ROLE_NONE): the VBUS session ends, i.e. the pull-up is dropped,
+ *   the UDC state goes not-attached and the uevent the USB HAL waits for is sent
+ *   (A:drivers/usb/gadget/udc/core.c:758-790 -> gadget->ops->pullup,
+ *   A:drivers/usb/dwc3/gadget.c:2791). That pull-up path is also where stock
+ *   re-tuned the PHY after its core reset (S:drivers/usb/dwc3/gadget.c:1962-1978),
+ *   which the L3 vendor hook already covers (spec/L3_usb.md 3.D step 5b);
+ * - a cable (USB_ROLE_DEVICE): the VBUS session starts, the pull-up again;
+ * - USB_ROLE_HOST: nothing, dwc3_set_mode() tears the gadget down and adds xHCI
+ *   itself.
+ *
+ * The session goes to usb_udc_vbus_handler(), not to the soft-connect API:
+ * usb_gadget_connect()/usb_gadget_disconnect() (A:drivers/usb/gadget/udc/core.c:
+ * 705-826) are what configfs' soft_connect and a UDC bind use, and they only move
+ * gadget->connected - every later UDC bind runs usb_udc_connect_control()
+ * (A:drivers/usb/gadget/udc/core.c:1608-1641), which connects again from
+ * udc->vbus (A:drivers/usb/gadget/udc/core.c:1143-1149) and undoes a detach as
+ * soon as Android rebinds the UDC. usb_udc_vbus_handler() records the state in
+ * the UDC and offloads the pull-up to the UDC's own work
+ * (A:drivers/usb/gadget/udc/core.c:1151-1186), so every later connect decision
+ * honours it; it is idempotent in both directions (the disconnect path returns
+ * early when nothing is connected, A:drivers/usb/gadget/udc/core.c:768-769, and
+ * the pull-up itself compares the state first, A:drivers/usb/dwc3/gadget.c:
+ * 2824-2827), and it may be called from atomic context.
+ */
+static void dwc3_exynos_set_role(struct dwc3 *dwc, enum usb_role role)
+{
+	struct usb_gadget *gadget = dwc->gadget;
+
+	if (!gadget)
+		return;			/* host mode: dwc3_gadget_exit() freed it */
+
+	switch (role) {
+	case USB_ROLE_NONE:
+		usb_udc_vbus_handler(gadget, false);
+		dev_info(dwc->dev, "no cable: VBUS session ended\n");
+		break;
+	case USB_ROLE_DEVICE:
+		usb_udc_vbus_handler(gadget, true);
+		dev_info(dwc->dev, "cable: VBUS session started\n");
+		break;
+	case USB_ROLE_HOST:
+		break;
+	}
+}
+
+static const struct dwc3_glue_ops dwc3_exynos_8895_glue_ops = {
+	.pre_set_role	= dwc3_exynos_set_role,
+};
+
+/*
+ * Attach the VBUS session to a dwc3 core. dwc3_probe() clears dwc->glue_ops
+ * (A:drivers/usb/dwc3/core.c:2389) and only a glue that probes the core itself
+ * can set it before that probe (the in-tree user is dwc3-qcom.c,
+ * A:drivers/usb/dwc3/dwc3-qcom.c:605-608,701), but the field is read on every
+ * role switch, so assigning it once the core has probed is enough. This is L3's
+ * O19 (spec/L3_usb.md:750) done without converting the glue: the child device,
+ * its name (10c00000.usb, which the UDC takes,
+ * A:drivers/usb/gadget/udc/core.c:1404-1406) and its whole property set stay
+ * what of_platform_populate() made them.
+ */
+static void dwc3_exynos_glue_core(struct dwc3_exynos *exynos, struct device *dev)
+{
+	struct dwc3 *dwc;
+
+	if (!of_device_is_compatible(dev->of_node, "snps,dwc3"))
+		return;
+
+	/*
+	 * dwc3_core_probe() stores the core in the driver data of its own
+	 * platform device (A:drivers/usb/dwc3/core.c:2275), and .probe has
+	 * returned by the time either caller below runs, so the core is there.
+	 */
+	dwc = dev_get_drvdata(dev);
+	if (!dwc) {
+		dev_err(exynos->dev, "%s: no dwc3 core, no VBUS session\n",
+			dev_name(dev));
+		return;
+	}
+
+	if (dwc->glue_ops == &dwc3_exynos_8895_glue_ops)
+		return;
+
+	dwc->glue_ops = &dwc3_exynos_8895_glue_ops;
+	dev_info(exynos->dev, "USB VBUS session on %s\n", dev_name(dev));
+}
+
+/*
+ * of_platform_populate() only binds the child core synchronously when nothing
+ * defers its probe - its PHY, the fw_devlink suppliers of the port graph to the
+ * Type-C connector on i2c 30, its regulators or clocks - and a deferred probe
+ * happens long after dwc3_exynos_probe() has returned. The platform bus reports
+ * every successful bind, bus_notify(BUS_NOTIFY_BOUND_DRIVER) from driver_bound()
+ * (A:drivers/base/dd.c:459-482), and really_probe() calls it only after .probe
+ * returned without error (A:drivers/base/dd.c:769), i.e. after dwc3_probe() has
+ * cleared dwc->glue_ops (A:drivers/usb/dwc3/core.c:2389). Watching the bus
+ * therefore covers the deferred case as well; the explicit lookup after
+ * of_platform_populate() covers a core that bound synchronously.
+ */
+static int dwc3_exynos_core_bound(struct notifier_block *nb, unsigned long action,
+				  void *data)
+{
+	struct dwc3_exynos *exynos = container_of(nb, struct dwc3_exynos, core_nb);
+	struct device *dev = data;
+
+	if (action != BUS_NOTIFY_BOUND_DRIVER)
+		return NOTIFY_DONE;
+
+	if (dev->parent != exynos->dev)		/* only the core of this glue */
+		return NOTIFY_DONE;
+
+	dwc3_exynos_glue_core(exynos, dev);
+	return NOTIFY_OK;
+}
+
+static void dwc3_exynos_set_vbus_session(struct dwc3_exynos *exynos,
+					 struct device_node *node)
+{
+	struct device_node *child;
+	struct platform_device *core;
+
+	for (child = of_get_next_available_child(node, NULL);
+	     child;
+	     child = of_get_next_available_child(node, child)) {
+		if (of_device_is_compatible(child, "snps,dwc3"))
+			break;
+	}
+	if (!child)
+		return;
+
+	core = of_find_device_by_node(child);
+	if (!core) {
+		dev_err(exynos->dev, "no dwc3 core device, no VBUS session\n");
+		return;
+	}
+
+	dwc3_exynos_glue_core(exynos, &core->dev);
+	put_device(&core->dev);
+}
 
 static int dwc3_exynos_probe(struct platform_device *pdev)
 {
@@ -100,20 +265,38 @@ static int dwc3_exynos_probe(struct platform_device *pdev)
 		goto vdd10_err;
 	}
 
-	if (node) {
-		ret = of_platform_populate(node, NULL, NULL, dev);
-		if (ret) {
-			dev_err(dev, "failed to add dwc3 core\n");
-			goto populate_err;
-		}
-	} else {
+	if (!node) {
 		dev_err(dev, "no device node, failed to add dwc3 core\n");
 		ret = -ENODEV;
 		goto populate_err;
 	}
 
+	if (driver_data->vbus_session) {
+		exynos->core_nb.notifier_call = dwc3_exynos_core_bound;
+		ret = bus_register_notifier(&platform_bus_type,
+					 &exynos->core_nb);
+		if (ret) {
+			dev_err(dev, "failed to watch the dwc3 core\n");
+			goto populate_err;
+		}
+		exynos->watch_core = true;
+	}
+
+	ret = of_platform_populate(node, NULL, NULL, dev);
+	if (ret) {
+		dev_err(dev, "failed to add dwc3 core\n");
+		goto notifier_err;
+	}
+
+	if (driver_data->vbus_session)
+		dwc3_exynos_set_vbus_session(exynos, node);
+
 	return 0;
 
+notifier_err:
+	if (exynos->watch_core)
+		bus_unregister_notifier(&platform_bus_type,
+					 &exynos->core_nb);
 populate_err:
 	regulator_disable(exynos->vdd10);
 vdd10_err:
@@ -132,6 +315,10 @@ static void dwc3_exynos_remove(struct platform_device *pdev)
 {
 	struct dwc3_exynos	*exynos = platform_get_drvdata(pdev);
 	int i;
+
+	if (exynos->watch_core)
+		bus_unregister_notifier(&platform_bus_type,
+					 &exynos->core_nb);
 
 	of_platform_depopulate(&pdev->dev);
 
@@ -191,6 +378,8 @@ static const struct dwc3_exynos_driverdata exynos8895_drvdata = {
 	.clk_names = { "aclk", "ref", "usbtvh_ahb", "usbtvh_core" },
 	.num_clks = 4,
 	.suspend_clk_idx = -1,
+	/* L6G G2: the S2MM005 port controller owns the role (spec L6G 5.4) */
+	.vbus_session = true,
 };
 
 static const struct dwc3_exynos_driverdata gs101_drvdata = {
