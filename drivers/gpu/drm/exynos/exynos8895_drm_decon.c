@@ -17,6 +17,7 @@
 #include <linux/interrupt.h>
 #include <linux/iopoll.h>
 #include <linux/mfd/syscon.h>
+#include <linux/moduleparam.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
@@ -396,6 +397,7 @@ struct decon8895_ctx {
 	bool needs_init;	/* run the full init before the next start */
 	bool hiber_init;	/* hibernation workqueue and CAM status are ready */
 	bool hiber_on;		/* DECON + DSIM powered down between frames */
+	bool hiber_ulps;	/* hiber_on with the DSIM link in ULPS */
 	bool hiber_timeout;	/* DECON timeout IRQ since the last commit */
 	void __iomem *hiber_cam;	/* CAM running status for the enter check */
 	struct mutex hiber_lock;	/* serialises a hibernation enter and exit */
@@ -1301,6 +1303,63 @@ EXPORT_SYMBOL_GPL(exynos8895_decon_set_dsim_hooks);
 /* the one DECON0 context, for the hibernation exports below */
 static struct decon8895_ctx *d8895_hiber_ctx;
 
+/*
+ * Runtime kill switches for display hibernation, both at the stock setting:
+ * stock can only turn hibernation off with a rebuild (CONFIG_DECON_HIBER,
+ * S:drivers/video/fbdev/exynos/dpu/Kconfig:55-58, default n, used in
+ * decon_core.c:4194-4199) and its only other gate, decon->hiber.init_status
+ * (S:.../dpu/decon.h:1062), is set once at probe (decon_dsi.c:1231-1248);
+ * ULPS was reachable from userspace only through the vendor ioctl
+ * DSIM_IOC_ENTER_ULPS (S:.../dpu/dsim_drv.c:1456-1474). The parameters are
+ * writable so a display problem can be bisected without a rebuild, as
+ * decon_log_level is (module_param(decon_log_level, int, 0644),
+ * S:.../dpu/decon_core.c:50).
+ */
+static bool d8895_hiber_enabled = true;
+static bool d8895_ulps_enabled = true;
+
+static int d8895_hiber_enable_set(const char *val, const struct kernel_param *kp)
+{
+	struct decon8895_ctx *ctx = READ_ONCE(d8895_hiber_ctx);
+	bool off;
+	int ret;
+
+	ret = kstrtobool(val, &off);
+	if (ret)
+		return ret;
+
+	/*
+	 * Leave hibernation before the switch goes off: a store of 0 must not
+	 * leave the pipe powered down until the next panel command brings it
+	 * back. A refused exit keeps the switch on (the write fails), so the
+	 * enter stays armed and a later panel command can retry the exit.
+	 */
+	if (off && ctx && READ_ONCE(ctx->hiber_init)) {
+		ret = exynos8895_decon_hiber_block_exit();
+		exynos8895_decon_hiber_unblock();
+		if (ret) {
+			dev_warn(ctx->dev, "hibernation exit failed: %d, still enabled\n",
+				 ret);
+			return ret;
+		}
+	}
+
+	return param_set_bool(val, kp);
+}
+
+static const struct kernel_param_ops d8895_hiber_enable_ops = {
+	.set = d8895_hiber_enable_set,
+	.get = param_get_bool,
+};
+module_param_cb(hiber_enable, &d8895_hiber_enable_ops,
+		&d8895_hiber_enabled, 0644);
+MODULE_PARM_DESC(hiber_enable,
+		 "DECON display hibernation; 0 leaves hibernation and stops entering it (default: Y)");
+
+module_param_named(ulps_enable, d8895_ulps_enabled, bool, 0644);
+MODULE_PARM_DESC(ulps_enable,
+		 "put the DSIM link into ULPS together with display hibernation (default: Y)");
+
 /* the bus votes are released at the hibernation enter, defined below */
 static void d8895_bts_release(struct decon8895_ctx *ctx);
 
@@ -1363,7 +1422,8 @@ static int d8895_hiber_enter(struct decon8895_ctx *ctx)
 	unsigned long flags;
 	int ret = 0, ch;
 
-	if (!D8895_HIBER_ON || !READ_ONCE(ctx->hiber_init))
+	if (!D8895_HIBER_ON || !READ_ONCE(ctx->hiber_init) ||
+	    !READ_ONCE(d8895_hiber_enabled))
 		return 0;
 	mutex_lock(&ctx->hiber_lock);
 	if (!ctx->rpm_held || READ_ONCE(ctx->hiber_on) || d8895_hiber_blocked(ctx))
@@ -1372,7 +1432,8 @@ static int d8895_hiber_enter(struct decon8895_ctx *ctx)
 	spin_lock_irqsave(&d8895_dsim_hooks_lock, flags);
 	hooks = d8895_dsim_hooks;
 	spin_unlock_irqrestore(&d8895_dsim_hooks_lock, flags);
-	if (!hooks || !hooks->enter_ulps || !hooks->exit_ulps)
+	if (!hooks || (READ_ONCE(d8895_ulps_enabled) &&
+		       (!hooks->enter_ulps || !hooks->exit_ulps)))
 		goto out;
 
 	d8895_hiber_block(ctx);
@@ -1402,9 +1463,12 @@ static int d8895_hiber_enter(struct decon8895_ctx *ctx)
 
 	WRITE_ONCE(ctx->hiber_on, true);
 	greatlte_l5_inc(GL5_ON, he);
-	ret = hooks->enter_ulps(hooks->data);
-	if (ret)
-		dev_warn(ctx->dev, "DSIM ULPS enter failed: %d\n", ret);
+	if (READ_ONCE(d8895_ulps_enabled)) {
+		ret = hooks->enter_ulps(hooks->data);
+		WRITE_ONCE(ctx->hiber_ulps, ret == 0);
+		if (ret)
+			dev_warn(ctx->dev, "DSIM ULPS enter failed: %d\n", ret);
+	}
 
 	ctx->needs_init = true;
 	pm_runtime_put_sync(ctx->dev);
@@ -1427,6 +1491,7 @@ static int d8895_hiber_exit(struct decon8895_ctx *ctx)
 	unsigned long flags;
 	int ret = 0;
 
+	/* the exit runs whatever hiber_enable says: the pipe must come back */
 	if (!D8895_HIBER_ON || !READ_ONCE(ctx->hiber_init))
 		return 0;
 	d8895_hiber_block(ctx);
@@ -1446,7 +1511,12 @@ static int d8895_hiber_exit(struct decon8895_ctx *ctx)
 	spin_lock_irqsave(&d8895_dsim_hooks_lock, flags);
 	hooks = d8895_dsim_hooks;
 	spin_unlock_irqrestore(&d8895_dsim_hooks_lock, flags);
-	if (hooks && hooks->exit_ulps) {
+	/*
+	 * hiber_ulps, not ulps_enable: the link is in ULPS whenever the enter
+	 * put it there, also when the switch was turned off in between.
+	 */
+	if (hooks && hooks->exit_ulps && READ_ONCE(ctx->hiber_ulps)) {
+		WRITE_ONCE(ctx->hiber_ulps, false);
 		ret = hooks->exit_ulps(hooks->data);
 		if (ret)
 			dev_warn(ctx->dev, "DSIM ULPS exit failed: %d\n", ret);
@@ -1470,7 +1540,8 @@ static void d8895_hiber_work(struct work_struct *work)
 {
 	struct decon8895_ctx *ctx = container_of(work, struct decon8895_ctx, hiber_work);
 
-	if (!D8895_HIBER_ON || !READ_ONCE(ctx->hiber_init))
+	if (!D8895_HIBER_ON || !READ_ONCE(ctx->hiber_init) ||
+	    !READ_ONCE(d8895_hiber_enabled))
 		return;
 	if (d8895_hiber_enter_cond(ctx))
 		d8895_hiber_enter(ctx);
@@ -2078,7 +2149,7 @@ static void d8895_te_handler(struct exynos_drm_crtc *crtc)
 	 * (decon_dsi.c:518-523); the check counts TEs without a frame done.
 	 */
 	if (D8895_HIBER_ON && ctx->rpm_held && READ_ONCE(ctx->hiber_init) &&
-	    !d8895_hiber_blocked(ctx))
+	    READ_ONCE(d8895_hiber_enabled) && !d8895_hiber_blocked(ctx))
 		queue_work(ctx->hiber_wq, &ctx->hiber_work);
 }
 
