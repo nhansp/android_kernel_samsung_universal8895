@@ -2375,6 +2375,10 @@ static ssize_t samsung_dsim_xfer_exynos8895(struct samsung_dsim *dsi,
 
 	mutex_lock(&dsi->cmd_lock);
 
+	/* dsim_read_data() re-arms rd_comp before it writes anything (:304) */
+	if (m.rx_len)
+		reinit_completion(&dsi->rx_done);
+
 	dsim8895_write(dsi, 0x50, DSIM8895_INT_SFR_PH_FIFO_EMPTY |
 		       (m.rx_len ? DSIM8895_INT_RX_DATA_DONE : 0));
 
@@ -2437,26 +2441,31 @@ out:
 }
 
 /*
- * mipi_read_cmd() (dsim_drv.c:780-806) is the only read entry point of the
- * vendor DSIM: it runs the read above again up to five times when the number of
- * bytes it got is not the requested one. Retries are for reads only.
+ * mipi_read_cmd() (dsim_drv.c:780-806) runs a read again up to five times when
+ * the number of bytes it got is not the requested one, and __mipi_write_data()
+ * (dsim_drv.c:404-425) does the same for a write whose return is not the
+ * requested size: six attempts, then the error. Both compare the count, not
+ * the sign, so a timeout is retried like a short packet.
  */
 static ssize_t samsung_dsim_transfer_exynos8895(struct samsung_dsim *dsi,
 						const struct mipi_dsi_msg *msg)
 {
 	ssize_t ret;
 	int retry = 5;
-
-	if (!msg->rx_len)
-		return samsung_dsim_xfer_exynos8895(dsi, msg);
+	size_t want = msg->rx_len ? msg->rx_len : msg->tx_len;
 
 	for (;;) {
 		ret = samsung_dsim_xfer_exynos8895(dsi, msg);
-		if (ret >= 0 && (size_t)ret == msg->rx_len)
+		if (ret >= 0 && (size_t)ret == want)
 			return ret;
 		if (!retry) {
-			dev_err(dsi->dev, "failed to read addr 0x%02x, %zd of %zu bytes\n",
-				((const u8 *)msg->tx_buf)[0], ret, msg->rx_len);
+			if (msg->rx_len)
+				dev_err(dsi->dev, "failed to read addr 0x%02x, %zd of %zu bytes\n",
+					((const u8 *)msg->tx_buf)[0], ret, msg->rx_len);
+			else
+				dev_err(dsi->dev, "failed to write 0x%02x, %zd of %zu bytes\n",
+					msg->tx_len ? ((const u8 *)msg->tx_buf)[0] : 0,
+					ret, msg->tx_len);
 			return ret;
 		}
 		retry--;
