@@ -7,9 +7,12 @@
  * freq_qos. This keeps one request list per class, aggregates it like stock
  * pm_qos (S:kernel/power/qos.c: a MIN class = largest active value, a MAX
  * class = smallest) and applies the result:
- * - INTCAM/CAM: clk_set_rate() on the ACPM DVFS clocks the camera core node
- *   names "dvfs_intcam"/"dvfs_cam", clamped to the stock devfreq range; with
- *   no active request the stock default_qos level (FDT:6759,6795 freq_info =
+ * - INTCAM/CAM: one request to the L2b bus DVFS driver when its devfreq for
+ *   the class is live (REQ-2B-L6B-1: at bus stage >= 2 that driver is the only
+ *   writer of the ACPM INTCAM/CAM clocks, spec L2b C-3), else clk_set_rate()
+ *   on the ACPM DVFS clocks the camera core node names "dvfs_intcam"/"dvfs_cam",
+ *   clamped to the stock devfreq range; with no active request the stock
+ *   default_qos level (FDT:6759,6795 freq_info =
  *   {initial, default_qos, suspend, min, max, reboot},
  *   S:drivers/devfreq/exynos/exynos-devfreq.c:903-908);
  * - CLUSTER0/1 MIN/MAX: freq_qos requests on the cpufreq policy of cpu 0
@@ -33,6 +36,7 @@
 #include <linux/mutex.h>
 #include <linux/pm_qos.h>
 #include <linux/seq_file.h>
+#include <soc/samsung/exynos8895-bus-qos.h>
 #include <soc/samsung/exynos8895-mm-qos.h>
 
 /* stock PM_QOS_DEFAULT_VALUE: the request takes the class default (S:include/linux/pm_qos.h:53) */
@@ -60,19 +64,31 @@ static const struct mm_qos_class_desc mm_qos_desc[MM_QOS_NR] = {
  * INTCAM/CAM levels in kHz: FDT:6759 devfreq_intcam freq_info = <0xa8750
  * 0x9c400 0xa8750 0x9c400 0xa8750 0xa8750>, FDT:6795 devfreq_cam freq_info =
  * <0xa8750 0x99cf0 0xa8750 0x99cf0 0xa8750 0xa8750>.
+ *
+ * The L2b bus DVFS driver carries the same two domains (spec L2b 4.2,
+ * EXYNOS_BUS_QOS_INTCCAM/_CAM of include/soc/samsung/exynos8895-bus-qos.h) with
+ * the same levels; when it owns a class, the shim votes through it
+ * (REQ-2B-L6B-1).
  */
 struct mm_qos_dvfs {
 	const char *clk_name;
 	u32 default_khz;	/* freq_info[1] default_qos */
 	u32 min_khz;		/* freq_info[3] */
 	u32 max_khz;		/* freq_info[4] */
-	struct clk *clk;
+	struct clk *clk;		/* NULL when the bus driver owns the clock */
+	struct exynos_bus_qos_request bus_req;	/* one request per class (REQ-2B-L6B-1) */
+	bool bus;		/* the class is voted through exynos8895-bus */
 	unsigned long applied_khz;
 };
 
 static struct mm_qos_dvfs mm_qos_dvfs[2] = {
 	{ "dvfs_intcam", 640000, 640000, 690000 },	/* MM_QOS_INTCAM */
 	{ "dvfs_cam", 630000, 630000, 690000 },		/* MM_QOS_CAM */
+};
+
+/* the bus QoS class of mm_qos_dvfs[i] (the two classes keep the same order) */
+static const enum exynos_bus_qos_class mm_qos_bus_cls[ARRAY_SIZE(mm_qos_dvfs)] = {
+	EXYNOS_BUS_QOS_INTCAM, EXYNOS_BUS_QOS_CAM,
 };
 
 /* cluster n <-> the cpufreq policy of cpu 0 (cpus 0-3) or cpu 4 (cpus 4-7) */
@@ -127,16 +143,28 @@ static s32 mm_qos_aggregate(enum mm_qos_class cls)
 static void mm_qos_apply_dvfs(enum mm_qos_class cls)
 {
 	struct mm_qos_dvfs *d = &mm_qos_dvfs[cls - MM_QOS_INTCAM];
-	u32 khz;
+	s32 khz;
 	int ret;
-
-	if (!d->clk)
-		return;
 
 	if (mm_qos_has_requests(cls))
 		khz = clamp_t(s32, mm_qos_aggregate(cls), d->min_khz, d->max_khz);
 	else
 		khz = d->default_khz;
+
+	if (d->bus) {
+		/*
+		 * The bus driver aggregates every consumer of the class and
+		 * applies its own default_qos when no request is active, so an
+		 * idle class votes nothing (REQ-2B-L6B-1, spec L2b 5.1 rule 6).
+		 */
+		khz = mm_qos_has_requests(cls) ? khz : 0;
+		exynos_bus_qos_update_request(&d->bus_req, khz);
+		d->applied_khz = khz;
+		return;
+	}
+
+	if (!d->clk)
+		return;
 
 	if (khz == d->applied_khz)
 		return;
@@ -306,25 +334,50 @@ static void mm_qos_put_dvfs(void *data)
 
 	mutex_lock(&mm_qos_lock);
 	for (i = 0; i < ARRAY_SIZE(mm_qos_dvfs); i++) {
-		mm_qos_dvfs[i].clk = NULL;
+		if (mm_qos_dvfs[i].bus) {
+			if (exynos_bus_qos_request_active(&mm_qos_dvfs[i].bus_req))
+				exynos_bus_qos_remove_request(&mm_qos_dvfs[i].bus_req);
+			mm_qos_dvfs[i].bus = false;
+		} else {
+			mm_qos_dvfs[i].clk = NULL;
+		}
 		mm_qos_dvfs[i].applied_khz = 0;
 	}
 	mutex_unlock(&mm_qos_lock);
 }
 
 /*
- * Called by the camera core probe with its device: takes the two ACPM DVFS
- * clocks and applies the current INTCAM/CAM aggregate (the idle level when no
- * request is active). The clocks are released with the device (the pointers
- * are cleared first, the devm action runs before the clk puts).
+ * Called by the camera core probe with its device: picks the owner of the two
+ * ACPM DVFS classes once, then takes the clocks of the classes the bus driver
+ * does not own (or adds its requests for the classes it does) and applies the
+ * current INTCAM/CAM aggregate (the idle level when no request is active). The
+ * clocks are released with the device (the pointers are cleared first, the devm
+ * action runs before the clk puts).
+ *
+ * REQ-2B-L6B-1: exynos_bus_qos_class_live() answers 1 when the class's bus
+ * devfreq has probed (it then owns the ACPM clock, spec L2b C-3), 0 when there
+ * is no such device and -EPROBE_DEFER while a bus node that is enabled in DT has
+ * not bound yet; in the last case the camera probe is deferred and retried, so
+ * the decision can never be taken twice.
  */
 int mm_qos_init(struct device *dev)
 {
-	struct clk *clk[ARRAY_SIZE(mm_qos_dvfs)];
+	struct clk *clk[ARRAY_SIZE(mm_qos_dvfs)] = { };
+	bool bus[ARRAY_SIZE(mm_qos_dvfs)];
 	unsigned int i;
 	int ret;
 
 	for (i = 0; i < ARRAY_SIZE(mm_qos_dvfs); i++) {
+		int live = exynos_bus_qos_class_live(mm_qos_bus_cls[i]);
+
+		if (live == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+		bus[i] = live > 0;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(mm_qos_dvfs); i++) {
+		if (bus[i])
+			continue;
 		clk[i] = devm_clk_get(dev, mm_qos_dvfs[i].clk_name);
 		if (IS_ERR(clk[i]))
 			return dev_err_probe(dev, PTR_ERR(clk[i]), "mm-qos: %s\n",
@@ -332,22 +385,35 @@ int mm_qos_init(struct device *dev)
 	}
 
 	mutex_lock(&mm_qos_lock);
-	if (mm_qos_dvfs[0].clk) {
+	if (mm_qos_dvfs[0].clk || mm_qos_dvfs[0].bus) {
 		mutex_unlock(&mm_qos_lock);
 		return -EBUSY;
 	}
-	for (i = 0; i < ARRAY_SIZE(mm_qos_dvfs); i++)
+	for (i = 0; i < ARRAY_SIZE(mm_qos_dvfs); i++) {
 		mm_qos_dvfs[i].clk = clk[i];
+		mm_qos_dvfs[i].bus = bus[i];
+		if (bus[i])
+			exynos_bus_qos_add_request(&mm_qos_dvfs[i].bus_req,
+						   mm_qos_bus_cls[i], 0);
+	}
 	mutex_unlock(&mm_qos_lock);
 
 	ret = devm_add_action_or_reset(dev, mm_qos_put_dvfs, NULL);
-	if (ret)
+	if (ret) {
+		mm_qos_put_dvfs(NULL);
 		return ret;
+	}
 
 	mutex_lock(&mm_qos_lock);
 	mm_qos_apply(MM_QOS_INTCAM);
 	mm_qos_apply(MM_QOS_CAM);
 	mutex_unlock(&mm_qos_lock);
+
+	for (i = 0; i < ARRAY_SIZE(mm_qos_dvfs); i++)
+		if (bus[i])
+			pr_info("mm-qos: %s votes through exynos8895-bus (%s)\n",
+				mm_qos_desc[MM_QOS_INTCAM + i].name,
+				mm_qos_dvfs[i].bus ? "REQ-2B-L6B-1" : "clock");
 
 	return 0;
 }
@@ -394,7 +460,9 @@ static int mm_qos_show(struct seq_file *s, void *unused)
 		seq_printf(s, "%-15s requests %u aggregate %d", mm_qos_desc[i].name, n,
 			   mm_qos_aggregate(i));
 		if (i == MM_QOS_INTCAM || i == MM_QOS_CAM)
-			seq_printf(s, " applied %lu kHz\n",
+			seq_printf(s, " %s %lu kHz\n",
+				   mm_qos_dvfs[i - MM_QOS_INTCAM].bus ?
+				   "bus floor" : "applied",
 				   mm_qos_dvfs[i - MM_QOS_INTCAM].applied_khz);
 		else if (mm_qos_cpu_of(i))
 			seq_printf(s, " freq_qos %s\n",
