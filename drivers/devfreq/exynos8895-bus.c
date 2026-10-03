@@ -458,8 +458,16 @@ void exynos_bus_qos_update_request(struct exynos_bus_qos_request *req, s32 khz)
 		return;
 	}
 
-	/* before the class lock: the timeout work takes it */
-	cancel_delayed_work_sync(&req->timeout);
+	/*
+	 * stock: only a pending timeout is cancelled (S:kernel/power/qos.c:816-817).
+	 * The CPU -> MIF vote reaches this from the cpufreq notifier, i.e. in the
+	 * sugov thread once per CPU transition; the unconditional cancel took a
+	 * workqueue lock (and could wait for a running timeout) for the transitions
+	 * that do not change the value, while stock acts only on a changed value
+	 * (S:kernel/power/qos.c:735,740 __pm_qos_update_request, e8895_qos_set()).
+	 */
+	if (delayed_work_pending(&req->timeout))
+		cancel_delayed_work_sync(&req->timeout);
 
 	e8895_qos_set(req, khz);
 }
@@ -477,7 +485,9 @@ void exynos_bus_qos_update_request_timeout(struct exynos_bus_qos_request *req,
 		 "%s called for unknown object.", __func__))
 		return;
 
-	cancel_delayed_work_sync(&req->timeout);
+	/* S:kernel/power/qos.c:869-870 */
+	if (delayed_work_pending(&req->timeout))
+		cancel_delayed_work_sync(&req->timeout);
 
 	e8895_qos_set(req, khz);
 
@@ -500,7 +510,9 @@ void exynos_bus_qos_remove_request(struct exynos_bus_qos_request *req)
 		return;
 	}
 
-	cancel_delayed_work_sync(&req->timeout);
+	/* S:kernel/power/qos.c:902-903 */
+	if (delayed_work_pending(&req->timeout))
+		cancel_delayed_work_sync(&req->timeout);
 
 	c = &e8895_qos[req->cls];
 	mutex_lock(&c->lock);
