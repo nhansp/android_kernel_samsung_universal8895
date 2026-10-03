@@ -513,6 +513,82 @@ static int fimc_is_tmu_notifier(struct notifier_block *nb,
 #endif
 }
 
+/*
+ * REQ-2B-L6B-2 (spec/L2b_devfreq.md T2, 4.3): 6.18 has no Exynos TMU ISP
+ * notifier chain (exynos_tmu_isp_add_notifier() at the top of this file is the
+ * stub of the stock !CONFIG_EXYNOS_THERMAL path, while stock ran with
+ * CONFIG_EXYNOS_THERMAL=y, IKC:2540), so the ported fimc-is exports the ISP
+ * thermal control the stock notifier did as a thermal cooling device on its own
+ * node (#cooling-cells = <2>, FDT:8535). The isp-thermal zone's cooling maps
+ * (spec L2b 4.3) ask for state 1 (15 fps) at 100 degC and state 2 (5 fps) at
+ * 105 degC; step_wise asks for state 0 again below them.
+ *
+ * set_cur_state() is the stock ISP_THROTTLING body above
+ * (S:drivers/media/platform/exynos/fimc-is2/fimc-is-resourcemgr.c:461-473):
+ * limited_fps gets the requested fps, "fps >= 60" means no limit (:466-468),
+ * and the log strings are stock's, which the spec's test looks for.
+ */
+#define FIMC_IS_ISP_COOLING_STATES	3	/* no limit, 15 fps, 5 fps (spec L2b 4.3) */
+static const u32 fimc_is_isp_fps[FIMC_IS_ISP_COOLING_STATES] = { 60, 15, 5 };
+
+static unsigned int fimc_is_isp_state_of_fps(u32 fps)
+{
+	if (fps >= 60)
+		return 0;	/* unlimited */
+	if (fps <= 5)
+		return 2;
+	return 1;
+}
+
+static int fimc_is_isp_get_max_state(struct thermal_cooling_device *cdev,
+	unsigned long *state)
+{
+	*state = FIMC_IS_ISP_COOLING_STATES - 1;
+
+	return 0;
+}
+
+static int fimc_is_isp_get_cur_state(struct thermal_cooling_device *cdev,
+	unsigned long *state)
+{
+	struct fimc_is_resourcemgr *resourcemgr = cdev->devdata;
+
+	*state = fimc_is_isp_state_of_fps(resourcemgr->limited_fps);
+
+	return 0;
+}
+
+static int fimc_is_isp_set_cur_state(struct thermal_cooling_device *cdev,
+	unsigned long state)
+{
+	struct fimc_is_resourcemgr *resourcemgr = cdev->devdata;
+	int fps;
+
+	if (state >= FIMC_IS_ISP_COOLING_STATES)
+		return -EINVAL;
+
+	fps = fimc_is_isp_fps[state];
+
+	/* The FPS can be defined to any specific value. (stock, :488) */
+	if (fps >= 60) {
+		resourcemgr->tmu_state = ISP_NORMAL;
+		resourcemgr->limited_fps = 0;
+		warn("[RSC] THROTTLING : Unlimited FPS");
+	} else {
+		resourcemgr->tmu_state = state ? ISP_TRIPPING : ISP_THROTTLING;
+		resourcemgr->limited_fps = fps;
+		warn("[RSC] THROTTLING : Limited %dFPS", fps);
+	}
+
+	return 0;
+}
+
+static const struct thermal_cooling_device_ops fimc_is_isp_cooling_ops = {
+	.get_max_state = fimc_is_isp_get_max_state,
+	.get_cur_state = fimc_is_isp_get_cur_state,
+	.set_cur_state = fimc_is_isp_set_cur_state,
+};
+
 #ifdef CONFIG_EXYNOS_BUSMONITOR
 static int due_to_fimc_is(const char *desc)
 {
@@ -820,6 +896,28 @@ int fimc_is_resourcemgr_probe(struct fimc_is_resourcemgr *resourcemgr,
 		probe_err("exynos_tmu_isp_add_notifier is fail(%d)", ret);
 		goto p_err;
 	}
+
+#ifdef CONFIG_THERMAL
+	{
+	struct device *dev = &((struct fimc_is_core *)resourcemgr->private_data)->pdev->dev;
+
+	/*
+	 * The 6.18 way of the stock ISP notifier chain (REQ-2B-L6B-2, see
+	 * fimc_is_isp_set_cur_state above): one cooling device on this node,
+	 * registered with the device so it goes away with the probe. The devm
+	 * release runs before anything the ISP interrupt handler touches is
+	 * torn down (the probe failure paths below).
+	 */
+	resourcemgr->isp_cdev = devm_thermal_of_cooling_device_register(dev,
+		dev->of_node, "ISP", resourcemgr, &fimc_is_isp_cooling_ops);
+	if (IS_ERR(resourcemgr->isp_cdev)) {
+		ret = PTR_ERR(resourcemgr->isp_cdev);
+		resourcemgr->isp_cdev = NULL;
+		probe_err("devm_thermal_of_cooling_device_register is fail(%d)", ret);
+		goto p_err;
+	}
+	}
+#endif
 
 #ifdef ENABLE_RESERVED_MEM
 	ret = fimc_is_resourcemgr_initmem(resourcemgr);
