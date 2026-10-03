@@ -31,14 +31,20 @@
 
 #include <trace/events/vb2.h>
 
-#define PLANE_INDEX_BITS	3
+/*
+ * The plane index is packed into the mmap offset of every plane, together with
+ * the buffer index, so it must be wide enough for VIDEO_MAX_PLANES planes.
+ * VIDEO_MAX_PLANES is 17 on Samsung kernels (S:include/uapi/linux/videodev2.h:73),
+ * which no longer is a power of two, hence the ">=" test below.
+ */
+#define PLANE_INDEX_BITS	5
 #define PLANE_INDEX_SHIFT	(PAGE_SHIFT + PLANE_INDEX_BITS)
 #define PLANE_INDEX_MASK	(BIT_MASK(PLANE_INDEX_BITS) - 1)
 #define MAX_BUFFER_INDEX	BIT_MASK(30 - PLANE_INDEX_SHIFT)
 #define BUFFER_INDEX_MASK	(MAX_BUFFER_INDEX - 1)
 
-#if BIT(PLANE_INDEX_BITS) != VIDEO_MAX_PLANES
-#error PLANE_INDEX_BITS order must be equal to VIDEO_MAX_PLANES
+#if VIDEO_MAX_PLANES > BIT(PLANE_INDEX_BITS)
+#error PLANE_INDEX_BITS must be able to address VIDEO_MAX_PLANES planes
 #endif
 
 static int debug;
@@ -383,15 +389,15 @@ static void __setup_offsets(struct vb2_buffer *vb)
 
 	/*
 	 * The offset "cookie" value has the following constraints:
-	 * - a buffer can have up to 8 planes.
+	 * - a buffer can have up to VIDEO_MAX_PLANES planes.
 	 * - v4l2 mem2mem uses bit 30 to distinguish between
 	 *   OUTPUT (aka "source", bit 30 is 0) and
 	 *   CAPTURE (aka "destination", bit 30 is 1) buffers.
 	 * - must be page aligned
 	 * That led to this bit mapping when PAGE_SHIFT = 12:
-	 * |30                |29        15|14       12|11 0|
+	 * |30                |29        17|16       12|11 0|
 	 * |DST_QUEUE_OFF_BASE|buffer index|plane index| 0  |
-	 * where there are 15 bits to store the buffer index.
+	 * where there are 13 bits to store the buffer index.
 	 * Depending on PAGE_SHIFT value we can have fewer bits
 	 * to store the buffer index.
 	 */
