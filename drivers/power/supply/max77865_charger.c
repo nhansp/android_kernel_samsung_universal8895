@@ -3376,6 +3376,22 @@ static void max77865_charger_shutdown(struct i2c_client *client)
 	cancel_delayed_work_sync(&chg->wc_current_dwork);
 #endif
 
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC)
+	/*
+	 * Do not leave an AFC/QC adapter at 9 V for S-Boot. Stock's MUIC shutdown
+	 * opened D+/D- (Samsung's drivers/muic/universal/muic_task_max77865.c); the
+	 * MAX77865 MUIC driver here has no shutdown, so step back to 5 V with the
+	 * request the policy makes on every withdrawal (stock muic_afc_set_voltage(5)).
+	 * No lock: the pass is cancelled and the HV module takes its own.
+	 */
+	if (chg->charge_control) {
+		int hv = READ_ONCE(chg->hv_event);
+
+		if (hv == MAX77865_HV_EV_9V || hv == MAX77865_HV_EV_ERR_V)
+			max77865_hv_set_voltage(5000);
+	}
+#endif
+
 	mutex_lock(&chg->lock);
 	if (chg->otg_on)
 		max77865_otg_off(chg);
