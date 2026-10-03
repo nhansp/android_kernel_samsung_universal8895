@@ -575,7 +575,7 @@ static int fimc_is_isp_set_cur_state(struct thermal_cooling_device *cdev,
 		resourcemgr->limited_fps = 0;
 		warn("[RSC] THROTTLING : Unlimited FPS");
 	} else {
-		resourcemgr->tmu_state = state ? ISP_TRIPPING : ISP_THROTTLING;
+		resourcemgr->tmu_state = state == 2 ? ISP_TRIPPING : ISP_THROTTLING;
 		resourcemgr->limited_fps = fps;
 		warn("[RSC] THROTTLING : Limited %dFPS", fps);
 	}
