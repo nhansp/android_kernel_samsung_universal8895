@@ -29,6 +29,7 @@
 #include <linux/sync_file.h>
 #include <linux/file.h>
 #include <linux/fcntl.h>
+#include <linux/fdtable.h>
 #include <linux/dma-mapping.h>
 
 #include <media/v4l2-ioctl.h>
@@ -805,6 +806,27 @@ static void sc_fence_work(struct work_struct *work)
 	v4l2_m2m_try_schedule(ctx->m2m_ctx);
 }
 
+/*
+ * Stock's own REQBUFS wrapper (S:.../scaler/scaler-core.c:743-769), restored
+ * because the 6.18 helper v4l2_m2m_ioctl_reqbufs() takes the context from
+ * file_to_v4l2_fh(file)->m2m_ctx (A:drivers/media/v4l2-core/v4l2-mem2mem.c:
+ * 1367-1373), which sc_open() never set: v4l2_m2m_get_vq() then handed
+ * vb2_reqbufs() a queue derived from a NULL context
+ * (A:.../v4l2-mem2mem.c:123-133) and the HWC's first REQBUFS on
+ * /dev/video50 oopsed in vb2_verify_memory_type(). Every stock buffer ioctl
+ * takes the context from its sc_ctx, obtained the same way as below.
+ * Stock's per-buffer INIT_WORK() loop (S:.../scaler/scaler-core.c:755-767) is
+ * not repeated here: the port initialises the fence work item once per buffer
+ * in sc_vb2_buf_init(), which vb2 calls for the same buffers.
+ */
+static int sc_v4l2_reqbufs(struct file *file, void *fh,
+			   struct v4l2_requestbuffers *reqbufs)
+{
+	struct sc_ctx *ctx = fh_to_sc_ctx(file->private_data);
+
+	return v4l2_m2m_reqbufs(file, ctx->m2m_ctx, reqbufs);
+}
+
 static int sc_v4l2_querybuf(struct file *file, void *fh,
 			     struct v4l2_buffer *buf)
 {
@@ -813,12 +835,90 @@ static int sc_v4l2_querybuf(struct file *file, void *fh,
 }
 
 /*
+ * Create the USE_SYNC release fence for a queued buffer, install it as the
+ * buffer's out_fence and hand userspace a sync_file fd (S:.../videobuf2-v4l2.c:
+ * 137-162, where stock's __set_timestamp() did this inside vb2_qbuf()). The
+ * fd goes to *fd_out, or -1 when the buffer is queued without a release
+ * fence (stock returned the error to userspace in that case; the HWC polls
+ * the fd of a successful qbuf, so -1 keeps the contract that a qbuf with no
+ * fd has no release fence to wait for).
+ * The buffer must not be queued yet, and sc->slock is taken here so the
+ * job-completion and teardown paths cannot miss the new fence.
+ */
+static void sc_install_out_fence(struct sc_ctx *ctx, struct vb2_sc_buffer *svb,
+				 int *fd_out)
+{
+	struct sc_fence *sfence;
+	struct dma_fence *fence;
+	struct sync_file *sync_file;
+	unsigned long flags;
+	int fd;
+
+	sfence = kzalloc(sizeof(*sfence), GFP_KERNEL);
+	if (!sfence) {
+		*fd_out = -1;
+		return;
+	}
+
+	fence = &sfence->base;
+	spin_lock_init(&sfence->lock);
+	/* The context is alive here (the file holds it through the vfd lock
+	 * serialising this ioctl); fence_lock only hands out sequence
+	 * numbers, the fence itself uses its own sfence->lock. */
+	spin_lock_irqsave(&ctx->fence_lock, flags);
+	ctx->fence_seqno++;
+	dma_fence_init(fence, &sc_fence_ops, &sfence->lock,
+		       ctx->fence_context, ctx->fence_seqno);
+	spin_unlock_irqrestore(&ctx->fence_lock, flags);
+
+	spin_lock_irqsave(&ctx->sc_dev->slock, flags);
+	if (svb->out_fence) {
+		/* Never leave a waiter hanging on the replaced fence. */
+		dma_fence_signal(svb->out_fence);
+		dma_fence_put(svb->out_fence);
+	}
+	svb->out_fence = fence;
+	spin_unlock_irqrestore(&ctx->sc_dev->slock, flags);
+
+	sync_file = sync_file_create(fence);
+	if (!sync_file)
+		goto no_fd;
+	fd = get_unused_fd_flags(O_CLOEXEC);
+	if (fd < 0) {
+		fput(sync_file->file);
+		goto no_fd;
+	}
+	fd_install(fd, sync_file->file);
+	*fd_out = fd;
+
+	return;
+
+no_fd:
+	/* Nobody can ever wait for this fence: signal and drop it. */
+	spin_lock_irqsave(&ctx->sc_dev->slock, flags);
+	sc_signal_buffer_fence(&svb->mb.vb);
+	spin_unlock_irqrestore(&ctx->sc_dev->slock, flags);
+	*fd_out = -1;
+}
+
+/*
  * QBUF with the USE_SYNC fence protocol (spec L6B 5.9, L6A REQ-L6B-6A-1).
- * 0x8000 lies in V4L2_BUF_FLAG_TIMESTAMP_MASK and vb2's fill overwrites
- * buf->reserved (A:.../videobuf2/videobuf2-v4l2.c:47-52,498), so the flag
- * and the acquire fd are read BEFORE v4l2_m2m_qbuf() and the release fd
- * is written back AFTER it. Userspace contract:
- * SLSI:graphics/base/libscaler/libscaler-v4l2.cpp:371-372,399.
+ * Stock ran both halves of it inside vb2_qbuf(), ahead of the buffer reaching
+ * the driver: vb2_fill_reserved() imported the acquire fence from
+ * buf->reserved (S:.../videobuf2-v4l2.c:352-353) and __set_timestamp()
+ * created the release fence and installed its fd there
+ * (S:.../videobuf2-v4l2.c:137-162), the latter from vb2_core_qbuf() at
+ * S:.../videobuf2-core.c:1403, i.e. before __enqueue_in_driver() at :1414.
+ * 6.18 dropped both, so the driver does it here and in the SAME ORDER: the
+ * acquire fd is read and the release fence installed BEFORE
+ * v4l2_m2m_qbuf(), because that call ends in v4l2_m2m_try_schedule()
+ * (A:drivers/media/v4l2-core/v4l2-mem2mem.c:794) and a job that finished
+ * before its release fence was attached would signal nothing, leaving the
+ * HWC polling that sync_file until STREAMOFF. (6.18 vb2 does not touch
+ * buf->reserved on the way out - only the flags, of which it strips the
+ * 0x8000 USE_SYNC bit, A:.../videobuf2/videobuf2-v4l2.c:313,492 - so the fd
+ * written here survives to the copy back to userspace.)
+ * Userspace contract: SLSI:graphics/base/libscaler/libscaler-v4l2.cpp:371-372,399.
  */
 static int sc_v4l2_qbuf(struct file *file, void *fh,
 			 struct v4l2_buffer *buf)
@@ -826,7 +926,9 @@ static int sc_v4l2_qbuf(struct file *file, void *fh,
 	struct sc_ctx *ctx = fh_to_sc_ctx(file->private_data);
 	struct vb2_queue *vq = v4l2_m2m_get_vq(ctx->m2m_ctx, buf->type);
 	struct vb2_sc_buffer *svb = NULL;
-	struct dma_fence *in_fence = NULL;
+	struct dma_fence *in_fence;
+	unsigned long flags;
+	int release_fd;
 	int ret;
 
 	if ((buf->flags & SC_USE_SYNC_FLAG) && vq) {
@@ -834,94 +936,48 @@ static int sc_v4l2_qbuf(struct file *file, void *fh,
 
 		if (vb)
 			svb = to_vb2_sc_buffer(vb);
-		if ((int)buf->reserved >= 0) {
-			in_fence = sync_file_get_fence(buf->reserved);
-			if (!in_fence)
-				return -EINVAL;
-		}
-		if (svb && in_fence) {
-			if (svb->in_fence)
-				dma_fence_put(svb->in_fence);
-			svb->in_fence = in_fence;
-			in_fence = NULL;
-		}
 	}
-	if (in_fence)
-		dma_fence_put(in_fence);
+	if (!svb)
+		/* No fence protocol (flag clear) or invalid buffer index:
+		 * let vb2 report the error, no fence is involved. */
+		return v4l2_m2m_qbuf(file, ctx->m2m_ctx, buf);
+
+	in_fence = NULL;
+	if ((int)buf->reserved >= 0) {
+		in_fence = sync_file_get_fence(buf->reserved);
+		if (!in_fence)
+			return -EINVAL;
+		if (svb->in_fence)
+			dma_fence_put(svb->in_fence);
+		svb->in_fence = in_fence;
+	}
+
+	sc_install_out_fence(ctx, svb, &release_fd);
+	buf->reserved = (__u32)release_fd;
 
 	ret = v4l2_m2m_qbuf(file, ctx->m2m_ctx, buf);
-	if (ret || !(buf->flags & SC_USE_SYNC_FLAG) || !svb) {
-		if (ret && svb && svb->in_fence) {
+	if (ret) {
+		/* The buffer never reached the job: drop both fences. The
+		 * release one is signalled so no waiter is left hanging. */
+		if (svb->in_fence) {
 			dma_fence_put(svb->in_fence);
 			svb->in_fence = NULL;
 		}
-		return ret;
-	}
-
-	/* Create the release fence on the context timeline and hand
-	 * userspace a sync_file fd for it, or -1 on failure (stock did the
-	 * same through its sw_sync timeline, S:.../videobuf2-v4l2.c:140-143).
-	 * The fence carries its own lock (struct sc_fence above), never the
-	 * context lock, and is signalled at job completion in
-	 * sc_irq_handler(). */
-	{
-		struct sc_fence *sfence;
-		struct dma_fence *fence;
-		struct sync_file *sync_file;
-		unsigned long flags;
-		int fd;
-
-		sfence = kzalloc(sizeof(*sfence), GFP_KERNEL);
-		if (!sfence) {
-			buf->reserved = (u32)-1;
-			return 0;
-		}
-		fence = &sfence->base;
-		spin_lock_init(&sfence->lock);
-		/* The context is alive here (the file holds it through the
-		 * vfd lock serialising this ioctl); fence_lock only hands
-		 * out sequence numbers, the fence itself uses sfence->lock. */
-		spin_lock_irqsave(&ctx->fence_lock, flags);
-		ctx->fence_seqno++;
-		dma_fence_init(fence, &sc_fence_ops, &sfence->lock,
-			       ctx->fence_context, ctx->fence_seqno);
-		spin_unlock_irqrestore(&ctx->fence_lock, flags);
-
+		spin_lock_irqsave(&ctx->sc_dev->slock, flags);
 		if (svb->out_fence) {
-			WARN_ON_ONCE(1);
-			/* Never leave a waiter hanging on the replaced fence.
-			 * Under sc->slock so the IRQ/job-finish signal paths
-			 * cannot signal+put the same pointer concurrently. */
-			spin_lock_irqsave(&ctx->sc_dev->slock, flags);
-			if (svb->out_fence) {
-				dma_fence_signal(svb->out_fence);
-				dma_fence_put(svb->out_fence);
-				svb->out_fence = NULL;
-			}
-			svb->out_fence = fence;
-			spin_unlock_irqrestore(&ctx->sc_dev->slock, flags);
-		} else {
-			spin_lock_irqsave(&ctx->sc_dev->slock, flags);
-			svb->out_fence = fence;
-			spin_unlock_irqrestore(&ctx->sc_dev->slock, flags);
+			dma_fence_signal(svb->out_fence);
+			dma_fence_put(svb->out_fence);
+			svb->out_fence = NULL;
 		}
-
-		sync_file = sync_file_create(fence);
-		if (!sync_file) {
-			buf->reserved = (u32)-1;
-			return 0;
-		}
-		fd = get_unused_fd_flags(O_CLOEXEC);
-		if (fd < 0) {
-			fput(sync_file->file);
-			buf->reserved = (u32)-1;
-			return 0;
-		}
-		fd_install(fd, sync_file->file);
-		buf->reserved = fd;
+		spin_unlock_irqrestore(&ctx->sc_dev->slock, flags);
+		/* A failed ioctl is not copied back to userspace
+		 * (A:drivers/media/v4l2-core/v4l2-ioctl.c:3499-3500), so the
+		 * sync_file fd installed above would leak in its process. */
+		if (release_fd >= 0)
+			close_fd(release_fd);
 	}
 
-	return 0;
+	return ret;
 }
 
 static int sc_v4l2_dqbuf(struct file *file, void *fh,
@@ -1142,7 +1198,7 @@ static const struct v4l2_ioctl_ops sc_v4l2_ioctl_ops = {
 	.vidioc_s_fmt_vid_cap_mplane	= sc_v4l2_s_fmt_mplane,
 	.vidioc_s_fmt_vid_out_mplane	= sc_v4l2_s_fmt_mplane,
 
-	.vidioc_reqbufs			= v4l2_m2m_ioctl_reqbufs,
+	.vidioc_reqbufs			= sc_v4l2_reqbufs,
 	.vidioc_querybuf		= sc_v4l2_querybuf,
 
 	.vidioc_qbuf			= sc_v4l2_qbuf,
@@ -2267,6 +2323,19 @@ static int sc_open(struct file *file)
 		goto err_ctx;
 	}
 
+	/* Also publish it through the v4l2 file handle: on 6.18 the
+	 * v4l2_m2m_ioctl_* / v4l2_m2m_fop_* helpers take the context from
+	 * file_to_v4l2_fh(file)->m2m_ctx and never from a driver private
+	 * field (A:drivers/media/v4l2-core/v4l2-mem2mem.c:1367-1373,
+	 * :1614-1620), while the 4.4 helpers took it as an argument, so
+	 * stock's sc_open() (S:.../scaler/scaler-core.c:2176) never set it -
+	 * the same reason the SMFC context has to (compare tegra-vde,
+	 * A:drivers/media/platform/nvidia/tegra-vde/v4l2.c:800). Every
+	 * scaler buffer ioctl below passes ctx->m2m_ctx itself, like stock;
+	 * this keeps a helper the core may route elsewhere from seeing
+	 * NULL. */
+	ctx->fh.m2m_ctx = ctx->m2m_ctx;
+
 	return 0;
 
 err_ctx:
@@ -2296,6 +2365,10 @@ static int sc_release(struct file *file)
 	atomic_dec(&sc->m2m.in_use);
 
 	v4l2_m2m_ctx_release(ctx->m2m_ctx);
+	/* v4l2_m2m_ctx_release() kfree()s the context but does not clear the
+	 * file handle's copy (A:.../v4l2-mem2mem.c:1267-1276). */
+	ctx->fh.m2m_ctx = NULL;
+	ctx->m2m_ctx = NULL;
 
 	destroy_intermediate_frame(ctx);
 
