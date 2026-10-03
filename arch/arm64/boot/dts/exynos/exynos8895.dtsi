@@ -2036,6 +2036,144 @@
 			status = "disabled";
 		};
 
+		/*
+		 * SYSREG_CAM: BUS_COMPONENT_DRCG_EN at +0x200
+		 * (S:.../pmucal_local_exynos8895.h:111), saved/restored by pd_cam;
+		 * CSIS D-PHY reset bits 0-3 at +0x1050
+		 * (S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:4157-4192). Size as
+		 * stock's ioremap of SYSREG_CAM (S:drivers/media/platform/exynos/
+		 * fimc-is2/ischain/fimc-is-v5_2_0/fimc-is-hw-chain.c:524). No clocks:
+		 * the APB clock is the HWACG GATE_SYSREG_CAM (S:drivers/clk/samsung/
+		 * clk-exynos8895.c:130); a syscon clock would keep CMU_CAM, hence
+		 * pd_cam, on (A:drivers/mfd/syscon.c:126-137). Accessed only while
+		 * pd_cam is on.
+		 */
+		syscon_cam: syscon@12c20000 {
+			compatible = "samsung,exynos8895-cam-sysreg", "syscon";
+			reg = <0x12c20000 0x10000>;
+		};
+
+		/*
+		 * L6B camera sensor interfaces (spec L6B 4.3): CSIS n + the FLITE/BNS
+		 * window shared by all four (the transplant ioremaps it without
+		 * requesting it). The D-PHYs are &mipi_phy (5.2.4); no iommus: DMA
+		 * maps through fimc_is, the only master of the camera SysMMUs (4.5).
+		 * MUX_CIS_CLKn and GATE_IS_CAM_CSISn of stock are HWACG no-ops (4.2).
+		 */
+		fimc_is_sensor0: fimc_is_sensor@12ca0000 {
+			compatible = "samsung,exynos8895-fimc-is-sensor";	/* stock "samsung,exynos5-fimc-is-sensor" FDT:9179 */
+			#pb-id-cells = <4>;				/* FDT:9180 */
+			reg = <0x12ca0000 0x10000>, <0x12c80000 0x10000>;	/* FDT:9181 */
+			interrupts = <GIC_SPI 264 IRQ_TYPE_LEVEL_HIGH>,	/* FDT:9182 0x108 */
+				     <GIC_SPI 291 IRQ_TYPE_LEVEL_HIGH>;	/* 0x123 */
+			power-domains = <&pd_cam>;			/* FDT:9183 samsung,power-domain = <0x0f> */
+			phys = <&mipi_phy 0>;				/* FDT:9184 <0x11f 0> dphy_m4s4_csis0 */
+			phy-names = "csis_dphy";
+			clocks = <&cmu_top CLK_DOUT_CMU_CIS_CLK0>, <&cmu_top CLK_DOUT_CMU_CIS_CLK1>,
+				 <&cmu_top CLK_DOUT_CMU_CIS_CLK2>, <&cmu_top CLK_DOUT_CMU_CIS_CLK3>;
+			clock-names = "CIS_CLK0", "CIS_CLK1", "CIS_CLK2", "CIS_CLK3";	/* FDT:9186-9187 */
+			scenario = <0>;					/* FDT:9189-9193 */
+			id = <0>;
+			csi_ch = <0>;
+			flite_ch = <0>;
+			is_bns = <1>;
+			use_ssvc2_internal;				/* FDT:9195 */
+			status = "disabled";
+		};
+
+		fimc_is_sensor1: fimc_is_sensor@12cb0000 {
+			compatible = "samsung,exynos8895-fimc-is-sensor";
+			#pb-id-cells = <4>;
+			reg = <0x12cb0000 0x10000>, <0x12c80000 0x10000>;	/* FDT:9203 */
+			interrupts = <GIC_SPI 266 IRQ_TYPE_LEVEL_HIGH>,	/* FDT:9204 0x10a */
+				     <GIC_SPI 291 IRQ_TYPE_LEVEL_HIGH>;
+			power-domains = <&pd_cam>;
+			phys = <&mipi_phy 2>;				/* FDT:9206 <0x120 0> dphy_m1s2s2_csis1 */
+			phy-names = "csis_dphy";
+			clocks = <&cmu_top CLK_DOUT_CMU_CIS_CLK0>, <&cmu_top CLK_DOUT_CMU_CIS_CLK1>,
+				 <&cmu_top CLK_DOUT_CMU_CIS_CLK2>, <&cmu_top CLK_DOUT_CMU_CIS_CLK3>;
+			clock-names = "CIS_CLK0", "CIS_CLK1", "CIS_CLK2", "CIS_CLK3";
+			scenario = <0>;					/* FDT:9211-9215 */
+			id = <1>;
+			csi_ch = <1>;
+			flite_ch = <0x64>;
+			is_bns = <0>;
+			status = "disabled";
+		};
+
+		fimc_is_sensor2: fimc_is_sensor@12cc0000 {
+			compatible = "samsung,exynos8895-fimc-is-sensor";
+			#pb-id-cells = <4>;
+			reg = <0x12cc0000 0x10000>, <0x12c80000 0x10000>;	/* FDT:9224 */
+			interrupts = <GIC_SPI 268 IRQ_TYPE_LEVEL_HIGH>,	/* FDT:9225 0x10c */
+				     <GIC_SPI 291 IRQ_TYPE_LEVEL_HIGH>;
+			power-domains = <&pd_cam>;
+			phys = <&mipi_phy 4>;				/* FDT:9227 <0x121 0> dphy_m4s4_csis2 */
+			phy-names = "csis_dphy";
+			clocks = <&cmu_top CLK_DOUT_CMU_CIS_CLK0>, <&cmu_top CLK_DOUT_CMU_CIS_CLK1>,
+				 <&cmu_top CLK_DOUT_CMU_CIS_CLK2>, <&cmu_top CLK_DOUT_CMU_CIS_CLK3>;
+			clock-names = "CIS_CLK0", "CIS_CLK1", "CIS_CLK2", "CIS_CLK3";
+			scenario = <0>;					/* FDT:9232-9236 */
+			id = <2>;
+			csi_ch = <2>;
+			flite_ch = <0x64>;
+			is_bns = <1>;
+			use_ssvc1_internal;				/* FDT:9238 */
+			status = "disabled";
+		};
+
+		/* stock node name "@112CD000" is a typo; reg is 0x12cd0000 (FDT:9243,9246) */
+		fimc_is_sensor3: fimc_is_sensor@12cd0000 {
+			compatible = "samsung,exynos8895-fimc-is-sensor";
+			#pb-id-cells = <4>;
+			reg = <0x12cd0000 0x10000>, <0x12c80000 0x10000>;	/* FDT:9246 */
+			interrupts = <GIC_SPI 270 IRQ_TYPE_LEVEL_HIGH>,	/* FDT:9247 0x10e */
+				     <GIC_SPI 291 IRQ_TYPE_LEVEL_HIGH>;
+			power-domains = <&pd_cam>;
+			phys = <&mipi_phy 5>, <&mipi_phy 2>;		/* FDT:9249 <0x122 0 0x120 0>: csis3 + extra csis1 */
+			phy-names = "csis_dphy", "extra_csis_dphy";	/* FDT:9250 */
+			clocks = <&cmu_top CLK_DOUT_CMU_CIS_CLK0>, <&cmu_top CLK_DOUT_CMU_CIS_CLK1>,
+				 <&cmu_top CLK_DOUT_CMU_CIS_CLK2>, <&cmu_top CLK_DOUT_CMU_CIS_CLK3>;
+			clock-names = "CIS_CLK0", "CIS_CLK1", "CIS_CLK2", "CIS_CLK3";
+			scenario = <6>;					/* FDT:9254-9258 */
+			id = <3>;
+			csi_ch = <3>;
+			flite_ch = <0x64>;
+			is_bns = <0>;
+			status = "disabled";
+		};
+
+		/*
+		 * Camera SysMMUs (spec L6B 4.4). DEVIATIONS as L5 4.5: stock had one
+		 * "aclk" CMUCAL vclk and no power domain; the ACK driver takes
+		 * aclk+pclk and reads the version register at probe. The domains
+		 * hold the SysMMU Q-channels (CAL:.../pmucal_local_exynos8895.h:91-92
+		 * cam_save, :424 isplp_save, :543 srdz_save). Secure IRQs not wired.
+		 */
+		sysmmu_cam0: iommu@12d10000 {
+			compatible = "samsung,exynos-sysmmu";
+			reg = <0x12d10000 0x3000>;			/* FDT:9274 */
+			interrupts = <GIC_SPI 279 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:9275 0x117 */
+			clocks = <&cmu_cam CLK_GOUT_CAM_IS_CAM_ACLK_SYSMMU_CAM0>,
+				 <&cmu_cam CLK_GOUT_CAM_IS_CAM_PCLK_SYSMMU_CAM0>;
+			clock-names = "aclk", "pclk";
+			power-domains = <&pd_cam>;
+			#iommu-cells = <0>;
+			status = "disabled";
+		};
+
+		sysmmu_cam1: iommu@12d20000 {
+			compatible = "samsung,exynos-sysmmu";
+			reg = <0x12d20000 0x3000>;			/* FDT:9290 */
+			interrupts = <GIC_SPI 282 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:9291 0x11a */
+			clocks = <&cmu_cam CLK_GOUT_CAM_IS_CAM_ACLK_SYSMMU_CAM1>,
+				 <&cmu_cam CLK_GOUT_CAM_IS_CAM_PCLK_SYSMMU_CAM1>;
+			clock-names = "aclk", "pclk";
+			power-domains = <&pd_cam>;
+			#iommu-cells = <0>;
+			status = "disabled";
+		};
+
 		cmu_dcam: clock-controller@12e00000 {
 			compatible = "samsung,exynos8895-cmu-dcam";
 			reg = <0x12e00000 0x8000>;	/* CAL:cmucal-sfr.c:18 SFR_BLOCK(DCAM, 0x12e00000, 0x8000) */
@@ -2048,6 +2186,12 @@
 			assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_DCAM_BUS>, <&cmu_top CLK_DOUT_CMU_DCAM_IMGD>;
 			power-domains = <&pd_dcam>;	/* CAL:pmucal_local_exynos8895.h:172-187 dcam_save */
 			status = "disabled";
+		};
+
+		/* SYSREG_DCAM: DRCG_EN at +0x200 (S:.../pmucal_local_exynos8895.h:186); no clocks, as syscon_cam */
+		syscon_dcam: syscon@12e20000 {
+			compatible = "samsung,exynos8895-dcam-sysreg", "syscon";
+			reg = <0x12e20000 0x1000>;
 		};
 
 		cmu_isplp: clock-controller@13000000 {
@@ -2063,6 +2207,24 @@
 			status = "disabled";
 		};
 
+		/* SYSREG_ISPLP: DRCG_EN at +0x200 (S:.../pmucal_local_exynos8895.h:434); no clocks, as syscon_cam */
+		syscon_isplp: syscon@13020000 {
+			compatible = "samsung,exynos8895-isplp-sysreg", "syscon";
+			reg = <0x13020000 0x1000>;
+		};
+
+		sysmmu_isp: iommu@13050000 {
+			compatible = "samsung,exynos-sysmmu";
+			reg = <0x13050000 0x3000>;			/* FDT:9304 */
+			interrupts = <GIC_SPI 298 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:9305 0x12a */
+			clocks = <&cmu_isplp CLK_GOUT_ISPLP_IS_ISPLP_SMMU_ISPLP_ACLK>,
+				 <&cmu_isplp CLK_GOUT_ISPLP_IS_ISPLP_SMMU_ISPLP_PCLK_NONSECURE>;
+			clock-names = "aclk", "pclk";
+			power-domains = <&pd_isplp>;
+			#iommu-cells = <0>;
+			status = "disabled";
+		};
+
 		cmu_isphq: clock-controller@13100000 {
 			compatible = "samsung,exynos8895-cmu-isphq";
 			reg = <0x13100000 0x8000>;	/* CAL:cmucal-sfr.c:27 SFR_BLOCK(ISPHQ, 0x13100000, 0x8000) */
@@ -2073,6 +2235,66 @@
 			assigned-clocks = <&cmu_isphq CLK_MOUT_ISPHQ_BUS_USER>;
 			assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_ISPHQ_BUS>;
 			power-domains = <&pd_isphq>;	/* CAL:pmucal_local_exynos8895.h:385-400 isphq_save */
+			status = "disabled";
+		};
+
+		/* SYSREG_ISPHQ: DRCG_EN at +0x200 (S:.../pmucal_local_exynos8895.h:399); no clocks, as syscon_cam */
+		syscon_isphq: syscon@13120000 {
+			compatible = "samsung,exynos8895-isphq-sysreg", "syscon";
+			reg = <0x13120000 0x1000>;
+		};
+
+		/*
+		 * FIMC-IS2 camera core (spec L6B 4.2; FDT:8525-8541). The 12 register
+		 * windows and 19 SPIs keep the stock order (the transplant indexes
+		 * them). 74 stock clocks -> 14: the 56 GATE_* and 4 MUX_CIS_CLKn are
+		 * HWACG vclks that never touched the hardware; the 10 UMUX_* are kept
+		 * as handles on the user muxes, and the CIS_CLKn sensor clocks.
+		 */
+		fimc_is: fimc_is@13140000 {
+			compatible = "samsung,exynos8895-fimc-is";	/* stock "samsung,exynos5-fimc-is" FDT:8526 */
+			#pb-id-cells = <6>;				/* FDT:8527 */
+			reg = <0x12ce0000 0x10000>, <0x13030000 0x10000>, <0x13130000 0x10000>,
+			      <0x13040000 0x10000>, <0x13140000 0x10000>, <0x12c40000 0x10000>,
+			      <0x12c90000 0x10000>, <0x12c50000 0x10000>, <0x12c60000 0x10000>,
+			      <0x12c70000 0x10000>, <0x12f00000 0x10000>, <0x14300000 0x10000>;	/* FDT:8528 */
+			interrupts = <GIC_SPI 294 IRQ_TYPE_LEVEL_HIGH>, <GIC_SPI 295 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 301 IRQ_TYPE_LEVEL_HIGH>, <GIC_SPI 302 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 296 IRQ_TYPE_LEVEL_HIGH>, <GIC_SPI 297 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 303 IRQ_TYPE_LEVEL_HIGH>, <GIC_SPI 304 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 272 IRQ_TYPE_LEVEL_HIGH>, <GIC_SPI 273 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 284 IRQ_TYPE_LEVEL_HIGH>, <GIC_SPI 285 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 274 IRQ_TYPE_LEVEL_HIGH>, <GIC_SPI 275 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 276 IRQ_TYPE_LEVEL_HIGH>, <GIC_SPI 277 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 242 IRQ_TYPE_LEVEL_HIGH>, <GIC_SPI 243 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 85 IRQ_TYPE_LEVEL_HIGH>;		/* FDT:8529, index 0 = 3AAW_0 */
+			power-domains = <&pd_dcam>;			/* FDT:8530 samsung,power-domain = <0x14> */
+			clocks = <&cmu_isphq CLK_MOUT_ISPHQ_BUS_USER>, <&cmu_isplp CLK_MOUT_ISPLP_BUS_USER>,
+				 <&cmu_cam CLK_MOUT_CAM_BUS_USER>, <&cmu_cam CLK_MOUT_CAM_TPU0_USER>,
+				 <&cmu_cam CLK_MOUT_CAM_VRA_USER>, <&cmu_cam CLK_MOUT_CAM_TPU1_USER>,
+				 <&cmu_dcam CLK_MOUT_DCAM_BUS_USER>, <&cmu_dcam CLK_MOUT_DCAM_IMGD_USER>,
+				 <&cmu_srdz CLK_MOUT_SRDZ_BUS_USER>, <&cmu_srdz CLK_MOUT_SRDZ_IMGD_USER>,
+				 <&cmu_top CLK_DOUT_CMU_CIS_CLK0>, <&cmu_top CLK_DOUT_CMU_CIS_CLK1>,
+				 <&cmu_top CLK_DOUT_CMU_CIS_CLK2>, <&cmu_top CLK_DOUT_CMU_CIS_CLK3>,
+				 <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_INTCAM>,
+				 <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CAM>;	/* multimedia QoS shim, spec 5.3 */
+			clock-names = "UMUX_CLKCMU_ISPHQ_BUS", "UMUX_CLKCMU_ISPLP_BUS",
+				      "UMUX_CLKCMU_CAM_BUS", "UMUX_CLKCMU_CAM_TPU0",
+				      "UMUX_CLKCMU_CAM_VRA", "UMUX_CLKCMU_CAM_TPU1",
+				      "UMUX_CLKCMU_DCAM_BUS", "UMUX_CLKCMU_DCAM_IMGD",
+				      "UMUX_CLKCMU_SRDZ_BUS", "UMUX_CLKCMU_SRDZ_IMGD",
+				      "CIS_CLK0", "CIS_CLK1", "CIS_CLK2", "CIS_CLK3",	/* stock names, FDT:8532 */
+				      "dvfs_intcam", "dvfs_cam";
+			/*
+			 * CIS_CLKn: stock sets 26 MHz = {div /1, mux 0 = OSCCLK}
+			 * (S:.../ischain/setup-fimc-is-sensor.c:164-167;
+			 * CAL:exynos8895/cmucal-vclk.c:2633-2635).
+			 */
+			assigned-clocks = <&cmu_top CLK_MOUT_CMU_CIS_CLK0>, <&cmu_top CLK_MOUT_CMU_CIS_CLK1>,
+					  <&cmu_top CLK_MOUT_CMU_CIS_CLK2>, <&cmu_top CLK_MOUT_CMU_CIS_CLK3>;
+			assigned-clock-parents = <&oscclk>, <&oscclk>, <&oscclk>, <&oscclk>;
+			iommus = <&sysmmu_cam0>, <&sysmmu_cam1>, <&sysmmu_isp>, <&sysmmu_dcp>;	/* FDT:8534 */
+			#cooling-cells = <2>;				/* FDT:8535 */
 			status = "disabled";
 		};
 
@@ -2165,6 +2387,12 @@
 			assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_G2D_G2D>, <&cmu_top CLK_DOUT_CMU_G2D_JPEG>;
 			power-domains = <&pd_g2d>;	/* CAL:pmucal_local_exynos8895.h:319-346 g2d_save */
 			status = "disabled";
+		};
+
+		/* SYSREG_G2D: DRCG_EN at +0x200 (S:.../pmucal_local_exynos8895.h:345); no clocks, as syscon_cam */
+		syscon_g2d: syscon@13a20000 {
+			compatible = "samsung,exynos8895-g2d-sysreg", "syscon";
+			reg = <0x13a20000 0x1000>;
 		};
 
 		g2d: g2d@13a30000 {
@@ -2263,6 +2491,173 @@
 			status = "disabled";
 		};
 
+		/* SYSREG_MFC: DRCG_EN at +0x200 (S:.../pmucal_local_exynos8895.h:519); no clocks, as syscon_cam */
+		syscon_mfc: syscon@13c20000 {
+			compatible = "samsung,exynos8895-mfc-sysreg", "syscon";
+			reg = <0x13c20000 0x1000>;
+		};
+
+		/*
+		 * MFC System MMUs (FDT:8428-8456): the MFC codec is their only
+		 * master. The second vendor interrupt is the secure one (binding
+		 * maxItems 1). Vendor-only properties dropped: port-name,
+		 * sysmmu,secure-irq, sysmmu,secure_base, sysmmu,tlb_property (no
+		 * ACK consumer). DEVIATION clocks: stock one "aclk" (a CMUCAL vclk,
+		 * GATE_SMMU_MFCD0/1, S:drivers/clk/samsung/clk-exynos8895.c:351-352);
+		 * ACK takes aclk + pclk (A:drivers/iommu/exynos-iommu.c:754-769).
+		 * DEVIATION power-domains: stock has none; the SysMMUs sit in the MFC
+		 * block (QCH_CON_SMMU_MFCD0/1_QCH in mfc_save, CAL:exynos8895/
+		 * pmucal_local_exynos8895.h:506-507) and ACK's probe reads the
+		 * version register (L6B 4.1). No dma-coherent behind a SysMMU.
+		 */
+		sysmmu_mfc0: iommu@13c80000 {
+			compatible = "samsung,exynos-sysmmu";
+			reg = <0x13c80000 0x3000>;	/* FDT:8430 */
+			interrupts = <GIC_SPI 198 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:8431 0xc6 */
+			clocks = <&cmu_mfc CLK_GOUT_MFC_SMMU_MFCD0_ACLK>,
+				 <&cmu_mfc CLK_GOUT_MFC_SMMU_MFCD0_PCLK_NONSECURE>;
+			clock-names = "aclk", "pclk";
+			power-domains = <&pd_mfc>;
+			#iommu-cells = <0>;
+			status = "disabled";
+		};
+
+		sysmmu_mfc1: iommu@13ca0000 {
+			compatible = "samsung,exynos-sysmmu";
+			reg = <0x13ca0000 0x3000>;	/* FDT:8445 */
+			interrupts = <GIC_SPI 201 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:8446 0xc9 */
+			clocks = <&cmu_mfc CLK_GOUT_MFC_SMMU_MFCD1_ACLK>,
+				 <&cmu_mfc CLK_GOUT_MFC_SMMU_MFCD1_PCLK_NONSECURE>;
+			clock-names = "aclk", "pclk";
+			power-domains = <&pd_mfc>;
+			#iommu-cells = <0>;
+			status = "disabled";
+		};
+
+		/*
+		 * MFC v11 (FDT:8304-8419). NEW compatible: the stock transplant
+		 * matches only "samsung,exynos8895-mfc" (stock "samsung,mfc-v6").
+		 * The clock keeps the stock name the driver asks for ("aclk_mfc",
+		 * S:drivers/media/platform/exynos/mfc/s5p_mfc_pm.c:154); it is
+		 * GOUT_BLK_MFC_UID_MFC_IPCLKPORT_Clk, the member of stock GATE_MFC
+		 * (CAL:exynos8895/cmucal-vclk.c:1856). The vendor properties and
+		 * the QoS table are read by the driver (s5p_mfc.c parse_dt); the
+		 * table is parsed but not voted in this image (L6B 5.3).
+		 */
+		mfc: codec@13ce0000 {
+			compatible = "samsung,exynos8895-mfc";
+			reg = <0x13ce0000 0x10000>;	/* FDT:8306 */
+			interrupts = <GIC_SPI 208 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:8307 0xd0 */
+			clocks = <&cmu_mfc CLK_GOUT_MFC_CLK>;	/* FDT:8309 */
+			clock-names = "aclk_mfc";		/* FDT:8308 */
+			iommus = <&sysmmu_mfc0>, <&sysmmu_mfc1>;	/* FDT:8310 */
+			power-domains = <&pd_mfc>;	/* FDT:8311 samsung,power-domain = <0x1a> */
+			ip_ver = <0x0f>;		/* FDT:8313 */
+			clock_rate = <400000000>;	/* FDT:8314 0x17d78400 */
+			min_rate = <100000>;		/* FDT:8315 0x186a0 */
+			num_qos_steps = <8>;		/* FDT:8316 */
+			max_mb = <4757298>;		/* FDT:8317 0x489732 */
+			status = "disabled";
+
+			mfc_qos_table {			/* FDT:8321-8418 */
+				mfc_qos_variant_0 {	/* FDT:8323-8333 */
+					thrd_mb = <0>;
+					freq_mfc = <89000>;
+					freq_int = <107000>;
+					freq_mif = <286000>;
+					freq_cpu = <0>;
+					freq_kfc = <0>;
+					mo_value = <0>;
+					mo_10bit_value = <0>;
+					time_fw = <923>;
+				};
+
+				mfc_qos_variant_1 {	/* FDT:8335-8345 */
+					thrd_mb = <259787>;
+					freq_mfc = <267000>;
+					freq_int = <267000>;
+					freq_mif = <421000>;
+					freq_cpu = <0>;
+					freq_kfc = <0>;
+					mo_value = <0>;
+					mo_10bit_value = <0>;
+					time_fw = <431>;
+				};
+
+				mfc_qos_variant_2 {	/* FDT:8347-8357 */
+					thrd_mb = <535550>;
+					freq_mfc = <400000>;
+					freq_int = <400000>;
+					freq_mif = <845000>;
+					freq_cpu = <0>;
+					freq_kfc = <0>;
+					mo_value = <0>;
+					mo_10bit_value = <0>;
+					time_fw = <261>;
+				};
+
+				mfc_qos_variant_3 {	/* FDT:8359-8369 */
+					thrd_mb = <1153791>;
+					freq_mfc = <400000>;
+					freq_int = <400000>;
+					freq_mif = <1352000>;
+					freq_cpu = <0>;
+					freq_kfc = <0>;
+					mo_value = <0>;
+					mo_10bit_value = <0>;
+					time_fw = <226>;
+				};
+
+				mfc_qos_variant_4 {	/* FDT:8371-8381 */
+					thrd_mb = <1884284>;
+					freq_mfc = <667000>;
+					freq_int = <533000>;
+					freq_mif = <1794000>;
+					freq_cpu = <0>;
+					freq_kfc = <0>;
+					mo_value = <0>;
+					mo_10bit_value = <0>;
+					time_fw = <161>;
+				};
+
+				mfc_qos_variant_5 {	/* FDT:8383-8393 */
+					thrd_mb = <2713968>;
+					freq_mfc = <667000>;
+					freq_int = <533000>;
+					freq_mif = <1014000>;
+					freq_cpu = <0>;
+					freq_kfc = <0>;
+					mo_value = <1>;
+					mo_10bit_value = <0>;
+					time_fw = <196>;
+				};
+
+				mfc_qos_variant_6 {	/* FDT:8395-8405 */
+					thrd_mb = <3267739>;
+					freq_mfc = <667000>;
+					freq_int = <533000>;
+					freq_mif = <1794000>;
+					freq_cpu = <0>;
+					freq_kfc = <0>;
+					mo_value = <1>;
+					mo_10bit_value = <0>;
+					time_fw = <161>;
+				};
+
+				mfc_qos_variant_7 {	/* FDT:8407-8417 */
+					thrd_mb = <4517358>;
+					freq_mfc = <667000>;
+					freq_int = <533000>;
+					freq_mif = <1794000>;
+					freq_cpu = <0>;
+					freq_kfc = <0>;
+					mo_value = <0>;
+					mo_10bit_value = <1>;
+					time_fw = <161>;
+				};
+			};
+		};
+
 		cmu_abox: clock-controller@13e00000 {
 			compatible = "samsung,exynos8895-cmu-abox";
 			reg = <0x13e00000 0x8000>;	/* CAL:cmucal-sfr.c:8 SFR_BLOCK(ABOX, 0x13e00000, 0x8000) */
@@ -2353,6 +2748,24 @@
 			assigned-clocks = <&cmu_srdz CLK_MOUT_SRDZ_BUS_USER>, <&cmu_srdz CLK_MOUT_SRDZ_IMGD_USER>;
 			assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_SRDZ_BUS>, <&cmu_top CLK_DOUT_CMU_SRDZ_IMGD>;
 			power-domains = <&pd_srdz>;	/* CAL:pmucal_local_exynos8895.h:536-555 srdz_save */
+			status = "disabled";
+		};
+
+		/* SYSREG_SRDZ: DRCG_EN at +0x200 (S:.../pmucal_local_exynos8895.h:554); no clocks, as syscon_cam */
+		syscon_srdz: syscon@14220000 {
+			compatible = "samsung,exynos8895-srdz-sysreg", "syscon";
+			reg = <0x14220000 0x1000>;
+		};
+
+		sysmmu_dcp: iommu@14230000 {
+			compatible = "samsung,exynos-sysmmu";
+			reg = <0x14230000 0x3000>;			/* FDT:9320 "DCP, SRDZ" */
+			interrupts = <GIC_SPI 248 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:9321 0xf8 */
+			clocks = <&cmu_srdz CLK_GOUT_SRDZ_SMMU_SRDZ_ACLK>,
+				 <&cmu_srdz CLK_GOUT_SRDZ_SMMU_SRDZ_PCLK_NONSECURE>;
+			clock-names = "aclk", "pclk";
+			power-domains = <&pd_srdz>;
+			#iommu-cells = <0>;
 			status = "disabled";
 		};
 

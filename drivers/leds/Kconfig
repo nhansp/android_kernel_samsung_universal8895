@@ -800,6 +800,20 @@ config LEDS_MAX77865
 	help
 	  LED driver for MAX77865 PMIC from Maxim Integrated.
 
+config LEDS_S2MPB02
+	bool "LED support for the S2MPB02"
+	depends on LEDS_CLASS && MFD_S2MPB02
+	help
+	  This option enables support for the flash and torch LEDs on the
+	  Samsung S2MPB02 camera PMIC.
+
+config LEDS_IRIS_IRLED_SUPPORT
+	bool "IRLED support for IRIS"
+	depends on LEDS_S2MPB02
+	help
+	  This option enables support for the IRLED of the iris camera on
+	  the S2MPB02 second LED channel.
+
 config LEDS_MAX8997
 	tristate "LED support for MAX8997 PMIC"
 	depends on LEDS_CLASS && MFD_MAX8997

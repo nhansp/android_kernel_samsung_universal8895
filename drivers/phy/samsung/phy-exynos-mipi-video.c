@@ -25,6 +25,7 @@ enum exynos_mipi_phy_id {
 	EXYNOS_MIPI_PHY_ID_CSIS1,
 	EXYNOS_MIPI_PHY_ID_DSIM1,
 	EXYNOS_MIPI_PHY_ID_CSIS2,
+	EXYNOS_MIPI_PHY_ID_CSIS3,
 	EXYNOS_MIPI_PHYS_NUM
 };
 
@@ -40,6 +41,7 @@ struct mipi_phy_device_desc {
 	int num_phys;
 	int num_regmaps;
 	const char *regmap_names[EXYNOS_MIPI_REGMAPS_NUM];
+	bool reset_after_enable;
 	struct exynos_mipi_phy_desc {
 		enum exynos_mipi_phy_id	coupled_phy_id;
 		u32 enable_val;
@@ -263,20 +265,48 @@ static const struct mipi_phy_device_desc exynos7870_mipi_phy = {
 };
 
 /*
- * Exynos 8895: the PHY is a child of the PMU and switches only the PMU
- * isolation bit; the DSIM drives its own D-PHY reset (SWRST bit 16), so no
- * DISP/CAM sysreg is needed. DSIM0 shares MIPI_PHY_CONTROL0 (0x710) with
- * CSIS2. The camera reset of CSIS0/CSIS2 is added with the camera sysreg.
+ * Exynos 8895 PMU isolation words and bit (S:arch/arm64/boot/dts/exynos/
+ * exynos8895.dtsi:4157-4192 "isolation = <0x70C>/<0x710>/<0x730>",
+ * S:drivers/phy/phy-exynos8895-mipi.c:25 EXYNOS_MIPI_PHY_ISO_BYPASS (1 << 0))
+ * and the SYSREG_CAM reset word (the same nodes, "reg = <0x0 0x12C21050 0x4>",
+ * SYSREG_CAM = 0x12C20000).
+ */
+#define EXYNOS8895_MIPI_PHY_ISO_BYPASS		BIT(0)
+#define EXYNOS8895_MIPI_PHY_CSIS0_ISO		0x70c
+#define EXYNOS8895_MIPI_PHY_M1S2S2_ISO		0x730
+#define EXYNOS8895_SYSREG_CAM_MIPI_DPHY_RESET	0x1050
+
+/*
+ * Exynos 8895: the PHY is a child of the PMU; the PMU regmap comes from the
+ * parent, the CSIS resets are bits 0-3 of SYSREG_CAM + 0x1050 (DISP slot
+ * unused: the DSIM drives its own D-PHY reset, SWRST bit 16). DSIM0 shares
+ * MIPI_PHY_CONTROL0 (0x710) with CSIS2, CSIS1 shares 0x730 with CSIS3.
+ * reset_after_enable gives stock's order (S:drivers/phy/phy-exynos8895-mipi.c:
+ * 164-190 __set_phy_alone, 193-233 __set_phy_share, reset pulse :109-134):
+ * on = isolation bypass, reset clear, reset release; off = reset clear, then
+ * isolation when the coupled PHY is off. CSIS0 is coupled with DSIM1, which is
+ * never powered here, so every CSIS0 power-off isolates it (its M4S4 top block
+ * has no other user on greatlte). DSIM0 has no reset bit, so its order is
+ * unchanged.
  */
 static const struct mipi_phy_device_desc exynos8895_mipi_phy = {
-	.num_regmaps = 1,
-	.regmap_names = {"samsung,pmu-syscon"},
-	.num_phys = 5,
+	.num_regmaps = 3,
+	.regmap_names = {
+		[EXYNOS_MIPI_REGMAP_PMU] = "samsung,pmu-syscon",
+		[EXYNOS_MIPI_REGMAP_CAM0] = "samsung,cam0-sysreg",
+	},
+	.num_phys = 6,
+	.reset_after_enable = true,
 	.phys = {
 		[EXYNOS_MIPI_PHY_ID_CSIS0] = {
-			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_NONE,
+			/* dphy_m4s4_csis0: isolation 0x70c, reset bit 0 */
+			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_DSIM1,
+			.enable_val = EXYNOS8895_MIPI_PHY_ISO_BYPASS,
+			.enable_reg = EXYNOS8895_MIPI_PHY_CSIS0_ISO,
 			.enable_map = EXYNOS_MIPI_REGMAP_PMU,
-			.resetn_map = EXYNOS_MIPI_REGMAP_PMU,
+			.resetn_val = BIT(0),
+			.resetn_reg = EXYNOS8895_SYSREG_CAM_MIPI_DPHY_RESET,
+			.resetn_map = EXYNOS_MIPI_REGMAP_CAM0,
 		},
 		[EXYNOS_MIPI_PHY_ID_DSIM0] = {
 			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_CSIS2,
@@ -288,9 +318,14 @@ static const struct mipi_phy_device_desc exynos8895_mipi_phy = {
 			.resetn_map = EXYNOS_MIPI_REGMAP_PMU,
 		},
 		[EXYNOS_MIPI_PHY_ID_CSIS1] = {
-			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_NONE,
+			/* dphy_m1s2s2_csis1: isolation 0x730, reset bit 2 */
+			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_CSIS3,
+			.enable_val = EXYNOS8895_MIPI_PHY_ISO_BYPASS,
+			.enable_reg = EXYNOS8895_MIPI_PHY_M1S2S2_ISO,
 			.enable_map = EXYNOS_MIPI_REGMAP_PMU,
-			.resetn_map = EXYNOS_MIPI_REGMAP_PMU,
+			.resetn_val = BIT(2),
+			.resetn_reg = EXYNOS8895_SYSREG_CAM_MIPI_DPHY_RESET,
+			.resetn_map = EXYNOS_MIPI_REGMAP_CAM0,
 		},
 		[EXYNOS_MIPI_PHY_ID_DSIM1] = {
 			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_NONE,
@@ -298,12 +333,24 @@ static const struct mipi_phy_device_desc exynos8895_mipi_phy = {
 			.resetn_map = EXYNOS_MIPI_REGMAP_PMU,
 		},
 		[EXYNOS_MIPI_PHY_ID_CSIS2] = {
+			/* dphy_m4s4_csis2: isolation 0x710 (with DSIM0), reset bit 1 */
 			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_DSIM0,
 			.enable_val = EXYNOS4_PHY_ENABLE,
 			.enable_reg = EXYNOS4_MIPI_PHY_CONTROL(0),
 			.enable_map = EXYNOS_MIPI_REGMAP_PMU,
-			.resetn_val = 0,
-			.resetn_map = EXYNOS_MIPI_REGMAP_PMU,
+			.resetn_val = BIT(1),
+			.resetn_reg = EXYNOS8895_SYSREG_CAM_MIPI_DPHY_RESET,
+			.resetn_map = EXYNOS_MIPI_REGMAP_CAM0,
+		},
+		[EXYNOS_MIPI_PHY_ID_CSIS3] = {
+			/* dphy_m1s2s2_csis3: isolation 0x730 (with CSIS1), reset bit 3 */
+			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_CSIS1,
+			.enable_val = EXYNOS8895_MIPI_PHY_ISO_BYPASS,
+			.enable_reg = EXYNOS8895_MIPI_PHY_M1S2S2_ISO,
+			.enable_map = EXYNOS_MIPI_REGMAP_PMU,
+			.resetn_val = BIT(3),
+			.resetn_reg = EXYNOS8895_SYSREG_CAM_MIPI_DPHY_RESET,
+			.resetn_map = EXYNOS_MIPI_REGMAP_CAM0,
 		},
 	},
 };
@@ -311,6 +358,7 @@ static const struct mipi_phy_device_desc exynos8895_mipi_phy = {
 struct exynos_mipi_video_phy {
 	struct regmap *regmaps[EXYNOS_MIPI_REGMAPS_NUM];
 	int num_phys;
+	bool reset_after_enable;
 	struct video_phy_desc {
 		struct phy *phy;
 		unsigned int index;
@@ -326,6 +374,26 @@ static int __set_phy_state(const struct exynos_mipi_phy_desc *data,
 	struct regmap *resetn_map = state->regmaps[data->resetn_map];
 
 	spin_lock(&state->slock);
+
+	if (state->reset_after_enable) {
+		if (on) {
+			regmap_update_bits(enable_map, data->enable_reg,
+					   data->enable_val, data->enable_val);
+			regmap_update_bits(resetn_map, data->resetn_reg,
+					   data->resetn_val, 0);
+			regmap_update_bits(resetn_map, data->resetn_reg,
+					   data->resetn_val, data->resetn_val);
+		} else {
+			regmap_update_bits(resetn_map, data->resetn_reg,
+					   data->resetn_val, 0);
+			if (data->coupled_phy_id >= 0 &&
+			    state->phys[data->coupled_phy_id].phy->power_count == 0)
+				regmap_update_bits(enable_map, data->enable_reg,
+						   data->enable_val, 0);
+		}
+		spin_unlock(&state->slock);
+		return 0;
+	}
 
 	/* disable in PMU sysreg */
 	if (!on && data->coupled_phy_id >= 0 &&
@@ -406,12 +474,15 @@ static int exynos_mipi_video_phy_probe(struct platform_device *pdev)
 	if (!IS_ERR(state->regmaps[i]))
 		i++;
 	for (; i < phy_dev->num_regmaps; i++) {
+		if (!phy_dev->regmap_names[i])
+			continue;
 		state->regmaps[i] = syscon_regmap_lookup_by_phandle(np,
 						phy_dev->regmap_names[i]);
 		if (IS_ERR(state->regmaps[i]))
 			return PTR_ERR(state->regmaps[i]);
 	}
 	state->num_phys = phy_dev->num_phys;
+	state->reset_after_enable = phy_dev->reset_after_enable;
 	spin_lock_init(&state->slock);
 
 	dev_set_drvdata(dev, state);

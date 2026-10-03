@@ -1458,6 +1458,16 @@ config MFD_SEC_I2C
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called sec-i2c.
+
+config MFD_S2MPB02
+	bool "Samsung S2MPB02 camera PMIC"
+	depends on I2C=y && OF
+	select MFD_CORE
+	help
+	  Say yes here to support the Samsung S2MPB02 camera PMIC of the
+	  Samsung Galaxy Note 8 (camera rails and the flash/torch LED).
+	  This driver provides the i2c register accessors; the regulator
+	  and LED functions are separate drivers.
 	  Have in mind that important core drivers (like regulators) depend
 	  on this driver so building this as a module might require proper
 	  initial ramdisk or might not boot up as well in certain scenarios.

@@ -77,3 +77,8 @@ obj-$(CONFIG_GREATLTE_HB_L6E)	+= greatlte-hb-l6e.o
 obj-$(CONFIG_GREATLTE_HB_L6L)	+= greatlte-hb-l6l.o
 # L6G Type-C heartbeat rows (WP l6gtc, DEBUG)
 obj-$(CONFIG_GREATLTE_HB_L6G)	+= greatlte-hb-l6g.o
+# L6B multimedia heartbeat (l6b2)
+obj-$(CONFIG_GREATLTE_HB_L6B)		+= greatlte-hb-l6b.o
+
+# L6B multimedia QoS shim
+obj-$(CONFIG_EXYNOS8895_MM_QOS)		+= exynos8895-mm-qos.o

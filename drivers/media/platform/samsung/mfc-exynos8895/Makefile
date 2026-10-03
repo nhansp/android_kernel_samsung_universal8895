@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Stock object list: S:drivers/media/platform/exynos/mfc/Makefile:1-6
+obj-$(CONFIG_VIDEO_EXYNOS8895_MFC) := exynos8895-mfc.o
+exynos8895-mfc-y += s5p_mfc.o s5p_mfc_irq.o s5p_mfc_dec.o s5p_mfc_dec_vb2_ops.o s5p_mfc_enc.o s5p_mfc_enc_vb2_ops.o
+exynos8895-mfc-y += s5p_mfc_ctrl.o s5p_mfc_hwlock.o s5p_mfc_nal_q.o s5p_mfc_watchdog.o s5p_mfc_opr.o s5p_mfc_sync.o
+exynos8895-mfc-y += s5p_mfc_pm.o s5p_mfc_inst.o s5p_mfc_cmd.o s5p_mfc_reg.o
+exynos8895-mfc-y += s5p_mfc_dec_ops.o s5p_mfc_enc_ops.o s5p_mfc_enc_param.o
+exynos8895-mfc-y += s5p_mfc_queue.o s5p_mfc_buf.o s5p_mfc_utils.o s5p_mfc_qos.o s5p_mfc_mem.o

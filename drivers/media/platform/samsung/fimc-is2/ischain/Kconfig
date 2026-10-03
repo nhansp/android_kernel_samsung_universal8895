@@ -1,0 +1,36 @@
+config EXYNOS_FIMC_IS
+        bool "Use FIMC-IS"
+        depends on VIDEO_EXYNOS_FIMC_IS2
+        default y
+        help
+          This config abstracts driver source folder.
+
+choice
+	prompt "Select FIMC-IS Version"
+	depends on EXYNOS_FIMC_IS
+	help
+	  Select FIMC-IS Version.
+
+# 6.18 Kconfig rejects "source" inside a choice; the v5.2.0 (Exynos8895) entry
+# of ischain/fimc-is-v5_2_0/Kconfig is inlined, the other SoC versions (stock
+# sources v4_3_0 ... v5_10_0, depending on 4.4 SoC symbols) are dropped.
+config FIMC_IS_V5_2_0
+	bool "Use fimc-is v5.2.0"
+	# stock: depends on SOC_EXYNOS8895 (IKC:339), a 4.4 SoC symbol 6.18 lacks
+	depends on ARCH_EXYNOS && ARM64
+	select EXYNOS_DEVICE_MIPI_CSIS_VER2 if !USE_SENSOR_GROUP
+	select EXYNOS_DEVICE_MIPI_CSIS_VER3 if USE_SENSOR_GROUP
+	select CSIS_V5_0
+	select EXYNOS_FIMC_BNS
+	select FIMC_BNS_V4_20_0
+	select CAMERA_CIS_SELECT
+	select CAMERA_ACT_SELECT
+	select CAMERA_FLASH_SELECT
+	select USE_DIRECT_IS_CONTROL
+	select CAMERA_MC_SCALER_VER2_USE
+	select MC_SCALER_V3_0
+	select USE_HW_API_COMMON
+	help
+	  fimc-is version 5.2.0
+
+endchoice
