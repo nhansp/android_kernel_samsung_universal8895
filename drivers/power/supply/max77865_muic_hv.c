@@ -1016,8 +1016,10 @@ static int hv_handle_attach(struct max77865_hv *hv, const struct hv_step *step)
 	int ret = 0;
 	u8 hvrx0[HV_HVRX_MAX];
 	int i;
+	/* HVCONTROL2 bit 3 read by the last detect: MPing missed */
+	bool mping_missed = hv->hvcontrol[1] & 0x8;
 
-	if ((hv->hvcontrol[1] & 0x8))
+	if (mping_missed)
 		hv->afc_count = 0;
 
 	if (!hv->is_charger_ready) {
@@ -1045,7 +1047,8 @@ static int hv_handle_attach(struct max77865_hv *hv, const struct hv_step *step)
 		cancel_delayed_work(&hv->mping_miss_work);
 		hv->afc_count++;
 		hv_handshaking(hv);
-		hv->is_afc_handshaking = true;
+		if (!mping_missed)
+			hv->is_afc_handshaking = true;
 		if (hv->afc_count > HV_AFC_WA_PING) {
 			hv_ping(hv, false);
 		} else {
@@ -1072,7 +1075,8 @@ static int hv_handle_attach(struct max77865_hv *hv, const struct hv_step *step)
 		hv->afc_count++;
 		if (!hv->is_afc_handshaking) {
 			hv_handshaking(hv);
-			hv->is_afc_handshaking = true;
+			if (!mping_missed)
+				hv->is_afc_handshaking = true;
 		}
 		if (hv->afc_count > HV_AFC_WA_PING) {
 			hv_ping(hv, false);
@@ -1109,7 +1113,8 @@ static int hv_handle_attach(struct max77865_hv *hv, const struct hv_step *step)
 		hv->afc_count++;
 		if (!hv->is_afc_handshaking) {
 			hv_handshaking(hv);
-			hv->is_afc_handshaking = true;
+			if (!mping_missed)
+				hv->is_afc_handshaking = true;
 		}
 		if (hv->afc_count > HV_AFC_WA_PING) {
 			hv_ping(hv, false);
@@ -1142,7 +1147,8 @@ static int hv_handle_attach(struct max77865_hv *hv, const struct hv_step *step)
 		hv->afc_count++;
 		if (!hv->is_afc_handshaking) {
 			hv_handshaking(hv);
-			hv->is_afc_handshaking = true;
+			if (!mping_missed)
+				hv->is_afc_handshaking = true;
 		}
 		if (hv->afc_count > HV_AFC_WA_PING) {
 			hv_ping(hv, false);
