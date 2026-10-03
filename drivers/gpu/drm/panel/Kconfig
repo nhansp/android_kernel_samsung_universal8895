@@ -826,7 +826,10 @@ config DRM_PANEL_SAMSUNG_S6E3HA6_STOCK
 	depends on BACKLIGHT_CLASS_DEVICE=y
 	depends on SPI=y
 	depends on !DRM_EXYNOS8895_DECON || DRM_EXYNOS=y
-	select LCD_CLASS_DEVICE
+	# not "select": DRM_PANEL_SAMSUNG_S6E3HA6 above already depends on it, and kconfig rejects a
+	# selected symbol that one of the selecting symbol's own dependencies depends on
+	# (gki_defconfig: "recursive dependency detected"). DRM_PANEL_SAMSUNG_S6E3HA6=y=y implies it.
+	depends on LCD_CLASS_DEVICE=y
 	help
 	  Drive the S6E3HA6 panel through the vendor panel framework of the
 	  SM-N950N 4.4 kernel: the panel's own sequence tables, AID dimming
