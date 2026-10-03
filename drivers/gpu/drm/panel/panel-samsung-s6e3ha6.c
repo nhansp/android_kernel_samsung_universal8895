@@ -211,7 +211,7 @@ static int s6e3ha6_enable(struct drm_panel *panel)
 	/*
 	 * The MTP / HBM_GAMMA registers the AID dimming table is built from are
 	 * only reachable over the DSI link, which is up here. Stock reads them
-	 * once in panel_probe() (panel_drv.c:609-725).
+	 * once at probe (S:.../panel/panel_drv.c:598,602-604).
 	 */
 	ret = s6e3ha6_bright_prepare(ctx->bright);
 	if (ret)
@@ -447,7 +447,12 @@ static int s6e3ha6_probe(struct mipi_dsi_device *dsi)
 	ctx->bright = s6e3ha6_bright_register(dev, dsi, ctx->variant);
 	if (IS_ERR(ctx->bright))
 		return dev_err_probe(dev, PTR_ERR(ctx->bright), "no backlight device\n");
-	s6e3ha6_bright_register_lcd(ctx->bright);
+	ret = s6e3ha6_bright_register_lcd(ctx->bright);
+	if (ret) {
+		s6e3ha6_bright_unregister(ctx->bright);
+		ctx->bright = NULL;
+		return dev_err_probe(dev, ret, "no lcd device\n");
+	}
 
 	dsi->lanes = 4;			/* FDT:10098 data_lane = <0x04> */
 	dsi->format = MIPI_DSI_FMT_RGB888;
@@ -474,6 +479,8 @@ static int s6e3ha6_probe(struct mipi_dsi_device *dsi)
 	ret = mipi_dsi_attach(dsi);
 	if (ret < 0) {
 		drm_panel_remove(&ctx->panel);
+		s6e3ha6_bright_unregister(ctx->bright);
+		ctx->bright = NULL;
 		if (ctx->booted)
 			for (i = S6E3HA6_NR_SUPPLIES - 1; i >= 0; i--)
 				regulator_disable(ctx->supplies[i]);
@@ -489,7 +496,8 @@ static void s6e3ha6_remove(struct mipi_dsi_device *dsi)
 
 	greatlte_l5_set(GL5_ON, panel, false);
 	greatlte_l5_set(GL5_ON, det, NULL);
-	s6e3ha6_bright_unregister(mipi_dsi_get_drvdata(dsi));
+	s6e3ha6_bright_unregister(ctx->bright);
+	ctx->bright = NULL;
 	mipi_dsi_detach(dsi);
 	drm_panel_remove(&ctx->panel);
 	s6e3ha6_power_off(ctx);

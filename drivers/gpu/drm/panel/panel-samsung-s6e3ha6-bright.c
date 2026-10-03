@@ -23,6 +23,7 @@
 
 #include <linux/backlight.h>
 #include <linux/err.h>
+#include <linux/kobject.h>
 #include <linux/lcd.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
@@ -77,6 +78,7 @@ enum s6e3ha6_acl_opr {
 
 /* s6e3ha6.h:39-57 read-back registers of the AID dimming */
 #define S6E3HA6_MTP_REG		0xC8
+#define S6E3HA6_MTP_OFS		0
 #define S6E3HA6_MTP_LEN		35
 #define S6E3HA6_HBM_GAMMA_REG	0xB3
 #define S6E3HA6_HBM_GAMMA_OFS	2
@@ -85,6 +87,26 @@ enum s6e3ha6_acl_opr {
 #define S6E3HA6_ELVSS_TEMP_0_OFS	23
 #define S6E3HA6_ELVSS_TEMP_1_REG	0xB5
 #define S6E3HA6_ELVSS_TEMP_1_OFS	24
+
+/*
+ * s6e3ha6.h:45-79 the other entries of the panel resource table (restbl) the
+ * lcd-class attributes print; PANEL_*_LEN are panel.h:47-53.
+ */
+#define S6E3HA6_ID_REG		0x04	/* s6e3ha6.h:59-61 */
+#define S6E3HA6_ID_OFS		0
+#define S6E3HA6_ID_LEN		3	/* panel.h:47 PANEL_ID_LEN */
+#define S6E3HA6_COORDINATE_REG	0xA1	/* s6e3ha6.h:49-51 */
+#define S6E3HA6_COORDINATE_OFS	0
+#define S6E3HA6_COORDINATE_LEN	4	/* panel.h:52 PANEL_COORD_LEN */
+#define S6E3HA6_DATE_REG	0xA1	/* s6e3ha6.h:45-47 */
+#define S6E3HA6_DATE_OFS	4
+#define S6E3HA6_DATE_LEN	7	/* panel.h:53 PANEL_DATE_LEN */
+#define S6E3HA6_CODE_REG	0xD6	/* s6e3ha6.h:67-69 */
+#define S6E3HA6_CODE_OFS	0
+#define S6E3HA6_CODE_LEN	5	/* panel.h:51 PANEL_CODE_LEN */
+#define S6E3HA6_OCTA_ID_REG	0xC9	/* s6e3ha6.h:77-79 */
+#define S6E3HA6_OCTA_ID_OFS	1
+#define S6E3HA6_OCTA_ID_LEN	20	/* panel.h:48 PANEL_OCTA_ID_LEN */
 
 /*
  * Every table and every payload of one panel variant. The stock code reaches
@@ -119,14 +141,17 @@ struct s6e3ha6_bright_variant {
 	size_t irc_on_len;
 	const u8 *gamma_update_enable;
 	size_t gamma_update_enable_len;
+	const u8 *key1_on;
+	const u8 *key1_off;
 	const u8 *key2_on;
 	const u8 *key2_off;
+	const u8 *key3_on;
+	const u8 *key3_off;
 
 	/* maptbl rows */
 	const u8 (*aor_tbl)[2];
 	const u8 (*mps_tbl)[1];
 	const u8 (*elvss_tbl)[S6E3HA6_TOTAL_NR_LUMINANCE][1];
-	const u8 (*elvss_temp_tbl)[S6E3HA6_TOTAL_NR_LUMINANCE][1];
 	const u8 (*vint_tbl)[1];
 	const u8 (*acl_onoff_tbl)[1];
 	const u8 (*acl_frame_avg_tbl)[1];
@@ -154,12 +179,15 @@ static const struct s6e3ha6_bright_variant s6e3ha6_variant_a3_sa = {
 	.irc_on = GREAT_A3_SA_IRC_ON,		.irc_on_len = sizeof(GREAT_A3_SA_IRC_ON),
 	.gamma_update_enable = GREAT_A3_SA_GAMMA_UPDATE_ENABLE,
 	.gamma_update_enable_len = sizeof(GREAT_A3_SA_GAMMA_UPDATE_ENABLE),
+	.key1_on = GREAT_A3_SA_KEY1_ENABLE,
+	.key1_off = GREAT_A3_SA_KEY1_DISABLE,
 	.key2_on = GREAT_A3_SA_KEY2_ENABLE,
 	.key2_off = GREAT_A3_SA_KEY2_DISABLE,
+	.key3_on = GREAT_A3_SA_KEY3_ENABLE,
+	.key3_off = GREAT_A3_SA_KEY3_DISABLE,
 	.aor_tbl = great_a3_sa_aor_table,
 	.mps_tbl = great_a3_sa_mps_table,
 	.elvss_tbl = great_a3_sa_elvss_table,
-	.elvss_temp_tbl = great_a3_sa_elvss_temp_table,
 	.vint_tbl = great_a3_sa_vint_table,
 	.acl_onoff_tbl = great_a3_sa_acl_onoff_table,
 	.acl_frame_avg_tbl = great_a3_sa_acl_frame_avg_table,
@@ -187,12 +215,15 @@ static const struct s6e3ha6_bright_variant s6e3ha6_variant_a2_s3 = {
 	.irc_on = GREAT_A2_S3_IRC_ON,		.irc_on_len = sizeof(GREAT_A2_S3_IRC_ON),
 	.gamma_update_enable = GREAT_A2_S3_GAMMA_UPDATE_ENABLE,
 	.gamma_update_enable_len = sizeof(GREAT_A2_S3_GAMMA_UPDATE_ENABLE),
+	.key1_on = GREAT_A2_S3_KEY1_ENABLE,
+	.key1_off = GREAT_A2_S3_KEY1_DISABLE,
 	.key2_on = GREAT_A2_S3_KEY2_ENABLE,
 	.key2_off = GREAT_A2_S3_KEY2_DISABLE,
+	.key3_on = GREAT_A2_S3_KEY3_ENABLE,
+	.key3_off = GREAT_A2_S3_KEY3_DISABLE,
 	.aor_tbl = great_a2_s3_aor_table,
 	.mps_tbl = great_a2_s3_mps_table,
 	.elvss_tbl = great_a2_s3_elvss_table,
-	.elvss_temp_tbl = great_a2_s3_elvss_temp_table,
 	.vint_tbl = great_a2_s3_vint_table,
 	.acl_onoff_tbl = great_a2_s3_acl_onoff_table,
 	.acl_frame_avg_tbl = great_a2_s3_acl_frame_avg_table,
@@ -225,6 +256,21 @@ struct s6e3ha6_bright {
 	int temperature;
 	int poc_onoff;
 	int irc_onoff;
+
+	/*
+	 * The panel resources stock keeps in restbl and copies out with
+	 * resource_copy_by_name() (s6e3ha6.h:379-387), read once over the DSI
+	 * link. RES_ELVSS (s6e3ha6.h:71-73) is read by stock's res_init sequence
+	 * but consumed by nothing of s6e3ha6.c, so it is not read here.
+	 */
+	u8 id[S6E3HA6_ID_LEN];
+	u8 coordinate[S6E3HA6_COORDINATE_LEN];
+	u8 date[S6E3HA6_DATE_LEN];
+	u8 code[S6E3HA6_CODE_LEN];
+	u8 octa_id[S6E3HA6_OCTA_ID_LEN];
+	u8 mtp[S6E3HA6_MTP_LEN];
+	u8 hbm_gamma[S6E3HA6_HBM_GAMMA_LEN];
+	bool res_ready;
 
 	/* AID dimming */
 	struct dimming_info dim;
@@ -478,7 +524,7 @@ static int s6e3ha6_bright_apply(struct s6e3ha6_bright *b)
 	plane = S6E3HA6_UNDER_MINUS_15(b->temperature) ? S6E3HA6_UNDER_MINUS_FIFTEEN :
 		(S6E3HA6_UNDER_0(b->temperature) ? S6E3HA6_UNDER_ZERO : S6E3HA6_OVER_ZERO);
 	buf[3] = v->elvss_tbl[plane][b->actual_brightness_index][0];
-	buf[24] = v->elvss_temp_tbl[plane][b->actual_brightness_index][0];
+	buf[24] = b->elvss_temp[b->actual_brightness_index];
 	ret = s6e3ha6_dcs_write(b, buf, v->tset_mps_elvss_len);
 	if (ret)
 		return ret;
@@ -599,55 +645,124 @@ static int s6e3ha6_bright_set(struct s6e3ha6_bright *b, int brightness, bool for
 }
 
 /*
- * The gamma table needs the panel's MTP and HBM_GAMMA registers, which only the
- * DSI link can read. Stock reads them in panel_probe() (panel_drv.c:609-725 ->
- * init_subdev_gamma_table(), s6e3ha6.c:168-240) before the first unblank; a
- * DRM panel has no link at probe, so this runs from the panel's enable().
+ * great_{a3_sa,a2_s3}_res_init_cmdtbl (S:.../s6e3ha6/s6e3ha6_great_a3_sa_panel.h:1981-2002,
+ * s6e3ha6_great_a2_s3_panel.h:2032-2053): the level 1/2/3 keys around the reads of
+ * the panel resource table, in stock's order. Stock runs this in panel_prepare()
+ * (S:.../panel/panel_drv.c:598 __panel_seq_res_init()) before the first unblank;
+ * a DRM panel has no DSI link at probe, so it runs from the panel's enable()
+ * like the gamma table below.
  */
-static int s6e3ha6_bright_read_gamma(struct s6e3ha6_bright *b)
+static int s6e3ha6_bright_read_res(struct s6e3ha6_bright *b)
+{
+	const struct s6e3ha6_bright_variant *v = b->v;
+	int ret;
+
+	if (b->res_ready)
+		return 0;
+
+	ret = s6e3ha6_dcs_write(b, v->key1_on, 3);
+	if (ret)
+		return ret;
+	ret = s6e3ha6_dcs_write(b, v->key2_on, 3);
+	if (ret)
+		return ret;
+	ret = s6e3ha6_dcs_write(b, v->key3_on, 3);
+	if (ret)
+		return ret;
+
+	ret = s6e3ha6_dcs_read(b, S6E3HA6_COORDINATE_REG, S6E3HA6_COORDINATE_OFS,
+			       b->coordinate, sizeof(b->coordinate));
+	if (ret)
+		return ret;
+	ret = s6e3ha6_dcs_read(b, S6E3HA6_CODE_REG, S6E3HA6_CODE_OFS, b->code,
+			       sizeof(b->code));
+	if (ret)
+		return ret;
+	/* RES_ELVSS (0xB5, 24 bytes) is read by stock and used by nothing */
+	ret = s6e3ha6_dcs_read(b, S6E3HA6_ELVSS_TEMP_0_REG, S6E3HA6_ELVSS_TEMP_0_OFS,
+			       &b->elvss_temp[S6E3HA6_NR_LUMINANCE - 1], 1);
+	if (ret)
+		return ret;
+	ret = s6e3ha6_dcs_read(b, S6E3HA6_ELVSS_TEMP_1_REG, S6E3HA6_ELVSS_TEMP_1_OFS,
+			       &b->elvss_temp[S6E3HA6_TOTAL_NR_LUMINANCE - 1], 1);
+	if (ret) {
+		/* stock init_elvss_temp_table() (s6e3ha6.c:404-446) drops the
+		 * whole res_init sequence when this read fails */
+		dev_warn(b->dev, "no ELVSS temperature 1, using 0: %d\n", ret);
+		b->elvss_temp[S6E3HA6_TOTAL_NR_LUMINANCE - 1] =
+			b->elvss_temp[S6E3HA6_NR_LUMINANCE - 1];
+	}
+	ret = s6e3ha6_dcs_read(b, S6E3HA6_MTP_REG, S6E3HA6_MTP_OFS, b->mtp,
+			       sizeof(b->mtp));
+	if (ret)
+		return ret;
+	ret = s6e3ha6_dcs_read(b, S6E3HA6_DATE_REG, S6E3HA6_DATE_OFS, b->date,
+			       sizeof(b->date));
+	if (ret)
+		return ret;
+	if (b->v->dim->nr_hbm_luminance > 0) {
+		ret = s6e3ha6_dcs_read(b, S6E3HA6_HBM_GAMMA_REG, S6E3HA6_HBM_GAMMA_OFS,
+				       b->hbm_gamma, sizeof(b->hbm_gamma));
+		if (ret)
+			return ret;
+	}
+	ret = s6e3ha6_dcs_read(b, S6E3HA6_OCTA_ID_REG, S6E3HA6_OCTA_ID_OFS, b->octa_id,
+			       sizeof(b->octa_id));
+	if (ret)
+		return ret;
+
+	/* the ID of the panel itself: read_panel_id() (panel.c:1193-1214) */
+	ret = s6e3ha6_dcs_read(b, S6E3HA6_ID_REG, S6E3HA6_ID_OFS, b->id, sizeof(b->id));
+	if (ret)
+		return ret;
+
+	ret = s6e3ha6_dcs_write(b, v->key3_off, 3);
+	if (ret)
+		return ret;
+	ret = s6e3ha6_dcs_write(b, v->key2_off, 3);
+	if (ret)
+		return ret;
+	ret = s6e3ha6_dcs_write(b, v->key1_off, 3);
+	if (ret)
+		return ret;
+
+	b->res_ready = true;
+	dev_info(b->dev, "panel id %02X%02X%02X code %02X%02X%02X%02X%02X\n",
+		 b->id[0], b->id[1], b->id[2], b->code[0], b->code[1], b->code[2],
+		 b->code[3], b->code[4]);
+
+	return 0;
+}
+
+/*
+ * The gamma table needs the panel's MTP and HBM_GAMMA resources, which only the
+ * DSI link can read. Stock turns them into the table in panel_probe()
+ * through the init hook of the gamma maptbl (init_gamma_table(),
+ * S:.../panel/s6e3ha6/s6e3ha6.c:265-267 -> init_subdev_gamma_table(), s6e3ha6.c:173-240),
+ * which maptbl_init() runs in panel_prepare() (S:.../panel/panel_drv.c:602-604).
+ */
+static int s6e3ha6_bright_build_gamma(struct s6e3ha6_bright *b)
 {
 	const struct panel_dimming_info *pdim = b->v->dim;
 	s32 mtp[S6E3HA6_NR_TP][MAX_COLOR];
 	s32 hbm[S6E3HA6_NR_TP][MAX_COLOR];
-	u8 mtp_raw[S6E3HA6_MTP_LEN];
-	u8 hbm_raw[S6E3HA6_HBM_GAMMA_LEN];
-	u8 elvss0, elvss1;
 	unsigned int i;
 	int ret;
 
-	ret = s6e3ha6_dcs_read(b, S6E3HA6_MTP_REG, 0, mtp_raw, S6E3HA6_MTP_LEN);
-	if (ret)
-		return ret;
+	mtp_ctoi(mtp, (char *)b->mtp, S6E3HA6_NR_TP);
 
-	mtp_ctoi(mtp, (char *)mtp_raw, S6E3HA6_NR_TP);
-
-	if (pdim->nr_hbm_luminance > 0) {
-		ret = s6e3ha6_dcs_read(b, S6E3HA6_HBM_GAMMA_REG, S6E3HA6_HBM_GAMMA_OFS,
-				       hbm_raw, S6E3HA6_HBM_GAMMA_LEN);
-		if (ret)
-			return ret;
-
-		hbm_ctoi(hbm, hbm_raw, S6E3HA6_NR_TP);
-	}
+	if (pdim->nr_hbm_luminance > 0)
+		hbm_ctoi(hbm, b->hbm_gamma, S6E3HA6_NR_TP);
 
 	/*
 	 * ELVSS_TEMP is the last two bytes of the 0xB5 packet; init_elvss_temp_table()
 	 * (s6e3ha6.c:404-446) copies elvss_temp_0 into every row below
 	 * S6E3HA6_NR_LUMINANCE and elvss_temp_1 into the rest.
 	 */
-	ret = s6e3ha6_dcs_read(b, S6E3HA6_ELVSS_TEMP_0_REG, S6E3HA6_ELVSS_TEMP_0_OFS,
-			       &elvss0, 1);
-	if (ret)
-		return ret;
-	ret = s6e3ha6_dcs_read(b, S6E3HA6_ELVSS_TEMP_1_REG, S6E3HA6_ELVSS_TEMP_1_OFS,
-			       &elvss1, 1);
-	if (ret) {
-		/* deviation: stock drops the whole resource read here */
-		dev_warn(b->dev, "no ELVSS temperature 1, using 0: %d\n", ret);
-		elvss1 = elvss0;
-	}
-	for (i = 0; i < S6E3HA6_TOTAL_NR_LUMINANCE; i++)
-		b->elvss_temp[i] = (i < S6E3HA6_NR_LUMINANCE) ? elvss0 : elvss1;
+	for (i = 0; i < S6E3HA6_NR_LUMINANCE; i++)
+		b->elvss_temp[i] = b->elvss_temp[S6E3HA6_NR_LUMINANCE - 1];
+	for (i = S6E3HA6_NR_LUMINANCE; i < S6E3HA6_TOTAL_NR_LUMINANCE; i++)
+		b->elvss_temp[i] = b->elvss_temp[S6E3HA6_TOTAL_NR_LUMINANCE - 1];
 
 	/* a previous attempt may have allocated the dimming tables already */
 	free_dimming_info(&b->dim);
@@ -774,9 +889,9 @@ int s6e3ha6_bright_prepare(struct s6e3ha6_bright *b)
 	int ret;
 
 	mutex_lock(&b->lock);
-	ret = 0;
-	if (!b->gamma_ready)
-		ret = s6e3ha6_bright_read_gamma(b);
+	ret = s6e3ha6_bright_read_res(b);
+	if (!ret && !b->gamma_ready)
+		ret = s6e3ha6_bright_build_gamma(b);
 	if (!ret)
 		/* adopt the requested brightness, but do not send it yet */
 		ret = s6e3ha6_bright_set(b, b->bd->props.brightness, false);
@@ -796,21 +911,361 @@ int s6e3ha6_bright_enable(struct s6e3ha6_bright *b)
 	return ret;
 }
 
+/*
+ * The lcd class device "panel" (S:.../panel/panel_drv.c:673) with the attributes
+ * of panel_attrs[] (sysfs.c:2012-2079) that the Samsung lights HAL and the
+ * stock init rc (work/factory/boot/rootfs/init.samsungexynos8895.rc:591-637)
+ * use, and whose stock implementation needs nothing but this panel.
+ */
+static struct s6e3ha6_bright *panel_from_lcd(struct device *dev)
+{
+	return lcd_get_data(to_lcd_device(dev));
+}
+
+/* sysfs.c:62-77 */
+static ssize_t lcd_type_show(struct device *dev, struct device_attribute *attr,
+				     char *buf)
+{
+	struct s6e3ha6_bright *b = panel_from_lcd(dev);
+
+	return sysfs_emit(buf, "SDC_%02X%02X%02X\n", b->id[0], b->id[1], b->id[2]);
+}
+
+/* sysfs.c:105-123 */
+static ssize_t manufacture_code_show(struct device *dev,
+					     struct device_attribute *attr, char *buf)
+{
+	struct s6e3ha6_bright *b = panel_from_lcd(dev);
+
+	return sysfs_emit(buf, "%02X%02X%02X%02X%02X\n", b->code[0], b->code[1],
+			  b->code[2], b->code[3], b->code[4]);
+}
+
+/* sysfs.c:126-146 */
+static ssize_t cell_id_show(struct device *dev, struct device_attribute *attr,
+				    char *buf)
+{
+	struct s6e3ha6_bright *b = panel_from_lcd(dev);
+
+	return sysfs_emit(buf, "%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X\n",
+			  b->date[0], b->date[1], b->date[2], b->date[3], b->date[4],
+			  b->date[5], b->date[6], b->coordinate[0], b->coordinate[1],
+			  b->coordinate[2], b->coordinate[3]);
+}
+
+/* sysfs.c:205-223 */
+static ssize_t color_coordinate_show(struct device *dev,
+					     struct device_attribute *attr, char *buf)
+{
+	struct s6e3ha6_bright *b = panel_from_lcd(dev);
+
+	return sysfs_emit(buf, "%u, %u\n", b->coordinate[0] << 8 | b->coordinate[1],
+			  b->coordinate[2] << 8 | b->coordinate[3]);
+}
+
+/* sysfs.c:226-250 */
+static ssize_t manufacture_date_show(struct device *dev,
+					     struct device_attribute *attr, char *buf)
+{
+	struct s6e3ha6_bright *b = panel_from_lcd(dev);
+	int year, month, day, hour, min;
+
+	year = ((b->date[0] & 0xF0) >> 4) + 2011;
+	month = b->date[0] & 0xF;
+	day = b->date[1] & 0x1F;
+	hour = b->date[2] & 0x1F;
+	min = b->date[3] & 0x3F;
+
+	return sysfs_emit(buf, "%d, %d, %d, %d:%d\n", year, month, day, hour, min);
+}
+
+/* sysfs.c:155-196 */
+static ssize_t octa_id_show(struct device *dev, struct device_attribute *attr,
+				    char *buf)
+{
+	struct s6e3ha6_bright *b = panel_from_lcd(dev);
+	const u8 *octa_id = b->octa_id;
+	int site, rework, poc, i, off = 0;
+	bool cell_id_exist = true;
+
+	site = (octa_id[0] >> 4) & 0x0F;
+	rework = octa_id[0] & 0x0F;
+	poc = octa_id[1] & 0x0F;
+
+	for (i = 0; i < 16; i++) {
+		if (!isalnum(octa_id[i + 4])) {
+			cell_id_exist = false;
+			break;
+		}
+	}
+
+	off += sysfs_emit(buf, "%d%d%d%02x%02x", site, rework, poc, octa_id[2], octa_id[3]);
+	if (cell_id_exist)
+		for (i = 0; i < 16; i++)
+			off += sysfs_emit_at(buf, off, "%c", octa_id[i + 4]);
+	off += sysfs_emit_at(buf, off, "\n");
+
+	return off;
+}
+
+/*
+ * sysfs.c:252-271: EXTEND_BRIGHTNESS / BRT_SCALE + 1 = 367 lines of at most
+ * "%5d %3d\n" = 10 bytes, so 3670 of the 4096 bytes of the sysfs buffer.
+ */
+static ssize_t brightness_table_show(struct device *dev,
+					     struct device_attribute *attr, char *buf)
+{
+	struct s6e3ha6_bright *b = panel_from_lcd(dev);
+	int br, off = 0;
+
+	for (br = 0; br <= EXTEND_BRIGHTNESS; br += BRT_SCALE)
+		off += sysfs_emit_at(buf, off, "%5d %3d\n", br,
+				     s6e3ha6_get_luminance(b, br));
+
+	return off;
+}
+
+/* sysfs.c:273-288 */
+static ssize_t adaptive_control_show(struct device *dev,
+					     struct device_attribute *attr, char *buf)
+{
+	struct s6e3ha6_bright *b = panel_from_lcd(dev);
+
+	return sysfs_emit(buf, "%d\n", b->adaptive_control);
+}
+
+/* sysfs.c:290-329 */
+static ssize_t adaptive_control_store(struct device *dev,
+					      struct device_attribute *attr,
+					      const char *buf, size_t size)
+{
+	struct s6e3ha6_bright *b = panel_from_lcd(dev);
+	unsigned int value;
+	int ret;
+
+	ret = kstrtouint(buf, 0, &value);
+	if (ret)
+		return ret;
+
+	mutex_lock(&b->lock);
+	if (b->adaptive_control == (int)value) {
+		mutex_unlock(&b->lock);
+		return size;
+	}
+	b->adaptive_control = value;
+	mutex_unlock(&b->lock);
+	backlight_update_status(b->bd);
+
+	dev_info(dev, "%s, adaptive_control %d\n", __func__, b->adaptive_control);
+
+	return size;
+}
+
+/* sysfs.c:385-393: stock returns this fixed string, not the temperature */
+static ssize_t temperature_show(struct device *dev,
+					 struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "-15, -14, 0, 1\n");
+}
+
+/* sysfs.c:394-427 */
+static ssize_t temperature_store(struct device *dev,
+					  struct device_attribute *attr,
+					  const char *buf, size_t size)
+{
+	struct s6e3ha6_bright *b = panel_from_lcd(dev);
+	int value, ret;
+
+	ret = kstrtoint(buf, 10, &value);
+	if (ret)
+		return ret;
+
+	mutex_lock(&b->lock);
+	b->temperature = value;
+	mutex_unlock(&b->lock);
+	backlight_update_status(b->bd);
+
+	dev_info(dev, "%s, temperature %d\n", __func__, b->temperature);
+
+	return size;
+}
+
+/* sysfs.c:1938-1949 */
+static ssize_t poc_onoff_show(struct device *dev,
+				      struct device_attribute *attr, char *buf)
+{
+	struct s6e3ha6_bright *b = panel_from_lcd(dev);
+
+	return sysfs_emit(buf, "%d\n", b->poc_onoff);
+}
+
+/* sysfs.c:1950-1961 */
+static ssize_t poc_onoff_store(struct device *dev,
+				       struct device_attribute *attr,
+				       const char *buf, size_t size)
+{
+	struct s6e3ha6_bright *b = panel_from_lcd(dev);
+	int value, ret;
+
+	ret = kstrtoint(buf, 0, &value);
+	if (ret)
+		return ret;
+
+	dev_info(dev, "%s: %d -> %d\n", __func__, b->poc_onoff, value);
+
+	if (b->poc_onoff != value) {
+		mutex_lock(&b->lock);
+		b->poc_onoff = value;
+		mutex_unlock(&b->lock);
+		backlight_update_status(b->bd);
+	}
+
+	return size;
+}
+
+/* sysfs.c:1962-1973 */
+static ssize_t irc_onoff_show(struct device *dev,
+				      struct device_attribute *attr, char *buf)
+{
+	struct s6e3ha6_bright *b = panel_from_lcd(dev);
+
+	return sysfs_emit(buf, "%d\n", b->irc_onoff);
+}
+
+/* sysfs.c:1974-2007 */
+static ssize_t irc_onoff_store(struct device *dev,
+				       struct device_attribute *attr,
+				       const char *buf, size_t size)
+{
+	struct s6e3ha6_bright *b = panel_from_lcd(dev);
+	int value, ret;
+
+	ret = kstrtoint(buf, 0, &value);
+	if (ret)
+		return ret;
+
+	dev_info(dev, "%s: %d -> %d\n", __func__, b->irc_onoff, value);
+
+	if (b->irc_onoff != value) {
+		mutex_lock(&b->lock);
+		b->irc_onoff = value;
+		mutex_unlock(&b->lock);
+		backlight_update_status(b->bd);
+	}
+
+	return size;
+}
+
+/* sysfs.c:149-152 and :199-202: the two SVC attributes print the cell/octa id */
+static ssize_t SVC_OCTA_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return cell_id_show(dev, attr, buf);
+}
+
+static ssize_t SVC_OCTA_CHIPID_show(struct device *dev, struct device_attribute *attr,
+				   char *buf)
+{
+	return octa_id_show(dev, attr, buf);
+}
+
+static DEVICE_ATTR_RO(lcd_type);
+static DEVICE_ATTR_RO(manufacture_code);
+static DEVICE_ATTR_RO(cell_id);
+static DEVICE_ATTR_RO(SVC_OCTA);
+static DEVICE_ATTR_RO(SVC_OCTA_CHIPID);
+static DEVICE_ATTR_RO(color_coordinate);
+static DEVICE_ATTR_RO(manufacture_date);
+static DEVICE_ATTR_RO(brightness_table);
+static DEVICE_ATTR_RW(adaptive_control);
+static DEVICE_ATTR_RW(temperature);
+static DEVICE_ATTR_RW(poc_onoff);
+static DEVICE_ATTR_RW(irc_onoff);
+
+static struct device_attribute *s6e3ha6_lcd_attrs[] = {
+	&dev_attr_lcd_type,
+	&dev_attr_manufacture_code,
+	&dev_attr_cell_id,
+	&dev_attr_SVC_OCTA,
+	&dev_attr_SVC_OCTA_CHIPID,
+	&dev_attr_color_coordinate,
+	&dev_attr_manufacture_date,
+	&dev_attr_brightness_table,
+	&dev_attr_adaptive_control,
+	&dev_attr_temperature,
+	&dev_attr_poc_onoff,
+	&dev_attr_irc_onoff,
+	NULL
+};
+
+int s6e3ha6_bright_register_lcd(struct s6e3ha6_bright *b)
+{
+	struct kernfs_node *svc_sd;
+	struct kobject *svc, *kobj;
+	int i, ret;
+
+	/* panel_drv.c:673 */
+	b->lcd = lcd_device_register("panel", b->dev, b, NULL);
+	if (IS_ERR(b->lcd))
+		return PTR_ERR(b->lcd);
+
+	for (i = 0; s6e3ha6_lcd_attrs[i]; i++) {
+		ret = device_create_file(&b->lcd->dev, s6e3ha6_lcd_attrs[i]);
+		if (ret) {
+			dev_err(&b->lcd->dev, "cannot add %s: %d\n",
+				s6e3ha6_lcd_attrs[i]->attr.name, ret);
+			goto err_unregister;
+		}
+	}
+
+	/*
+	 * /sys/devices/svc/OCTA -> the lcd device, the path the SVC (Samsung
+	 * VIP) HAL reads the OTP with (sysfs.c:2097-2119). devices_kset is not
+	 * exported out of drivers/base (A:drivers/base/base.h:209), so the
+	 * "devices" kobject is found by walking up from the lcd device.
+	 */
+	kobj = &b->lcd->dev.kobj;
+	while (kobj->parent && kobject_name(kobj->parent) &&
+	       strcmp(kobject_name(kobj->parent), "devices"))
+		kobj = kobj->parent;
+	if (!kobj->parent || !kobject_name(kobj->parent) ||
+	    strcmp(kobject_name(kobj->parent), "devices")) {
+		dev_err(&b->lcd->dev, "no /sys/devices for the SVC link\n");
+		return 0;
+	}
+
+	svc_sd = sysfs_get_dirent(kobj->parent->sd, "svc");
+	if (IS_ERR_OR_NULL(svc_sd)) {
+		svc = kobject_create_and_add("svc", kobj->parent);
+		if (IS_ERR_OR_NULL(svc))
+			dev_err(&b->lcd->dev, "cannot create /sys/devices/svc\n");
+	} else {
+		svc = svc_sd->priv;
+	}
+	if (!IS_ERR_OR_NULL(svc)) {
+		ret = sysfs_create_link(svc, &b->lcd->dev.kobj, "OCTA");
+		if (ret)
+			dev_err(&b->lcd->dev, "cannot create /sys/devices/svc/OCTA\n");
+	}
+
+	return 0;
+
+err_unregister:
+	lcd_device_unregister(b->lcd);
+	b->lcd = NULL;
+	return ret;
+}
+
 void s6e3ha6_bright_unregister(struct s6e3ha6_bright *b)
 {
 	if (!b)
 		return;
 
 	if (b->lcd)
+		/* the sysfs files go away with the device */
 		lcd_device_unregister(b->lcd);
 	if (b->bd)
 		backlight_device_unregister(b->bd);
 
 	free_dimming_info(&b->dim);
 	kfree(b);
-}
-
-void s6e3ha6_bright_register_lcd(struct s6e3ha6_bright *b)
-{
-	b->lcd = devm_lcd_device_register(b->dev, "panel", b->dev, b, NULL);
 }

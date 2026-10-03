@@ -813,10 +813,12 @@ config DRM_PANEL_SAMSUNG_S6E3HA6
 	depends on OF
 	depends on DRM_MIPI_DSI
 	depends on BACKLIGHT_CLASS_DEVICE
+	depends on LCD_CLASS_DEVICE
 	help
 	  Say Y or M here if you want to enable support for the Samsung
 	  S6E3HA6 1440x2960 AMOLED panel of the Galaxy Note 8 (greatlte),
-	  a MIPI DSI command-mode panel with VESA DSC.
+	  a MIPI DSI command-mode panel with VESA DSC. It registers the
+	  backlight device "panel" and the lcd class device "panel".
 
 config DRM_PANEL_SAMSUNG_S6E3HA8
 	tristate "Samsung S6E3HA8 DSI video mode panel"
