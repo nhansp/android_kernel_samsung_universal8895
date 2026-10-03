@@ -71,7 +71,11 @@
  * Moved from videodev.h
  */
 #define VIDEO_MAX_FRAME               64
-#define VIDEO_MAX_PLANES               8
+/* The vendor blobs (HWC scaler library, libexynosv4l2, camera HAL) were built
+ * against the stock uapi, which has 17 planes: S:include/uapi/linux/videodev2.h:73.
+ * struct v4l2_format is 384 bytes there and VIDIOC_S_FMT is 0xc1805605.
+ */
+#define VIDEO_MAX_PLANES              17
 
 /*
  *	M I S C E L L A N E O U S
