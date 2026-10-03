@@ -86,6 +86,7 @@ static int cpufreq_init(struct cpufreq_policy *policy)
 	struct device *cpu_dev;
 	struct clk *cpu_clk;
 	unsigned int transition_latency;
+	u32 rate_limit_us;
 	int ret;
 
 	priv = cpufreq_dt_find_data(policy->cpu);
@@ -113,6 +114,17 @@ static int cpufreq_init(struct cpufreq_policy *policy)
 	policy->suspend_freq = dev_pm_opp_get_suspend_opp_freq(cpu_dev) / 1000;
 	policy->cpuinfo.transition_latency = transition_latency;
 	policy->dvfs_possible_from_any_cpu = true;
+
+	/*
+	 * "samsung,transition-delay-us": a per-policy governor rate limit, for
+	 * boards whose stock governor re-evaluated less often than 1.5x the
+	 * transition latency (cpufreq_policy_transition_delay_us() below,
+	 * A:drivers/cpufreq/cpufreq.c:552-565). Absent everywhere else, so every
+	 * other DT keeps the generic default.
+	 */
+	if (!of_property_read_u32(cpu_dev->of_node, "samsung,transition-delay-us",
+				  &rate_limit_us))
+		policy->transition_delay_us = rate_limit_us;
 
 	return 0;
 }

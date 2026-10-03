@@ -257,4 +257,5 @@
 #include "exynos8895-greatlte-l6l.dtsi"
 #include "exynos8895-greatlte-l6m.dtsi"
 #include "exynos8895-greatlte-l7.dtsi"
+#include "exynos8895-greatlte-l7dvfs.dtsi"
 #include "exynos8895-greatlte-dbg.dtsi"

@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Galaxy Note 8 (greatlte, SM-N950N) board DT, part "l7dvfs":
+ * the CPU governor's rate limit, stock-equivalent (work package l7dvfs, scope 1).
+ *
+ * Included at the end of exynos8895-greatlte.dts after the L7 part. Owner:
+ * WP-l7dvfs; no other work package edits this file (plan 2.3 rule D1).
+ *
+ * Stock runs the interactive governor (IKC:609,615; policy scaling_governor
+ * "interactive" on the 4.4 phone), which re-evaluates every DEFAULT_TIMER_RATE
+ * = 20 ms (S:drivers/cpufreq/cpufreq_interactive.c:83,212) and holds a
+ * frequency for DEFAULT_MIN_SAMPLE_TIME = 80 ms before lowering it
+ * (S:.../cpufreq_interactive.c:111,591-607); both are the compiled-in defaults
+ * (:1624-1627) and match the values read from the 4.4 sysfs.
+ *
+ * 6.18's schedutil has one symmetric delay, schedutil rate_limit_us
+ * (A:kernel/sched/cpufreq_schedutil.c:789,109), taken from
+ * cpufreq_policy_transition_delay_us() = transition_delay_us, else 1.5x the
+ * transition latency (A:drivers/cpufreq/cpufreq.c:552-565). The 8895 declares
+ * the stock transition latency, 100000 ns (S:drivers/cpufreq/exynos-acme.h:101;
+ * arch/arm64/boot/dts/exynos/exynos8895.dtsi:201-207), which gives 150 us = ~150
+ * transitions/s per cluster: too many for a bus DVFS that answers every
+ * transition with an ACPM FREQ_REQ. This is the stock timer_rate as the one
+ * value 6.18 can express; the 80 ms down-hold has no equivalent here and is
+ * documented in the l7dvfs report.
+ *
+ * The property is read in cpufreq_init() of drivers/cpufreq/cpufreq-dt.c, on
+ * the node that owns the policy's clock and OPP table, i.e. the first cpu of
+ * each cluster. It is written on all eight cpu nodes so that a policy that is
+ * brought up by any of its cpus reads the same value.
+ *
+ * cpufreq-dt sets no CPUFREQ_HAVE_GOVERNOR_PER_POLICY, so have_governor_per_policy() is
+ * false (A:drivers/cpufreq/cpufreq.c:118-122) and schedutil keeps one global tunables
+ * object (/sys/devices/system/cpu/cpufreq/schedutil/,
+ * A:kernel/sched/cpufreq_schedutil.c:730-806): the first policy to initialise its
+ * governor fixes rate_limit_us for both. Both clusters therefore declare the same value.
+ */
+&cpu0 { samsung,transition-delay-us = <20000>; };	/* policy0, cpus 0-3 */
+&cpu1 { samsung,transition-delay-us = <20000>; };
+&cpu2 { samsung,transition-delay-us = <20000>; };
+&cpu3 { samsung,transition-delay-us = <20000>; };
+&cpu4 { samsung,transition-delay-us = <20000>; };	/* policy4, cpus 4-7 */
+&cpu5 { samsung,transition-delay-us = <20000>; };
+&cpu6 { samsung,transition-delay-us = <20000>; };
+&cpu7 { samsung,transition-delay-us = <20000>; };
