@@ -594,6 +594,19 @@
 &sysmmu_isp { status = "okay"; };
 &sysmmu_dcp { status = "okay"; };
 
+/*
+ * INTCAM and CAM bus DVFS domains: the M3 step of spec L2b 4.2, which the
+ * bus spec enables together with REQ-2B-L6B-1 - the camera core's QoS shim
+ * (spec L6B 5.3) now forwards its INTCAM/CAM aggregate to the bus driver
+ * (drivers/soc/samsung/exynos8895-mm-qos.c mm_qos_init()), which is the only
+ * writer of the two ACPM DVFS clocks from bus stage 2 on (spec L2b C-3, 0.5
+ * M3/V-5). Written here as an override of the two lines L2b's part leaves
+ * disabled; stock enables all five domains on greatlte (FDT:6712-6805, no
+ * status property).
+ */
+&bus_intcam { status = "okay"; };
+&bus_cam { status = "okay"; };
+
 /* FDT:8536-8541 and the vender/fimc_is_dvfs children FDT:8543-9130 verbatim (L6B 4.2) */
 &fimc_is {
 	pinctrl-names = "default", "release";
