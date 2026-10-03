@@ -712,6 +712,310 @@ static void e8895_pd_dump(void)
 		pr_info("exynos8895-pm: DEBUG pre-SMC pd%s\n", buf);
 }
 
+/* ================= DEBUG (l7wake): the wake path itself =================
+ *
+ * image 0139: no wake-up reaches CPU0 in suspend (RTC alarm through the PMIC
+ * EINT gpa3-6 and the power key through gpa2-4, both armed as wake sources,
+ * both dead). Everything the PMU shows at the SMC matches stock, so the
+ * remaining kernel-visible hops - the ALIVE EINT block and the GIC that
+ * carries it - were never dumped. This block prints them, and the two DEBUG
+ * params after it can force them.
+ *
+ * Register map (all offsets, all opened this run):
+ *   GIC distributor / CPU interface, GICv2 - the 8895 interrupt controller is
+ *   "arm,gic-400" (exynos8895.dtsi:544) / "arm,cortex-a15-gic" (FDT:4542), i.e.
+ *   drivers/irqchip/irq-gic.c (IRQCHIP_DECLARE(gic_400) :1516), NOT the v3
+ *   driver; A:include/linux/irqchip/arm-gic.h:6-56
+ *     GICD_CTLR 0x000, GICD_TYPER 0x004, GICD_ICTR 0x008,
+ *     GICD_IGROUPR 0x080, GICD_ISENABLER 0x100, GICD_ISPENDR 0x200,
+ *     GICD_IPRIORITYR 0x400, GICD_ITARGETSR 0x800 (4 bits per INTID)
+ *     GICC_CTLR 0x000, GICC_PMR 0x004, GICC_BPR 0x008, GICC_EOI 0x010,
+ *     GICC_RPR 0x014, GICC_HIGHPRI 0x018, GICC_HPPIR 0x04c
+ *   GICC_DIR (0x1000) is NOT dumped: image 0142 (this patch on the test line)
+ *   took a translation fault (0x96000007, level 3 = VA not mapped) in readl()
+ *   from e8895_wake_dump+0x33c, which the 0142 vmlinux resolves to this very
+ *   read (`add x0, x8, #0x1, lsl #12` then `bl readl`, x8 = e8895_gicc_base).
+ *   DT reg #1 - the window of_iomap(node, 1) maps - is 0x1000 bytes
+ *   (exynos8895.dtsi:546), so offset 0x1000 is the first byte outside the
+ *   mapping. Stock never reads GICC_DIR either: its CPU interface window is
+ *   mapped the same two reg entries (S:drivers/irqchip/irq-gic.c:1249 dist =
+ *   of_iomap(node, 0), :1252 cpu = of_iomap(node, 1)), and the only path that
+ *   makes +0x1000 reachable is gic_check_eoimode()'s "Move the base up by 60kB,
+ *   so that we have a 8kB contiguous region, which allows us to use GICC_DIR at
+ *   its normal offset" (:1224-1233), which that function itself skips when the
+ *   CPU interface window is smaller than 8kB (:1207-1208) - 0x1000 here. Every
+ *   read of this DEBUG block goes through e8895_rd() below, which refuses an
+ *   offset the mapped size does not cover instead of faulting on it.
+ *   ALIVE EINT block, 0x164b0000 (exynos8895.dtsi pinctrl_alive, FDT:88-92,
+ *   reg 0x164b0000/0x1000): the wkup chip of the DT is
+ *   samsung,exynos7-wakeup-eint (FDT:216), whose offsets are
+ *   A:drivers/pinctrl/samsung/pinctrl-exynos.h:30-32 (ECON 0x700, EMASK 0x900,
+ *   EPEND 0xA00) and the driver adds +bank->eint_offset (pinctrl-exynos.c:71,92);
+ *   EFLTCON 0x800 is the same file, :23. PEND_SET 0xB00 is EXYNOS_SVC_OFFSET
+ *   0xB08 minus 8 (same file, :32) minus the ECON base 0x700, i.e. the register
+ *   the SVC (software clear) block follows; INT_ENABLE 0xC00 and LEVEL 0xD00 are
+ *   the next two 0x100 steps of that stride - [INFERRED]: nothing in S: or A:
+ *   names them (no EXYNOS_*_INT_ENABLE/INT_LEVEL exists in either pinctrl
+ *   header), this DEBUG block is the only reader of them.
+ *   Bank list S:drivers/pinctrl/samsung/pinctrl-exynos.c:1785-1790.
+ */
+#define E8895_GICD_CTLR		0x000
+#define E8895_GICD_TYPER	0x004
+#define E8895_GICD_ICTR		0x008
+#define E8895_GICD_IGROUPR	0x080
+#define E8895_GICD_ISENABLER	0x100
+#define E8895_GICD_ISPENDR	0x200
+#define E8895_GICD_ITARGETSR	0x800
+#define E8895_GICC_CTLR		0x000
+#define E8895_GICC_PMR		0x004
+#define E8895_GICC_BPR		0x008
+#define E8895_GICC_RPR		0x014
+#define E8895_GICC_HIGHPRI	0x018
+#define E8895_GICC_HPPIR		0x04c
+
+/*
+ * GICD arithmetic, taken from the GICv2 driver of this tree and nothing else:
+ * GICD_ISENABLER holds one bit per INTID, 32 INTIDs per word, so SPI s (INTID
+ * 32+s) is word (32+s)/32, bit (32+s)%32 -
+ * A:drivers/irqchip/irq-gic.c:180-185 (gic_poke_irq: "offset + (hwirq / 32) * 4",
+ * "1 << (hwirq % 32)"), with hwirq == INTID because the domain is created linear
+ * over INTIDs (:1213 irq_domain_create_linear(handle, gic_irqs, ...) with
+ * handle = 32), so irq_create_mapping() gives hwirq == INTID.
+ * GICD_ITARGETSR is one word per four INTIDs counted from INTID 0, i.e. SPI s is
+ * at 0x800 + 32 + s - A:drivers/irqchip/irq-gic.c:480-481 (gic_dist_init writes
+ * GIC_DIST_TARGET + i * 4 / 4 for i = 32, 36, 40 ... with one cpumask, i.e. every
+ * word from 0x820 upwards and none below it). Under that map the EINT carriers
+ * (SPI 0-15 per bank, exynos8895-pinctrl.dtsi:37-91, and SPI 16 = the WKUP_MUX
+ * demux, exynos8895.dtsi:2635) are the words 0x820..0x840, while 0x800..0x81c are
+ * the SGI/PPI words, which a GICv2 distributor does not implement and which read
+ * as zero. [the driver's arithmetic is what this file uses; the ARM manual is not
+ * in this tree, so the dump prints the whole range offset by offset - where the
+ * first non-zero word sits on hardware is the answer.]
+ */
+/* ITARGETSR words 0x800..0x840 = 17 words: the eight SGI/PPI words plus the nine
+ * that hold SPI 0..19 under the map above, i.e. every word that either reading of
+ * the carrier map can mean */
+#define E8895_GICD_TARGET_WORDS	17
+
+#define E8895_EINT_ECON		0x700
+#define E8895_EINT_EFLTCON	0x800
+#define E8895_EINT_EMASK	0x900
+#define E8895_EINT_EPEND	0xa00
+#define E8895_EINT_EPEND_SET	0xb00
+#define E8895_EINT_ENABLE	0xc00
+#define E8895_EINT_LEVEL	0xd00
+
+/* S:pinctrl-exynos.c:1785-1790 (etc1 included; our table has no etc1 bank,
+ * pinctrl-exynos-arm64.c:1489-1495 - inert, no DT pin group uses it) */
+static const struct {
+	const char *name;
+	u32 eint_offset;
+	u8 nr_pins;
+} e8895_alive_banks[] = {
+	{ "etc1", 0x20, 6 }, { "gpa0", 0x00, 8 }, { "gpa1", 0x04, 8 },
+	{ "gpa2", 0x08, 8 }, { "gpa3", 0x0c, 8 }, { "gpa4", 0x24, 7 },
+};
+
+static void __iomem *e8895_gicd_base, *e8895_gicc_base, *e8895_alive_base;
+static u32 e8895_gicd_size, e8895_gicc_size, e8895_alive_size;
+static unsigned int e8895_unmapped;
+
+/* The mapped size of the block a base belongs to. All three come from the DT:
+ * reg #0 and #1 of the GIC (exynos8895.dtsi:545-547, the two windows
+ * drivers/irqchip/irq-gic.c:1397 /:1401 maps with of_iomap(node, 0/1)) and reg #0
+ * of the pinctrl_alive node (exynos8895.dtsi:2632, mapped with
+ * devm_ioremap(resource_size(&res)) below). */
+static u32 e8895_map_size(void __iomem *base)
+{
+	if (base == e8895_gicc_base)
+		return e8895_gicc_size;
+	if (base == e8895_gicd_base)
+		return e8895_gicd_size;
+	return e8895_alive_size;
+}
+
+/* image 0142 showed that a read outside the mapped window is a translation fault
+ * (0x96000007, level 3) and panics the box before the SMC, so an offset the size
+ * does not cover is refused and counted here instead of being issued. ~0U is the
+ * refused value; e8895_wake_dump() prints the counter, so a refused access can
+ * never be silent. */
+static u32 e8895_rd(void __iomem *base, u32 off)
+{
+	if (!base || off + 4 > e8895_map_size(base)) {
+		e8895_unmapped++;
+		return ~0U;
+	}
+	return readl(base + off);
+}
+
+/* GPIO_ALIVE is the first exynos8895-pinctrl node (FDT:88) and the GIC the only
+ * interrupt-controller with a "arm,gic-*" compatible (exynos8895.dtsi:543);
+ * the v2m/gic-400 compatible is listed first because that is what this DT has */
+static void e8895_map_wake_blocks(struct device *dev)
+{
+	static const char * const gic_compat[] = {
+		"arm,gic-400", "arm,gic-v3", "arm,gic-v4", "arm,cortex-a15-gic",
+	};
+	struct device_node *np;
+	unsigned int i;
+
+	if (e8895_alive_base)
+		return;
+	np = of_find_compatible_node(NULL, NULL, "samsung,exynos8895-pinctrl");
+	if (np) {
+		struct resource res;
+
+		if (!of_address_to_resource(np, 0, &res)) {
+			e8895_alive_base = devm_ioremap(dev, res.start,
+							resource_size(&res));
+			e8895_alive_size = resource_size(&res);
+		}
+		of_node_put(np);
+	}
+	for (i = 0; i < ARRAY_SIZE(gic_compat) && !e8895_gicd_base; i++) {
+		struct resource res;
+
+		np = of_find_compatible_node(NULL, NULL, gic_compat[i]);
+		if (!np)
+			continue;
+		e8895_gicd_base = of_iomap(np, 0);
+		e8895_gicc_base = of_iomap(np, 1);
+		/* the sizes of those two of_iomap() calls used, read from the very
+		 * same DT reg entries the irq-gic driver reads
+		 * (drivers/irqchip/irq-gic.c:1397 /:1401). The GICC window is 0x1000
+		 * (exynos8895.dtsi:546), i.e. GICC_DIR (0x1000) is NOT inside it -
+		 * that is the image 0142 panic. */
+		if (!of_address_to_resource(np, 0, &res))
+			e8895_gicd_size = resource_size(&res);
+		if (!of_address_to_resource(np, 1, &res))
+			e8895_gicc_size = resource_size(&res);
+		of_node_put(np);
+		if (!e8895_gicd_base || !e8895_gicc_base) {
+			dev_warn(dev, "DEBUG: GIC regmap %d unusable\n", (int)i);
+			e8895_gicd_base = NULL;
+			e8895_gicc_base = NULL;
+			e8895_gicd_size = 0;
+			e8895_gicc_size = 0;
+		}
+	}
+	dev_info(dev, "DEBUG: wake blocks alive=%p/%x gicd=%p/%x gicc=%p/%x\n",
+		 e8895_alive_base, e8895_alive_size,
+		 e8895_gicd_base, e8895_gicd_size,
+		 e8895_gicc_base, e8895_gicc_size);
+}
+
+/* one line per ALIVE bank: EINT_CON / INT_MASK / INT_PEND / INT_ENABLE /
+ * INT_LEVEL / FLTCON, so a masked or un-armed wake pin is visible */
+static void e8895_eint_dump(const char *tag)
+{
+	unsigned int i;
+
+	if (!e8895_alive_base)
+		return;
+	for (i = 0; i < ARRAY_SIZE(e8895_alive_banks); i++) {
+		const char *n = e8895_alive_banks[i].name;
+		u32 o = e8895_alive_banks[i].eint_offset;
+
+		pr_info("exynos8895-pm: DEBUG %s eint %s con=%08x flt=%08x mask=%08x pend=%08x en=%08x lvl=%08x\n",
+			tag, n,
+			e8895_rd(e8895_alive_base, E8895_EINT_ECON + o),
+			e8895_rd(e8895_alive_base, E8895_EINT_EFLTCON + o),
+			e8895_rd(e8895_alive_base, E8895_EINT_EMASK + o),
+			e8895_rd(e8895_alive_base, E8895_EINT_EPEND + o),
+			e8895_rd(e8895_alive_base, E8895_EINT_ENABLE + o),
+			e8895_rd(e8895_alive_base, E8895_EINT_LEVEL + o));
+	}
+}
+
+/* GICD/GICC: words 0-1 of IGROUPR/ISENABLER/ISPENDR cover INTID 0-63 = SGI 0-15,
+ * PPI 0-15 and SPI 0-31, i.e. every EINT carrier; the ITARGETSR words are printed
+ * offset by offset (see E8895_GICD_TARGET_WORDS) */
+static void e8895_gic_dump(const char *tag)
+{
+	unsigned int b;
+
+	if (!e8895_gicd_base || !e8895_gicc_base)
+		return;
+	pr_info("exynos8895-pm: DEBUG %s gicd ctlr=%08x typer=%08x ictr=%08x\n", tag,
+		e8895_rd(e8895_gicd_base, E8895_GICD_CTLR),
+		e8895_rd(e8895_gicd_base, E8895_GICD_TYPER),
+		e8895_rd(e8895_gicd_base, E8895_GICD_ICTR));
+	pr_info("exynos8895-pm: DEBUG %s gicd igrp=%08x %08x en=%08x %08x pend=%08x %08x\n", tag,
+		e8895_rd(e8895_gicd_base, E8895_GICD_IGROUPR),
+		e8895_rd(e8895_gicd_base, E8895_GICD_IGROUPR + 4),
+		e8895_rd(e8895_gicd_base, E8895_GICD_ISENABLER),
+		e8895_rd(e8895_gicd_base, E8895_GICD_ISENABLER + 4),
+		e8895_rd(e8895_gicd_base, E8895_GICD_ISPENDR),
+		e8895_rd(e8895_gicd_base, E8895_GICD_ISPENDR + 4));
+	for (b = 0; b < E8895_GICD_TARGET_WORDS; b++) {
+		if (b && !(b % 6))
+			pr_info("exynos8895-pm: DEBUG %s gicd target\n", tag);
+		pr_info(" %x:%08x", E8895_GICD_ITARGETSR + b * 4,
+			e8895_rd(e8895_gicd_base, E8895_GICD_ITARGETSR + b * 4));
+	}
+	pr_info("\n");
+	pr_info("exynos8895-pm: DEBUG %s gicc ctlr=%08x pmr=%08x bpr=%08x rpr=%08x hppir=%08x\n",
+		tag,
+		e8895_rd(e8895_gicc_base, E8895_GICC_CTLR),
+		e8895_rd(e8895_gicc_base, E8895_GICC_PMR),
+		e8895_rd(e8895_gicc_base, E8895_GICC_BPR),
+		e8895_rd(e8895_gicc_base, E8895_GICC_RPR),
+		e8895_rd(e8895_gicc_base, E8895_GICC_HPPIR));
+}
+
+/* the EINT wake mask bits that are CLEAR are the wake-enabled pins; print them
+ * by name, so a wrong bit convention (bank offset, 32-bit truncation) shows up */
+static void e8895_wake_mask_dump(u32 mask, const char *tag)
+{
+	char buf[192];
+	unsigned int b, p, n = 0;
+	bool any = false;
+
+	buf[0] = 0;
+	for (b = 0; b < ARRAY_SIZE(e8895_alive_banks); b++) {
+		for (p = 0; p < e8895_alive_banks[b].nr_pins; p++) {
+			unsigned int bit = 2 * e8895_alive_banks[b].eint_offset + p;
+
+			if (bit >= 32 || (mask & BIT(bit)))
+				continue;
+			n += scnprintf(buf + n, sizeof(buf) - n, "%s%s-%u",
+					n ? " " : "", e8895_alive_banks[b].name, p);
+			any = true;
+			if (n > 150)
+				goto out;
+		}
+	}
+out:
+	pr_info("exynos8895-pm: DEBUG %s eint_wake=%08x armed=%s%s\n", tag, mask,
+		any ? buf : "-", any ? "" : " (none)");
+}
+
+static void e8895_wake_dump(const char *tag)
+{
+	e8895_gic_dump(tag);
+	e8895_eint_dump(tag);
+	e8895_wake_mask_dump(pmu_raw_readl(E8895_EINT_WAKEUP_MASK), tag);
+	/* the words stock's exynos_show_wakeup_reason() prints after the wake
+	 * (S:drivers/soc/samsung/exynos-pm.c:119-134), plus 0x604/0x608 which
+	 * nothing dumped before: on 8895 0x600-0x608 are WAKEUP_STAT/2/3
+	 * (S:drivers/soc/samsung/pwrcal/S5E8890/S5E8890-pmusfr.h:131-133) and
+	 * WAKEUP_STAT2 is also the "wrong" EXYNOS_EINT_WAKEUP_MASK 0x0604 that the
+	 * exynos4210 wkup chip would use (A:...exynos-regs-pmu.h:47,
+	 * A:...pinctrl-exynos.c:630) - this DT selects exynos7_wkup_irq_chip
+	 * instead, whose mask register is EXYNOS5433_EINT_WAKEUP_MASK = 0x060c
+	 * (A:...pinctrl-exynos.c:650), i.e. the same word this driver writes at
+	 * :1021 and the same one stock writes at
+	 * S:...exynos-powermode.c:624-631 */
+	pr_info("exynos8895-pm: DEBUG %s pmustat=%08x %08x %08x wkmask=%08x %08x %08x %08x wkmif=%08x\n",
+		tag, pmu_raw_readl(E8895_WAKEUP_STAT), pmu_raw_readl(0x0604),
+		pmu_raw_readl(0x0608), pmu_raw_readl(0x0610), pmu_raw_readl(0x0614),
+		pmu_raw_readl(0x0618), pmu_raw_readl(0x061c), pmu_raw_readl(0x0628));
+	/* anything refused above prints as ffffffff; the count makes it visible */
+	pr_info("exynos8895-pm: DEBUG %s maps alive=%x gicd=%x gicc=%x unmapped=%u\n",
+		tag, e8895_alive_size, e8895_gicd_size, e8895_gicc_size,
+		e8895_unmapped);
+}
+
 /*
  * DEBUG E1 (l7re H1: EL3's SLEEP gates read PMU words that are in no kernel
  * PMUCAL list and were never dumped, so a divergence is invisible to the
@@ -794,6 +1098,26 @@ static int e8895_sleep_dump_set(const char *val, const struct kernel_param *kp)
 static const struct kernel_param_ops e8895_sleep_dump_ops = { .set = e8895_sleep_dump_set };
 module_param_cb(sleep_dump, &e8895_sleep_dump_ops, NULL, 0200);
 
+/* DEBUG (l7wake): same trigger idiom as sleep_dump, for the GIC/EINT dump */
+static int e8895_wake_dump_set(const char *val, const struct kernel_param *kp)
+{
+	u32 v;
+	int ret = kstrtou32(val, 0, &v);
+
+	if (ret)
+		return ret;
+	if (v) {
+		if (!pmu_base_addr)
+			return -ENODEV;
+		e8895_wake_dump("boot");
+	}
+	return 0;
+}
+
+static const struct kernel_param_ops e8895_wake_dump_ops = { .set = e8895_wake_dump_set };
+module_param_cb(wake_dump, &e8895_wake_dump_ops, NULL, 0200);
+
+
 static void e8895_sleep_dump(void)
 {
 	pr_info("exynos8895-pm: DEBUG pre-SMC mode=%d wk=%08x %08x %08x %08x eint=%08x cp=%08x abox=%x vts=%x\n",
@@ -807,6 +1131,7 @@ static void e8895_sleep_dump(void)
 		pmu_raw_readl(E8895_IDLE_IP(3)), pmu_raw_readl(0x2200) & 0xf, pmu_raw_readl(0x2204) & 0xf);
 	e8895_sleep_regs("pre-SMC");			/* DEBUG E1 */
 	e8895_pd_dump();
+	e8895_wake_dump("pre-SMC");			/* DEBUG l7wake */
 }
 
 /* DEBUG sleep_pdoff: bounded like e8895_wait() (pmucal_rae_wait(), 1000 x 1 us) */
@@ -1293,6 +1618,7 @@ static int e8895_pm_probe(struct platform_device *pdev)
 	suspend_set_ops(&e8895_pm_ops);			/* A:kernel/power/suspend.c:224-241: mem = deep */
 	bus_register_notifier(&platform_bus_type, &e8895_pm_bus_nb);
 	e8895_sp_init();					/* DEBUG stage_poke */
+	e8895_map_wake_blocks(dev);			/* DEBUG l7wake */
 	dev_info(dev, "SLEEP via PSCI 0x%08x, %zu PMUCAL blocks\n", E8895_PSCI_SLEEP,
 		 ARRAY_SIZE(e8895_pm_bases));
 	e8895_pm_try_resolve();				/* no-op before late_initcall_sync */
