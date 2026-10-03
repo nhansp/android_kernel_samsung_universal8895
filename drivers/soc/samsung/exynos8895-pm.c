@@ -1176,6 +1176,25 @@ module_param(sleep_bare, bool, 0644);
 static u32 sleep_swpend;
 module_param(sleep_swpend, uint, 0644);
 
+/* DEBUG (l7el3) sleep_c2prep=1: in the sleep_bare path, run the per-CPU PMU
+ * preparation the cpuidle C2 state runs right before its SMC -
+ * e8895_pmu_cpu_down() clears DD0_DD_DA_INPUT_0 bit 0 and
+ * CLUSTER0_CPU0_CONFIGURATION[3:0] (CAL:pmucal_cpu_exynos8895.h:5-9, what
+ * stock's cpu_disable() plays in exynos_cpu_pm_enter(),
+ * S:drivers/soc/samsung/exynos-powermode.c:513-517,80-84) - and undo it after
+ * the SMC returns. It is the only PMU write the two contexts do not share, so
+ * if the EL3 CPU_SUSPEND handler reads the core's CONFIGURATION/STATUS this is
+ * the switch that decides whether the bare suspend returns.
+ * sleep_bare_eint=1: put PMU EINT_WAKEUP_MASK (0x60c) back to the value it has
+ * at run time. The pinctrl syscore op writes the EINT wake mask in suspend but
+ * never in cpuidle, so the bare path is the one context where 0x60c differs
+ * from a C2 that works. */
+static bool sleep_c2prep;
+module_param(sleep_c2prep, bool, 0644);
+static bool sleep_bare_eint;
+module_param(sleep_bare_eint, bool, 0644);
+static u32 eint_wake_boot;			/* 0x60c at probe (== the cpuidle value) */
+
 /* power_state of the SMC: sleep_bare forces C2 (0x00010000), otherwise the
  * stock SLEEP word unless sleep_psci overrides it */
 static unsigned int e8895_smc_state(void)
@@ -1528,6 +1547,11 @@ static int e8895_pm_syscore_suspend(void)
 		e8895_mode = E8895_SYS_SLEEP;		/* label only: t[] is unused below */
 		pr_info("exynos8895-pm: DEBUG bare: no PMU program, PSCI 0x%08x\n",
 			e8895_smc_state());
+		if (sleep_bare_eint && pmu_raw_readl(E8895_EINT_WAKEUP_MASK) != eint_wake_boot) {
+			pmu_raw_writel(eint_wake_boot, E8895_EINT_WAKEUP_MASK);	/* DEBUG l7el3 */
+			pr_info("exynos8895-pm: DEBUG bare eint: 0x60c back to the boot value 0x%08x\n",
+				eint_wake_boot);
+		}
 		e8895_wakearm();				/* still available */
 		e8895_swpend();					/* still available */
 		if (sleep_trace)
@@ -1629,11 +1653,24 @@ static struct syscore_ops e8895_pm_syscore_ops = {
  * (FDT:4418,4420), so every mode uses PSCI_SYSTEM_SLEEP */
 static int e8895_pm_enter(suspend_state_t state)
 {
+	unsigned int cpu = smp_processor_id();
 	int ret;
 
 	if (sleep_trace)					/* DEBUG */
 		pr_info("exynos8895-pm: DEBUG SMC power_state=0x%08x\n", e8895_smc_state());
+	if (sleep_c2prep) {					/* DEBUG l7el3 */
+		pr_info("exynos8895-pm: DEBUG c2prep: CONF ok=%d STATUS %x -> down\n",
+			e8895_pmu_cpu_conf_ok(cpu), e8895_pmu_cpu_status(cpu));
+		e8895_pmu_cpu_down(cpu);
+		pr_info("exynos8895-pm: DEBUG c2prep: CONF ok=%d STATUS %x\n",
+			e8895_pmu_cpu_conf_ok(cpu), e8895_pmu_cpu_status(cpu));
+	}
 	ret = e8895_psci_suspend(e8895_smc_state());		/* DEBUG sleep_psci */
+	if (sleep_c2prep) {					/* DEBUG l7el3 */
+		e8895_pmu_cpu_up(cpu);
+		pr_info("exynos8895-pm: DEBUG c2prep: back %d, CONF ok=%d STATUS %x\n",
+			ret, e8895_pmu_cpu_conf_ok(cpu), e8895_pmu_cpu_status(cpu));
+	}
 	if (sleep_trace)					/* DEBUG: first code after a wake */
 		pr_info("exynos8895-pm: DEBUG back from SLEEP SMC: %d (finisher %d) WAKEUP_STAT=%08x\n",
 			ret, ret ? this_cpu_read(e8895_dbg_fin_ret) : 0, pmu_raw_readl(E8895_WAKEUP_STAT));
@@ -1813,6 +1850,9 @@ static int e8895_pm_probe(struct platform_device *pdev)
 			pmu_raw_readl(0x0200), pmu_raw_readl(0x0208), pmu_raw_readl(0x0240),
 			pmu_raw_readl(0x610), pmu_raw_readl(E8895_EINT_WAKEUP_MASK));
 	WRITE_ONCE(e8895_pm_probed, true);
+	/* DEBUG (l7el3): the value 0x60c has during cpuidle, before the pinctrl
+	 * syscore op overwrites it with the EINT wake mask (sleep_bare_eint) */
+	eint_wake_boot = pmu_raw_readl(E8895_EINT_WAKEUP_MASK);
 	register_syscore_ops(&e8895_pm_syscore_ops);
 	suspend_set_ops(&e8895_pm_ops);			/* A:kernel/power/suspend.c:224-241: mem = deep */
 	bus_register_notifier(&platform_bus_type, &e8895_pm_bus_nb);
