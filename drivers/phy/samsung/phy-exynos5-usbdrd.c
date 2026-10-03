@@ -260,6 +260,15 @@
 #define EXYNOS8895_CR_LOSLEVEL_OVRD_IN		0x0015		/* value 0xa409, cal.c:1056-1057 */
 #define EXYNOS8895_CR_TX_VBOOSTLVL_OVRD		0x0012		/* vboost << 13, cal.c:1059-1060 */
 /*
+ * Host-mode HS tune (usbdrd.c:446-449 overrides on top of the :398-407 fill values; the
+ * :422-431 device overrides are not applied) and the host SS boost level (usbdrd.c:515, the
+ * fill value; the device override 6 of :465 belongs to device mode only).
+ */
+#define EXYNOS8895_HS_TXVREF_HOST		0x1		/* usbdrd.c:447 */
+#define EXYNOS8895_HS_SQRX_HOST			0x3		/* usbdrd.c:405 (fill) */
+#define EXYNOS8895_HS_COMPDIS_HOST		0x7		/* usbdrd.c:449 */
+#define EXYNOS8895_SS_TX_VBOOST_HOST		0x4		/* usbdrd.c:515 */
+/*
  * greatlte: the MAX77865 MUIC's analog switch sits between the connector D+/D- and this PHY.
  * Stock connects it from its MUIC driver on every USB attach (S:drivers/muic/universal/
  * muic_apis.c:323-334 switch_to_ap_usb -> :235-245 com_to_usb_ap) and opens it on detach and
@@ -520,6 +529,8 @@ struct exynos5_usbdrd_phy_drvdata {
 	u32 pmu_offset_usbdrd1_phy;
 	int (*probe_extra)(struct exynos5_usbdrd_phy *phy_drd,
 			   struct platform_device *pdev);
+	int (*orien_sw_set)(struct typec_switch_dev *sw,
+			    enum typec_orientation orientation);
 };
 
 /**
@@ -549,6 +560,8 @@ struct exynos5_usbdrd_phy_drvdata {
  * @cal_probed: Exynos8895 CAL version probed (stock hw_version != 0)
  * @cal_zero: Exynos8895 offset 0 of window 0 read 0 (no shift, stock port -1)
  * @cal_port: Exynos8895 port in use: 0, 1 (flipped) or -1 (stock used_phy_port)
+ * @sw_port: Exynos8895 port from the Type-C orientation switch, used by the next CAL enable
+ * @cal_inited: Exynos8895 PIPE3 .init done and .exit not yet (under @phy_mutex)
  * @muic_adap: Exynos8895 greatlte MUIC I2C bus (samsung,muic-i2c-bus), or NULL
  * @muic_before: Exynos8895 MUIC CONTROL1 read before the last switch write, or -errno
  * @muic_after: Exynos8895 MUIC CONTROL1 read back after it, or -errno
@@ -556,6 +569,7 @@ struct exynos5_usbdrd_phy_drvdata {
  * @init_count: Exynos8895 number of .init calls
  * @retunes: Exynos8895 re-tunes done from the dwc3 soft-reset hook
  * @tune_armed: Exynos8895 set by .power_on, cleared by .exit: the hook re-tunes only when set
+ * @host_mode: Exynos8895 last mode dwc3 asked for with phy_set_mode() (L6G 5.3.2)
  */
 struct exynos5_usbdrd_phy {
 	struct device *dev;
@@ -590,6 +604,8 @@ struct exynos5_usbdrd_phy {
 	bool cal_probed;
 	bool cal_zero;
 	int cal_port;
+	int sw_port;
+	bool cal_inited;
 	struct i2c_adapter *muic_adap;
 	int muic_before;
 	int muic_after;
@@ -597,6 +613,7 @@ struct exynos5_usbdrd_phy {
 	unsigned int init_count;
 	unsigned int retunes;
 	bool tune_armed;
+	bool host_mode;
 };
 
 static inline
@@ -2027,9 +2044,13 @@ static void exynos8895_cal_enable(struct exynos5_usbdrd_phy *d)
 	 * the GPIO active-low, so the logical value is the port. Stock reads it at every
 	 * attach; here .init runs once per dwc3_core_init (probe and system resume).
 	 */
-	d->cal_port = d->port_gpio ? gpiod_get_value(d->port_gpio) : 0;
-	if (d->cal_port < 0)
-		d->cal_port = 0;
+	if (d->sw) {
+		d->cal_port = d->sw_port;	/* orientation from the Type-C controller (L6G 5.3.3) */
+	} else {
+		d->cal_port = d->port_gpio ? gpiod_get_value(d->port_gpio) : 0;
+		if (d->cal_port < 0)
+			d->cal_port = 0;
+	}
 	d->init_count++;
 	dev_info(d->dev, "8895: init #%u port=%d gpio=%d\n", d->init_count, d->cal_port,
 		 d->port_gpio ? gpiod_get_raw_value(d->port_gpio) : -1);
@@ -2198,6 +2219,139 @@ static void exynos8895_cal_tune_dev(struct exynos5_usbdrd_phy *d)
 		exynos8895_dp_altmode_ss_disable_port0(d);
 }
 
+/*
+ * Host tune = stock exynos_usbdrd_pipe3_tune(phy_state >= OTG_STATE_A_IDLE) with
+ * use_additional_tuning (FDT:7896): samsung_exynos_cal_usb3phy_tune_host() (cal.c:1454-1557)
+ * then samsung_exynos_cal_usb3phy_late_enable() (cal.c:1027-1080), usbdrd.c:862-886.
+ *
+ * HS (cal.c:1478-1512): the fill values of usbdrd.c:398-407 with the host override of
+ * usbdrd.c:446-449 (tx_res 3, tx_vref 1, tx_pre_emp 0, compdis 7). rx_sqrx keeps the fill
+ * value 3 of usbdrd.c:405 (the device override of :429 is not applied in host mode).
+ * PHYPARAM0[25:0] = vref 1<<22 | rise 1<<20 | res 3<<18 | pre_emp_plus 0 | pre_emp 0<<15 |
+ * hsxv 3<<13 | fsls 3<<9 | sqrx 3<<6 | otg 3<<3 | compdis 7 = 0x005c66df.
+ * SS (cal.c:1519-1556): the fill values of usbdrd.c:515-528 only - stock has no host SS
+ * override (usbdrd.c:476-485) and does not write PHYPARAM1 (USB_SS_TX_TUNE_PCS, cal.c:40);
+ * tx_boost_level 4 is the fill value, not the device override 6 (usbdrd.c:465).
+ */
+static void exynos8895_cal_tune_host(struct exynos5_usbdrd_phy *d)
+{
+	void __iomem *b0 = d->cal_base[0];
+	void __iomem *bs = exynos8895_port_base(d);	/* SS block of the port, cal.c:1520-1522 */
+	u32 v;
+
+	/* LINKSYSTEM FLADJ 0x20 and the xHCI version control bit, cal.c:1466-1471 */
+	v = readl(b0 + EXYNOS5_DRD_LINKSYSTEM);
+	v &= ~LINKSYSTEM_FLADJ;
+	v |= FIELD_PREP(LINKSYSTEM_FLADJ, 0x20) | LINKSYSTEM_XHCI_VERSION_CONTROL;
+	writel(v, b0 + EXYNOS5_DRD_LINKSYSTEM);
+
+	v = readl(b0 + EXYNOS5_DRD_PHYPARAM0);
+	v &= ~(PHYPARAM0_TXVREFTUNE | PHYPARAM0_TXRISETUNE | PHYPARAM0_TXRESTUNE |
+	       PHYPARAM0_TXPREEMPPULSETUNE | PHYPARAM0_TXPREEMPAMPTUNE | PHYPARAM0_TXHSXVTUNE |
+	       PHYPARAM0_TXFSLSTUNE | PHYPARAM0_SQRXTUNE | PHYPARAM0_OTGTUNE |
+	       PHYPARAM0_COMPDISTUNE);
+	v |= FIELD_PREP(PHYPARAM0_TXVREFTUNE, EXYNOS8895_HS_TXVREF_HOST) |
+	     FIELD_PREP(PHYPARAM0_TXRISETUNE, EXYNOS8895_HS_TXRISE) |
+	     FIELD_PREP(PHYPARAM0_TXRESTUNE, EXYNOS8895_HS_TXRES) |
+	     FIELD_PREP(PHYPARAM0_TXPREEMPAMPTUNE, 0) |		/* usbdrd.c:448 */
+	     FIELD_PREP(PHYPARAM0_TXHSXVTUNE, EXYNOS8895_HS_TXHSXV) |
+	     FIELD_PREP(PHYPARAM0_TXFSLSTUNE, EXYNOS8895_HS_TXFSLS) |
+	     FIELD_PREP(PHYPARAM0_SQRXTUNE, EXYNOS8895_HS_SQRX_HOST) |
+	     FIELD_PREP(PHYPARAM0_OTGTUNE, EXYNOS8895_HS_OTG) |
+	     FIELD_PREP(PHYPARAM0_COMPDISTUNE, EXYNOS8895_HS_COMPDIS_HOST);
+	writel(v, b0 + EXYNOS5_DRD_PHYPARAM0);
+
+	v = readl(bs + EXYNOS7870_DRD_PHYPARAM2);
+	v &= ~(PHYPARAM2_TX_VBOOST_LVL | PHYPARAM2_LOS_BIAS);
+	v |= FIELD_PREP(PHYPARAM2_TX_VBOOST_LVL, EXYNOS8895_SS_TX_VBOOST_HOST) |
+	     FIELD_PREP(PHYPARAM2_LOS_BIAS, EXYNOS8895_SS_LOS_BIAS);
+	writel(v, bs + EXYNOS7870_DRD_PHYPARAM2);
+	v = readl(bs + EXYNOS7870_DRD_PHYPCSVAL);
+	v &= ~PHYPCSVAL_PCS_RX_LOS_MASK;
+	v |= FIELD_PREP(PHYPCSVAL_PCS_RX_LOS_MASK, EXYNOS8895_SS_LOS_MASK);
+	writel(v, bs + EXYNOS7870_DRD_PHYPCSVAL);
+
+	/* Late enable, cal.c:1037-1060 (the device values, boost 4 instead of 6) */
+	exynos8895_cr_write(d, EXYNOS8895_CR_LANE0_TX_DEBUG, 0x80);
+	exynos8895_cr_write(d, EXYNOS8895_CR_TX_OVRD_DRV_LO,
+			    0x4000 | (EXYNOS8895_SS_DEEMPH_3P5DB << 7) | EXYNOS8895_SS_SWING_FULL);
+	exynos8895_cr_write(d, EXYNOS8895_CR_LOSLEVEL_OVRD_IN, 0xa409);
+	exynos8895_cr_write(d, EXYNOS8895_CR_TX_VBOOSTLVL_OVRD, EXYNOS8895_SS_TX_VBOOST_HOST << 13);
+	if (d->cal_port == 1)				/* cal.c:1075-1077, power reduction */
+		exynos8895_dp_altmode_ss_disable_port0(d);
+}
+
+/*
+ * Host mode UTMI = stock samsung_exynos_cal_usb3phy_config_host_mode() (cal.c:1138-1150):
+ * PHYUTMI |= DMPULLDOWN | DPPULLDOWN, &= ~VBUSVLDEXTSEL | ~VBUSVLDEXT. Stock runs it on
+ * window 0 (cal.c:1141 usbphy_info->regs_base), after dwc3 added the xHCI platform device
+ * (S:drivers/usb/dwc3/otg.c:245-250, S:drivers/usb/host/xhci-plat.c:68-73).
+ * PHYUTMI_DMPULLDOWN/DPPULLDOWN/VBUSVLDEXTSEL/VBUSVLDEXT = bits 2, 3, 10, 9
+ * (S:drivers/phy/phy-samsung-usb3-cal.h:15-26).
+ */
+static void exynos8895_cal_host_mode(struct exynos5_usbdrd_phy *d)
+{
+	void __iomem *b0 = d->cal_base[0];
+	u32 v;
+
+	v = readl(b0 + EXYNOS5_DRD_PHYUTMI);
+	v |= PHYUTMI_DMPULLDOWN | PHYUTMI_DPPULLDOWN;
+	v &= ~(PHYUTMI_VBUSVLDEXTSEL | PHYUTMI_VBUSVLDEXT);
+	writel(v, b0 + EXYNOS5_DRD_PHYUTMI);
+}
+
+/*
+ * Device mode UTMI = what the CAL enable of .init left there: the pull-downs are cleared by
+ * samsung_exynos_cal_usb3phy_enable (cal.c:965-966) and VBUSVLDEXTSEL/VBUSVLDEXT are set by
+ * it for not_used_vbus_pad (cal.c:976-977, this board has no VBUS pad, FDT:7886; L3 P2
+ * "U & 0x65f == 0x640"). The device tune itself already ran from .power_on (L3 5.1.6b), so
+ * set_mode only restores these bits.
+ */
+static void exynos8895_cal_device_mode(struct exynos5_usbdrd_phy *d)
+{
+	void __iomem *b0 = d->cal_base[0];
+	u32 v;
+
+	v = readl(b0 + EXYNOS5_DRD_PHYUTMI);
+	v &= ~(PHYUTMI_DMPULLDOWN | PHYUTMI_DPPULLDOWN);
+	v |= PHYUTMI_VBUSVLDEXTSEL | PHYUTMI_VBUSVLDEXT;
+	writel(v, b0 + EXYNOS5_DRD_PHYUTMI);
+}
+
+/*
+ * dwc3 calls phy_set_mode() after dwc3_host_init() (A:drivers/usb/dwc3/core.c:250-254) and
+ * after its core soft reset on every switch to device (:263-271). Host mode is the point
+ * where stock re-tuned the PHY after the xHCI reset, so the tune and the pull-downs are
+ * (re)written here. Nothing of this runs while the controller stays in device mode, so the
+ * peripheral-only image behaves exactly as before.
+ */
+static int exynos8895_usbdrd_phy_set_mode(struct phy *phy, enum phy_mode mode, int submode)
+{
+	struct phy_usb_instance *inst = phy_get_drvdata(phy);
+	struct exynos5_usbdrd_phy *d = to_usbdrd_phy(inst);
+	void __iomem *b0 = d->cal_base[0];
+
+	if (inst->phy_cfg->id != EXYNOS5_DRDPHY_PIPE3)
+		return 0;
+	if (mode != PHY_MODE_USB_HOST && mode != PHY_MODE_USB_DEVICE)
+		return 0;
+
+	guard(mutex)(&d->phy_mutex);
+	if (mode == PHY_MODE_USB_HOST) {
+		WRITE_ONCE(d->host_mode, true);
+		exynos8895_cal_tune_host(d);
+		exynos8895_cal_host_mode(d);
+	} else {
+		WRITE_ONCE(d->host_mode, false);
+		exynos8895_cal_device_mode(d);
+	}
+	dev_info(d->dev, "8895: %s mode, utmi=0x%08x\n",
+		 READ_ONCE(d->host_mode) ? "host" : "device",
+		 readl(b0 + EXYNOS5_DRD_PHYUTMI));
+
+	return 0;
+}
+
 /* CAL disable = stock samsung_exynos_cal_usb3phy_disable, cal.c:1082-1136 */
 static void exynos8895_cal_disable(struct exynos5_usbdrd_phy *d)
 {
@@ -2262,9 +2416,12 @@ static int exynos8895_usbdrd_phy_init(struct phy *phy)
 		goto err_core;
 	}
 	inst->phy_cfg->phy_isol(inst, false);			/* stock power_on, usbdrd.c:966 */
-	exynos8895_cal_enable(d);
-	/* D+/D- to the AP before the gadget can pull up, as stock's MUIC attach_usb */
-	exynos8895_muic_switch(d, EXYNOS8895_MUIC_COM_USB_AP);
+	scoped_guard(mutex, &d->phy_mutex) {			/* vs the orientation switch */
+		exynos8895_cal_enable(d);
+		/* D+/D- to the AP before the gadget can pull up, as stock's MUIC attach_usb */
+		exynos8895_muic_switch(d, EXYNOS8895_MUIC_COM_USB_AP);
+		d->cal_inited = true;
+	}
 	regmap_read(inst->reg_pmu, inst->pmu_offset, &pmu);
 	dev_info(d->dev, "8895: pmu704=0x%08x\n", pmu);
 	return 0;
@@ -2288,6 +2445,7 @@ static int exynos8895_usbdrd_phy_power_on(struct phy *phy)
 		return 0;
 	d = to_usbdrd_phy(inst);
 	/* after the dwc3_core_init CSFTRST (A:drivers/usb/dwc3/core.c:1385 -> 1411) */
+	guard(mutex)(&d->phy_mutex);
 	exynos8895_cal_tune_dev(d);
 	WRITE_ONCE(d->tune_armed, true);	/* later CSFTRSTs re-tune from the dwc3 hook */
 	return 0;
@@ -2300,9 +2458,12 @@ static int exynos8895_usbdrd_phy_exit(struct phy *phy)
 
 	if (inst->phy_cfg->id != EXYNOS5_DRDPHY_PIPE3)
 		return 0;
-	WRITE_ONCE(d->tune_armed, false);	/* no re-tune of a PHY that goes down */
-	exynos8895_cal_disable(d);
-	exynos8895_muic_switch(d, EXYNOS8895_MUIC_COM_OPEN);	/* stock detach_usb, shutdown */
+	scoped_guard(mutex, &d->phy_mutex) {
+		WRITE_ONCE(d->tune_armed, false);	/* no re-tune of a PHY that goes down */
+		d->cal_inited = false;
+		exynos8895_cal_disable(d);
+		exynos8895_muic_switch(d, EXYNOS8895_MUIC_COM_OPEN);	/* stock detach_usb, shutdown */
+	}
 	inst->phy_cfg->phy_isol(inst, true);			/* usbdrd.c:989 */
 	clk_bulk_disable_unprepare(d->drv_data->n_core_clks, d->core_clks);
 	clk_bulk_disable_unprepare(d->drv_data->n_clks, d->clks);
@@ -2311,10 +2472,67 @@ static int exynos8895_usbdrd_phy_exit(struct phy *phy)
 	return 0;
 }
 
+/*
+ * Type-C orientation switch (spec L6G 5.3.3, D-6; closes L3 O22). Stock re-read gpi1-7 in
+ * pipe3_init at every attach (S:drivers/phy/phy-exynos-usbdrd.c:767-770, called per attach
+ * from S:drivers/usb/dwc3/otg.c:310-316), used_phy_port = !level: NORMAL (level 0) -> port 1,
+ * REVERSE (level 1) -> port 0. The S2MM005 driver owns the pin and calls this before it sets
+ * the USB role. Not initialised: the next .init uses the port. Initialised on the other
+ * port: stock's per-attach exit + init pair on the CAL (clocks and rails stay on), then the
+ * device tune if .power_on had tuned, or the host tune and config_host_mode
+ * when dwc3 has the controller in host mode (L6G 5.3.2).
+ */
+static int exynos8895_orien_sw_set(struct typec_switch_dev *sw,
+				   enum typec_orientation orientation)
+{
+	struct exynos5_usbdrd_phy *d = typec_switch_get_drvdata(sw);
+	bool armed;
+	int port;
+
+	guard(mutex)(&d->phy_mutex);
+	d->orientation = orientation;
+	if (orientation == TYPEC_ORIENTATION_NONE)
+		return 0;			/* the last port stays until the next attach */
+
+	port = orientation == TYPEC_ORIENTATION_NORMAL ? 1 : 0;
+	d->sw_port = port;
+	if (!d->cal_inited)
+		return 0;
+
+	/*
+	 * The dwc3 CSFTRST re-tune runs from a tracepoint with preemption disabled, cannot
+	 * take phy_mutex and briefly rewrites cal_port: disarm it and wait until a re-tune
+	 * already past its check has finished before cal_port is read.
+	 */
+	armed = READ_ONCE(d->tune_armed);
+	WRITE_ONCE(d->tune_armed, false);
+	synchronize_rcu();
+	if (port != d->cal_port) {
+		dev_info(d->dev, "8895: orientation %s, re-init on port %d\n",
+			 orientation == TYPEC_ORIENTATION_NORMAL ? "normal" : "reverse", port);
+		exynos8895_cal_disable(d);
+		exynos8895_muic_switch(d, EXYNOS8895_MUIC_COM_OPEN);	/* as .exit */
+		exynos8895_cal_enable(d);
+		exynos8895_muic_switch(d, EXYNOS8895_MUIC_COM_USB_AP);	/* as .init */
+		if (armed) {
+			if (READ_ONCE(d->host_mode)) {
+				exynos8895_cal_tune_host(d);
+				exynos8895_cal_host_mode(d);
+			} else {
+				exynos8895_cal_tune_dev(d);
+			}
+		}
+	}
+	if (armed)
+		WRITE_ONCE(d->tune_armed, true);
+	return 0;
+}
+
 static const struct phy_ops exynos8895_usbdrd_phy_ops = {
 	.init		= exynos8895_usbdrd_phy_init,
 	.exit		= exynos8895_usbdrd_phy_exit,
 	.power_on	= exynos8895_usbdrd_phy_power_on,
+	.set_mode	= exynos8895_usbdrd_phy_set_mode,
 	.owner		= THIS_MODULE,
 };
 
@@ -2409,9 +2627,12 @@ static int exynos8895_usbdrd_probe_extra(struct exynos5_usbdrd_phy *d,
 	d->cal_base[1] = d->reg_phy2;					/* usbdrd.c:646 */
 	d->cal_port = 0;						/* usbdrd.c:647 */
 
-	d->port_gpio = devm_gpiod_get_optional(d->dev, "samsung,phy-port", GPIOD_IN);
-	if (IS_ERR(d->port_gpio))
-		return dev_err_probe(d->dev, PTR_ERR(d->port_gpio), "phy-port gpio\n");
+	/* with an orientation switch the Type-C controller owns gpi1-7 (L6G 5.3.3) */
+	if (!device_property_present(d->dev, "orientation-switch")) {
+		d->port_gpio = devm_gpiod_get_optional(d->dev, "samsung,phy-port", GPIOD_IN);
+		if (IS_ERR(d->port_gpio))
+			return dev_err_probe(d->dev, PTR_ERR(d->port_gpio), "phy-port gpio\n");
+	}
 
 	d->muic_adap = exynos8895_muic_get(d);
 	if (IS_ERR(d->muic_adap))
@@ -2656,7 +2877,7 @@ static int exynos5_usbdrd_setup_notifiers(struct exynos5_usbdrd_phy *phy_drd)
 
 		sw_desc.drvdata = phy_drd;
 		sw_desc.fwnode = dev_fwnode(phy_drd->dev);
-		sw_desc.set = exynos5_usbdrd_orien_sw_set;
+		sw_desc.set = phy_drd->drv_data->orien_sw_set ?: exynos5_usbdrd_orien_sw_set;
 
 		phy_drd->sw = typec_switch_register(phy_drd->dev, &sw_desc);
 		if (IS_ERR(phy_drd->sw))
@@ -2855,6 +3076,7 @@ static const struct exynos5_usbdrd_phy_drvdata exynos8895_usbdrd_phy = {
 	.core_clk_names		= exynos5_core_clk_names,	/* "ref" */
 	.n_core_clks		= ARRAY_SIZE(exynos5_core_clk_names),
 	.probe_extra		= exynos8895_usbdrd_probe_extra,
+	.orien_sw_set		= exynos8895_orien_sw_set,
 	/* no regulator_names: this PHY switches no VBUS (no VBUS pad, FDT:7886) */
 };
 

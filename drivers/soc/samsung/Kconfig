@@ -387,3 +387,13 @@ config GREATLTE_HB_L6M
 	  Registers the L6M heartbeat rows: the SMFC driver binding
 	  (/soc@0/jpeg@13b00000) and the MSCL scaler binding
 	  (/soc@0/scaler@13b10000). Never enable in a release build.
+
+# L6G Type-C heartbeat rows (DEBUG)
+config GREATLTE_HB_L6G
+	bool "greatlte heartbeat: L6G Type-C port controller, MUIC and dwc3 role (cc, cci, muic, drd, vbus)"
+	depends on GREATLTE_HB
+	default GREATLTE_HB
+	help
+	  Registers the L6G heartbeat rows of the S2MM005 port controller,
+	  the MAX77865 MUIC, the dwc3 core behind the role switch and L6F's
+	  usb_otg_vbus regulator. Never enable in a release build.

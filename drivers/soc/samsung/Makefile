@@ -75,3 +75,5 @@ obj-$(CONFIG_GREATLTE_HB_L6I)	+= greatlte-hb-l6i.o
 obj-$(CONFIG_GREATLTE_HB_L6E)	+= greatlte-hb-l6e.o
 # L6L (G2D blitter) heartbeat rows (WP l6l, DEBUG)
 obj-$(CONFIG_GREATLTE_HB_L6L)	+= greatlte-hb-l6l.o
+# L6G Type-C heartbeat rows (WP l6gtc, DEBUG)
+obj-$(CONFIG_GREATLTE_HB_L6G)	+= greatlte-hb-l6g.o

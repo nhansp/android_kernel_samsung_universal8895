@@ -31,11 +31,6 @@
 &usbdrd_phy {
 	pinctrl-names = "default";				/* FDT:7893-7894 */
 	pinctrl-0 = <&usb_phy_port>;
-	/*
-	 * stock "phy,gpio_phy_port = <&gpi1 7 0>" (FDT:7895) and port = !level
-	 * (S:drivers/phy/phy-exynos-usbdrd.c:767-768): active low gives value == port
-	 */
-	samsung,phy-port-gpios = <&gpi1 7 GPIO_ACTIVE_LOW>;
 	vdd18-dp-supply = <&s2mps17_ldo37>;			/* VDD_DP_1P8, FDT:7242-7246 */
 	/*
 	 * MAX77865 MUIC (0x25) on hsi2c@10970000 (FDT:6149-6166): its CONTROL1 switch must
@@ -67,6 +62,13 @@
 };
 
 &usbdrd_dwc3 {
-	dr_mode = "peripheral";		/* stock "otg" (FDT:7875); peripheral only in L3 (1.1) */
+	/*
+	 * stock "otg" (FDT:7875); peripheral only in L3 (1.1). L6G G2 (spec L6G 5.4,
+	 * REQ-L3-G2, V-3): the S2MM005 port controller owns the role through the dwc3
+	 * role switch that -l6g.dtsi adds, so the controller has to be dual-role.
+	 * role-switch-default-mode = "peripheral" keeps the behaviour L3 had before the
+	 * first cable attach.
+	 */
+	dr_mode = "otg";
 	maximum-speed = "super-speed";	/* FDT:7876 */
 };
