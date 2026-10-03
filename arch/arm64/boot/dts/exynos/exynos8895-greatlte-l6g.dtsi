@@ -67,6 +67,29 @@
 			data-role = "dual";
 			try-power-role = "sink";	/* informational; the firmware toggles */
 			typec-power-opmode = "default";
+			/*
+			 * G2: the phone's 5 V OTG boost (L6F regulator usb_otg_vbus,
+			 * exynos8895-greatlte-l6f.dtsi:276-282). The driver switches it only
+			 * with CONFIG_TYPEC_S2MM005_OTG_VBUS, which defaults to n (spec L6G
+			 * 5.1.7, 6.2; L6H SAFETY row V1), so with the default image no
+			 * regulator_enable() of this path runs.
+			 */
+			vbus-supply = <&otg_vbus>;
+			/*
+			 * G2: the role switch endpoint (spec L6G 4.3); the S2MM005 driver
+			 * found it on the connector's fwnode.
+			 */
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {			/* HS: the role switch (G2) */
+					reg = <0>;
+					typec_hs: endpoint {
+						remote-endpoint = <&dwc3_hs>;
+					};
+				};
+			};
 		};
 	};
 };
@@ -82,5 +105,22 @@
 		 */
 		interrupts-extended = <&gpa0 0 IRQ_TYPE_LEVEL_LOW>;
 		wakeup-source;			/* stock enable_irq_wake, muic_task_max77865.c:349 */
+	};
+};
+
+/*
+ * G2 (spec L6G 5.4): the S2MM005 driver is the consumer of the dwc3 role switch, so the
+ * controller switches between host and device on the cable (stock dwc3_exynos_vbus_event,
+ * S:drivers/usb/dwc3/dwc3-exynos.c:378-403). dr_mode = "otg" is L3's property (the carried
+ * commit in exynos8895-greatlte-l3.dtsi, REQ-L3-G2).
+ */
+&usbdrd_dwc3 {
+	usb-role-switch;
+	role-switch-default-mode = "peripheral";	/* A:Documentation/devicetree/bindings/usb/usb-drd.yaml:57-63 */
+
+	port {
+		dwc3_hs: endpoint {
+			remote-endpoint = <&typec_hs>;
+		};
 	};
 };
