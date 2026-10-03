@@ -33,6 +33,7 @@
 #include <drm/exynos8895_hiber.h>
 
 #include "panel-samsung-s6e3ha6-bright.h"
+#include "panel-samsung-s6e3ha6-bright-tbl.h"
 #include "panel-samsung-s6e3ha6-great-a2-s3-dimming.h"
 #include "panel-samsung-s6e3ha6-great-a3-sa-dimming.h"
 
