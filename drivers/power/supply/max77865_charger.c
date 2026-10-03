@@ -2905,6 +2905,15 @@ static void max77865_debugfs_remove(void *data)
 static int max77865_debugfs_init(struct max77865_charger *chg)
 {
 	struct dentry *d = debugfs_create_dir("max77865-charger", NULL);
+	/*
+	 * The test overrides replace T, Tu, Tc and Hc and can stop the WDTCLR
+	 * kick. In charge control a write there could hide a hot or cold battery from the
+	 * thermal, swelling and chg_high_temp steps (and the 9 V grant), so there they are
+	 * writable only in a CONFIG_CHARGER_MAX77865_TEST build; otherwise read-only
+	 * (debugfs then installs the read-only fops) and they stay 0 = off.
+	 */
+	umode_t ovr = !chg->charge_control || IS_ENABLED(CONFIG_CHARGER_MAX77865_TEST) ?
+		      0600 : 0400;
 
 	debugfs_create_u32("budget_ms", 0400, d, &chg->budget_ms);
 	debugfs_create_file("mode", 0400, d, chg, &max77865_mode_fops);
@@ -2916,11 +2925,11 @@ static int max77865_debugfs_init(struct max77865_charger *chg)
 	debugfs_create_u32("chg_mode", 0400, d, &chg->chg_mode);
 	debugfs_create_bool("mix_limit", 0400, d, &chg->mix_limit);
 	debugfs_create_bool("ntc_valid", 0400, d, &chg->ntc_valid);
-	debugfs_create_u32("override_usb_mc", 0600, d, &chg->override_usb_mc);
-	debugfs_create_u32("override_chg_mc", 0600, d, &chg->override_chg_mc);
-	debugfs_create_u32("override_t_mc", 0600, d, &chg->override_t_mc);
-	debugfs_create_u32("override_hc", 0600, d, &chg->override_hc);
-	debugfs_create_bool("wdt_kick", 0600, d, &chg->wdt_kick);
+	debugfs_create_u32("override_usb_mc", ovr, d, &chg->override_usb_mc);
+	debugfs_create_u32("override_chg_mc", ovr, d, &chg->override_chg_mc);
+	debugfs_create_u32("override_t_mc", ovr, d, &chg->override_t_mc);
+	debugfs_create_u32("override_hc", ovr, d, &chg->override_hc);
+	debugfs_create_bool("wdt_kick", ovr, d, &chg->wdt_kick);
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_AICL)
 	debugfs_create_u32("aicl_ma", 0400, d, &chg->aicl_ma);
 #endif
