@@ -76,7 +76,8 @@ const char *dim_lut_field_name[] = {
 	"DIM_COLOR_SHIFT_OFFSET",
 };
 
-const char *color_name[] = {
+/* stock color_name (S:.../panel/dimming.c:79): renamed, see dimming.h */
+const char *s6e3ha6_color_name[] = {
 	"RED", "GREEN", "BLUE",
 };
 
@@ -532,7 +533,7 @@ static u64 mtp_offset_to_vregout(struct dimming_info *dim_info,
 
 #ifdef DEBUG_DIMMING
 	pr_info("%s, %s %s vreg %lld, vsrc %lld, num %lld, den %lld, res %lld\n",
-			__func__, tp[(int)v].name, color_name[(int)c], vreg, vsrc, num, den, res);
+			__func__, tp[(int)v].name, s6e3ha6_color_name[(int)c], vreg, vsrc, num, den, res);
 #endif
 	if (res < 0)
 		pr_err("%s, res %lld should not be minus value\n", __func__, res);
@@ -587,7 +588,7 @@ static s32 mtp_vregout_to_offset(struct dimming_info *dim_info,
 	num -= den * (tp[v].numerator);
 	num = disp_round(num, 7) - den * (s64)tp[v].offset[c];
 	res = disp_div64_round(num, den, 2);
-	pr_debug("lum %d, %s %s  num %lld, den %lld, res %lld\n", dim_lut[luminance_index].luminance, tp[v].name, color_name[c], num, den, res);
+	pr_debug("lum %d, %s %s  num %lld, den %lld, res %lld\n", dim_lut[luminance_index].luminance, tp[v].name, s6e3ha6_color_name[c], num, den, res);
 #else
 	num -= den * ((s64)tp[v].numerator + (s64)tp[v].offset[c]);
 	res = disp_div64(num, den);
@@ -597,7 +598,7 @@ static s32 mtp_vregout_to_offset(struct dimming_info *dim_info,
 
 #ifdef DEBUG_DIMMING
 	pr_debug("luminance %3d %5s %5s num %lld\t den %lld\t rgb_offset %d\t res %lld\n",
-			dim_lut[luminance_index].luminance, tp[v].name, color_name[c], num, den, rgb_offset[v][c], res);
+			dim_lut[luminance_index].luminance, tp[v].name, s6e3ha6_color_name[c], num, den, rgb_offset[v][c], res);
 #endif
 
 	if (res < 0)
@@ -801,7 +802,7 @@ static void copy_tpout_center(struct dimming_info *dim_info, u32 luminance, u8 *
 				output[idst++] = value & 0x00FF;
 				if (value > 511) {
 					pr_err("%s, error : exceed output range %s[%s] %d !!\n", __func__,
-							tp[i].name, color_name[c], value);
+							tp[i].name, s6e3ha6_color_name[c], value);
 				}
 			} else if (i == TP_VT) {
 				if (compact) {
@@ -818,13 +819,13 @@ static void copy_tpout_center(struct dimming_info *dim_info, u32 luminance, u8 *
 				}
 				if (value > 15) {
 					pr_err("%s, error : exceed output range %s[%s] %d !!\n", __func__,
-							tp[i].name, color_name[c], value);
+							tp[i].name, s6e3ha6_color_name[c], value);
 				}
 			} else {
 				output[idst++] = value & 0x00FF;
 				if (value > 255) {
 					pr_err("%s, error : exceed output range %s[%s] %d !!\n", __func__,
-							tp[i].name, color_name[c], value);
+							tp[i].name, s6e3ha6_color_name[c], value);
 				}
 			}
 		}
@@ -883,7 +884,7 @@ static void copy_tpout_hbm_center(struct dimming_info *dim_info, u32 luminance, 
 				output[idst++] = value & 0x00FF;
 				if (value > 511) {
 					pr_err("%s, error : exceed output range %s[%s] %d !!\n", __func__,
-							tp[i].name, color_name[c], value);
+							tp[i].name, s6e3ha6_color_name[c], value);
 				}
 			} else if (i == TP_VT) {
 				if (compact) {
@@ -900,13 +901,13 @@ static void copy_tpout_hbm_center(struct dimming_info *dim_info, u32 luminance, 
 				}
 				if (value > 15) {
 					pr_err("%s, error : exceed output range %s[%s] %d !!\n", __func__,
-							tp[i].name, color_name[c], value);
+							tp[i].name, s6e3ha6_color_name[c], value);
 				}
 			} else {
 				output[idst++] = value & 0x00FF;
 				if (value > 255) {
 					pr_err("%s, error : exceed output range %s[%s] %d !!\n", __func__,
-							tp[i].name, color_name[c], value);
+							tp[i].name, s6e3ha6_color_name[c], value);
 				}
 			}
 		}
@@ -921,7 +922,7 @@ err:
 	return;
 }
 
-void get_dimming_gamma_compact(struct dimming_info *dim_info, u32 luminance, u8 *output)
+void s6e3ha6_get_dimming_gamma_compact(struct dimming_info *dim_info, u32 luminance, u8 *output)
 {
 	if (unlikely(!dim_info || !output)) {
 		pr_err("%s, invalid dim_info or output\n", __func__);
@@ -938,7 +939,7 @@ void get_dimming_gamma_compact(struct dimming_info *dim_info, u32 luminance, u8 
 	return;
 }
 
-void get_dimming_gamma(struct dimming_info *dim_info, u32 luminance, u8 *output)
+void s6e3ha6_get_dimming_gamma(struct dimming_info *dim_info, u32 luminance, u8 *output)
 {
 	if (unlikely(!dim_info || !output)) {
 		pr_err("%s, invalid dim_info or output\n", __func__);
@@ -1264,7 +1265,7 @@ void print_dimming_info(struct dimming_info *dim_info, int tag)
 	pr_info("%s\n\n", tag_name[tag + 1]);
 }
 
-int init_dimming_info(struct dimming_info *dim_info, struct dimming_init_info *src)
+int s6e3ha6_init_dimming_info(struct dimming_info *dim_info, struct dimming_init_info *src)
 {
 	int ilum;
 
@@ -1293,7 +1294,7 @@ int init_dimming_info(struct dimming_info *dim_info, struct dimming_init_info *s
 	return 0;
 }
 
-int init_dimming_mtp(struct dimming_info *dim_info, s32 (*mtp)[MAX_COLOR])
+int s6e3ha6_init_dimming_mtp(struct dimming_info *dim_info, s32 (*mtp)[MAX_COLOR])
 {
 	int i, c;
 
@@ -1307,7 +1308,7 @@ int init_dimming_mtp(struct dimming_info *dim_info, s32 (*mtp)[MAX_COLOR])
 	return 0;
 }
 
-int init_dimming_hbm_info(struct dimming_info *dim_info, s32 (*hbm_gamma_tbl)[MAX_COLOR], u32 hbm_luminance)
+int s6e3ha6_init_dimming_hbm_info(struct dimming_info *dim_info, s32 (*hbm_gamma_tbl)[MAX_COLOR], u32 hbm_luminance)
 {
 	int i, c, nr_tp;
 
@@ -1341,7 +1342,7 @@ int init_dimming_hbm_info(struct dimming_info *dim_info, s32 (*hbm_gamma_tbl)[MA
 	return 0;
 }
 
-int process_dimming(struct dimming_info *dim_info)
+int s6e3ha6_process_dimming(struct dimming_info *dim_info)
 {
 	int i, c, v;
 	struct tp *tp;
@@ -1377,7 +1378,7 @@ int process_dimming(struct dimming_info *dim_info)
 			tp[v].vout[c] = mtp_offset_to_vregout(dim_info, v, (enum color)c);
 			if (tp[v].vout[c] < 0) {
 				pr_warn("%s, invalid vout[%s][%s] %lld\n",
-						__func__, tp[v].name, color_name[c],
+						__func__, tp[v].name, s6e3ha6_color_name[c],
 						tp[v].vout[c]);
 			}
 			dim_info->gray_scale_lut[tp[v].level].vout[c] =

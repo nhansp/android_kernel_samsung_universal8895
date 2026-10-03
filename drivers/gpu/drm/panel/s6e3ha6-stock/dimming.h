@@ -197,7 +197,7 @@ enum {
 extern const char *tag_name[];
 extern const char *global_dim_info_name[];
 extern const char *dim_lut_field_name[];
-extern const char *color_name[];
+extern const char *s6e3ha6_color_name[];
 extern const char *volt_src_name[];
 
 struct gamma_curve {
@@ -379,12 +379,21 @@ struct dimming_init_info {
 	s32 hbm_luminance;
 };
 
-int init_dimming_info(struct dimming_info *, struct dimming_init_info *);
-int init_dimming_mtp(struct dimming_info *, s32 (*)[MAX_COLOR]);
-int init_dimming_hbm_info(struct dimming_info *, s32 (*)[MAX_COLOR], u32);
-int process_dimming(struct dimming_info *);
-void get_dimming_gamma_compact(struct dimming_info *, u32, u8 *);
-void get_dimming_gamma(struct dimming_info *, u32, u8 *);
+/*
+ * The vendor names of the seven entry points below are color_name (dimming.c:79),
+ * init_dimming_info (:1267), init_dimming_mtp (:1296), init_dimming_hbm_info (:1310),
+ * process_dimming (:1344), get_dimming_gamma_compact (:924) and get_dimming_gamma (:941);
+ * they keep an "s6e3ha6_" prefix in this port. drivers/gpu/drm/panel/panel-samsung-
+ * s6e3ha6-dimming.c is a second port of the same stock file (l5bl, the AID-dimming
+ * path that runs when CONFIG_DRM_PANEL_SAMSUNG_S6E3HA6_STOCK is off) and defines the
+ * same seven global symbols, which cannot both be linked into one kernel image.
+ */
+int s6e3ha6_init_dimming_info(struct dimming_info *, struct dimming_init_info *);
+int s6e3ha6_init_dimming_mtp(struct dimming_info *, s32 (*)[MAX_COLOR]);
+int s6e3ha6_init_dimming_hbm_info(struct dimming_info *, s32 (*)[MAX_COLOR], u32);
+int s6e3ha6_process_dimming(struct dimming_info *);
+void s6e3ha6_get_dimming_gamma_compact(struct dimming_info *, u32, u8 *);
+void s6e3ha6_get_dimming_gamma(struct dimming_info *, u32, u8 *);
 /* for debug */
 void print_dimming_info(struct dimming_info *dim_info, int tag);
 #endif	/* _DIMMING_H_ */

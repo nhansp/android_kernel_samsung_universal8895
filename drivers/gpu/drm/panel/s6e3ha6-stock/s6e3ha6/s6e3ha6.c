@@ -104,7 +104,7 @@ static int init_dimming(struct panel_info *panel_data, int id,
 		return -ENOMEM;
 	}
 
-	ret = init_dimming_info(dim_info, &panel_dim_info->dim_init_info);
+	ret = s6e3ha6_init_dimming_info(dim_info, &panel_dim_info->dim_init_info);
 	if (unlikely(ret)) {
 		pr_err("%s panel_bl-%d failed to init_dimming_info\n", __func__, id);
 		kfree(dim_info);
@@ -126,19 +126,19 @@ static int init_dimming(struct panel_info *panel_data, int id,
 		return -EINVAL;
 	}
 
-	init_dimming_mtp(dim_info, mtp);
+	s6e3ha6_init_dimming_mtp(dim_info, mtp);
 	if (hbm && (panel_dim_info->hbm_target_luminance >
 			panel_dim_info->target_luminance))
-		init_dimming_hbm_info(dim_info,
+		s6e3ha6_init_dimming_hbm_info(dim_info,
 				hbm, panel_dim_info->hbm_target_luminance);
-	process_dimming(dim_info);
+	s6e3ha6_process_dimming(dim_info);
 
 	for (i = 0; i < brt_tbl->sz_lum; i++) {
 		if (i >= nr_luminance + nr_hbm_luminance)
 			luminance = brt_tbl->lum[nr_luminance + nr_hbm_luminance - 1];
 		else
 			luminance = brt_tbl->lum[i];
-		get_dimming_gamma_compact(dim_info, luminance,
+		s6e3ha6_get_dimming_gamma_compact(dim_info, luminance,
 				(u8 *)&gamma_maptbl->arr[i * gamma_maptbl->ncol]);
 	}
 
