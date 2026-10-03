@@ -2395,8 +2395,6 @@ static ssize_t samsung_dsim_xfer_exynos8895(struct samsung_dsim *dsi,
 			goto out;
 	}
 
-	reinit_completion(&dsi->rx_done);
-
 	hdr = get_unaligned_le32(xfer.packet.header) & 0xffffff;
 	if (m.rx_len)
 		hdr |= DSIM8895_PKTHDR_BTA;	/* dsim_drv.c:250 bta_type = true */
@@ -2405,7 +2403,19 @@ static ssize_t samsung_dsim_xfer_exynos8895(struct samsung_dsim *dsi,
 	if (ret)
 		goto out;
 
-	ret = xfer.packet.payload_length;
+	/*
+	 * The host has to return the number of bytes transmitted for a write
+	 * and the number of bytes received for a read (drm_mipi_dsi.h:77-82);
+	 * mipi_dsi_dcs_write_buffer() passes its return value on unchanged and
+	 * mipi_dsi_dcs_read() documents it as "the number of bytes read"
+	 * (drm_mipi_dsi.c:920-947, :1074-1082). Not payload_length: a short
+	 * write carries its two parameters in the header and has no payload at
+	 * all (drm_mipi_dsi.c:567-578), so a two byte DCS short write would
+	 * report 0. The vendor driver returns size as well
+	 * (dsim_drv.c:273) and compares it with size
+	 * (dsim_drv.c:411, :319-323).
+	 */
+	ret = m.tx_len;
 	if (!m.rx_len)
 		goto out;
 
