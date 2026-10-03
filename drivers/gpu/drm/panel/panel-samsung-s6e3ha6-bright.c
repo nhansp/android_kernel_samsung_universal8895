@@ -637,7 +637,17 @@ static int s6e3ha6_bright_set(struct s6e3ha6_bright *b, int brightness, bool for
 		return 0;
 
 	if (!b->gamma_ready) {
-		dev_warn(b->dev, "no gamma table yet, brightness not sent\n");
+		/*
+		 * Stock has no check here: panel_bl_set_brightness()
+		 * (S:.../panel/panel_bl.c:472-490) runs PANEL_SET_BL_SEQ whatever
+		 * init_gamma_table() left behind, and that maptbl is the plain
+		 * static array great_a3_sa_gamma_table[]
+		 * (S:.../s6e3ha6/s6e3ha6_great_a3_sa_panel.h:73, filled by
+		 * s6e3ha6.c:154-156) - an all zero gamma payload for the panel.
+		 * The properties are still updated above as in stock; only the
+		 * sequence is held back, once loudly and then rate limited.
+		 */
+		dev_err_ratelimited(b->dev, "no AID gamma table, brightness not sent\n");
 		return 0;
 	}
 

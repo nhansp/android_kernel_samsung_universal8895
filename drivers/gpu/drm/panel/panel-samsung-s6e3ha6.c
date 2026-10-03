@@ -215,7 +215,8 @@ static int s6e3ha6_enable(struct drm_panel *panel)
 	 */
 	ret = s6e3ha6_bright_prepare(ctx->bright);
 	if (ret)
-		dev_warn(&ctx->dsi->dev, "no AID gamma table: %d\n", ret);
+		dev_err(&ctx->dsi->dev, "no AID gamma table: %d, brightness is not sent\n",
+			ret);
 
 	/* the first unblank after boot does not reach the panel (decon_core.c:634-639) */
 	if (ctx->booted)
