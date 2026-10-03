@@ -945,13 +945,31 @@ static int sc_v4l2_streamoff(struct file *file, void *fh,
 	return v4l2_m2m_streamoff(file, ctx->m2m_ctx, type);
 }
 
+/* The 6.18 core emulates VIDIOC_{G,S}_CROP and VIDIOC_CROPCAP on top of the
+ * selection API and hands the driver the single-planar spelling of the queue
+ * type (v4l_s_selection/v4l_g_selection rewrite VIDEO_{CAPTURE,OUTPUT}_MPLANE
+ * to VIDEO_{CAPTURE,OUTPUT}: A:drivers/media/v4l2-core/v4l2-ioctl.c:2495-2508
+ * and :2577-2580), while VIDIOC_{G,S}_SELECTION keeps the caller's type.
+ * Map it back so the emulation reaches the same frame the stock crop ioctls
+ * used (S:.../scaler/scaler-core.c:826 sc_v4l2_g_crop, :894 sc_v4l2_s_crop);
+ * without this every legacy crop call failed -EINVAL from ctx_get_frame(). */
+static enum v4l2_buf_type sc_sel_buf_type(enum v4l2_buf_type type)
+{
+	if (type == V4L2_BUF_TYPE_VIDEO_OUTPUT)
+		return V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+	if (type == V4L2_BUF_TYPE_VIDEO_CAPTURE)
+		return V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+
+	return type;
+}
+
 static int sc_v4l2_g_selection(struct file *file, void *fh,
 				struct v4l2_selection *sel)
 {
 	struct sc_ctx *ctx = fh_to_sc_ctx(file->private_data);
 	struct sc_frame *frame;
 
-	frame = ctx_get_frame(ctx, sel->type);
+	frame = ctx_get_frame(ctx, sc_sel_buf_type(sel->type));
 	if (IS_ERR(frame))
 		return PTR_ERR(frame);
 
@@ -1048,7 +1066,7 @@ static int sc_v4l2_s_selection(struct file *file, void *fh,
 	    sel->target != V4L2_SEL_TGT_COMPOSE)
 		return -EINVAL;
 
-	frame = ctx_get_frame(ctx, sel->type);
+	frame = ctx_get_frame(ctx, sc_sel_buf_type(sel->type));
 	if (IS_ERR(frame))
 		return PTR_ERR(frame);
 
@@ -3098,6 +3116,19 @@ static int sc_register_m2m_device(struct sc_dev *sc, int dev_id)
 	vfd->v4l2_dev	= v4l2_dev;
 	/* 6.18 requires device_caps before registration (spec L6B B-V4) */
 	vfd->device_caps = V4L2_CAP_VIDEO_M2M_MPLANE | V4L2_CAP_STREAMING;
+	/*
+	 * Stock's legacy crop ioctls are "inverted" for the 6.18 core:
+	 * s_crop on an OUTPUT queue sets the SOURCE crop (the fractional
+	 * source window of ctx->s_frame, and it sets CTX_SRC_FMT -
+	 * S:.../scaler/scaler-core.c:922-927) and s_crop on a CAPTURE queue
+	 * sets the destination crop, while the core maps a legacy OUTPUT crop
+	 * to SEL_TGT_COMPOSE and a legacy CAPTURE crop to SEL_TGT_CROP
+	 * (A:drivers/media/v4l2-core/v4l2-ioctl.c:2523-2530, :2553-2560).  The
+	 * documented quirk flag inverts the mapping back, so S_CROP/G_CROP/
+	 * CROPCAP keep the stock meaning while the driver implements the
+	 * selection API (A:include/media/v4l2-dev.h:79-86).
+	 */
+	set_bit(V4L2_FL_QUIRK_INVERTED_CROP, &vfd->flags);
 	scnprintf(vfd->name, sizeof(vfd->name), "%s:m2m", MODULE_NAME);
 
 	video_set_drvdata(vfd, sc);

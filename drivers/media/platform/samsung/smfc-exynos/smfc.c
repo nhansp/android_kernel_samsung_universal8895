@@ -750,6 +750,16 @@ static int smfc_init_v4l2(struct device *dev, struct smfc_dev *smfc)
 	 */
 	smfc->videodev->device_caps = smfc->devdata->device_caps |
 					V4L2_CAP_STREAMING;
+	/*
+	 * Stock's smfc_v4l2_s_crop is the crop of the OUTPUT (raw source)
+	 * queue and rejects every other type - "Cropping on the capture
+	 * buffer is not supported" (S:.../smfc/smfc-v4l2-ioctls.c:902, :927-931).
+	 * The 6.18 core maps a legacy OUTPUT crop to SEL_TGT_COMPOSE
+	 * (A:drivers/media/v4l2-core/v4l2-ioctl.c:2553-2560), so invert the
+	 * mapping back with the documented quirk flag to keep the stock
+	 * meaning (A:include/media/v4l2-dev.h:79-86).
+	 */
+	set_bit(V4L2_FL_QUIRK_INVERTED_CROP, &smfc->videodev->flags);
 
 	video_set_drvdata(smfc->videodev, smfc);
 
