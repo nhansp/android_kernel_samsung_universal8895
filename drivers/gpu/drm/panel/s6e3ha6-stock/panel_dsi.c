@@ -303,6 +303,10 @@ static int mipi_write_cmd(u32 id, u8 cmd_id, const u8 *cmd, int size)
 	ret = exynos8895_decon_hiber_block_exit();
 	if (ret) {
 		pr_err("ERR:DSIM:%s:hibernation exit failed: %d\n", __func__, ret);
+		/* the block stays held across the call: stock ignores the exit
+		 * result and releases it on every path (dsim_drv.c:199, :276-277)
+		 */
+		exynos8895_decon_hiber_unblock();
 		return ret;
 	}
 	dsi = panel->dsi;
@@ -391,6 +395,8 @@ static int mipi_read_cmd(u32 id, u8 addr, u8 *buf, int size)
 	ret = exynos8895_decon_hiber_block_exit();
 	if (ret) {
 		pr_err("ERR:%s:hibernation exit failed: %d\n", __func__, ret);
+		/* as the write path above (dsim_drv.c:276-277, :295) */
+		exynos8895_decon_hiber_unblock();
 		return ret;
 	}
 

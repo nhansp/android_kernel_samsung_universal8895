@@ -455,6 +455,10 @@ static int s6e3ha6_dcs_write(struct s6e3ha6_bright *b, const u8 *buf, size_t len
 	hret = exynos8895_decon_hiber_block_exit();
 	if (hret) {
 		dev_err(b->dev, "hibernation exit failed: %d\n", hret);
+		/* the block stays held across the call: stock ignores the exit
+		 * result and releases it on every path (dsim_drv.c:199, :276-277)
+		 */
+		exynos8895_decon_hiber_unblock();
 		return hret;
 	}
 
@@ -493,6 +497,8 @@ static int s6e3ha6_dcs_read(struct s6e3ha6_bright *b, u8 reg, int ofs, u8 *buf,
 	hret = exynos8895_decon_hiber_block_exit();
 	if (hret) {
 		dev_err(b->dev, "hibernation exit failed: %d\n", hret);
+		/* as s6e3ha6_dcs_write() above (dsim_drv.c:295) */
+		exynos8895_decon_hiber_unblock();
 		return hret;
 	}
 
