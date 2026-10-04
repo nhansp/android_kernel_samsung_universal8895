@@ -1481,6 +1481,26 @@ static void e8895_hwacg_restore(void)
 	pr_info("exynos8895-pm: DEBUG hwacg: %u gates back to manual\n", k);
 }
 
+/*
+ * DEBUG (L7, 2026-10-05, sleep_trace): the APM side right before the SMC. SLEEP powers the APM
+ * down too (CAL:pmucal_system_exynos8895.h:883 TOP_PWR_APM = 0, :886 CPU_QCH_CORTEXM3_APM = 0),
+ * which needs its Cortex-M3 idle; an IPC either side has not taken yet keeps it busy.
+ * CORTEXM3_APM_CONFIGURATION/STATUS/OPTION 0x2500/0x2504/0x2508 (S:include/linux/apm-exynos.h:
+ * 117-119); AP2APM mailbox INTSR0/INTMSR0 (AP -> APM pending, raw / unmasked) 0x14/0x18 and
+ * INTSR1/INTMSR1 (APM -> AP) 0x28/0x2c (S:drivers/soc/samsung/acpm/acpm_ipc.h:78-87).
+ */
+static void __iomem *e8895_mbox_base;
+
+static void e8895_apm_dump(void)
+{
+	pr_info("exynos8895-pm: DEBUG pre-SMC apm cm3=%08x %08x %08x mbox sr0=%08x msr0=%08x sr1=%08x msr1=%08x\n",
+		pmu_raw_readl(0x2500), pmu_raw_readl(0x2504), pmu_raw_readl(0x2508),
+		e8895_mbox_base ? readl(e8895_mbox_base + 0x14) : ~0U,
+		e8895_mbox_base ? readl(e8895_mbox_base + 0x18) : ~0U,
+		e8895_mbox_base ? readl(e8895_mbox_base + 0x28) : ~0U,
+		e8895_mbox_base ? readl(e8895_mbox_base + 0x2c) : ~0U);
+}
+
 /* power_state of the SMC: sleep_bare forces C2 (0x00010000), otherwise the
  * stock SLEEP word unless sleep_psci overrides it */
 static unsigned int e8895_smc_state(void)
@@ -1993,8 +2013,10 @@ static int e8895_pm_enter(suspend_state_t state)
 		pr_info("exynos8895-pm: DEBUG c2prep: CONF ok=%d STATUS %x\n",
 			e8895_pmu_cpu_conf_ok(cpu), e8895_pmu_cpu_status(cpu));
 	}
-	if (sleep_trace)
-		e8895_hwacg_dump();				/* DEBUG */
+	if (sleep_trace) {					/* DEBUG */
+		e8895_hwacg_dump();
+		e8895_apm_dump();
+	}
 	e8895_hwacg_set();					/* DEBUG sleep_hwacg */
 	e8895_wdt_arm();					/* DEBUG sleep_wdt */
 	if (sleep_wfi && sleep_bare) {				/* DEBUG */
@@ -2205,6 +2227,13 @@ static int e8895_pm_probe(struct platform_device *pdev)
 		of_node_put(np);
 	}
 	e8895_hwacg_map(dev);				/* DEBUG sleep_hwacg */
+	/* DEBUG e8895_apm_dump(): the mailbox driver owns the region, so no claim here */
+	np = of_find_compatible_node(NULL, NULL, "samsung,exynos8895-mbox");
+	if (np) {
+		if (!of_address_to_resource(np, 0, &res))
+			e8895_mbox_base = devm_ioremap(dev, res.start, resource_size(&res));
+		of_node_put(np);
+	}
 	WRITE_ONCE(e8895_pm_probed, true);
 	/* DEBUG (l7el3): the value 0x60c has during cpuidle, before the pinctrl
 	 * syscore op overwrites it with the EINT wake mask (sleep_bare_eint) */
