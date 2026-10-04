@@ -4839,6 +4839,22 @@ int dwc3_gadget_suspend(struct dwc3 *dwc)
 	unsigned long flags;
 	int ret;
 
+	/*
+	 * greatlte: with no VBUS session (cable out: the pull-up is already
+	 * off and the link is down) there is nothing to disconnect. Stock's
+	 * dwc3_gadget_suspend() only stopped the controller and never called
+	 * the gadget driver's ->disconnect (S:drivers/usb/dwc3/gadget.c:
+	 * 3479-3492), so a system suspend must not either: the ->disconnect
+	 * re-runs configfs_composite_disconnect() even though the unplug-time
+	 * detach already ended the session, which re-emits
+	 * USB_STATE=DISCONNECTED on android_usb and makes the USB HAL tear
+	 * the functions down and rebuild them on every suspend. Skip as stock
+	 * was silent; the resume side already skips the same state
+	 * (!gadget_driver || !softconnect).
+	 */
+	if (!dwc->pullups_connected && !dwc->connected)
+		return 0;
+
 	ret = dwc3_gadget_soft_disconnect(dwc);
 	/*
 	 * Attempt to reset the controller's state. Likely no

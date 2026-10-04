@@ -32,16 +32,13 @@
 	pinctrl-names = "default";				/* FDT:7893-7894 */
 	pinctrl-0 = <&usb_phy_port>;
 	vdd18-dp-supply = <&s2mps17_ldo37>;			/* VDD_DP_1P8, FDT:7242-7246 */
-	/*
-	 * MAX77865 MUIC (0x25) on hsi2c@10970000 (FDT:6149-6166): its CONTROL1 switch must
-	 * route D+/D- to the AP (0x89), stock S:drivers/muic/universal/muic_apis.c:235-245
-	 */
-	samsung,muic-i2c-bus = <&hsi2c_32>;
+	/* No samsung,muic-i2c-bus: the MUIC driver alone owns CONTROL1 (single owner,
+	 * stock S:drivers/muic/universal/muic_apis.c:323-334; spec L6G 5.2.4 fallback) */
 	status = "okay";
 };
 
 /*
- * The MAX77865 bus, only for the MUIC switch write of the PHY (and the L3 heartbeat's MUIC
+ * The MAX77865 bus for the MUIC driver client (and the L3 heartbeat's MUIC
  * read). Written exactly as spec/L6F_power_input_misc.md 4.3 will (plan D1: identical in
  * both parts).
  */

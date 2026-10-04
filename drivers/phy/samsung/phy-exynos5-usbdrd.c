@@ -12,7 +12,6 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
-#include <linux/i2c.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -270,18 +269,15 @@
 #define EXYNOS8895_SS_TX_VBOOST_HOST		0x4		/* usbdrd.c:515 */
 /*
  * greatlte: the MAX77865 MUIC's analog switch sits between the connector D+/D- and this PHY.
- * Stock connects it from its MUIC driver on every USB attach (S:drivers/muic/universal/
+ * Its single owner is the MUIC driver (drivers/usb/typec/max77865-muic.c), as in stock:
+ * stock connects it from its MUIC driver on every USB attach (S:drivers/muic/universal/
  * muic_apis.c:323-334 switch_to_ap_usb -> :235-245 com_to_usb_ap) and opens it on detach and
- * at every shutdown (S:drivers/muic/universal/muic_task_max77865.c:642-643). muic_regmap =
- * S:drivers/muic/universal/muic_regmap_max77865.c.
+ * at every shutdown (S:drivers/muic/universal/muic_task_max77865.c:642-643), while the PHY
+ * never writes it (S:drivers/phy/phy-exynos-usbdrd.c only reads gpio_phy_port, :767-770).
+ * This PHY therefore never touches CONTROL1: no COM write at .init/.exit or on an
+ * orientation re-init, so a PHY exit/init pair (probe, system suspend/resume) can never
+ * reopen COM under a live USB data session (spec L6G 5.2.4 fallback).
  */
-#define EXYNOS8895_MUIC_ADDR			0x25	/* S:drivers/mfd/max77865.c:45 (0x4A >> 1) */
-#define EXYNOS8895_MUIC_CONTROL1		0x19	/* muic_regmap:80 REG_CONTROL1 */
-/* COM_VALUE(dm, open, comp) = dm << 3 | dm | open << 6 | comp << 7, muic_regmap:236-237 */
-#define EXYNOS8895_MUIC_COM_USB_AP		0x89	/* _COM_USB_AP, _D_USB = 1: muic_regmap:228,244 */
-#define EXYNOS8895_MUIC_COM_OPEN		0x80	/* _COM_OPEN(_WITH_V_BUS), muic_regmap:239-240 */
-#define EXYNOS8895_MUIC_RETRIES			6	/* S:drivers/muic/universal/muic_i2c.c:112 */
-#define EXYNOS8895_MUIC_RETRY_MS		100	/* muic_i2c.c:117 */
 
 /* Exynos850: USB DRD PHY registers */
 #define EXYNOS850_DRD_LINKCTRL			0x04
@@ -562,9 +558,6 @@ struct exynos5_usbdrd_phy_drvdata {
  * @cal_port: Exynos8895 port in use: 0, 1 (flipped) or -1 (stock used_phy_port)
  * @sw_port: Exynos8895 port from the Type-C orientation switch, used by the next CAL enable
  * @cal_inited: Exynos8895 PIPE3 .init done and .exit not yet (under @phy_mutex)
- * @muic_adap: Exynos8895 greatlte MUIC I2C bus (samsung,muic-i2c-bus), or NULL
- * @muic_before: Exynos8895 MUIC CONTROL1 read before the last switch write, or -errno
- * @muic_after: Exynos8895 MUIC CONTROL1 read back after it, or -errno
  * @cr_timeouts: Exynos8895 CR-port handshake timeouts
  * @init_count: Exynos8895 number of .init calls
  * @retunes: Exynos8895 re-tunes done from the dwc3 soft-reset hook
@@ -606,9 +599,6 @@ struct exynos5_usbdrd_phy {
 	int cal_port;
 	int sw_port;
 	bool cal_inited;
-	struct i2c_adapter *muic_adap;
-	int muic_before;
-	int muic_after;
 	unsigned int cr_timeouts;
 	unsigned int init_count;
 	unsigned int retunes;
@@ -1952,86 +1942,6 @@ static void exynos8895_ss_power_down(struct exynos5_usbdrd_phy *d, bool en)
 	}
 }
 
-/*
- * greatlte MUIC switch: stock regmap_write_value() with _ATTR_OVERWRITE_M (S:drivers/muic/
- * universal/muic_regmap.c:162-172 -> :63-95): read CONTROL1, and only if it differs write it and
- * read it back, retrying the write up to 6 times 100 ms apart (muic_i2c_guaranteed_wbyte,
- * S:drivers/muic/universal/muic_i2c.c:99-121). Plain SMBus transfers on the adapter, no client
- * at 0x25 (spec/L6F_power_input_misc.md REQ-L3-1). A failure is logged, never fatal: stock
- * carries on with the PHY too (muic_apis.c:238-241 only prints).
- */
-static void exynos8895_muic_switch(struct exynos5_usbdrd_phy *d, u8 val)
-{
-#if IS_REACHABLE(CONFIG_I2C)
-	union i2c_smbus_data data;
-	int ret, tries = 0;
-
-	if (!d->muic_adap)
-		return;
-	ret = i2c_smbus_xfer(d->muic_adap, EXYNOS8895_MUIC_ADDR, 0, I2C_SMBUS_READ,
-			     EXYNOS8895_MUIC_CONTROL1, I2C_SMBUS_BYTE_DATA, &data);
-	d->muic_before = ret ? ret : data.byte;
-	if (!ret && data.byte == val) {
-		d->muic_after = val;
-		return;
-	}
-	for (;;) {
-		data.byte = val;
-		ret = i2c_smbus_xfer(d->muic_adap, EXYNOS8895_MUIC_ADDR, 0, I2C_SMBUS_WRITE,
-				     EXYNOS8895_MUIC_CONTROL1, I2C_SMBUS_BYTE_DATA, &data);
-		if (!ret)
-			ret = i2c_smbus_xfer(d->muic_adap, EXYNOS8895_MUIC_ADDR, 0, I2C_SMBUS_READ,
-					     EXYNOS8895_MUIC_CONTROL1, I2C_SMBUS_BYTE_DATA, &data);
-		d->muic_after = ret ? ret : data.byte;
-		if (!ret && data.byte == val)
-			break;
-		if (tries++ >= EXYNOS8895_MUIC_RETRIES) {
-			dev_err(d->dev, "8895: MUIC CONTROL1 write 0x%02x failed (%d)\n", val,
-				d->muic_after);
-			return;
-		}
-		msleep(EXYNOS8895_MUIC_RETRY_MS);
-	}
-	dev_info(d->dev, "8895: MUIC CONTROL1 %d -> 0x%02x (%d retries)\n", d->muic_before, val,
-		 tries);
-#endif
-}
-
-#if IS_REACHABLE(CONFIG_I2C)
-static void exynos8895_muic_put(void *data)
-{
-	i2c_put_adapter(data);
-}
-#endif
-
-/*
- * Optional greatlte MUIC bus. Returns NULL (no property), the adapter, or an ERR_PTR:
- * -EPROBE_DEFER until the adapter is registered, so .init can always switch D+/D-.
- */
-static struct i2c_adapter *exynos8895_muic_get(struct exynos5_usbdrd_phy *d)
-{
-	struct device_node *np;
-	struct i2c_adapter *adap = NULL;
-
-	d->muic_before = -ENODEV;
-	d->muic_after = -ENODEV;
-	np = of_parse_phandle(d->dev->of_node, "samsung,muic-i2c-bus", 0);
-	if (!np)
-		return NULL;
-#if IS_REACHABLE(CONFIG_I2C)
-	adap = of_get_i2c_adapter_by_node(np);
-	of_node_put(np);
-	if (!adap)
-		return ERR_PTR(dev_err_probe(d->dev, -EPROBE_DEFER, "MUIC I2C bus not ready\n"));
-	if (devm_add_action_or_reset(d->dev, exynos8895_muic_put, adap))
-		return ERR_PTR(-ENOMEM);
-#else
-	of_node_put(np);
-	dev_warn(d->dev, "8895: samsung,muic-i2c-bus ignored, no I2C support\n");
-#endif
-	return adap;
-}
-
 /* CAL enable = stock exynos_usbdrd_pipe3_init (usbdrd.c:757-783) + samsung_exynos_cal_usb3phy_enable (cal.c:845-1025) */
 static void exynos8895_cal_enable(struct exynos5_usbdrd_phy *d)
 {
@@ -2418,8 +2328,7 @@ static int exynos8895_usbdrd_phy_init(struct phy *phy)
 	inst->phy_cfg->phy_isol(inst, false);			/* stock power_on, usbdrd.c:966 */
 	scoped_guard(mutex, &d->phy_mutex) {			/* vs the orientation switch */
 		exynos8895_cal_enable(d);
-		/* D+/D- to the AP before the gadget can pull up, as stock's MUIC attach_usb */
-		exynos8895_muic_switch(d, EXYNOS8895_MUIC_COM_USB_AP);
+		/* D+/D- reach the AP through the MUIC driver's own attach path (single owner) */
 		d->cal_inited = true;
 	}
 	regmap_read(inst->reg_pmu, inst->pmu_offset, &pmu);
@@ -2462,7 +2371,6 @@ static int exynos8895_usbdrd_phy_exit(struct phy *phy)
 		WRITE_ONCE(d->tune_armed, false);	/* no re-tune of a PHY that goes down */
 		d->cal_inited = false;
 		exynos8895_cal_disable(d);
-		exynos8895_muic_switch(d, EXYNOS8895_MUIC_COM_OPEN);	/* stock detach_usb, shutdown */
 	}
 	inst->phy_cfg->phy_isol(inst, true);			/* usbdrd.c:989 */
 	clk_bulk_disable_unprepare(d->drv_data->n_core_clks, d->core_clks);
@@ -2511,9 +2419,7 @@ static int exynos8895_orien_sw_set(struct typec_switch_dev *sw,
 		dev_info(d->dev, "8895: orientation %s, re-init on port %d\n",
 			 orientation == TYPEC_ORIENTATION_NORMAL ? "normal" : "reverse", port);
 		exynos8895_cal_disable(d);
-		exynos8895_muic_switch(d, EXYNOS8895_MUIC_COM_OPEN);	/* as .exit */
 		exynos8895_cal_enable(d);
-		exynos8895_muic_switch(d, EXYNOS8895_MUIC_COM_USB_AP);	/* as .init */
 		if (armed) {
 			if (READ_ONCE(d->host_mode)) {
 				exynos8895_cal_tune_host(d);
@@ -2633,10 +2539,6 @@ static int exynos8895_usbdrd_probe_extra(struct exynos5_usbdrd_phy *d,
 		if (IS_ERR(d->port_gpio))
 			return dev_err_probe(d->dev, PTR_ERR(d->port_gpio), "phy-port gpio\n");
 	}
-
-	d->muic_adap = exynos8895_muic_get(d);
-	if (IS_ERR(d->muic_adap))
-		return PTR_ERR(d->muic_adap);
 
 	d->vdd_dp = devm_regulator_get_optional(d->dev, "vdd18-dp");
 	if (IS_ERR(d->vdd_dp)) {
