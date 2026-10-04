@@ -375,7 +375,8 @@ int sensor_module_imx260_probe(struct platform_device *pdev)
 	struct device *dev;
     int ch;
 
-	BUG_ON(!fimc_is_dev);
+	if (!fimc_is_dev)
+		return -EPROBE_DEFER;	/* core probes later on 6.18 */
 
 	core = (struct fimc_is_core *)dev_get_drvdata(fimc_is_dev);
 	if (!core) {

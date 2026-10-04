@@ -76,7 +76,8 @@ int sensor_3h5_probe(struct i2c_client *client,
 	struct fimc_is_device_sensor *device;
 	struct sensor_open_extended *ext;
 
-	BUG_ON(!fimc_is_dev);
+	if (!fimc_is_dev)
+		return -EPROBE_DEFER;	/* core probes later on 6.18 */
 
 	core = (struct fimc_is_core *)dev_get_drvdata(fimc_is_dev);
 	if (!core) {

@@ -1748,7 +1748,8 @@ int cis_6b2_probe(struct i2c_client *client,
 	struct device_node *dnode;
 
 	BUG_ON(!client);
-	BUG_ON(!fimc_is_dev);
+	if (!fimc_is_dev)
+		return -EPROBE_DEFER;	/* core probes later on 6.18 */
 
 	core = (struct fimc_is_core *)dev_get_drvdata(fimc_is_dev);
 	if (!core) {

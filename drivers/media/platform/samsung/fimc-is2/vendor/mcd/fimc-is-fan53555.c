@@ -164,7 +164,8 @@ static int fimc_is_fan53555_probe(struct i2c_client *client,
 	struct device_node *np;
 	int gpio_comp_en;
 
-	BUG_ON(!fimc_is_dev);
+	if (!fimc_is_dev)
+		return -EPROBE_DEFER;	/* core probes later on 6.18 */
 
 	pr_info("%s start\n",__func__);
 
