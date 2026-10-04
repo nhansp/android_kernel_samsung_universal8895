@@ -38,6 +38,7 @@
 #include <linux/syscore_ops.h>
 #include <trace/events/power.h>
 #include <asm/memory.h>
+#include <asm/proc-fns.h>
 #include <asm/suspend.h>
 #include <dt-bindings/soc/samsung,exynos8895-pm.h>
 
@@ -1191,6 +1192,18 @@ module_param(sleep_swpend, uint, 0644);
  * from a C2 that works. */
 static bool sleep_c2prep;
 module_param(sleep_c2prep, bool, 0644);
+
+/*
+ * DEBUG (L7, 2026-10-05) sleep_wfi=1 (with sleep_bare=1 only): ->enter runs a plain WFI
+ * (cpu_do_idle()) instead of the PSCI SMC, i.e. the whole deep-suspend context (device
+ * noirq stage, CPUs 1-7 offline, syscore suspend) without any EL3 call. sleep_bare=1 keeps
+ * the PMU in its run-time state, so the WFI cannot start the CENTRAL sequencer. A wake
+ * proves that the wake interrupt reaches CPU0 through the EINT block and the GIC in this
+ * context; no wake means the Linux side of the wake path is broken. (sleep_bare alone =
+ * cpuidle c2_mode=2, which hangs at run time too: L7 B3/B4, work/full/l7/STATUS.md:113,138.)
+ */
+static bool sleep_wfi;
+module_param(sleep_wfi, bool, 0644);
 static bool sleep_bare_eint;
 module_param(sleep_bare_eint, bool, 0644);
 static u32 eint_wake_boot;			/* 0x60c at probe (== the cpuidle value) */
@@ -1665,7 +1678,12 @@ static int e8895_pm_enter(suspend_state_t state)
 		pr_info("exynos8895-pm: DEBUG c2prep: CONF ok=%d STATUS %x\n",
 			e8895_pmu_cpu_conf_ok(cpu), e8895_pmu_cpu_status(cpu));
 	}
-	ret = e8895_psci_suspend(e8895_smc_state());		/* DEBUG sleep_psci */
+	if (sleep_wfi && sleep_bare) {				/* DEBUG */
+		cpu_do_idle();
+		ret = 0;
+	} else {
+		ret = e8895_psci_suspend(e8895_smc_state());	/* DEBUG sleep_psci */
+	}
 	if (sleep_c2prep) {					/* DEBUG l7el3 */
 		e8895_pmu_cpu_up(cpu);
 		pr_info("exynos8895-pm: DEBUG c2prep: back %d, CONF ok=%d STATUS %x\n",
