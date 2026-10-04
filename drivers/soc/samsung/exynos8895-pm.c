@@ -1478,13 +1478,84 @@ static int e8895_pd_check(void)
 }
 
 /* S:drivers/soc/samsung/exynos-pm.c:231-255 */
-static int e8895_pm_syscore_suspend(void)
+/* the PMU wake/idle masks before arming, restored on a refusal */
+static u32 e8895_save_ipm[4], e8895_save_wk[4], e8895_save_eint;
+
+/*
+ * DEBUG (L7, 2026-10-05) sleep_late=1: arm the PMU for SLEEP (IDLE_IP masks, wake masks,
+ * PMUCAL save + enter list) in ->enter right before the SMC instead of in this syscore
+ * op. Stock's exynos_pm_syscore_suspend() ran after timekeeping's syscore op (stock log:
+ * "mct_tick_stop (cpu0)" then "Enter Suspend scenario", work/l7c/stock44-suspend/
+ * dmesg-real.txt:1427-1428), while ours runs first and the pinctrl, cpu_pm and clk syscore
+ * ops still touch hardware after the PMU is armed (work/l7c/run-R1-0128/console.txt).
+ */
+static bool sleep_late;
+module_param(sleep_late, bool, 0644);
+static bool e8895_late;			/* the deferred arming is pending */
+
+/* S:drivers/soc/samsung/exynos-powermode.c:638-663 exynos_prepare_sys_powerdown() */
+static int e8895_sleep_arm(const char **why)
 {
-	u32 ipm[4], wk[4], eint;
 	struct e8895_tabs *t;
-	const char *why;
 	unsigned int i;
 	u32 arm0, arm1;		/* DEBUG sleep_noarm: pre-enter CENTRAL bits */
+
+	/* only SYS_SICD has a ref-idle-ip node (FDT:4433-4439): the SLEEP masks are all-ones,
+	 * S:drivers/soc/samsung/exynos-powermode.c:171-182 */
+	for (i = 0; i < 4; i++)
+		pmu_raw_writel(~0u, E8895_IDLE_IP_MASK(i));
+	pmu_raw_writel(exynos_pinctrl_get_eint_wake_mask(), E8895_EINT_WAKEUP_MASK);	/* :625-631 */
+	for (i = 0; i < 4; i++)
+		pmu_raw_writel(e8895_wkmask_sleep[i], e8895_wkmask_off[i]);		/* :633-635 */
+	if (sleep_wkmask0 >= 0)								/* DEBUG */
+		pmu_raw_writel(sleep_wkmask0, e8895_wkmask_off[0]);
+	t = e8895_tab(e8895_mode);
+	e8895_save(t->t[1], t->n[1]);			/* S:drivers/soc/samsung/cal-if/pmucal_system.c:31 */
+	arm0 = pmu_raw_readl(0x0200);			/* DEBUG sleep_noarm */
+	arm1 = pmu_raw_readl(0x0240);
+	if (e8895_handle(t->t[0], t->n[0])) {		/* :33-39; only the VTS_ON list has a WAIT */
+		/* deviation: stock drops this error and enters SLEEP anyway
+		 * (S:drivers/soc/samsung/exynos-pm.c:241-248); here the half-programmed
+		 * PMU is rolled back and the suspend aborted */
+		e8895_handle(t->t[3], t->n[3]);
+		e8895_restore(t->t[1], t->n[1]);
+		for (i = 0; i < 4; i++) {
+			pmu_raw_writel(e8895_save_ipm[i], E8895_IDLE_IP_MASK(i));
+			pmu_raw_writel(e8895_save_wk[i], e8895_wkmask_off[i]);
+		}
+		pmu_raw_writel(e8895_save_eint, E8895_EINT_WAKEUP_MASK);
+		*why = "enter list wait timed out";
+		return -EIO;
+	}
+	/*
+	 * Until ->enter reports a real power-down the correct unwind is the
+	 * early-wakeup list: suspend_enter() skips ->enter when a wakeup is
+	 * pending or a later syscore op fails, but still runs syscore_resume()
+	 * (A:kernel/power/suspend.c:471-484). Stock kept the previous cycle's
+	 * flag (S:drivers/soc/samsung/exynos-pm.c:257-266,320).
+	 */
+	e8895_early = true;
+	e8895_sleep_armed = true;
+	pr_info("exynos8895-pm: SLEEP mode=%d\n", e8895_mode);
+	if (sleep_noarm) {					/* DEBUG E6 */
+		pmu_raw_writel((pmu_raw_readl(0x0200) & ~BIT(16)) | (arm0 & BIT(16)), 0x0200);
+		pmu_raw_writel((pmu_raw_readl(0x0240) & ~BIT(16)) | (arm1 & BIT(16)), 0x0240);
+		pr_info("exynos8895-pm: DEBUG noarm: CENTRAL_SEQ %08x MIF %08x (pre-enter %08x %08x)\n",
+			pmu_raw_readl(0x0200), pmu_raw_readl(0x0240), arm0, arm1);
+	}
+	e8895_wakearm();					/* DEBUG l7wake */
+	e8895_swpend();					/* DEBUG l7wake */
+	if (sleep_trace) {					/* DEBUG */
+		e8895_verify(t->t[0], t->n[0]);
+		e8895_sleep_dump();
+	}
+	return 0;
+}
+
+static int e8895_pm_syscore_suspend(void)
+{
+	const char *why;
+	unsigned int i;
 	int ret;
 
 	e8895_sleep_armed = false;
@@ -1534,10 +1605,10 @@ static int e8895_pm_syscore_suspend(void)
 
 	/* kept for a refusal; a completed cycle leaves the SLEEP values, as stock */
 	for (i = 0; i < 4; i++) {
-		ipm[i] = pmu_raw_readl(E8895_IDLE_IP_MASK(i));
-		wk[i] = pmu_raw_readl(e8895_wkmask_off[i]);
+		e8895_save_ipm[i] = pmu_raw_readl(E8895_IDLE_IP_MASK(i));
+		e8895_save_wk[i] = pmu_raw_readl(e8895_wkmask_off[i]);
 	}
-	eint = pmu_raw_readl(E8895_EINT_WAKEUP_MASK);
+	e8895_save_eint = pmu_raw_readl(E8895_EINT_WAKEUP_MASK);
 
 	/*
 	 * DEBUG (l7wake) sleep_bare=1: run nothing but the PSCI call, i.e. skip
@@ -1573,56 +1644,15 @@ static int e8895_pm_syscore_suspend(void)
 		return 0;
 	}
 
-	/* only SYS_SICD has a ref-idle-ip node (FDT:4433-4439): the SLEEP masks are all-ones,
-	 * S:drivers/soc/samsung/exynos-powermode.c:171-182 */
-	for (i = 0; i < 4; i++)
-		pmu_raw_writel(~0u, E8895_IDLE_IP_MASK(i));
-	pmu_raw_writel(exynos_pinctrl_get_eint_wake_mask(), E8895_EINT_WAKEUP_MASK);	/* :625-631 */
-	for (i = 0; i < 4; i++)
-		pmu_raw_writel(e8895_wkmask_sleep[i], e8895_wkmask_off[i]);		/* :633-635 */
-	if (sleep_wkmask0 >= 0)								/* DEBUG */
-		pmu_raw_writel(sleep_wkmask0, e8895_wkmask_off[0]);
-	t = e8895_tab(e8895_mode);
-	e8895_save(t->t[1], t->n[1]);			/* S:drivers/soc/samsung/cal-if/pmucal_system.c:31 */
-	arm0 = pmu_raw_readl(0x0200);			/* DEBUG sleep_noarm */
-	arm1 = pmu_raw_readl(0x0240);
-	if (e8895_handle(t->t[0], t->n[0])) {		/* :33-39; only the VTS_ON list has a WAIT */
-		/* deviation: stock drops this error and enters SLEEP anyway
-		 * (S:drivers/soc/samsung/exynos-pm.c:241-248); here the half-programmed
-		 * PMU is rolled back and the suspend aborted */
-		e8895_handle(t->t[3], t->n[3]);
-		e8895_restore(t->t[1], t->n[1]);
-		for (i = 0; i < 4; i++) {
-			pmu_raw_writel(ipm[i], E8895_IDLE_IP_MASK(i));
-			pmu_raw_writel(wk[i], e8895_wkmask_off[i]);
-		}
-		pmu_raw_writel(eint, E8895_EINT_WAKEUP_MASK);
-		why = "enter list wait timed out";
-		ret = -EIO;
+	if (sleep_late) {					/* DEBUG */
+		e8895_late = true;
+		pr_info("exynos8895-pm: DEBUG late: PMU program deferred to ->enter (mode %d)\n",
+			e8895_mode);
+		return 0;
+	}
+	ret = e8895_sleep_arm(&why);
+	if (ret)
 		goto refuse;
-	}
-	/*
-	 * Until ->enter reports a real power-down the correct unwind is the
-	 * early-wakeup list: suspend_enter() skips ->enter when a wakeup is
-	 * pending or a later syscore op fails, but still runs syscore_resume()
-	 * (A:kernel/power/suspend.c:471-484). Stock kept the previous cycle's
-	 * flag (S:drivers/soc/samsung/exynos-pm.c:257-266,320).
-	 */
-	e8895_early = true;
-	e8895_sleep_armed = true;
-	pr_info("exynos8895-pm: SLEEP mode=%d\n", e8895_mode);
-	if (sleep_noarm) {					/* DEBUG E6 */
-		pmu_raw_writel((pmu_raw_readl(0x0200) & ~BIT(16)) | (arm0 & BIT(16)), 0x0200);
-		pmu_raw_writel((pmu_raw_readl(0x0240) & ~BIT(16)) | (arm1 & BIT(16)), 0x0240);
-		pr_info("exynos8895-pm: DEBUG noarm: CENTRAL_SEQ %08x MIF %08x (pre-enter %08x %08x)\n",
-			pmu_raw_readl(0x0200), pmu_raw_readl(0x0240), arm0, arm1);
-	}
-	e8895_wakearm();					/* DEBUG l7wake */
-	e8895_swpend();					/* DEBUG l7wake */
-	if (sleep_trace) {					/* DEBUG */
-		e8895_verify(t->t[0], t->n[0]);
-		e8895_sleep_dump();
-	}
 	return 0;
 
 refuse:
@@ -1637,6 +1667,7 @@ static void e8895_pm_syscore_resume(void)
 	struct e8895_tabs *t;
 	u32 stat;
 
+	e8895_late = false;			/* DEBUG sleep_late: ->enter never ran */
 	if (!e8895_sleep_armed)			/* hibernation snapshot, or nothing programmed */
 		return;
 	if (sleep_trace)						/* DEBUG */
@@ -1669,6 +1700,17 @@ static int e8895_pm_enter(suspend_state_t state)
 	unsigned int cpu = smp_processor_id();
 	int ret;
 
+	if (e8895_late) {					/* DEBUG sleep_late */
+		const char *why;
+
+		e8895_late = false;
+		ret = e8895_sleep_arm(&why);
+		if (ret) {
+			e8895_dbg_allon();
+			pr_err("exynos8895-pm: SLEEP refused: %s (%d)\n", why, ret);
+			return ret;
+		}
+	}
 	if (sleep_trace)					/* DEBUG */
 		pr_info("exynos8895-pm: DEBUG SMC power_state=0x%08x\n", e8895_smc_state());
 	if (sleep_c2prep) {					/* DEBUG l7el3 */
