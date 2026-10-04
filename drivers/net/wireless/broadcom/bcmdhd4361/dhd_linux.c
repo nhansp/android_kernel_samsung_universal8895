@@ -1555,6 +1555,8 @@ static int dhd_toe_set(dhd_info_t *dhd, int idx, uint32 toe_ol);
 
 static int dhd_wl_host_event(dhd_info_t *dhd, int ifidx, void *pktdata, uint16 pktlen,
 		wl_event_msg_t *event_ptr, void **data_ptr);
+/* L6DWAKE: the stock suspend/resume helper (this file), called from dhd_pm_callback */
+static int dhd_suspend_resume_helper(struct dhd_info *dhd, int val, int force);
 
 #if defined(CONFIG_PM_SLEEP)
 static int dhd_pm_callback(struct notifier_block *nfb, unsigned long action, void *ignored)
@@ -1584,6 +1586,41 @@ static int dhd_pm_callback(struct notifier_block *nfb, unsigned long action, voi
 	case PM_POST_SUSPEND:
 		suspend = FALSE;
 		break;
+	}
+
+	/*
+	 * L6DWAKE: stock programs the dongle suspend state (packet filters, ARP/ND
+	 * offload, bcn_li_dtim/DTIM skip, beacon timeout, const_awake_thresh;
+	 * dhd_set_suspend, S:drivers/net/wireless/bcmdhd4361/dhd_linux.c:2890)
+	 * from the screen-off SETSUSPENDMODE private command
+	 * (S:drivers/net/wireless/bcmdhd4361/wl_android.c:846-861). When that
+	 * userspace trigger never arrives, the dongle keeps asserting
+	 * WLAN_HOST_WAKE through every s2idle attempt. Run the same stock helper
+	 * across a system suspend, but only when userspace has not already done
+	 * so (in_suspend == 0), and on resume undo only what this hook programmed
+	 * (pm_suspend_programmed), so a screen-off suspend programmed by
+	 * userspace is left untouched. Same call signature as the userspace
+	 * screen-off path (net_os_set_suspend(dev, 1/0, 0)).
+	 *
+	 * The pairing is balanced: this tree sends exactly one PM_POST_SUSPEND per
+	 * PM_SUSPEND_PREPARE. The PREPARE chain sends it itself when a notifier
+	 * refuses (A:kernel/power/suspend.c:378, pm_notifier_call_chain_robust), and
+	 * enter_state() runs suspend_finish(), which sends it, after
+	 * suspend_devices_and_enter() returns whatever the device and the noirq stage
+	 * returned (A:kernel/power/suspend.c:635 and :581). So pm_suspend_programmed
+	 * cannot outlive the suspend it was set for, and the in_suspend /
+	 * suspend_disable_flag pair the helper leaves behind is always undone.
+	 */
+	if (suspend) {
+		if (!dhdinfo->pub.in_suspend && dhdinfo->pub.up) {
+			dhd_suspend_resume_helper(dhdinfo, 1, 0);
+			dhdinfo->pub.pm_suspend_programmed = TRUE;
+		}
+	} else {
+		if (dhdinfo->pub.pm_suspend_programmed) {
+			dhdinfo->pub.pm_suspend_programmed = FALSE;
+			dhd_suspend_resume_helper(dhdinfo, 0, 0);
+		}
 	}
 
 #if defined(SUPPORT_P2P_GO_PS) && defined(PROP_TXSTATUS)
