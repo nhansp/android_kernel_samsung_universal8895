@@ -56,7 +56,7 @@ obj-$(CONFIG_SEC_SIPC_MODEM_IF)	+= exynos8895-pmu-cp.o
 obj-$(CONFIG_GREATLTE_HB_L6C)	+= greatlte-hb-l6c.o
 # L6M SMFC/MSCL heartbeat (WP l6m, DEBUG)
 obj-$(CONFIG_GREATLTE_HB_L6M)	+= greatlte-hb-l6m.o# L7 (power management)
-obj-$(CONFIG_EXYNOS8895_PM)		+= exynos8895-pm.o
+obj-$(CONFIG_EXYNOS8895_PM)		+= exynos8895-pm.o exynos8895-el3mon.o
 # L7 heartbeat printers
 obj-$(CONFIG_GREATLTE_HB_L7)		+= greatlte-hb-l7.o
 # L7 s2idle SICD heartbeat rows (WP l7sicd, DEBUG); same bool as the L7 printers

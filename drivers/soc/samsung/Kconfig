@@ -273,6 +273,7 @@ config EXYNOS8895_PM
 	depends on SOC_SAMSUNG
 	depends on ARCH_EXYNOS && ARM64 && EXYNOS_PMU && SUSPEND && ARM_PSCI_FW
 	depends on EXYNOS_ACPM_PROTOCOL=y
+	select EXYNOS8895_SMC
 	help
 	  System suspend to the stock SLEEP mode with the PMUCAL sequences,
 	  the SICD entry/exit and veto used by the Exynos 8895 cpuidle

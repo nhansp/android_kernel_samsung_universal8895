@@ -131,6 +131,19 @@
 			mem-type = <0x0>;		/* write-combine, A:fs/pstore/ram_core.c:410,434-435; 1 = noncached also works, 2 (cached) must never be used: dirty lines are lost on reset */
 		};
 
+		/*
+		 * DEBUG (L7 deep suspend): EL3 monitor debug page + lockup buffer
+		 * (drivers/soc/samsung/exynos8895-el3mon.c; stock uses two kmalloc() pages,
+		 * S:drivers/soc/samsung/exynos-el3_mon.c:88,118). Right after the ramoops zone:
+		 * the exynos-snapshot MINIMIZED layout of the 4.4 kernels that can boot in
+		 * between (TWRP, LOS) ends there (log_pstore 32K at 0x91800000,
+		 * S:drivers/trace/exynos-ss.c:562-571), so a forced reset keeps the page.
+		 */
+		el3-debug@91808000 {
+			compatible = "samsung,exynos8895-el3-debug";
+			reg = <0x0 0x91808000 0x2000>;
+		};
+
 		/* ECT (DVFS/ASV tables). S:arch/arm64/kernel/setup.c:115-136, S:arch/arm64/boot/dts/exynos/exynos8895-greatlte_common.dtsi:22-25, FDT:11121-11124 */
 		ect_mem: ect@a0000000 {
 			reg = <0x0 0xa0000000 0x19000>;
