@@ -296,7 +296,8 @@ static int fimc_is_comp_probe(struct platform_device *pdev)
 	u32 position = 0;
 
 	BUG_ON(!pdev);
-	BUG_ON(!fimc_is_dev);
+	if (!fimc_is_dev)
+		return -EPROBE_DEFER;	/* core probes later on 6.18 */
 
 	dev = &pdev->dev;
 	dnode = dev->of_node;

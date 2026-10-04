@@ -479,7 +479,8 @@ int sensor_dw9807_actuator_probe(struct i2c_client *client,
 	struct device *dev;
 	struct device_node *dnode;
 
-	BUG_ON(!fimc_is_dev);
+	if (!fimc_is_dev)
+		return -EPROBE_DEFER;	/* core probes later on 6.18 */
 	BUG_ON(!client);
 
 	core = (struct fimc_is_core *)dev_get_drvdata(fimc_is_dev);

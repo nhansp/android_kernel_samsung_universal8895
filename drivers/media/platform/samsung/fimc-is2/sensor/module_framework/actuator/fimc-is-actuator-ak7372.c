@@ -393,7 +393,8 @@ static int sensor_ak7372_actuator_probe(struct i2c_client *client)
 	u32 sensor_id_len;
 	int i = 0;
 
-	BUG_ON(!fimc_is_dev);
+	if (!fimc_is_dev)
+		return -EPROBE_DEFER;	/* core probes later on 6.18 */
 	BUG_ON(!client);
 	core = (struct fimc_is_core *)dev_get_drvdata(fimc_is_dev);
 	if (!core) {

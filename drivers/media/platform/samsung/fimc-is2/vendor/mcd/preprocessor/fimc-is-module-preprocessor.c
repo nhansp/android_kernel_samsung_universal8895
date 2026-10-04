@@ -1145,7 +1145,8 @@ static int sensor_preproc_probe(struct platform_device *pdev)
 	int preproc_irq = 0;
 
 	BUG_ON(!pdev);
-	BUG_ON(!fimc_is_dev);
+	if (!fimc_is_dev)
+		return -EPROBE_DEFER;	/* core probes later on 6.18 */
 
 	dev = &pdev->dev;
 	dnode = dev->of_node;
