@@ -1208,6 +1208,116 @@ static bool sleep_bare_eint;
 module_param(sleep_bare_eint, bool, 0644);
 static u32 eint_wake_boot;			/* 0x60c at probe (== the cpuidle value) */
 
+/*
+ * DEBUG (L7, 2026-10-05) sleep_wdt=<s>: arm the PERIS watchdog for a reset after <s> seconds
+ * right before the SMC (or the sleep_wfi WFI) and disarm it as soon as ->enter runs again.
+ * The setup is the boot code's, which arms this timer on every boot (SB:0x282a8-0x28300:
+ * WTCON prescaler 0xee, DIV128, ENABLE, RSTEN, INTEN off; WTDAT = WTCNT = 0xff60, 77 s;
+ * PMU 0x408/0x40c = 0xfeffffff, i.e. bit 24 = this timer neither auto-disabled nor masked).
+ * Stock enters SLEEP with the timer stopped (tmr_atboot 0, S:drivers/watchdog/s3c2410_wdt.c:
+ * 68,846-855; WTCON 0x5c00 restored after the wake, work/l7c/stock44-suspend/
+ * dmesg-real.txt:1447) but with bit 24 clear in 0x408/0x40c (:1442; its syscore suspend
+ * writes neither, S:...s3c2410_wdt.c:656-669), while our driver's suspend sets bit 24 in
+ * both (drivers/watchdog/s3c2410_wdt.c s3c2410wdt_suspend()). So the PMU bits are stock's
+ * here and the running timer is the instrument.
+ * The counter runs on OSCCLK in CMU_PERIS (DT watchdog_src), i.e. in the TOP domain:
+ *   reset after <s> s => the SoC stayed powered and clocked: SLEEP was never entered (CPU0
+ *                        parked in a deaf WFI, or a power-down sequence that stalled before
+ *                        the oscillator / TOP went off); the reboot also ends the attempt
+ *                        without a forced reset, with DRAM (pstore, EL3 page) kept
+ *   no reset          => TOP or its oscillator went down (SLEEP entered, then no wake)
+ * The reboot shows as RST_STAT bit 24 (the 8895 variant of drivers/watchdog/s3c2410_wdt.c,
+ * rst_stat_bit 24 as S:...s3c2410_wdt.c:179-185) in the probe line below. 0 = off; at most
+ * 77 (16-bit WTCNT at the boot code's prescaler).
+ * sleep_wdt_auto=1: leave 0x408 bit 24 (AUTOMATIC_WDT_RESET_DISABLE, set by our driver's
+ * suspend) as it is: the PMU then drops the watchdog reset itself once it enters a
+ * low-power mode, so a reset with it set says the PMU never began one at all.
+ */
+static unsigned int sleep_wdt;
+module_param(sleep_wdt, uint, 0644);
+static bool sleep_wdt_auto;
+module_param(sleep_wdt_auto, bool, 0644);
+
+#define E8895_WTCON		0x00	/* drivers/watchdog/s3c2410_wdt.c:32-35 */
+#define E8895_WTDAT		0x04
+#define E8895_WTCNT		0x08
+#define E8895_WTCLRINT		0x0c
+#define E8895_WTCON_RSTEN	BIT(0)	/* :40-53 */
+#define E8895_WTCON_INTEN	BIT(2)
+#define E8895_WTCON_DIV128	(3 << 3)
+#define E8895_WTCON_DIV_MASK	(3 << 3)
+#define E8895_WTCON_ENABLE	BIT(5)
+#define E8895_WTCON_PRESCALE(x)	((x) << 8)
+#define E8895_WTCON_PRESCALE_MASK (0xff << 8)
+#define E8895_WDT_PRESCALE	0xee	/* SB:0x282e0-0x282e4: orr #0xe00, orr #0xe000 */
+#define E8895_WDT_OSC		26000000	/* oscclk, the DT watchdog_src clock */
+#define E8895_WDT_DISABLE	0x0408	/* EXYNOS5_WDT_DISABLE_REG_OFFSET; SB:0x282cc */
+#define E8895_WDT_MASK_RESET	0x040c	/* EXYNOS5_WDT_MASK_RESET_REG_OFFSET; SB:0x282d0 */
+#define E8895_WDT_BIT		BIT(24)	/* S:drivers/watchdog/s3c2410_wdt.c:182 mask_bit */
+#define E8895_RST_STAT		0x0404	/* EXYNOS5_RST_STAT_REG_OFFSET */
+
+static void __iomem *e8895_wdt_base;
+static u32 e8895_wdt_con, e8895_wdt_dat, e8895_wdt_dis, e8895_wdt_mask;
+static bool e8895_wdt_armed;
+
+static void e8895_wdt_arm(void)
+{
+	void __iomem *w = e8895_wdt_base;
+	u32 cnt, con;
+
+	if (!sleep_wdt)
+		return;
+	if (!w) {
+		pr_warn("exynos8895-pm: DEBUG wdt: no watchdog mapping, sleep_wdt ignored\n");
+		return;
+	}
+	cnt = min_t(u64, 0xffff, DIV_ROUND_UP((u64)sleep_wdt * E8895_WDT_OSC,
+					      128 * (E8895_WDT_PRESCALE + 1)));
+	e8895_wdt_con = readl(w + E8895_WTCON);
+	e8895_wdt_dat = readl(w + E8895_WTDAT);
+	e8895_wdt_dis = pmu_raw_readl(E8895_WDT_DISABLE);
+	e8895_wdt_mask = pmu_raw_readl(E8895_WDT_MASK_RESET);
+	/* the boot code's order: stop, clear the interrupt, open the PMU, load, start */
+	writel(e8895_wdt_con & ~(E8895_WTCON_ENABLE | E8895_WTCON_RSTEN), w + E8895_WTCON);
+	writel(1, w + E8895_WTCLRINT);
+	if (!sleep_wdt_auto)
+		pmu_raw_writel(e8895_wdt_dis & ~E8895_WDT_BIT, E8895_WDT_DISABLE);
+	pmu_raw_writel(e8895_wdt_mask & ~E8895_WDT_BIT, E8895_WDT_MASK_RESET);
+	writel(cnt, w + E8895_WTDAT);
+	writel(cnt, w + E8895_WTCNT);
+	con = (e8895_wdt_con & ~(E8895_WTCON_INTEN | E8895_WTCON_PRESCALE_MASK |
+				 E8895_WTCON_DIV_MASK)) |
+	      E8895_WTCON_PRESCALE(E8895_WDT_PRESCALE) | E8895_WTCON_DIV128 |
+	      E8895_WTCON_ENABLE | E8895_WTCON_RSTEN;
+	writel(con, w + E8895_WTCON);
+	e8895_wdt_armed = true;
+	pr_info("exynos8895-pm: DEBUG wdt: reset in %u s: WTCON %08x -> %08x WTCNT %04x, 0x408 %08x -> %08x 0x40c %08x -> %08x\n",
+		sleep_wdt, e8895_wdt_con, readl(w + E8895_WTCON), cnt, e8895_wdt_dis,
+		pmu_raw_readl(E8895_WDT_DISABLE), e8895_wdt_mask,
+		pmu_raw_readl(E8895_WDT_MASK_RESET));
+}
+
+/* after a real SLEEP the timer is the one the wake path left; stopped either way */
+static void e8895_wdt_disarm(void)
+{
+	void __iomem *w = e8895_wdt_base;
+	u32 left;
+
+	if (!e8895_wdt_armed)
+		return;
+	e8895_wdt_armed = false;
+	writel(readl(w + E8895_WTCON) & ~(E8895_WTCON_ENABLE | E8895_WTCON_RSTEN),
+	       w + E8895_WTCON);
+	left = readl(w + E8895_WTCNT);
+	writel(1, w + E8895_WTCLRINT);
+	pmu_raw_writel(e8895_wdt_dis, E8895_WDT_DISABLE);
+	pmu_raw_writel(e8895_wdt_mask, E8895_WDT_MASK_RESET);
+	writel(e8895_wdt_dat, w + E8895_WTDAT);
+	writel(e8895_wdt_con, w + E8895_WTCON);
+	pr_info("exynos8895-pm: DEBUG wdt: disarmed, WTCNT %04x left, WTCON %08x\n",
+		left, readl(w + E8895_WTCON));
+}
+
 /* power_state of the SMC: sleep_bare forces C2 (0x00010000), otherwise the
  * stock SLEEP word unless sleep_psci overrides it */
 static unsigned int e8895_smc_state(void)
@@ -1720,12 +1830,14 @@ static int e8895_pm_enter(suspend_state_t state)
 		pr_info("exynos8895-pm: DEBUG c2prep: CONF ok=%d STATUS %x\n",
 			e8895_pmu_cpu_conf_ok(cpu), e8895_pmu_cpu_status(cpu));
 	}
+	e8895_wdt_arm();					/* DEBUG sleep_wdt */
 	if (sleep_wfi && sleep_bare) {				/* DEBUG */
 		cpu_do_idle();
 		ret = 0;
 	} else {
 		ret = e8895_psci_suspend(e8895_smc_state());	/* DEBUG sleep_psci */
 	}
+	e8895_wdt_disarm();					/* DEBUG sleep_wdt */
 	if (sleep_c2prep) {					/* DEBUG l7el3 */
 		e8895_pmu_cpu_up(cpu);
 		pr_info("exynos8895-pm: DEBUG c2prep: back %d, CONF ok=%d STATUS %x\n",
@@ -1880,6 +1992,8 @@ static struct notifier_block e8895_pm_bus_nb = {
 static int e8895_pm_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct device_node *np;
+	struct resource res;
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(e8895_pm_bases); i++) {
@@ -1904,11 +2018,25 @@ static int e8895_pm_probe(struct platform_device *pdev)
 		dev_err(dev, "PMU CPU hooks not ready: no SLEEP, mem falls back to s2idle\n");
 		return -ENODEV;
 	}
-	if (sleep_trace)		/* DEBUG: what a forced reset after a SLEEP attempt left behind */
+	if (sleep_trace) {		/* DEBUG: what a forced reset after a SLEEP attempt left behind */
 		pr_info("exynos8895-pm: DEBUG boot WAKEUP_STAT=%08x 0x640=%08x seq=%08x opt=%08x mif=%08x wk=%08x eint=%08x\n",
 			pmu_raw_readl(E8895_WAKEUP_STAT), pmu_raw_readl(E8895_EXTRA_WAKEUP_STAT),
 			pmu_raw_readl(0x0200), pmu_raw_readl(0x0208), pmu_raw_readl(0x0240),
 			pmu_raw_readl(0x610), pmu_raw_readl(E8895_EINT_WAKEUP_MASK));
+		/* DEBUG sleep_wdt: RST_STAT bit 24 = the reset came from the PERIS watchdog */
+		pr_info("exynos8895-pm: DEBUG boot RST_STAT=%08x%s wdt 0x408=%08x 0x40c=%08x seqstat=%08x mifstat=%08x 0x500=%08x\n",
+			pmu_raw_readl(E8895_RST_STAT),
+			pmu_raw_readl(E8895_RST_STAT) & E8895_WDT_BIT ? " (watchdog reset)" : "",
+			pmu_raw_readl(E8895_WDT_DISABLE), pmu_raw_readl(E8895_WDT_MASK_RESET),
+			pmu_raw_readl(0x0204), pmu_raw_readl(0x0244), pmu_raw_readl(0x0500));
+	}
+	/* DEBUG sleep_wdt: the s3c2410_wdt driver owns the region, so no claim here */
+	np = of_find_compatible_node(NULL, NULL, "samsung,exynos8895-wdt");
+	if (np) {
+		if (!of_address_to_resource(np, 0, &res))
+			e8895_wdt_base = devm_ioremap(dev, res.start, resource_size(&res));
+		of_node_put(np);
+	}
 	WRITE_ONCE(e8895_pm_probed, true);
 	/* DEBUG (l7el3): the value 0x60c has during cpuidle, before the pinctrl
 	 * syscore op overwrites it with the EINT wake mask (sleep_bare_eint) */
