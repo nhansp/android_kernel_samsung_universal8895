@@ -18,6 +18,7 @@
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/kconfig.h>
+#include <linux/moduleparam.h>
 #include <linux/notifier.h>
 #include <linux/printk.h>
 #include <linux/reboot.h>
@@ -146,6 +147,108 @@ static const struct exynos8895_pmu_seq exynos8895_lpm_init[] = {
 	{ 0x2608, 0x00010000, 0x00010000 },	/* CAL:pmucal_system_exynos8895.h:144 CLUSTER0_L2_OPTION */
 	{ 0x2628, 0x00010000, 0x00010000 },	/* CAL:pmucal_system_exynos8895.h:145 CLUSTER1_L2_OPTION */
 };
+
+/*
+ * The other 42 writes of stock pmucal_lpm_init (CAL:pmucal_system_exynos8895.h:84-125,
+ * between rows 80 and 81 of exynos8895_lpm_init[]): hardware clock gating of the CMU
+ * clock muxes (*_HCHGEN_CLKMUX) and dynamic root clock gating of the bus components
+ * (BUS_COMPONENT_DRCG_EN) of every SYSREG. Stock writes them at time_init through the
+ * same sequence (S:drivers/soc/samsung/cal-if/pmucal_system.c:200-210; every base is in
+ * CAL:pmucal_p2vmap_exynos8895.h). S-Boot does not leave them set: SYSREG_DPU0
+ * DRCG_EN reads 0x80000fff on this kernel (heartbeat dpu+ drcg0), stock writes
+ * 0xffffffff, and the domains' PMUCAL save/restore keeps whatever was there
+ * (CAL:pmucal_local_exynos8895.h:230). In SLEEP the PMU asks CMU_TOP/CMU_MIF to stop
+ * their clocks (CLKSTOP_CMU_TOP/MIF, CAL:pmucal_system_exynos8895.h enter_sleep). A
+ * target inside a power domain is written only while that domain is on (STATUS[3:0] =
+ * 0xf), as the L1 self-test reads them (greatlte-l1-selftest.c, rows 84-125, whose
+ * values this table repeats). exynos8895_pmu.lpm_cmu=0 skips them (A/B).
+ */
+struct exynos8895_cmu_seq {
+	u32 pd_st, pa, mask, val;
+};
+
+#define EXYNOS8895_LPM_CMU_AT	81	/* exynos8895_lpm_init[81] = CAL line 126 */
+
+static const struct exynos8895_cmu_seq exynos8895_lpm_init_cmu[] = {
+	{      0, 0x15a80000, 0x00000001, 0x00000001 },	/* CAL:pmucal_system_exynos8895.h:84 CMU_HCHGEN_CLKMUX */
+	{      0, 0x15810850, 0x00000001, 0x00000001 },	/* CAL:pmucal_system_exynos8895.h:85 CORE_HCHGEN_CLKMUX */
+	{      0, 0x16800850, 0x0000007f, 0x00000001 },	/* CAL:pmucal_system_exynos8895.h:86 CPUCL0_HCHGEN_CLKMUX */
+	{      0, 0x16900850, 0x0000007f, 0x00000001 },	/* CAL:pmucal_system_exynos8895.h:87 CPUCL1_HCHGEN_CLKMUX */
+	{      0, 0x16000850, 0x00000001, 0x00000001 },	/* CAL:pmucal_system_exynos8895.h:88 MIF0_HCHGEN_CLKMUX */
+	{      0, 0x16100850, 0x00000001, 0x00000001 },	/* CAL:pmucal_system_exynos8895.h:89 MIF1_HCHGEN_CLKMUX */
+	{      0, 0x16200850, 0x00000001, 0x00000001 },	/* CAL:pmucal_system_exynos8895.h:90 MIF2_HCHGEN_CLKMUX */
+	{      0, 0x16300850, 0x00000001, 0x00000001 },	/* CAL:pmucal_system_exynos8895.h:91 MIF3_HCHGEN_CLKMUX */
+	{      0, 0x10010850, 0x0000001f, 0x00000000 },	/* CAL:pmucal_system_exynos8895.h:92 PERIS_HCHGEN_CLKMUX */
+	{ 0x4004, 0x13e20200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:93 BUS_COMPONENT_DRCG_EN */
+	{      0, 0x16420200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:94 BUS_COMPONENT_DRCG_EN */
+	{ 0x4044, 0x17c20200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:95 BUS_COMPONENT_DRCG_EN */
+	{      0, 0x15c20200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:96 BUS_COMPONENT_DRCG_EN */
+	{      0, 0x15a20200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:97 BUS_COMPONENT_DRCG_EN */
+	{ 0x4024, 0x12c20200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:98 BUS_COMPONENT_DRCG2_EN */
+	{      0, 0x16820200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:99 BUS_COMPONENT_DRCG_EN */
+	{      0, 0x16920200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:100 BUS_COMPONENT_DRCG2_EN */
+	{ 0x4044, 0x17c20200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:101 BUS_COMPONENT_DRCG_EN */
+	{ 0x5224, 0x12e20200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:102 BUS_COMPONENT_DRCG_EN */
+	{ 0x4064, 0x12820200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:103 BUS_COMPONENT_DRCG_EN */
+	{ 0x4084, 0x12a20200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:104 BUS_COMPONENT_DRCG_EN */
+	{ 0x40a4, 0x13420200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:105 BUS_COMPONENT_DRCG_EN */
+	{      0, 0x11020200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:106 BUS_COMPONENT_DRCG_EN */
+	{      0, 0x11420200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:107 BUS_COMPONENT_DRCG_EN */
+	{ 0x40c4, 0x13a20200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:108 BUS_COMPONENT_DRCG_EN */
+	{ 0x40e4, 0x13820200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:109 BUS_COMPONENT_DRCG_EN */
+	{      0, 0x15e20200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:110 BUS_COMPONENT_DRCG_EN */
+	{ 0x4104, 0x13120200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:111 BUS_COMPONENT_DRCG_EN */
+	{ 0x4124, 0x13020200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:112 BUS_COMPONENT_DRCG_EN */
+	{ 0x4144, 0x13520200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:113 BUS_COMPONENT_DRCG_EN */
+	{ 0x4164, 0x13c20200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:114 BUS_COMPONENT_DRCG_EN */
+	{      0, 0x16020200, 0xffffffff, 0xffffefff },	/* CAL:pmucal_system_exynos8895.h:115 BUS_COMPONENT_DRCG_EN */
+	{      0, 0x16120200, 0xffffffff, 0xffffefff },	/* CAL:pmucal_system_exynos8895.h:116 BUS_COMPONENT_DRCG_EN */
+	{      0, 0x16220200, 0xffffffff, 0xffffefff },	/* CAL:pmucal_system_exynos8895.h:117 BUS_COMPONENT_DRCG_EN */
+	{      0, 0x16320200, 0xffffffff, 0xffffefff },	/* CAL:pmucal_system_exynos8895.h:118 BUS_COMPONENT_DRCG_EN */
+	{      0, 0x10420200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:119 BUS_COMPONENT_DRCG_EN */
+	{      0, 0x10820200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:120 BUS_COMPONENT_DRCG_EN */
+	{      0, 0x10030200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:121 BUS_COMPONENT_DRCG_EN */
+	{ 0x5424, 0x14220200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:122 BUS_COMPONENT_DRCG_EN */
+	{ 0x4184, 0x13220200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:123 BUS_COMPONENT_DRCG_EN */
+	{      0, 0x15830200, 0xffffffff, 0xfffffff0 },	/* CAL:pmucal_system_exynos8895.h:124 BUS_COMPONENT_DRCG_EN */
+	{ 0x41a4, 0x14020200, 0xffffffff, 0xffffffff },	/* CAL:pmucal_system_exynos8895.h:125 BUS_COMPONENT_DRCG_EN */
+};
+
+static bool lpm_cmu = true;
+module_param(lpm_cmu, bool, 0444);
+MODULE_PARM_DESC(lpm_cmu, "write the 42 CMU/SYSREG rows of stock lpm_init at boot (default 1)");
+
+static void exynos8895_lpm_init_cmu_apply(void)
+{
+	unsigned int i, changed = 0, skipped = 0;
+
+	for (i = 0; i < ARRAY_SIZE(exynos8895_lpm_init_cmu); i++) {
+		const struct exynos8895_cmu_seq *e = &exynos8895_lpm_init_cmu[i];
+		void __iomem *va;
+		u32 v;
+
+		if (e->pd_st && (pmu_raw_readl(e->pd_st) & 0xf) != 0xf) {
+			skipped++;
+			continue;
+		}
+		va = ioremap(e->pa & PAGE_MASK, PAGE_SIZE);
+		if (!va) {
+			skipped++;
+			continue;
+		}
+		v = readl(va + (e->pa & ~PAGE_MASK));
+		if ((v & e->mask) != e->val) {
+			changed++;
+			pr_info("exynos8895-pmu: lpm_init %08x: %08x -> %08x\n", e->pa, v,
+				e->mask == U32_MAX ? e->val : (v & ~e->mask) | e->val);
+		}
+		writel(e->mask == U32_MAX ? e->val : (v & ~e->mask) | e->val,
+		       va + (e->pa & ~PAGE_MASK));
+		iounmap(va);
+	}
+	pr_info("exynos8895-pmu: lpm_init CMU/SYSREG %u of %zu entries changed, %u skipped\n",
+		changed, ARRAY_SIZE(exynos8895_lpm_init_cmu), skipped);
+}
 
 /*
  * CPU and cluster power hooks for deep idle and CPU hotplug (spec L7 5.3).
@@ -501,7 +604,12 @@ static void exynos8895_pmu_init(void)
 
 	for (i = 0; i < ARRAY_SIZE(exynos8895_lpm_init); i++) {
 		const struct exynos8895_pmu_seq *e = &exynos8895_lpm_init[i];
-		u32 v = pmu_raw_readl(e->off);
+		u32 v;
+
+		/* stock order: the CMU/SYSREG rows sit between CAL lines 83 and 126 */
+		if (i == EXYNOS8895_LPM_CMU_AT && lpm_cmu)
+			exynos8895_lpm_init_cmu_apply();
+		v = pmu_raw_readl(e->off);
 
 		if ((v & e->mask) != e->val)
 			changed++;
