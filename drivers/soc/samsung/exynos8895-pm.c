@@ -1318,6 +1318,169 @@ static void e8895_wdt_disarm(void)
 		left, readl(w + E8895_WTCON));
 }
 
+/*
+ * DEBUG (L7, 2026-10-05) sleep_hwacg=1: put the 103 gates our clock driver took out of
+ * hardware auto-gating back into it for the SMC, and restore them as soon as ->enter runs
+ * again. exynos_arm64_init_clocks() sets GATE_MANUAL (bit 20) and clears GATE_ENABLE_HWACG
+ * (bit 28) on every gate register of a CMU's clk_regs[] (drivers/clk/samsung/
+ * clk-exynos-arm64.c:142-170). Stock never wrote the MANUAL bit: ra_set_gate()/ra_get_gate()
+ * drive CG_VALUE or ENABLE_AUTOMATIC_CLKGATING in whatever mode the gate is in
+ * (S:drivers/soc/samsung/cal-if/ra.c:378-419), so its gates entered SLEEP in the boot mode,
+ * auto-gating, apart from the USI/UAIF/DSIF/JPEG set it took off the Q-channel (VCLK_QCH_DIS,
+ * S:drivers/clk/samsung/clk-exynos8895.c:48-53,273,372-418). The SLEEP enter list asks
+ * CMU_TOP for a clock stop (CAL:pmucal_system_exynos8895.h:802 CLKSTOP_CMU_TOP = 1) before
+ * TOP powers off (:816 TOP_PWR = 0); if that stop waits for the gates' Q-channel handshakes,
+ * a manual gate with CG_VAL set (forced on) can hold it. The table = the gate entries
+ * (offsets 0x2000-0x2fff, clk-exynos-arm64.c:32-33) of top/peris/fsys0/fsys1/peric0/
+ * peric1_clk_regs[] (drivers/clk/samsung/clk-exynos8895.c:304,1334,1546,1804,2065,2304),
+ * the six CMUs outside every power domain; the CMUs inside one are off at the SMC (the
+ * sleep_trace pd dump reads 0/0 for all but dbg). With sleep_trace=1, ->enter lists the
+ * forced-on gates whether or not sleep_hwacg is set.
+ */
+static bool sleep_hwacg;
+module_param(sleep_hwacg, bool, 0644);
+
+#define E8895_GATE_MANUAL	BIT(20)	/* clk-exynos-arm64.c:24 */
+#define E8895_GATE_CG_VAL	BIT(21)	/* the enable bit of every GATE() in clk-exynos8895.c */
+#define E8895_GATE_HWACG	BIT(28)	/* clk-exynos-arm64.c:25 */
+
+static const u16 e8895_hwacg_top[] = {	/* 25 */
+	0x2060, 0x2064, 0x2068, 0x206c, 0x2074, 0x2078, 0x207c, 0x20b4, 0x20b8, 0x20bc,
+	0x20c0, 0x20c8, 0x20cc, 0x20d0, 0x20d4, 0x20d8, 0x20dc, 0x20e0, 0x20e4, 0x20e8,
+	0x20ec, 0x20f0, 0x20f4, 0x20f8, 0x20fc
+};
+static const u16 e8895_hwacg_peris[] = {	/* 1 */
+	0x202c
+};
+static const u16 e8895_hwacg_fsys0[] = {	/* 11 */
+	0x202c, 0x2030, 0x2050, 0x2054, 0x206c, 0x2070, 0x2078, 0x207c, 0x2080, 0x2084,
+	0x2088
+};
+static const u16 e8895_hwacg_fsys1[] = {	/* 17 */
+	0x2000, 0x2034, 0x2038, 0x203c, 0x2040, 0x2044, 0x2048, 0x204c, 0x2050, 0x2054,
+	0x2058, 0x205c, 0x2060, 0x2094, 0x2098, 0x209c, 0x20a0
+};
+static const u16 e8895_hwacg_peric0[] = {	/* 10 */
+	0x2028, 0x2030, 0x2040, 0x2044, 0x2048, 0x204c, 0x2050, 0x2054, 0x2058, 0x205c
+};
+static const u16 e8895_hwacg_peric1[] = {	/* 39 */
+	0x200c, 0x202c, 0x2030, 0x2034, 0x2038, 0x2048, 0x204c, 0x2050, 0x2054, 0x2058,
+	0x205c, 0x2060, 0x2064, 0x2068, 0x206c, 0x2070, 0x2074, 0x207c, 0x2080, 0x2084,
+	0x2088, 0x208c, 0x2090, 0x2094, 0x2098, 0x209c, 0x20a0, 0x20a4, 0x20a8, 0x20ac,
+	0x20b0, 0x20b4, 0x20b8, 0x20bc, 0x20c0, 0x20c4, 0x20c8, 0x20cc, 0x20d0
+};
+
+/* bases: the cmu_* nodes of exynos8895.dtsi (:2789, :425, :1664, :1734, :557, :860) */
+static const struct {
+	const char *name;
+	phys_addr_t base;
+	const u16 *off;
+	unsigned int n;
+} e8895_hwacg_cmus[] = {
+	{ "top",    0x15a80000, e8895_hwacg_top,    ARRAY_SIZE(e8895_hwacg_top) },
+	{ "peris",  0x10010000, e8895_hwacg_peris,  ARRAY_SIZE(e8895_hwacg_peris) },
+	{ "fsys0",  0x11000000, e8895_hwacg_fsys0,  ARRAY_SIZE(e8895_hwacg_fsys0) },
+	{ "fsys1",  0x11400000, e8895_hwacg_fsys1,  ARRAY_SIZE(e8895_hwacg_fsys1) },
+	{ "peric0", 0x10400000, e8895_hwacg_peric0, ARRAY_SIZE(e8895_hwacg_peric0) },
+	{ "peric1", 0x10800000, e8895_hwacg_peric1, ARRAY_SIZE(e8895_hwacg_peric1) },
+};
+
+#define E8895_HWACG_N	(ARRAY_SIZE(e8895_hwacg_top) + ARRAY_SIZE(e8895_hwacg_peris) + \
+			 ARRAY_SIZE(e8895_hwacg_fsys0) + ARRAY_SIZE(e8895_hwacg_fsys1) + \
+			 ARRAY_SIZE(e8895_hwacg_peric0) + ARRAY_SIZE(e8895_hwacg_peric1))
+
+static void __iomem *e8895_hwacg_va[ARRAY_SIZE(e8895_hwacg_cmus)];
+static u32 e8895_hwacg_saved[E8895_HWACG_N];
+static bool e8895_hwacg_done;
+
+/* all six or none, so that the saved values always line up with the table */
+static void e8895_hwacg_map(struct device *dev)
+{
+	unsigned int c;
+
+	for (c = 0; c < ARRAY_SIZE(e8895_hwacg_cmus); c++) {
+		/* no region claim: the clock driver owns these blocks */
+		e8895_hwacg_va[c] = devm_ioremap(dev, e8895_hwacg_cmus[c].base, SZ_16K);
+		if (!e8895_hwacg_va[c]) {
+			dev_warn(dev, "DEBUG: cannot map cmu_%s, no sleep_hwacg\n",
+				 e8895_hwacg_cmus[c].name);
+			memset(e8895_hwacg_va, 0, sizeof(e8895_hwacg_va));
+			return;
+		}
+	}
+}
+
+/* DEBUG sleep_trace: per CMU, how many listed gates are manual and which are forced on */
+static void e8895_hwacg_dump(void)
+{
+	unsigned int c, i;
+
+	if (!e8895_hwacg_va[0])
+		return;
+	for (c = 0; c < ARRAY_SIZE(e8895_hwacg_cmus); c++) {
+		unsigned int manual = 0, forced = 0;
+		char buf[128];
+		int n = 0;
+
+		buf[0] = 0;
+		for (i = 0; i < e8895_hwacg_cmus[c].n; i++) {
+			u16 off = e8895_hwacg_cmus[c].off[i];
+			u32 v = readl(e8895_hwacg_va[c] + off);
+
+			if (!(v & E8895_GATE_MANUAL))
+				continue;
+			manual++;
+			if (v & E8895_GATE_CG_VAL) {
+				forced++;
+				n += scnprintf(buf + n, sizeof(buf) - n, " %x", off);
+			}
+		}
+		pr_info("exynos8895-pm: DEBUG pre-SMC gates cmu_%s: %u listed, %u manual, %u forced on:%s\n",
+			e8895_hwacg_cmus[c].name, e8895_hwacg_cmus[c].n, manual, forced,
+			forced ? buf : " -");
+	}
+}
+
+static void e8895_hwacg_set(void)
+{
+	unsigned int c, i, k = 0, changed = 0;
+
+	if (!sleep_hwacg)
+		return;
+	if (!e8895_hwacg_va[0]) {
+		pr_warn("exynos8895-pm: DEBUG hwacg: no CMU mapping, sleep_hwacg ignored\n");
+		return;
+	}
+	for (c = 0; c < ARRAY_SIZE(e8895_hwacg_cmus); c++) {
+		for (i = 0; i < e8895_hwacg_cmus[c].n; i++) {
+			void __iomem *a = e8895_hwacg_va[c] + e8895_hwacg_cmus[c].off[i];
+			u32 v = readl(a);
+
+			e8895_hwacg_saved[k++] = v;
+			if ((v & E8895_GATE_MANUAL) || !(v & E8895_GATE_HWACG)) {
+				writel((v & ~E8895_GATE_MANUAL) | E8895_GATE_HWACG, a);
+				changed++;
+			}
+		}
+	}
+	e8895_hwacg_done = true;
+	pr_info("exynos8895-pm: DEBUG hwacg: %u of %u gates back to auto-gating\n", changed, k);
+}
+
+static void e8895_hwacg_restore(void)
+{
+	unsigned int c, i, k = 0;
+
+	if (!e8895_hwacg_done)
+		return;
+	e8895_hwacg_done = false;
+	for (c = 0; c < ARRAY_SIZE(e8895_hwacg_cmus); c++)
+		for (i = 0; i < e8895_hwacg_cmus[c].n; i++)
+			writel(e8895_hwacg_saved[k++],
+			       e8895_hwacg_va[c] + e8895_hwacg_cmus[c].off[i]);
+	pr_info("exynos8895-pm: DEBUG hwacg: %u gates back to manual\n", k);
+}
+
 /* power_state of the SMC: sleep_bare forces C2 (0x00010000), otherwise the
  * stock SLEEP word unless sleep_psci overrides it */
 static unsigned int e8895_smc_state(void)
@@ -1830,6 +1993,9 @@ static int e8895_pm_enter(suspend_state_t state)
 		pr_info("exynos8895-pm: DEBUG c2prep: CONF ok=%d STATUS %x\n",
 			e8895_pmu_cpu_conf_ok(cpu), e8895_pmu_cpu_status(cpu));
 	}
+	if (sleep_trace)
+		e8895_hwacg_dump();				/* DEBUG */
+	e8895_hwacg_set();					/* DEBUG sleep_hwacg */
 	e8895_wdt_arm();					/* DEBUG sleep_wdt */
 	if (sleep_wfi && sleep_bare) {				/* DEBUG */
 		cpu_do_idle();
@@ -1838,6 +2004,7 @@ static int e8895_pm_enter(suspend_state_t state)
 		ret = e8895_psci_suspend(e8895_smc_state());	/* DEBUG sleep_psci */
 	}
 	e8895_wdt_disarm();					/* DEBUG sleep_wdt */
+	e8895_hwacg_restore();					/* DEBUG sleep_hwacg */
 	if (sleep_c2prep) {					/* DEBUG l7el3 */
 		e8895_pmu_cpu_up(cpu);
 		pr_info("exynos8895-pm: DEBUG c2prep: back %d, CONF ok=%d STATUS %x\n",
@@ -2037,6 +2204,7 @@ static int e8895_pm_probe(struct platform_device *pdev)
 			e8895_wdt_base = devm_ioremap(dev, res.start, resource_size(&res));
 		of_node_put(np);
 	}
+	e8895_hwacg_map(dev);				/* DEBUG sleep_hwacg */
 	WRITE_ONCE(e8895_pm_probed, true);
 	/* DEBUG (l7el3): the value 0x60c has during cpuidle, before the pinctrl
 	 * syscore op overwrites it with the EINT wake mask (sleep_bare_eint) */
