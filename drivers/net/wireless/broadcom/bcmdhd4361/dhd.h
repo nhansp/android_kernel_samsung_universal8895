@@ -932,6 +932,13 @@ typedef struct dhd_pub {
 	/* Suspend disable flag and "in suspend" flag */
 	int suspend_disable_flag; /* "1" to disable all extra powersaving during suspend */
 	int in_suspend;			/* flag set to 1 when early suspend called */
+	/* L6DWAKE: set to 1 when the PM notifier (dhd_pm_callback) programmed the
+	 * stock suspend state across a system suspend because userspace had not
+	 * (in_suspend == 0); cleared after the matching resume programming.
+	 * Stock has no such flag: on 4.4 the screen-off SETSUSPENDMODE always ran
+	 * first (S:drivers/net/wireless/bcmdhd4361/wl_android.c:846-861).
+	 */
+	int pm_suspend_programmed;
 #ifdef PNO_SUPPORT
 	int pno_enable;			/* pno status : "1" is pno enable */
 	int pno_suspend;		/* pno suspend status : "1" is pno suspended */
