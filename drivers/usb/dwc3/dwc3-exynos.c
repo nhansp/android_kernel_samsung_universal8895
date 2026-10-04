@@ -11,8 +11,10 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 #include <linux/platform_device.h>
 #include <linux/notifier.h>
+#include <linux/pm_wakeup.h>
 #include <linux/clk.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
@@ -46,6 +48,20 @@ struct dwc3_exynos {
 	/* greatlte: the bind notifier of the dwc3 core of_platform_populate() adds */
 	struct notifier_block	core_nb;
 	bool			watch_core;
+
+	/*
+	 * greatlte: wakeup source held for the whole VBUS session. Stock kept
+	 * the system awake from gadget/host start to stop with the "dwc3-otg"
+	 * wake_lock (S:drivers/usb/dwc3/otg.c:714 init, :226 host on, :270
+	 * host off, :308 gadget on, :344 gadget off); without it every
+	 * suspend attempt suspends dwc3, which soft-disconnects the pull-up
+	 * and the host sees a disconnect (the 3-7 s cable-in flap). Only used
+	 * when vbus_session is set; vbus_lock guards vbus_held because the
+	 * role switch may run where sleeping is not allowed.
+	 */
+	struct wakeup_source	*vbus_ws;
+	spinlock_t		vbus_lock;
+	bool			vbus_held;
 };
 
 /*
@@ -86,10 +102,56 @@ struct dwc3_exynos {
  * early when nothing is connected, A:drivers/usb/gadget/udc/core.c:768-769, and
  * the pull-up itself compares the state first, A:drivers/usb/dwc3/gadget.c:
  * 2824-2827), and it may be called from atomic context.
+ *
+ * The session also holds exynos->vbus_ws from USB_ROLE_DEVICE/USB_ROLE_HOST
+ * until USB_ROLE_NONE, the 6.18 form of stock's "dwc3-otg" wake_lock
+ * (S:drivers/usb/dwc3/otg.c:714, :226/:270 host, :308/:344 gadget): stock never
+ * let the system suspend while a gadget session was up, and neither do we.
+ * With no session (NONE) nothing is held, so the cable-out suspend path stays
+ * free to sleep.
  */
+static void dwc3_exynos_vbus_hold(struct dwc3_exynos *exynos, bool hold)
+{
+	unsigned long flags;
+
+	if (!exynos || !exynos->vbus_ws)
+		return;
+
+	spin_lock_irqsave(&exynos->vbus_lock, flags);
+	if (hold && !exynos->vbus_held) {
+		__pm_stay_awake(exynos->vbus_ws);
+		exynos->vbus_held = true;
+	} else if (!hold && exynos->vbus_held) {
+		__pm_relax(exynos->vbus_ws);
+		exynos->vbus_held = false;
+	}
+	spin_unlock_irqrestore(&exynos->vbus_lock, flags);
+}
+
 static void dwc3_exynos_set_role(struct dwc3 *dwc, enum usb_role role)
 {
 	struct usb_gadget *gadget = dwc->gadget;
+	struct dwc3_exynos *exynos = NULL;
+
+	/*
+	 * Only this glue installs these ops, and it installs them only on the
+	 * core of_platform_populate() added under its own device
+	 * (dwc3_exynos_glue_core()/dwc3_exynos_core_bound() check
+	 * dev->parent), so the parent's driver data is this glue. The wakeup
+	 * state is tracked here rather than on the dwc3 core because the core
+	 * is upstream-owned; a missing glue (never happens) only loses the
+	 * suspend block, never the VBUS session.
+	 */
+	if (dwc->dev && dwc->dev->parent)
+		exynos = dev_get_drvdata(dwc->dev->parent);
+
+	/* The wakeup source is role state, not gadget state: host mode has no
+	 * gadget (dwc3_gadget_exit() freed it) but must still block suspend.
+	 */
+	if (role == USB_ROLE_NONE)
+		dwc3_exynos_vbus_hold(exynos, false);
+	else
+		dwc3_exynos_vbus_hold(exynos, true);
 
 	if (!gadget)
 		return;			/* host mode: dwc3_gadget_exit() freed it */
@@ -272,6 +334,9 @@ static int dwc3_exynos_probe(struct platform_device *pdev)
 	}
 
 	if (driver_data->vbus_session) {
+		spin_lock_init(&exynos->vbus_lock);
+		exynos->vbus_ws = wakeup_source_register(dev,
+							  "dwc3-exynos-vbus");
 		exynos->core_nb.notifier_call = dwc3_exynos_core_bound;
 		ret = bus_register_notifier(&platform_bus_type,
 					 &exynos->core_nb);
@@ -298,6 +363,11 @@ notifier_err:
 		bus_unregister_notifier(&platform_bus_type,
 					 &exynos->core_nb);
 populate_err:
+	if (exynos->vbus_ws) {
+		dwc3_exynos_vbus_hold(exynos, false);
+		wakeup_source_unregister(exynos->vbus_ws);
+		exynos->vbus_ws = NULL;
+	}
 	regulator_disable(exynos->vdd10);
 vdd10_err:
 	regulator_disable(exynos->vdd33);
@@ -319,6 +389,12 @@ static void dwc3_exynos_remove(struct platform_device *pdev)
 	if (exynos->watch_core)
 		bus_unregister_notifier(&platform_bus_type,
 					 &exynos->core_nb);
+
+	if (exynos->vbus_ws) {
+		dwc3_exynos_vbus_hold(exynos, false);
+		wakeup_source_unregister(exynos->vbus_ws);
+		exynos->vbus_ws = NULL;
+	}
 
 	of_platform_depopulate(&pdev->dev);
 
