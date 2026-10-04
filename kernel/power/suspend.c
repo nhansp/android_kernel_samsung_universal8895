@@ -446,7 +446,7 @@ static int suspend_enter(suspend_state_t state, bool *wakeup)
 	if (error)
 		goto Devices_early_resume;
 
-	if (READ_ONCE(suspend_skip_noirq))
+	if (!READ_ONCE(suspend_skip_noirq))
 		error = dpm_suspend_noirq(PMSG_SUSPEND);
 	if (error) {
 		last_dev = suspend_stats.last_failed_dev + REC_FAILED_NUM - 1;
