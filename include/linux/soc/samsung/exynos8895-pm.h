@@ -40,6 +40,8 @@ int e8895_psci_suspend(u32 power_state);	/* 0 after a real power-down and wake, 
 int e8895_sicd_prepare(void);			/* 0: armed, caller passes E8895_PSCI_SICD; <0: vetoed */
 void e8895_sicd_exit(bool early_wakeup);
 const char *e8895_sicd_last_veto(void);
+void e8895_dbg_sicd_enter(void);		/* DEBUG: s2idle SICD armed, c2_lock held */
+void e8895_dbg_sicd_leave(void);		/* DEBUG: first CPU out of SICD, c2_lock held */
 
 /* exynos8895-pmu.c (CPU and cluster power hooks) */
 void e8895_pmu_cpu_down(unsigned int cpu);

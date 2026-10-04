@@ -207,6 +207,7 @@ static u32 e8895_c2_prepare(unsigned int cpu, bool s2idle)
 				sicd_entered = true;
 				state = E8895_PSCI_SICD;		/* :544 */
 				atomic_inc(&e8895_stats.sicd_s2);
+				e8895_dbg_sicd_enter();		/* DEBUG sicd_wdt/sicd_hwacg */
 			} else {
 				atomic_inc(&e8895_stats.sicd_veto);
 			}
@@ -269,6 +270,7 @@ static void e8895_c2_finish(unsigned int cpu, bool failed)
 		atomic_inc(&e8895_stats.cpd);
 	}
 	if (sicd_entered) {					/* :564-570: the first CPU out runs the exit */
+		e8895_dbg_sicd_leave();				/* DEBUG sicd_wdt/sicd_hwacg */
 		e8895_sicd_exit(failed);
 		sicd_entered = false;
 		atomic_inc(&e8895_stats.sicd);

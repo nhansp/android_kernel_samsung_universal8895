@@ -1260,18 +1260,14 @@ static void __iomem *e8895_wdt_base;
 static u32 e8895_wdt_con, e8895_wdt_dat, e8895_wdt_dis, e8895_wdt_mask;
 static bool e8895_wdt_armed;
 
-static void e8895_wdt_arm(void)
+/* timer + PMU setup shared by the SLEEP path (verbose) and the s2idle SICD path (quiet: it runs
+ * in the idle path with IRQs off, so nothing there may print) */
+static u32 e8895_wdt_start(unsigned int secs, bool keep_auto)
 {
 	void __iomem *w = e8895_wdt_base;
 	u32 cnt, con;
 
-	if (!sleep_wdt)
-		return;
-	if (!w) {
-		pr_warn("exynos8895-pm: DEBUG wdt: no watchdog mapping, sleep_wdt ignored\n");
-		return;
-	}
-	cnt = min_t(u64, 0xffff, DIV_ROUND_UP((u64)sleep_wdt * E8895_WDT_OSC,
+	cnt = min_t(u64, 0xffff, DIV_ROUND_UP((u64)secs * E8895_WDT_OSC,
 					      128 * (E8895_WDT_PRESCALE + 1)));
 	e8895_wdt_con = readl(w + E8895_WTCON);
 	e8895_wdt_dat = readl(w + E8895_WTDAT);
@@ -1280,7 +1276,7 @@ static void e8895_wdt_arm(void)
 	/* the boot code's order: stop, clear the interrupt, open the PMU, load, start */
 	writel(e8895_wdt_con & ~(E8895_WTCON_ENABLE | E8895_WTCON_RSTEN), w + E8895_WTCON);
 	writel(1, w + E8895_WTCLRINT);
-	if (!sleep_wdt_auto)
+	if (!keep_auto)
 		pmu_raw_writel(e8895_wdt_dis & ~E8895_WDT_BIT, E8895_WDT_DISABLE);
 	pmu_raw_writel(e8895_wdt_mask & ~E8895_WDT_BIT, E8895_WDT_MASK_RESET);
 	writel(cnt, w + E8895_WTDAT);
@@ -1291,20 +1287,16 @@ static void e8895_wdt_arm(void)
 	      E8895_WTCON_ENABLE | E8895_WTCON_RSTEN;
 	writel(con, w + E8895_WTCON);
 	e8895_wdt_armed = true;
-	pr_info("exynos8895-pm: DEBUG wdt: reset in %u s: WTCON %08x -> %08x WTCNT %04x, 0x408 %08x -> %08x 0x40c %08x -> %08x\n",
-		sleep_wdt, e8895_wdt_con, readl(w + E8895_WTCON), cnt, e8895_wdt_dis,
-		pmu_raw_readl(E8895_WDT_DISABLE), e8895_wdt_mask,
-		pmu_raw_readl(E8895_WDT_MASK_RESET));
+	return cnt;
 }
 
-/* after a real SLEEP the timer is the one the wake path left; stopped either way */
-static void e8895_wdt_disarm(void)
+/* after a real SLEEP the timer is the one the wake path left; stopped either way. Returns the
+ * count that was left. */
+static u32 e8895_wdt_stop(void)
 {
 	void __iomem *w = e8895_wdt_base;
 	u32 left;
 
-	if (!e8895_wdt_armed)
-		return;
 	e8895_wdt_armed = false;
 	writel(readl(w + E8895_WTCON) & ~(E8895_WTCON_ENABLE | E8895_WTCON_RSTEN),
 	       w + E8895_WTCON);
@@ -1314,8 +1306,35 @@ static void e8895_wdt_disarm(void)
 	pmu_raw_writel(e8895_wdt_mask, E8895_WDT_MASK_RESET);
 	writel(e8895_wdt_dat, w + E8895_WTDAT);
 	writel(e8895_wdt_con, w + E8895_WTCON);
+	return left;
+}
+
+static void e8895_wdt_arm(void)
+{
+	u32 cnt;
+
+	if (!sleep_wdt)
+		return;
+	if (!e8895_wdt_base) {
+		pr_warn("exynos8895-pm: DEBUG wdt: no watchdog mapping, sleep_wdt ignored\n");
+		return;
+	}
+	cnt = e8895_wdt_start(sleep_wdt, sleep_wdt_auto);
+	pr_info("exynos8895-pm: DEBUG wdt: reset in %u s: WTCON %08x -> %08x WTCNT %04x, 0x408 %08x -> %08x 0x40c %08x -> %08x\n",
+		sleep_wdt, e8895_wdt_con, readl(e8895_wdt_base + E8895_WTCON), cnt,
+		e8895_wdt_dis, pmu_raw_readl(E8895_WDT_DISABLE), e8895_wdt_mask,
+		pmu_raw_readl(E8895_WDT_MASK_RESET));
+}
+
+static void e8895_wdt_disarm(void)
+{
+	u32 left;
+
+	if (!e8895_wdt_armed)
+		return;
+	left = e8895_wdt_stop();
 	pr_info("exynos8895-pm: DEBUG wdt: disarmed, WTCNT %04x left, WTCON %08x\n",
-		left, readl(w + E8895_WTCON));
+		left, readl(e8895_wdt_base + E8895_WTCON));
 }
 
 /*
@@ -1441,16 +1460,11 @@ static void e8895_hwacg_dump(void)
 	}
 }
 
-static void e8895_hwacg_set(void)
+/* gate switch shared by the SLEEP path (verbose) and the s2idle SICD path (quiet) */
+static unsigned int e8895_hwacg_switch(void)
 {
 	unsigned int c, i, k = 0, changed = 0;
 
-	if (!sleep_hwacg)
-		return;
-	if (!e8895_hwacg_va[0]) {
-		pr_warn("exynos8895-pm: DEBUG hwacg: no CMU mapping, sleep_hwacg ignored\n");
-		return;
-	}
 	for (c = 0; c < ARRAY_SIZE(e8895_hwacg_cmus); c++) {
 		for (i = 0; i < e8895_hwacg_cmus[c].n; i++) {
 			void __iomem *a = e8895_hwacg_va[c] + e8895_hwacg_cmus[c].off[i];
@@ -1464,22 +1478,98 @@ static void e8895_hwacg_set(void)
 		}
 	}
 	e8895_hwacg_done = true;
-	pr_info("exynos8895-pm: DEBUG hwacg: %u of %u gates back to auto-gating\n", changed, k);
+	return changed;
 }
 
-static void e8895_hwacg_restore(void)
+static void e8895_hwacg_unswitch(void)
 {
 	unsigned int c, i, k = 0;
 
-	if (!e8895_hwacg_done)
-		return;
 	e8895_hwacg_done = false;
 	for (c = 0; c < ARRAY_SIZE(e8895_hwacg_cmus); c++)
 		for (i = 0; i < e8895_hwacg_cmus[c].n; i++)
 			writel(e8895_hwacg_saved[k++],
 			       e8895_hwacg_va[c] + e8895_hwacg_cmus[c].off[i]);
-	pr_info("exynos8895-pm: DEBUG hwacg: %u gates back to manual\n", k);
 }
+
+static void e8895_hwacg_set(void)
+{
+	unsigned int changed;
+
+	if (!sleep_hwacg)
+		return;
+	if (!e8895_hwacg_va[0]) {
+		pr_warn("exynos8895-pm: DEBUG hwacg: no CMU mapping, sleep_hwacg ignored\n");
+		return;
+	}
+	changed = e8895_hwacg_switch();
+	pr_info("exynos8895-pm: DEBUG hwacg: %u of %u gates back to auto-gating\n", changed,
+		(unsigned int)E8895_HWACG_N);
+}
+
+static void e8895_hwacg_restore(void)
+{
+	if (!e8895_hwacg_done)
+		return;
+	e8895_hwacg_unswitch();
+	pr_info("exynos8895-pm: DEBUG hwacg: %u gates back to manual\n", (unsigned int)E8895_HWACG_N);
+}
+
+/*
+ * DEBUG (L7, 2026-10-05) the same two instruments for SICD taken from s2idle
+ * (cpuidle_exynos8895.sicd_enabled=1 sicd_s2idle=1). SICD runs the CENTRAL sequencer and asks
+ * CMU_TOP for the same clock stop as SLEEP (CAL:pmucal_system_exynos8895.h:232
+ * CLKSTOP_CMU_TOP = 1) but keeps TOP powered (:246 TOP_PWR = 3), so it tests the clock stop
+ * on its own:
+ *   sicd_wdt=<s>  arm the watchdog when the s2idle path takes SICD, disarm when the first CPU
+ *                 leaves it. Keep <s> above the wake interval (e.g. sicd_wdt=20 with the RTC at
+ *                 +10 s): the counter runs on OSCCLK, which SICD keeps (:252 OSCCLK_SLEEP = 1),
+ *                 so a long but healthy SICD would also fire it.
+ *   sicd_hwacg=1  the sleep_hwacg gate switch around the SICD SMC.
+ * Both run under the cpuidle driver's c2_lock with IRQs off and print nothing there;
+ * PM_POST_SUSPEND reports the counts and the smallest count the watchdog had left.
+ */
+static unsigned int sicd_wdt;
+module_param(sicd_wdt, uint, 0644);
+static bool sicd_hwacg;
+module_param(sicd_hwacg, bool, 0644);
+static unsigned int e8895_sicd_dbg_arms, e8895_sicd_dbg_hwacg;
+static u32 e8895_sicd_dbg_left_min = U32_MAX;
+
+void e8895_dbg_sicd_enter(void)
+{
+	if (READ_ONCE(sicd_hwacg) && e8895_hwacg_va[0]) {
+		e8895_hwacg_switch();
+		e8895_sicd_dbg_hwacg++;
+	}
+	if (READ_ONCE(sicd_wdt) && e8895_wdt_base) {
+		e8895_wdt_start(READ_ONCE(sicd_wdt), false);
+		e8895_sicd_dbg_arms++;
+	}
+}
+
+void e8895_dbg_sicd_leave(void)
+{
+	if (e8895_wdt_armed)
+		e8895_sicd_dbg_left_min = min(e8895_sicd_dbg_left_min, e8895_wdt_stop());
+	if (e8895_hwacg_done)
+		e8895_hwacg_unswitch();
+}
+
+static int e8895_sicd_dbg_pm_fn(struct notifier_block *nb, unsigned long ev, void *p)
+{
+	if (ev == PM_SUSPEND_PREPARE) {
+		e8895_sicd_dbg_arms = 0;
+		e8895_sicd_dbg_hwacg = 0;
+		e8895_sicd_dbg_left_min = U32_MAX;
+	} else if (ev == PM_POST_SUSPEND && (e8895_sicd_dbg_arms || e8895_sicd_dbg_hwacg)) {
+		pr_info("exynos8895-pm: DEBUG sicd: watchdog armed %u times (min WTCNT left %04x), hwacg %u times\n",
+			e8895_sicd_dbg_arms, e8895_sicd_dbg_left_min, e8895_sicd_dbg_hwacg);
+	}
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block e8895_sicd_dbg_pm_nb = { .notifier_call = e8895_sicd_dbg_pm_fn };
 
 /*
  * DEBUG (L7, 2026-10-05, sleep_trace): the APM side right before the SMC. SLEEP powers the APM
@@ -2227,6 +2317,7 @@ static int e8895_pm_probe(struct platform_device *pdev)
 		of_node_put(np);
 	}
 	e8895_hwacg_map(dev);				/* DEBUG sleep_hwacg */
+	register_pm_notifier(&e8895_sicd_dbg_pm_nb);	/* DEBUG sicd_wdt/sicd_hwacg */
 	/* DEBUG e8895_apm_dump(): the mailbox driver owns the region, so no claim here */
 	np = of_find_compatible_node(NULL, NULL, "samsung,exynos8895-mbox");
 	if (np) {
