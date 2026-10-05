@@ -1583,6 +1583,32 @@ static struct notifier_block e8895_sicd_dbg_pm_nb = { .notifier_call = e8895_sic
  */
 static void __iomem *e8895_mbox_base;
 
+/*
+ * DEBUG (L7, 2026-10-05) sleep_mbox_clr=1: clear the APM -> AP status bits of the polled
+ * (masked) mailbox channels right before the SMC. Stock clears a polled channel's INTSR1 bit as
+ * soon as its RX queue is drained (S:drivers/soc/samsung/acpm/acpm_ipc.c:287-288 "if (rear ==
+ * front) __raw_writel((1 << channel->id), acpm_ipc->intr + INTCR1)"), so it enters SLEEP with
+ * INTSR1 = 0; our mailbox driver clears it only right before the next doorbell
+ * (drivers/mailbox/exynos-mailbox.c exynos_mbox_send_data()), so the last pre-suspend IPCs leave
+ * their bits set through SLEEP (image 0160: sr1 = 0x17, all masked). INTCR1 0x20, INTMR1 0x24,
+ * INTSR1 0x28 (S:drivers/soc/samsung/acpm/acpm_ipc.h:84-86).
+ */
+static bool sleep_mbox_clr;
+module_param(sleep_mbox_clr, bool, 0644);
+
+static void e8895_mbox_clr(void)
+{
+	u32 sr1, mr1;
+
+	if (!sleep_mbox_clr || !e8895_mbox_base)
+		return;
+	sr1 = readl(e8895_mbox_base + 0x28);
+	mr1 = readl(e8895_mbox_base + 0x24);
+	writel(sr1 & mr1, e8895_mbox_base + 0x20);
+	pr_info("exynos8895-pm: DEBUG mbox clr: sr1 %08x (mr1 %08x) -> %08x\n", sr1, mr1,
+		readl(e8895_mbox_base + 0x28));
+}
+
 static void e8895_apm_dump(void)
 {
 	if (!e8895_mbox_base)
@@ -2108,6 +2134,7 @@ static int e8895_pm_enter(suspend_state_t state)
 		e8895_hwacg_dump();
 		e8895_apm_dump();
 	}
+	e8895_mbox_clr();					/* DEBUG sleep_mbox_clr */
 	e8895_hwacg_set();					/* DEBUG sleep_hwacg */
 	e8895_wdt_arm();					/* DEBUG sleep_wdt */
 	if (sleep_wfi && sleep_bare) {				/* DEBUG */
