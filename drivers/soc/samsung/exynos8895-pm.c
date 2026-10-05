@@ -1575,20 +1575,21 @@ static struct notifier_block e8895_sicd_dbg_pm_nb = { .notifier_call = e8895_sic
  * DEBUG (L7, 2026-10-05, sleep_trace): the APM side right before the SMC. SLEEP powers the APM
  * down too (CAL:pmucal_system_exynos8895.h:883 TOP_PWR_APM = 0, :886 CPU_QCH_CORTEXM3_APM = 0),
  * which needs its Cortex-M3 idle; an IPC either side has not taken yet keeps it busy.
- * CORTEXM3_APM_CONFIGURATION/STATUS/OPTION 0x2500/0x2504/0x2508 (S:include/linux/apm-exynos.h:
- * 117-119); AP2APM mailbox INTSR0/INTMSR0 (AP -> APM pending, raw / unmasked) 0x14/0x18 and
- * INTSR1/INTMSR1 (APM -> AP) 0x28/0x2c (S:drivers/soc/samsung/acpm/acpm_ipc.h:78-87).
+ * AP2APM mailbox INTSR0/INTMSR0 (AP -> APM pending, raw / unmasked) 0x14/0x18 and INTSR1/INTMSR1
+ * (APM -> AP) 0x28/0x2c (S:drivers/soc/samsung/acpm/acpm_ipc.h:78-87). No PMU word here: the
+ * CORTEXM3_APM block (S:include/linux/apm-exynos.h:117-119) is not known to be open to the
+ * normal world, and image 0159 took a synchronous external abort reading PMU 0x0030
+ * (CP_CTRL_NS) through peek (work/l7c/deep/boot0159/crash), so the PMU is not uniformly readable.
  */
 static void __iomem *e8895_mbox_base;
 
 static void e8895_apm_dump(void)
 {
-	pr_info("exynos8895-pm: DEBUG pre-SMC apm cm3=%08x %08x %08x mbox sr0=%08x msr0=%08x sr1=%08x msr1=%08x\n",
-		pmu_raw_readl(0x2500), pmu_raw_readl(0x2504), pmu_raw_readl(0x2508),
-		e8895_mbox_base ? readl(e8895_mbox_base + 0x14) : ~0U,
-		e8895_mbox_base ? readl(e8895_mbox_base + 0x18) : ~0U,
-		e8895_mbox_base ? readl(e8895_mbox_base + 0x28) : ~0U,
-		e8895_mbox_base ? readl(e8895_mbox_base + 0x2c) : ~0U);
+	if (!e8895_mbox_base)
+		return;
+	pr_info("exynos8895-pm: DEBUG pre-SMC apm mbox sr0=%08x msr0=%08x sr1=%08x msr1=%08x\n",
+		readl(e8895_mbox_base + 0x14), readl(e8895_mbox_base + 0x18),
+		readl(e8895_mbox_base + 0x28), readl(e8895_mbox_base + 0x2c));
 }
 
 /* power_state of the SMC: sleep_bare forces C2 (0x00010000), otherwise the
