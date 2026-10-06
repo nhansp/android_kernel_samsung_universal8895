@@ -452,6 +452,51 @@ static bool e8895_sicd_armed;
 static bool sleep_aftr;
 module_param(sleep_aftr, bool, 0644);
 static bool e8895_aftr_armed;
+
+/*
+ * DEBUG (L7, 2026-10-06) sleep_emul=<mask>: after the mode's enter list, set PMU emulation bits so
+ * the central sequencer skips that handshake: bits 3/1/0 = TOP_BUS_MIF_OPTION EMULATION_APM_IF /
+ * EMULATION_BUS / EMULATION_BUSMASTER (0x2c88, CAL:pmucal_system_exynos8895.h:317-320), bit 31 =
+ * TOP_PWR_APM_OPTION[31] EMULATION (0x82c8, :344). Bit 2 (EMULATION_DRAM) is never set: without the
+ * DRAM handshake the MIF clocks stop with no self-refresh and RAM is lost. Stock's SLEEP list clears
+ * all of them (:1550-1553,1576); its SICD list sets BUS and BUSMASTER (:319-320). Reading for SLEEP:
+ * no reset at sleep_wdt any more = TOP powered down, so a skipped handshake was the stall.
+ */
+#define E8895_TOP_BUS_MIF_OPTION	0x2c88
+#define E8895_TOP_PWR_APM_OPTION	0x82c8
+#define E8895_EMUL_OK			(BIT(31) | BIT(3) | BIT(1) | BIT(0))
+static unsigned int sleep_emul;
+module_param(sleep_emul, uint, 0644);
+static u32 e8895_emul_save[2];
+static bool e8895_emul_set;
+
+static void e8895_emul_apply(void)
+{
+	u32 m = READ_ONCE(sleep_emul) & E8895_EMUL_OK;
+
+	e8895_emul_set = false;
+	if (!m)
+		return;
+	e8895_emul_save[0] = pmu_raw_readl(E8895_TOP_BUS_MIF_OPTION);
+	e8895_emul_save[1] = pmu_raw_readl(E8895_TOP_PWR_APM_OPTION);
+	pmu_raw_writel(e8895_emul_save[0] | (m & 0xf), E8895_TOP_BUS_MIF_OPTION);
+	if (m & BIT(31))
+		pmu_raw_writel(e8895_emul_save[1] | BIT(31), E8895_TOP_PWR_APM_OPTION);
+	e8895_emul_set = true;
+	pr_info("exynos8895-pm: DEBUG emul: TOP_BUS_MIF_OPTION %08x -> %08x TOP_PWR_APM_OPTION %08x -> %08x\n",
+		e8895_emul_save[0], pmu_raw_readl(E8895_TOP_BUS_MIF_OPTION),
+		e8895_emul_save[1], pmu_raw_readl(E8895_TOP_PWR_APM_OPTION));
+}
+
+/* the exit lists clear the bits again; this also covers the early-wakeup and refusal paths */
+static void e8895_emul_restore(void)
+{
+	if (!e8895_emul_set)
+		return;
+	e8895_emul_set = false;
+	pmu_raw_writel(e8895_emul_save[0], E8895_TOP_BUS_MIF_OPTION);
+	pmu_raw_writel(e8895_emul_save[1], E8895_TOP_PWR_APM_OPTION);
+}
 static bool cp_check = true;		/* stock always checks CP; 0 only for boots without a running CP */
 module_param(cp_check, bool, 0644);
 
@@ -2256,6 +2301,7 @@ static int e8895_sleep_arm(const char **why)
 		e8895_sleep_armed = true;
 		pr_info("exynos8895-pm: DEBUG sleep_sicd: SICD programmed instead of SLEEP mode %d\n",
 			e8895_mode);
+		e8895_emul_apply();				/* DEBUG sleep_emul */
 		return 0;
 	}
 	/* only SYS_SICD has a ref-idle-ip node (FDT:4433-4439): the SLEEP masks are all-ones,
@@ -2295,6 +2341,7 @@ static int e8895_sleep_arm(const char **why)
 	e8895_early = true;
 	e8895_sleep_armed = true;
 	pr_info("exynos8895-pm: SLEEP mode=%d\n", e8895_mode);
+	e8895_emul_apply();					/* DEBUG sleep_emul */
 	if (sleep_noarm) {					/* DEBUG E6 */
 		pmu_raw_writel((pmu_raw_readl(0x0200) & ~BIT(16)) | (arm0 & BIT(16)), 0x0200);
 		pmu_raw_writel((pmu_raw_readl(0x0240) & ~BIT(16)) | (arm1 & BIT(16)), 0x0240);
@@ -2432,6 +2479,7 @@ static void e8895_pm_syscore_resume(void)
 	if (sleep_trace)						/* DEBUG */
 		pr_info("exynos8895-pm: DEBUG syscore resume early=%d mode=%d\n", e8895_early, e8895_mode);
 	e8895_sleep_armed = false;
+	e8895_emul_restore();					/* DEBUG sleep_emul */
 	if (e8895_aftr_armed) {					/* DEBUG sleep_aftr */
 		unsigned int i;
 
