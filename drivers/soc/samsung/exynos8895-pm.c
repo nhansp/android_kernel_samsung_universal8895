@@ -420,6 +420,19 @@ void e8895_sicd_exit(bool early)
 static int e8895_mode;
 static bool e8895_early;
 static bool e8895_sleep_armed;		/* syscore suspend programmed the PMU for SLEEP */
+
+/*
+ * DEBUG sleep_sicd=1 (L7, 2026-10-06): program SICD instead of SLEEP in the system suspend
+ * (stock's SICD masks and enter list, e8895_sicd_prepare(), and power_state 0x00000001 =
+ * PSCI_SYSTEM_IDLE) and run SICD's exit/early-wakeup list in syscore resume. SICD shares the
+ * start of the SLEEP hardware sequence (CPU and cluster power-down, CMU clock stop) but
+ * keeps TOP powered; stock's SLEEP and SLEEP_AUD_ON lists differ only in ABOX, MIF arming,
+ * CENTRAL_SEQ_OPTION bit 1 and VTS (CAL:pmucal_system_exynos8895.h:773-920, 2403-), and
+ * both hang. Returns => the shared start works and the stall is in the TOP power-down part.
+ */
+static bool sleep_sicd;
+module_param(sleep_sicd, bool, 0644);
+static bool e8895_sicd_armed;
 static bool cp_check = true;		/* stock always checks CP; 0 only for boots without a running CP */
 module_param(cp_check, bool, 0644);
 
@@ -1847,6 +1860,8 @@ module_param_cb(regdiff_now, &e8895_rs_now_ops, NULL, 0200);
  * stock SLEEP word unless sleep_psci overrides it */
 static unsigned int e8895_smc_state(void)
 {
+	if (e8895_sicd_armed)					/* DEBUG sleep_sicd */
+		return E8895_PSCI_SICD;
 	if (sleep_bare)
 		return 0x00010000;
 	return sleep_psci ?: E8895_PSCI_SLEEP;
@@ -2135,6 +2150,27 @@ static int e8895_sleep_arm(const char **why)
 	unsigned int i;
 	u32 arm0, arm1;		/* DEBUG sleep_noarm: pre-enter CENTRAL bits */
 
+	if (sleep_sicd) {					/* DEBUG sleep_sicd */
+		int r = e8895_sicd_prepare();
+
+		if (r) {
+			*why = r == -EBUSY ? "sleep_sicd: SICD vetoed" : "sleep_sicd: SICD enter list failed";
+			pr_info("exynos8895-pm: DEBUG sleep_sicd: refused (%d, last veto %s)\n", r,
+				READ_ONCE(e8895_last_veto) ?: "-");
+			for (i = 0; i < 4; i++) {
+				pmu_raw_writel(e8895_save_ipm[i], E8895_IDLE_IP_MASK(i));
+				pmu_raw_writel(e8895_save_wk[i], e8895_wkmask_off[i]);
+			}
+			pmu_raw_writel(e8895_save_eint, E8895_EINT_WAKEUP_MASK);
+			return r;
+		}
+		e8895_sicd_armed = true;
+		e8895_early = true;
+		e8895_sleep_armed = true;
+		pr_info("exynos8895-pm: DEBUG sleep_sicd: SICD programmed instead of SLEEP mode %d\n",
+			e8895_mode);
+		return 0;
+	}
 	/* only SYS_SICD has a ref-idle-ip node (FDT:4433-4439): the SLEEP masks are all-ones,
 	 * S:drivers/soc/samsung/exynos-powermode.c:171-182 */
 	for (i = 0; i < 4; i++)
@@ -2308,6 +2344,22 @@ static void e8895_pm_syscore_resume(void)
 	if (sleep_trace)						/* DEBUG */
 		pr_info("exynos8895-pm: DEBUG syscore resume early=%d mode=%d\n", e8895_early, e8895_mode);
 	e8895_sleep_armed = false;
+	if (e8895_sicd_armed) {					/* DEBUG sleep_sicd */
+		unsigned int i;
+
+		e8895_sicd_armed = false;
+		e8895_sicd_exit(e8895_early);
+		for (i = 0; i < 4; i++) {
+			pmu_raw_writel(e8895_save_ipm[i], E8895_IDLE_IP_MASK(i));
+			pmu_raw_writel(e8895_save_wk[i], e8895_wkmask_off[i]);
+		}
+		pmu_raw_writel(e8895_save_eint, E8895_EINT_WAKEUP_MASK);
+		stat = pmu_raw_readl(E8895_WAKEUP_STAT);
+		pr_info("exynos8895-pm: DEBUG sleep_sicd: back, %sWAKEUP_STAT=0x%08x\n",
+			e8895_early ? "early " : "", stat);
+		e8895_dbg_allon();
+		return;
+	}
 	t = e8895_tab(e8895_mode);
 	/* S:drivers/soc/samsung/cal-if/pmucal_system.c:74,123 */
 	e8895_handle(t->t[e8895_early ? 3 : 2], t->n[e8895_early ? 3 : 2]);
