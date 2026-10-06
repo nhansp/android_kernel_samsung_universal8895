@@ -608,6 +608,30 @@ static void acpm_fwlog_init(struct acpm_info *acpm)
 	dev_info(acpm->dev, "acpm: fwlog ktime_index@0x%x ring front@0x%x rear@0x%x data@0x%x size=%u len=%u\n",
 		 ti, lf, lr, ld, es, el);
 
+	/*
+	 * DEBUG (L7 deep suspend, 2026-10-06): the whole ring as S-Boot's APM restart left it,
+	 * before the first drain, so that entries the APM wrote during a SLEEP attempt that
+	 * ended in a watchdog reset show up if the SRAM kept them. Entry: header (ID [30:28],
+	 * level 23, time index [28:24]... as acpm_fwlog_drain), es - 8 string bytes, value.
+	 */
+	{
+		char str[64 - 8 + 1];
+		void __iomem *e;
+		u32 i, hdr;
+
+		dev_info(acpm->dev, "acpm: fwlog boot ktime_index=%u front=%u rear=%u\n",
+			 readl(acpm->sram_base + ti), readl(acpm->sram_base + lf),
+			 readl(acpm->sram_base + lr));
+		for (i = 0; i < el; i++) {
+			e = acpm->sram_base + ld + es * i;
+			hdr = readl(e);
+			memcpy_fromio(str, e + 4, es - 8);
+			str[es - 8] = '\0';
+			dev_info(acpm->dev, "acpm: fwlog boot[%02u] hdr=%08x %s val=%08x\n",
+				 i, hdr, str, readl(e + es - 4));
+		}
+	}
+
 	if (devm_add_action_or_reset(acpm->dev, acpm_fwlog_cancel, acpm))
 		return;
 

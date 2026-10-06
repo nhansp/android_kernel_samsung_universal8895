@@ -1657,6 +1657,24 @@ static int e8895_speedy_rel_set(const char *val, const struct kernel_param *kp)
 static const struct kernel_param_ops e8895_speedy_rel_ops = { .set = e8895_speedy_rel_set };
 module_param_cb(speedy_rel, &e8895_speedy_rel_ops, NULL, 0200);
 
+/*
+ * DEBUG (L7, 2026-10-06): the APM firmware-log ring indices (SRAM 0x16502cd0 ktime index,
+ * 0x16502cd8 rear, 0x16502cdc front; entries at 0x16502ce0, 50 x 16 bytes). Stock's APM logs
+ * a whole SLEEP round between the SMC and the wake (work/l7c/regsnap/stock44-apm-*.txt:
+ * irq_num 0x40, plug_in 0xe, sci_init, plg_in 1, ..., timeout 0xe); the front index at the
+ * SMC tells which ring slots a stalled attempt wrote, read back at the next boot (exynos-acpm
+ * "fwlog boot[]" dump).
+ */
+static void __iomem *e8895_apmlog;
+
+static void e8895_apmlog_print(void)
+{
+	if (e8895_apmlog)
+		pr_info("exynos8895-pm: DEBUG pre-SMC apm fwlog ktime_index=%u rear=%u front=%u\n",
+			readl(e8895_apmlog + 0xcd0), readl(e8895_apmlog + 0xcd8),
+			readl(e8895_apmlog + 0xcdc));
+}
+
 static void e8895_apm_dump(void)
 {
 	if (!e8895_mbox_base)
@@ -2348,6 +2366,7 @@ static int e8895_pm_enter(suspend_state_t state)
 	e8895_stockcmu_set();					/* DEBUG sleep_stockcmu */
 	if (sleep_regdiff)					/* DEBUG sleep_regdiff */
 		e8895_rs_diff(true, "pre-SMC");
+	e8895_apmlog_print();					/* DEBUG APM fwlog front at the SMC */
 	e8895_wdt_arm();					/* DEBUG sleep_wdt */
 	if (sleep_wfi && sleep_bare) {				/* DEBUG */
 		cpu_do_idle();
@@ -2559,6 +2578,7 @@ static int e8895_pm_probe(struct platform_device *pdev)
 	}
 	e8895_hwacg_map(dev);				/* DEBUG sleep_hwacg */
 	e8895_speedy = devm_ioremap(dev, E8895_SPEEDY_AP, SZ_4K);	/* DEBUG sleep_speedy, no driver owns it */
+	e8895_apmlog = devm_ioremap(dev, 0x16502000, SZ_4K);	/* DEBUG APM fwlog ring indices */
 	register_pm_notifier(&e8895_sicd_dbg_pm_nb);	/* DEBUG sicd_wdt/sicd_hwacg */
 	/* DEBUG e8895_apm_dump(): the mailbox driver owns the region, so no claim here */
 	np = of_find_compatible_node(NULL, NULL, "samsung,exynos8895-mbox");
