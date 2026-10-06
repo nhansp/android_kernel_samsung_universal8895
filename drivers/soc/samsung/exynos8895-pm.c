@@ -1609,13 +1609,62 @@ static void e8895_mbox_clr(void)
 		readl(e8895_mbox_base + 0x28));
 }
 
+/*
+ * DEBUG (L7, 2026-10-06) the SPEEDY IP batcher of the AP (PMIC bus, S:arch/arm64/boot/dts/exynos/
+ * exynos8895.dtsi:2699-2711 "SPEEDY IP_BATCHER_AP" speedy@15B50000). Its multi-processor APB
+ * semaphore arbitrates the one SPEEDY master between the AP, CP and APM batchers. 6.18 has no
+ * SPEEDY driver, and at run time IPBATCHER_STATE reads 0x00100008: MP_APBSEMA_CH_LOCK_STATUS
+ * (bit 20, S:drivers/i2c/busses/i2c-speedy.c:181) set, i.e. the AP channel still holds the
+ * semaphore S-Boot took for its own PMIC accesses. Stock's probe releases it ("release semaphore
+ * after direct SPEEDY SFR access", :1044-1045, write 1 to IPBATCHER_SEMA_REL 0x200, :444-447).
+ *   speedy_rel=1    release it now (process context), log IPBATCHER_STATE before and after
+ *   sleep_speedy=1  the same in ->enter right before the SMC
+ * Only the release: stock's controller/batcher software resets (:1029, :1048) are not done at
+ * run time, the APM may be using the SPEEDY master.
+ */
+#define E8895_SPEEDY_AP		0x15b50000
+#define E8895_IPB_SEMA_REL	0x200		/* S:drivers/i2c/busses/i2c-speedy.c:152 */
+#define E8895_IPB_CON		0x500		/* :137 */
+#define E8895_IPB_STATE		0x504		/* :138 */
+#define E8895_IPB_LOCK		BIT(20)		/* :181 MP_APBSEMA_CH_LOCK_STATUS */
+static void __iomem *e8895_speedy;
+static bool sleep_speedy;
+module_param(sleep_speedy, bool, 0644);
+
+static void e8895_speedy_release(const char *tag)
+{
+	u32 st0, st1;
+
+	if (!e8895_speedy)
+		return;
+	st0 = readl(e8895_speedy + E8895_IPB_STATE);
+	if (st0 & E8895_IPB_LOCK)
+		writel(0x1, e8895_speedy + E8895_IPB_SEMA_REL);
+	st1 = readl(e8895_speedy + E8895_IPB_STATE);
+	pr_info("exynos8895-pm: DEBUG speedy %s: IPBATCHER_STATE %08x -> %08x CON %08x\n",
+		tag, st0, st1, readl(e8895_speedy + E8895_IPB_CON));
+}
+
+static int e8895_speedy_rel_set(const char *val, const struct kernel_param *kp)
+{
+	if (!e8895_speedy)
+		e8895_speedy = ioremap(E8895_SPEEDY_AP, SZ_4K);
+	if (!e8895_speedy)
+		return -ENOMEM;
+	e8895_speedy_release("now");
+	return 0;
+}
+static const struct kernel_param_ops e8895_speedy_rel_ops = { .set = e8895_speedy_rel_set };
+module_param_cb(speedy_rel, &e8895_speedy_rel_ops, NULL, 0200);
+
 static void e8895_apm_dump(void)
 {
 	if (!e8895_mbox_base)
 		return;
-	pr_info("exynos8895-pm: DEBUG pre-SMC apm mbox sr0=%08x msr0=%08x sr1=%08x msr1=%08x\n",
+	pr_info("exynos8895-pm: DEBUG pre-SMC apm mbox sr0=%08x msr0=%08x sr1=%08x msr1=%08x speedy_ipb=%08x\n",
 		readl(e8895_mbox_base + 0x14), readl(e8895_mbox_base + 0x18),
-		readl(e8895_mbox_base + 0x28), readl(e8895_mbox_base + 0x2c));
+		readl(e8895_mbox_base + 0x28), readl(e8895_mbox_base + 0x2c),
+		e8895_speedy ? readl(e8895_speedy + E8895_IPB_STATE) : 0xdeadbeef);
 }
 
 /*
@@ -2293,6 +2342,8 @@ static int e8895_pm_enter(suspend_state_t state)
 		e8895_apm_dump();
 	}
 	e8895_mbox_clr();					/* DEBUG sleep_mbox_clr */
+	if (sleep_speedy)					/* DEBUG sleep_speedy */
+		e8895_speedy_release("pre-SMC");
 	e8895_hwacg_set();					/* DEBUG sleep_hwacg */
 	e8895_stockcmu_set();					/* DEBUG sleep_stockcmu */
 	if (sleep_regdiff)					/* DEBUG sleep_regdiff */
@@ -2507,6 +2558,7 @@ static int e8895_pm_probe(struct platform_device *pdev)
 		of_node_put(np);
 	}
 	e8895_hwacg_map(dev);				/* DEBUG sleep_hwacg */
+	e8895_speedy = devm_ioremap(dev, E8895_SPEEDY_AP, SZ_4K);	/* DEBUG sleep_speedy, no driver owns it */
 	register_pm_notifier(&e8895_sicd_dbg_pm_nb);	/* DEBUG sicd_wdt/sicd_hwacg */
 	/* DEBUG e8895_apm_dump(): the mailbox driver owns the region, so no claim here */
 	np = of_find_compatible_node(NULL, NULL, "samsung,exynos8895-mbox");
