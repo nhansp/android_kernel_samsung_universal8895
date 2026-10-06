@@ -155,6 +155,8 @@ struct s3c64xx_spi_dma_data {
  * @clk_ioclk: True if clock is present on this device
  * @has_loopback: True if loopback mode can be supported
  * @use_32bit_io: True if the SoC allows only 32-bit register accesses.
+ * @cs_inact_suspend: True if suspend must leave the chip select in manual mode, inactive
+ *	(an IP left in auto CS mode keeps its clock requested under HW auto clock gating).
  *
  * The Samsung s3c64xx SPI controller are used on various Samsung SoC's but
  * differ in some aspects such as the size of the fifo and spi bus clock
@@ -175,6 +177,7 @@ struct s3c64xx_spi_port_config {
 	bool	clk_ioclk;
 	bool	has_loopback;
 	bool	use_32bit_io;
+	bool	cs_inact_suspend;
 };
 
 /**
@@ -1420,6 +1423,19 @@ static int s3c64xx_spi_suspend(struct device *dev)
 	if (ret)
 		return ret;
 
+	/*
+	 * Exynos 8895: with S3C64XX_SPI_QUIRK_CS_AUTO, set_cs(true) leaves CS_REG in auto mode
+	 * after the first transfer. Stock's controller rests in manual mode with nSS inactive
+	 * (CS_REG 0x1, peek on stock 4.4, 2026-10-07), and the DBG_NFO of SPI_CAM0 read
+	 * "active" at the SLEEP SMC on 6.18 and idle on stock (TESTCARD-deep-0157). Put the
+	 * stock idle value back; the next transfer selects auto mode again.
+	 */
+	if (sdd->port_conf->cs_inact_suspend && !sdd->cntrlr_info->no_cs &&
+	    !pm_runtime_resume_and_get(dev)) {
+		writel(S3C64XX_SPI_CS_SIG_INACT, sdd->regs + S3C64XX_SPI_CS_REG);
+		pm_runtime_put_noidle(dev);
+	}
+
 	ret = pm_runtime_force_suspend(dev);
 	if (ret < 0)
 		return ret;
@@ -1587,6 +1603,7 @@ static const struct s3c64xx_spi_port_config exynos8895_spi_port_config = {
 	.clk_from_cmu	= true,				/* S:...:2076 */
 	.has_loopback	= true,				/* as exynos850; only used with SPI_LOOP */
 	.quirks		= S3C64XX_SPI_QUIRK_CS_AUTO,	/* as exynos850 */
+	.cs_inact_suspend = true,			/* stock's idle CS_REG, see suspend */
 };
 
 static const struct s3c64xx_spi_port_config exynosautov9_spi_port_config = {
