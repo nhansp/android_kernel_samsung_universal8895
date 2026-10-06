@@ -15,6 +15,7 @@
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/delay.h>
+#include <linux/hex.h>
 #include <linux/i2c.h>
 #include <linux/io.h>
 #include <linux/module.h>
@@ -2047,6 +2048,101 @@ static int e8895_rs_now_set(const char *val, const struct kernel_param *kp)
 static const struct kernel_param_ops e8895_rs_now_ops = { .set = e8895_rs_now_set };
 module_param_cb(regdiff_now, &e8895_rs_now_ops, NULL, 0200);
 
+/*
+ * DEBUG (L7, 2026-10-07) sleep_qch=1: the Q-channel state of every always-on CMU right before
+ * the SMC, once before sleep_hwacg/sleep_stockcmu ("pre-cmu") and once after ("pre-SMC");
+ * qch_now=1 prints it at once. Each channel's DBG_NFO word sits at its QCH_CON + 0x4000 (stock
+ * reads them for IVA: S:drivers/soc/samsung/cal-if/exynos8895/pmucal_local_exynos8895.h:470-483
+ * at 0x7000 = cmucal-sfr.c:1513-1515 QCH_CON 0x3000 + 0x4000). One hex digit per channel, in
+ * exynos8895-qch.h order (work/l7c/regsnap/qch-names.txt names them; 'x' = wider than a digit,
+ * printed in full after the line); con = QCH_CON[3:0] (bit 0 ENABLE, bit 1 CLOCK_REQ).
+ * Read at run time through peek (2026-10-07, all 542 words safe): 0 = the IP holds its clock
+ * (UFS, USB link with the cable in, PCIe0 with Wi-Fi up, the LH bridges of the reading CPU's
+ * path), 4 = idle, 5 = the CMU's own channel. The TOP_BUS step of the system sequence waits
+ * on the always-on blocks, so an IP still at 0 in "pre-SMC" is the one to look at.
+ */
+#include "exynos8895-qch.h"
+
+#define E8895_QCH_NFO		0x4000		/* DBG_NFO_QCH_CON_* - QCH_CON_* */
+#define E8895_DBG_STATUS	0x4044		/* S:...pmucal_local_exynos8895.h:125 */
+
+static bool sleep_qch;
+static void __iomem *e8895_qch_va[ARRAY_SIZE(e8895_qch_blks)];
+
+static int e8895_qch_map(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(e8895_qch_blks); i++) {
+		if (e8895_qch_va[i])
+			continue;
+		/* QCH_CON page (0x3000) through the DBG_NFO page (0x7000) */
+		e8895_qch_va[i] = ioremap(e8895_qch_blks[i].base + 0x3000, 0x5000);
+		if (!e8895_qch_va[i])
+			return -ENOMEM;
+	}
+	return 0;
+}
+
+static void e8895_qch_dump(const char *when)
+{
+	char nfo[64 + 1], con[64 + 1];
+	unsigned int i, j;
+
+	for (i = 0; i < ARRAY_SIZE(e8895_qch_blks); i++) {
+		const struct e8895_qch_blk *b = &e8895_qch_blks[i];
+		void __iomem *va = e8895_qch_va[i];
+
+		if (!va)
+			continue;
+		/* DBG is a power domain: its CMU only answers while the domain is on */
+		if (!strcmp(b->name, "DBG") && (pmu_raw_readl(E8895_DBG_STATUS) & 0xf) != 0xf) {
+			pr_info("exynos8895-pm: DEBUG qch %s DBG off (STATUS %x), not read\n", when,
+				pmu_raw_readl(E8895_DBG_STATUS));
+			continue;
+		}
+		for (j = 0; j < b->n && j < 64; j++) {
+			u32 n = readl(va + b->off[j] + E8895_QCH_NFO);
+
+			nfo[j] = n > 0xf ? 'x' : hex_asc[n];
+			con[j] = hex_asc[readl(va + b->off[j]) & 0xf];
+		}
+		nfo[j] = con[j] = '\0';
+		pr_info("exynos8895-pm: DEBUG qch %s %s nfo=%s con=%s\n", when, b->name, nfo, con);
+		for (j = 0; j < b->n && j < 64; j++)
+			if (nfo[j] == 'x')
+				pr_info("exynos8895-pm: DEBUG qch %s %s #%u 3%03x nfo=%08x\n", when,
+					b->name, j, b->off[j],
+					readl(va + b->off[j] + E8895_QCH_NFO));
+	}
+}
+
+static int e8895_qch_param_set(const char *val, const struct kernel_param *kp)
+{
+	int ret = param_set_bool(val, kp);
+
+	if (!ret && sleep_qch)
+		ret = e8895_qch_map();			/* process context, before any suspend */
+	return ret;
+}
+static const struct kernel_param_ops e8895_qch_param_ops = {
+	.set = e8895_qch_param_set,
+	.get = param_get_bool,
+};
+module_param_cb(sleep_qch, &e8895_qch_param_ops, &sleep_qch, 0644);
+
+static int e8895_qch_now_set(const char *val, const struct kernel_param *kp)
+{
+	int ret = e8895_qch_map();
+
+	if (ret)
+		return ret;
+	e8895_qch_dump("now");
+	return 0;
+}
+static const struct kernel_param_ops e8895_qch_now_ops = { .set = e8895_qch_now_set };
+module_param_cb(qch_now, &e8895_qch_now_ops, NULL, 0200);
+
 /* power_state of the SMC: sleep_bare forces C2 (0x00010000), otherwise the
  * stock SLEEP word unless sleep_psci overrides it */
 static unsigned int e8895_smc_state(void)
@@ -2658,10 +2754,16 @@ static int e8895_pm_enter(suspend_state_t state)
 	e8895_mbox_clr();					/* DEBUG sleep_mbox_clr */
 	if (sleep_speedy)					/* DEBUG sleep_speedy */
 		e8895_speedy_release("pre-SMC");
+	if (sleep_qch)						/* DEBUG sleep_qch */
+		e8895_qch_dump("pre-cmu");
 	e8895_hwacg_set();					/* DEBUG sleep_hwacg */
 	e8895_stockcmu_set();					/* DEBUG sleep_stockcmu */
 	if (sleep_regdiff)					/* DEBUG sleep_regdiff */
 		e8895_rs_diff(true, "pre-SMC");
+	if (sleep_qch) {					/* DEBUG sleep_qch */
+		udelay(10);		/* the QCH_CON writes above hand the clocks to HWACG */
+		e8895_qch_dump("pre-SMC");
+	}
 	e8895_apmlog_print();					/* DEBUG APM fwlog front at the SMC */
 	e8895_apmlog_take("pre-SMC");
 	e8895_wdt_arm();					/* DEBUG sleep_wdt */
