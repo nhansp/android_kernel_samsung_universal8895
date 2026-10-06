@@ -499,7 +499,7 @@ static void e8895_emul_restore(void)
 }
 
 /*
- * DEBUG (L7, 2026-10-06) sleep_ovr="off:val[,off:val...]" (hex, up to 16): after the SLEEP enter
+ * DEBUG (L7, 2026-10-06) sleep_ovr="off:val[,off:val...]" (hex, up to 16): after the SLEEP (or sleep_sicd) enter
  * list, rewrite PMU words that the list itself writes (PMU base, WRITE rows only; the union of
  * that offset's row masks applies), e.g. a SYS_PWR register back to its SICD/AFTR value so the
  * central sequencer leaves that block alone. Bisection tool for the SLEEP entry stall: with
@@ -2359,6 +2359,7 @@ static int e8895_sleep_arm(const char **why)
 		pr_info("exynos8895-pm: DEBUG sleep_sicd: SICD programmed instead of SLEEP mode %d\n",
 			e8895_mode);
 		e8895_emul_apply();				/* DEBUG sleep_emul */
+		e8895_ovr_apply(e8895_enter_sicd, ARRAY_SIZE(e8895_enter_sicd));	/* DEBUG sleep_ovr */
 		return 0;
 	}
 	/* only SYS_SICD has a ref-idle-ip node (FDT:4433-4439): the SLEEP masks are all-ones,
