@@ -1618,6 +1618,85 @@ static void e8895_apm_dump(void)
 		readl(e8895_mbox_base + 0x28), readl(e8895_mbox_base + 0x2c));
 }
 
+/*
+ * DEBUG (L7, 2026-10-06) stock register baseline. work/l7c/regsnap/regsnap.ko, loaded into the LOS
+ * 4.4.302 kernel, read 1442 registers (every CMU SFR of the always-on CMU blocks, every address
+ * the stock PMUCAL tables write outside power-gated blocks) at run time and in a kprobe on
+ * exynos_pm_enter(), i.e. after every syscore op and right before stock's SLEEP SMC; stock then
+ * slept and woke normally. exynos8895-regsnap.h holds both stock values per address.
+ *   regdiff_now=1|2  print now every address whose value differs from stock's run-time (1) or
+ *                    pre-SMC (2) value
+ *   sleep_regdiff=1  the same against stock's pre-SMC values in ->enter, right before the SMC
+ *                    (after sleep_hwacg/sleep_mbox_clr, before the watchdog is armed)
+ * 4 differences per line (pa=ours/stock): the pstore console zone is 16K.
+ */
+#include "exynos8895-regsnap.h"
+
+static bool sleep_regdiff;
+module_param(sleep_regdiff, bool, 0644);
+static void __iomem *e8895_rs_va[ARRAY_SIZE(e8895_rs)];
+
+static void e8895_rs_map(struct device *dev)
+{
+	void __iomem *page = NULL;
+	u32 cur = 0;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(e8895_rs); i++) {	/* sorted: one mapping per 4K page */
+		u32 pg = e8895_rs[i].pa & ~0xfffu;
+
+		if (!page || pg != cur) {
+			page = devm_ioremap(dev, pg, SZ_4K);
+			cur = pg;
+		}
+		e8895_rs_va[i] = page ? page + (e8895_rs[i].pa & 0xfff) : NULL;
+	}
+}
+
+static void e8895_rs_diff(bool sus, const char *tag)
+{
+	char line[160];
+	int i, len = 0, k = 0, n = 0, skipped = 0;
+
+	for (i = 0; i < ARRAY_SIZE(e8895_rs); i++) {
+		u32 v, exp = sus ? e8895_rs[i].sus : e8895_rs[i].rt;
+
+		if (!e8895_rs_va[i]) {
+			skipped++;
+			continue;
+		}
+		v = readl(e8895_rs_va[i]);
+		if (v == exp)
+			continue;
+		n++;
+		len += scnprintf(line + len, sizeof(line) - len, " %08x=%08x/%08x",
+				 e8895_rs[i].pa, v, exp);
+		if (++k == 4) {
+			pr_info("exynos8895-pm: DEBUG rd %s:%s\n", tag, line);
+			len = k = 0;
+		}
+	}
+	if (k)
+		pr_info("exynos8895-pm: DEBUG rd %s:%s\n", tag, line);
+	pr_info("exynos8895-pm: DEBUG rd %s: %d of %zu differ from stock %s (%d unmapped)\n",
+		tag, n, ARRAY_SIZE(e8895_rs), sus ? "pre-SMC" : "run time", skipped);
+}
+
+static int e8895_rs_now_set(const char *val, const struct kernel_param *kp)
+{
+	unsigned int which;
+	int ret = kstrtouint(val, 0, &which);
+
+	if (ret)
+		return ret;
+	if (which != 1 && which != 2)
+		return -EINVAL;
+	e8895_rs_diff(which == 2, which == 2 ? "now-vs-presmc" : "now-vs-runtime");
+	return 0;
+}
+static const struct kernel_param_ops e8895_rs_now_ops = { .set = e8895_rs_now_set };
+module_param_cb(regdiff_now, &e8895_rs_now_ops, NULL, 0200);
+
 /* power_state of the SMC: sleep_bare forces C2 (0x00010000), otherwise the
  * stock SLEEP word unless sleep_psci overrides it */
 static unsigned int e8895_smc_state(void)
@@ -2136,6 +2215,8 @@ static int e8895_pm_enter(suspend_state_t state)
 	}
 	e8895_mbox_clr();					/* DEBUG sleep_mbox_clr */
 	e8895_hwacg_set();					/* DEBUG sleep_hwacg */
+	if (sleep_regdiff)					/* DEBUG sleep_regdiff */
+		e8895_rs_diff(true, "pre-SMC");
 	e8895_wdt_arm();					/* DEBUG sleep_wdt */
 	if (sleep_wfi && sleep_bare) {				/* DEBUG */
 		cpu_do_idle();
@@ -2345,6 +2426,7 @@ static int e8895_pm_probe(struct platform_device *pdev)
 		of_node_put(np);
 	}
 	e8895_hwacg_map(dev);				/* DEBUG sleep_hwacg */
+	e8895_rs_map(dev);				/* DEBUG sleep_regdiff */
 	register_pm_notifier(&e8895_sicd_dbg_pm_nb);	/* DEBUG sicd_wdt/sicd_hwacg */
 	/* DEBUG e8895_apm_dump(): the mailbox driver owns the region, so no claim here */
 	np = of_find_compatible_node(NULL, NULL, "samsung,exynos8895-mbox");
