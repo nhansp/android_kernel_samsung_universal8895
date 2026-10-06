@@ -69,6 +69,7 @@ enum {
 static const u32 e8895_wkmask_off[4] = { 0x610, 0x614, 0x618, 0x644 };	/* FDT:4445,4450,4455,4460 */
 static const u32 e8895_wkmask_sicd[4] = { 0x400001e0, 0x0, 0x0, 0x4 };	/* FDT:4444,4449,4454,4459 column 0 */
 static const u32 e8895_wkmask_sleep[4] = { 0x500f7e7e, 0xffff00ff, 0xffff00ff, 0x4 };	/* columns 8, 9, 10 (equal) */
+static const u32 e8895_wkmask_aftr[4] = { 0x0, 0x0, 0x0, 0x4 };	/* DEBUG sleep_aftr: FDT:4444,4449,4454,4459 column 2 */
 
 /*
  * PD STATUS registers: the first WAIT on each <PD>_STATUS of
@@ -438,6 +439,19 @@ static bool e8895_sleep_armed;		/* syscore suspend programmed the PMU for SLEEP 
 static bool sleep_sicd;
 module_param(sleep_sicd, bool, 0644);
 static bool e8895_sicd_armed;
+
+/*
+ * DEBUG sleep_aftr=1 (L7, 2026-10-06): program stock's AFTR ("ARM off, TOP running") instead of
+ * SLEEP, with the SLEEP power_state so EL3 still flushes and prepares as for SLEEP. AFTR
+ * powers the CPU clusters, L2 and DBG off through the central sequencer but keeps every PLL,
+ * the DDRPHY DLL and the MIF bus running (CAL:pmucal_system_exynos8895.h:393-540); SICD,
+ * which hung in this context (image 0170, work/l7c/deep/sicd2), does the opposite. Returns
+ * => cluster power-down and the sequencer/wake path work, the stall is in the clock-down
+ * (PLL off / CMU clock stop) part shared by SICD and SLEEP.
+ */
+static bool sleep_aftr;
+module_param(sleep_aftr, bool, 0644);
+static bool e8895_aftr_armed;
 static bool cp_check = true;		/* stock always checks CP; 0 only for boots without a running CP */
 module_param(cp_check, bool, 0644);
 
@@ -2155,6 +2169,29 @@ static int e8895_sleep_arm(const char **why)
 	unsigned int i;
 	u32 arm0, arm1;		/* DEBUG sleep_noarm: pre-enter CENTRAL bits */
 
+	if (sleep_aftr) {					/* DEBUG sleep_aftr */
+		for (i = 0; i < 4; i++)
+			pmu_raw_writel(~0u, E8895_IDLE_IP_MASK(i));
+		pmu_raw_writel(exynos_pinctrl_get_eint_wake_mask(), E8895_EINT_WAKEUP_MASK);
+		for (i = 0; i < 4; i++)
+			pmu_raw_writel(e8895_wkmask_aftr[i], e8895_wkmask_off[i]);
+		if (e8895_handle(e8895_enter_aftr, ARRAY_SIZE(e8895_enter_aftr))) {
+			e8895_handle(e8895_earlywkup_aftr, ARRAY_SIZE(e8895_earlywkup_aftr));
+			for (i = 0; i < 4; i++) {
+				pmu_raw_writel(e8895_save_ipm[i], E8895_IDLE_IP_MASK(i));
+				pmu_raw_writel(e8895_save_wk[i], e8895_wkmask_off[i]);
+			}
+			pmu_raw_writel(e8895_save_eint, E8895_EINT_WAKEUP_MASK);
+			*why = "sleep_aftr: enter list failed";
+			return -EIO;
+		}
+		e8895_aftr_armed = true;
+		e8895_early = true;
+		e8895_sleep_armed = true;
+		pr_info("exynos8895-pm: DEBUG sleep_aftr: AFTR programmed instead of SLEEP mode %d\n",
+			e8895_mode);
+		return 0;
+	}
 	if (sleep_sicd) {					/* DEBUG sleep_sicd */
 		int r;
 
@@ -2353,6 +2390,25 @@ static void e8895_pm_syscore_resume(void)
 	if (sleep_trace)						/* DEBUG */
 		pr_info("exynos8895-pm: DEBUG syscore resume early=%d mode=%d\n", e8895_early, e8895_mode);
 	e8895_sleep_armed = false;
+	if (e8895_aftr_armed) {					/* DEBUG sleep_aftr */
+		unsigned int i;
+
+		e8895_aftr_armed = false;
+		if (e8895_early)
+			e8895_handle(e8895_earlywkup_aftr, ARRAY_SIZE(e8895_earlywkup_aftr));
+		else
+			e8895_handle(e8895_exit_aftr, ARRAY_SIZE(e8895_exit_aftr));
+		for (i = 0; i < 4; i++) {
+			pmu_raw_writel(e8895_save_ipm[i], E8895_IDLE_IP_MASK(i));
+			pmu_raw_writel(e8895_save_wk[i], e8895_wkmask_off[i]);
+		}
+		pmu_raw_writel(e8895_save_eint, E8895_EINT_WAKEUP_MASK);
+		stat = pmu_raw_readl(E8895_WAKEUP_STAT);
+		pr_info("exynos8895-pm: DEBUG sleep_aftr: back, %sWAKEUP_STAT=0x%08x\n",
+			e8895_early ? "early " : "", stat);
+		e8895_dbg_allon();
+		return;
+	}
 	if (e8895_sicd_armed) {					/* DEBUG sleep_sicd */
 		unsigned int i;
 
