@@ -1710,6 +1710,56 @@ static void e8895_rs_diff(bool sus, const char *tag)
 		tag, n, ARRAY_SIZE(e8895_rs), sus ? "pre-SMC" : "run time", skipped);
 }
 
+/*
+ * DEBUG sleep_stockcmu=<mask> (L7, 2026-10-06): right before the SMC, write stock's pre-SMC value
+ * (exynos8895-regsnap.h .sus) into every always-on-CMU register of the selected classes that
+ * differs from it; put the old values back right after the SMC returns.
+ *   1  CLK_CON_GAT_*  stock 0x00200000 = MANUAL 0, ENABLE_AUTOMATIC_CLKGATING 0: the clock
+ *                     passes (S:drivers/soc/samsung/cal-if/ra.c:378-417 ra_set_gate/ra_get_gate);
+ *                     ours is MANUAL with many gates off, or HWACG with sleep_hwacg
+ *   2  QCH_CON_*      stock 0x003f0000 = Q-channel off; ours 0x003f0003 (USI01-USI13)
+ *   4  *_USER muxes   stock 0 = OSCCLK (PLL_MUX_SEL bit 4, S:.../cal-if/ra.h:33-34); ours 0x10
+ * Image 0164 run "rdiff" (work/l7c/deep/rdiff): at our SMC these were the differences left
+ * besides dividers of powered-off domains, PMU_DEBUG bit 8 and two big-core OPTION words.
+ */
+static unsigned int sleep_stockcmu;
+module_param(sleep_stockcmu, uint, 0644);
+static u32 e8895_sc_save[ARRAY_SIZE(e8895_rs)];
+static DECLARE_BITMAP(e8895_sc_done, ARRAY_SIZE(e8895_rs));
+
+static void e8895_stockcmu_set(void)
+{
+	int i, n[5] = { 0 };
+
+	if (!sleep_stockcmu || !e8895_rs_mapped)
+		return;
+	for (i = 0; i < ARRAY_SIZE(e8895_rs); i++) {
+		u32 v;
+
+		if (!(e8895_rs[i].cls & sleep_stockcmu) || !e8895_rs_va[i])
+			continue;
+		v = readl(e8895_rs_va[i]);
+		if (v == e8895_rs[i].sus)
+			continue;
+		e8895_sc_save[i] = v;
+		writel(e8895_rs[i].sus, e8895_rs_va[i]);
+		__set_bit(i, e8895_sc_done);
+		n[e8895_rs[i].cls]++;
+	}
+	pr_info("exynos8895-pm: DEBUG stockcmu 0x%x: %d gates, %d qch, %d user muxes set to stock pre-SMC\n",
+		sleep_stockcmu, n[1], n[2], n[4]);
+}
+
+static void e8895_stockcmu_restore(void)
+{
+	int i;
+
+	for_each_set_bit(i, e8895_sc_done, ARRAY_SIZE(e8895_rs)) {
+		writel(e8895_sc_save[i], e8895_rs_va[i]);
+		__clear_bit(i, e8895_sc_done);
+	}
+}
+
 static int e8895_rs_now_set(const char *val, const struct kernel_param *kp)
 {
 	unsigned int which;
@@ -2244,6 +2294,7 @@ static int e8895_pm_enter(suspend_state_t state)
 	}
 	e8895_mbox_clr();					/* DEBUG sleep_mbox_clr */
 	e8895_hwacg_set();					/* DEBUG sleep_hwacg */
+	e8895_stockcmu_set();					/* DEBUG sleep_stockcmu */
 	if (sleep_regdiff)					/* DEBUG sleep_regdiff */
 		e8895_rs_diff(true, "pre-SMC");
 	e8895_wdt_arm();					/* DEBUG sleep_wdt */
@@ -2254,6 +2305,7 @@ static int e8895_pm_enter(suspend_state_t state)
 		ret = e8895_psci_suspend(e8895_smc_state());	/* DEBUG sleep_psci */
 	}
 	e8895_wdt_disarm();					/* DEBUG sleep_wdt */
+	e8895_stockcmu_restore();				/* DEBUG sleep_stockcmu */
 	e8895_hwacg_restore();					/* DEBUG sleep_hwacg */
 	if (sleep_c2prep) {					/* DEBUG l7el3 */
 		e8895_pmu_cpu_up(cpu);
