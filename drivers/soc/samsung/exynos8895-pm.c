@@ -497,6 +497,63 @@ static void e8895_emul_restore(void)
 	pmu_raw_writel(e8895_emul_save[0], E8895_TOP_BUS_MIF_OPTION);
 	pmu_raw_writel(e8895_emul_save[1], E8895_TOP_PWR_APM_OPTION);
 }
+
+/*
+ * DEBUG (L7, 2026-10-06) sleep_ovr="off:val[,off:val...]" (hex, up to 16): after the SLEEP enter
+ * list, rewrite PMU words that the list itself writes (PMU base, WRITE rows only; the union of
+ * that offset's row masks applies), e.g. a SYS_PWR register back to its SICD/AFTR value so the
+ * central sequencer leaves that block alone. Bisection tool for the SLEEP entry stall: with
+ * sleep_wdt, an override that removes the stall shows as no reset at the watchdog. Syscore
+ * resume puts the saved words back before the exit list runs.
+ */
+#define E8895_OVR_MAX	16
+static char sleep_ovr[200];
+module_param_string(sleep_ovr, sleep_ovr, sizeof(sleep_ovr), 0644);
+static struct {
+	u16 off;
+	u32 old;
+} e8895_ovr_save[E8895_OVR_MAX];
+static unsigned int e8895_ovr_n;
+
+static void e8895_ovr_apply(const struct e8895_seq *s, unsigned int n)
+{
+	char buf[sizeof(sleep_ovr)], *p, *tok;
+	unsigned int i, off, val;
+	u32 mask;
+
+	e8895_ovr_n = 0;
+	strscpy(buf, sleep_ovr, sizeof(buf));
+	p = strim(buf);
+	while ((tok = strsep(&p, ",")) && e8895_ovr_n < E8895_OVR_MAX) {
+		if (!*tok)
+			continue;
+		if (sscanf(tok, "%x:%x", &off, &val) != 2) {
+			pr_err("exynos8895-pm: DEBUG ovr: bad token '%s'\n", tok);
+			continue;
+		}
+		for (mask = 0, i = 0; i < n; i++)
+			if (s[i].type == E8895_WRITE && s[i].base == 0 && s[i].off == off)
+				mask |= s[i].mask;
+		if (!mask) {
+			pr_err("exynos8895-pm: DEBUG ovr: 0x%x is not written by this enter list\n", off);
+			continue;
+		}
+		e8895_ovr_save[e8895_ovr_n].off = off;
+		e8895_ovr_save[e8895_ovr_n].old = pmu_raw_readl(off);
+		pmu_raw_writel((e8895_ovr_save[e8895_ovr_n].old & ~mask) | (val & mask), off);
+		pr_info("exynos8895-pm: DEBUG ovr: 0x%04x %08x -> %08x (mask %08x)\n", off,
+			e8895_ovr_save[e8895_ovr_n].old, pmu_raw_readl(off), mask);
+		e8895_ovr_n++;
+	}
+}
+
+static void e8895_ovr_restore(void)
+{
+	while (e8895_ovr_n) {
+		e8895_ovr_n--;
+		pmu_raw_writel(e8895_ovr_save[e8895_ovr_n].old, e8895_ovr_save[e8895_ovr_n].off);
+	}
+}
 static bool cp_check = true;		/* stock always checks CP; 0 only for boots without a running CP */
 module_param(cp_check, bool, 0644);
 
@@ -2342,6 +2399,7 @@ static int e8895_sleep_arm(const char **why)
 	e8895_sleep_armed = true;
 	pr_info("exynos8895-pm: SLEEP mode=%d\n", e8895_mode);
 	e8895_emul_apply();					/* DEBUG sleep_emul */
+	e8895_ovr_apply(t->t[0], t->n[0]);			/* DEBUG sleep_ovr */
 	if (sleep_noarm) {					/* DEBUG E6 */
 		pmu_raw_writel((pmu_raw_readl(0x0200) & ~BIT(16)) | (arm0 & BIT(16)), 0x0200);
 		pmu_raw_writel((pmu_raw_readl(0x0240) & ~BIT(16)) | (arm1 & BIT(16)), 0x0240);
@@ -2479,6 +2537,7 @@ static void e8895_pm_syscore_resume(void)
 	if (sleep_trace)						/* DEBUG */
 		pr_info("exynos8895-pm: DEBUG syscore resume early=%d mode=%d\n", e8895_early, e8895_mode);
 	e8895_sleep_armed = false;
+	e8895_ovr_restore();					/* DEBUG sleep_ovr */
 	e8895_emul_restore();					/* DEBUG sleep_emul */
 	if (e8895_aftr_armed) {					/* DEBUG sleep_aftr */
 		unsigned int i;

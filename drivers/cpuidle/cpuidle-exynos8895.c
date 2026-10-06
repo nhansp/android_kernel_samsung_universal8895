@@ -56,6 +56,26 @@ static bool sicd_s2idle;
 module_param(sicd_s2idle, bool, 0644);
 
 /*
+ * DEBUG (L7, 2026-10-06) cpd_boot=1: let the boot (A53) cluster take CPD as well. Stock never
+ * powers the boot cluster down at run time (S:drivers/soc/samsung/exynos-powermode.c:440-445),
+ * while every system mode does (SLEEP, SICD-from-suspend and AFTR all hang here; Mongoose CPD
+ * runs millions of times). With CPUs 1-3 offline and the A53 cpufreq pinned, CPU0's idle then
+ * runs stock's cluster1_off + PSCI CPU_SUSPEND 0x01000000 (CAL:pmucal_cpu_exynos8895.h:105-109),
+ * and the Mongoose CPUs stay up to read the cluster's PMU status if it does not come back.
+ * cpd_boot_count = boot-cluster power-down/up cycles completed.
+ */
+static bool cpd_boot;
+module_param(cpd_boot, bool, 0644);
+
+static int e8895_cpdb_get(char *buf, const struct kernel_param *kp)
+{
+	return sysfs_emit(buf, "%d\n", atomic_read(&e8895_stats.cpd_boot));
+}
+
+static const struct kernel_param_ops e8895_cpdb_ops = { .get = e8895_cpdb_get };
+module_param_cb(cpd_boot_count, &e8895_cpdb_ops, NULL, 0444);
+
+/*
  * DEBUG (bring-up of image 0074, which hung ~7 ms after this driver registered):
  * boot-time switches that isolate one variable of the C2 path per boot.
  *   c2_mode=0  stock C2: PMU core-down writes + PSCI CPU_SUSPEND 0x10000 (default)
@@ -222,8 +242,9 @@ static u32 e8895_c2_prepare(unsigned int cpu, bool s2idle)
 	    (s64)min(E8895_CPD_RES_NS, E8895_SICD_RES_NS))
 		goto out;
 
-	/* is_cpd_available(), :426-449 */
-	if (READ_ONCE(cpd_enabled) && !READ_ONCE(cpd_blocking) && !e8895_boot_cluster(cpu)) {
+	/* is_cpd_available(), :426-449; DEBUG cpd_boot lifts the boot-cluster exclusion (:440-445) */
+	if (READ_ONCE(cpd_enabled) && !READ_ONCE(cpd_blocking) &&
+	    (!e8895_boot_cluster(cpu) || READ_ONCE(cpd_boot))) {
 		e8895_cluster_cpus(cpu, &m);
 		if (e8895_cpus_idle_for(&m, now, E8895_CPD_RES_NS)) {
 			e8895_pmu_cluster_down(cpu);		/* :529 */
@@ -232,8 +253,8 @@ static u32 e8895_c2_prepare(unsigned int cpu, bool s2idle)
 		}
 	}
 
-	/* is_sicd_available(), :465-488 */
-	if (READ_ONCE(sicd_enabled) && e8895_boot_cluster(cpu) &&
+	/* is_sicd_available(), :465-488; DEBUG cpd_boot: a boot-cluster CPD is taken alone */
+	if (READ_ONCE(sicd_enabled) && e8895_boot_cluster(cpu) && state != E8895_PSCI_CPD &&
 	    e8895_cpus_idle_for(cpu_online_mask, now, E8895_SICD_RES_NS)) {
 		atomic_inc(&e8895_stats.sicd_try);
 		if (!e8895_sicd_prepare()) {			/* :536-537 */
@@ -267,7 +288,10 @@ static void e8895_c2_finish(unsigned int cpu, bool failed)
 	if (cluster_down[e8895_phycluster(cpu)]) {		/* :559-562 */
 		e8895_pmu_cluster_up(cpu);
 		cluster_down[e8895_phycluster(cpu)] = false;
-		atomic_inc(&e8895_stats.cpd);
+		if (e8895_boot_cluster(cpu))			/* DEBUG cpd_boot */
+			atomic_inc(&e8895_stats.cpd_boot);
+		else
+			atomic_inc(&e8895_stats.cpd);
 	}
 	if (sicd_entered) {					/* :564-570: the first CPU out runs the exit */
 		e8895_dbg_sicd_leave();				/* DEBUG sicd_wdt/sicd_hwacg */
