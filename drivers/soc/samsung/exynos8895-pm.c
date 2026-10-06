@@ -1699,6 +1699,47 @@ module_param_cb(speedy_rel, &e8895_speedy_rel_ops, NULL, 0200);
  */
 static void __iomem *e8895_apmlog;
 
+/* DEBUG: the whole APM ring as it was at the end of the last syscore suspend / at the SMC,
+ * for pm_test=core runs (no SMC, no hang); printed oldest -> newest by reading apmlog_last */
+#define E8895_APMLOG_WORDS	(3 + 50 * 4)	/* ktime index, rear, front; 50 x 16-byte entries */
+static u32 e8895_apmlog_copy[E8895_APMLOG_WORDS];
+static const char *e8895_apmlog_where = "none";
+
+static void e8895_apmlog_take(const char *where)
+{
+	int i;
+
+	if (!e8895_apmlog)
+		return;
+	e8895_apmlog_copy[0] = readl(e8895_apmlog + 0xcd0);
+	e8895_apmlog_copy[1] = readl(e8895_apmlog + 0xcd8);
+	e8895_apmlog_copy[2] = readl(e8895_apmlog + 0xcdc);
+	for (i = 0; i < 50 * 4; i++)
+		e8895_apmlog_copy[3 + i] = readl(e8895_apmlog + 0xce0 + 4 * i);
+	e8895_apmlog_where = where;
+}
+
+static int e8895_apmlog_get(char *buf, const struct kernel_param *kp)
+{
+	u32 front = e8895_apmlog_copy[2];
+	int len, n;
+
+	len = scnprintf(buf, PAGE_SIZE, "%s: ktime_index=%u rear=%u front=%u (oldest first)\n",
+			e8895_apmlog_where, e8895_apmlog_copy[0], e8895_apmlog_copy[1], front);
+	for (n = 0; n < 50 && front < 50; n++) {
+		const u32 *e = &e8895_apmlog_copy[3 + ((front + n) % 50) * 4];
+		char str[9];
+
+		memcpy(str, &e[1], 8);
+		str[8] = '\0';
+		len += scnprintf(buf + len, PAGE_SIZE - len, "%02u %08x cnt=%7u %-8s %08x\n",
+				 (front + n) % 50, e[0], e[0] & 0x7fffff, str, e[3]);
+	}
+	return len;
+}
+static const struct kernel_param_ops e8895_apmlog_ops = { .get = e8895_apmlog_get };
+module_param_cb(apmlog_last, &e8895_apmlog_ops, NULL, 0444);
+
 static void e8895_apmlog_print(void)
 {
 	if (e8895_apmlog)
@@ -2370,6 +2411,7 @@ static int e8895_pm_syscore_suspend(void)
 	ret = e8895_sleep_arm(&why);
 	if (ret)
 		goto refuse;
+	e8895_apmlog_take("syscore");				/* DEBUG: pm_test=core reads it */
 	return 0;
 
 refuse:
@@ -2484,6 +2526,7 @@ static int e8895_pm_enter(suspend_state_t state)
 	if (sleep_regdiff)					/* DEBUG sleep_regdiff */
 		e8895_rs_diff(true, "pre-SMC");
 	e8895_apmlog_print();					/* DEBUG APM fwlog front at the SMC */
+	e8895_apmlog_take("pre-SMC");
 	e8895_wdt_arm();					/* DEBUG sleep_wdt */
 	if (sleep_wfi && sleep_bare) {				/* DEBUG */
 		cpu_do_idle();
