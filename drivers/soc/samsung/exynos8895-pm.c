@@ -1961,11 +1961,29 @@ static void e8895_rs_diff(bool sus, const char *tag)
  *                     ours is MANUAL with many gates off, or HWACG with sleep_hwacg
  *   2  QCH_CON_*      stock 0x003f0000 = Q-channel off; ours 0x003f0003 (USI01-USI13)
  *   4  *_USER muxes   stock 0 = OSCCLK (PLL_MUX_SEL bit 4, S:.../cal-if/ra.h:33-34); ours 0x10
+ *   8  CMU_TOP CLK_CON_MUX/CLK_CON_DIV (0x15a81000-0x15a81fff, class 0 rows): stock parks the
+ *                     outputs of powered-off domains (mux 0, divider 0xf); ours keep the last
+ *                     run-time setting (CAM_VRA on SHARED4 /1, ISPHQ/ISPLP/IVA on SHARED1, ...).
+ *                     SICD bisection 2026-10-06: the stall is the CMU_TOP PLL disable.
  * Image 0164 run "rdiff" (work/l7c/deep/rdiff): at our SMC these were the differences left
  * besides dividers of powered-off domains, PMU_DEBUG bit 8 and two big-core OPTION words.
  */
 static unsigned int sleep_stockcmu;
-module_param(sleep_stockcmu, uint, 0644);
+
+/* the table is mapped here, in process context: ->enter runs with IRQs off (images 0173-0176
+ * ran sleep_stockcmu without sleep_regdiff, i.e. never mapped, i.e. never applied) */
+static int e8895_sc_param_set(const char *val, const struct kernel_param *kp)
+{
+	int ret = param_set_uint(val, kp);
+
+	if (!ret && sleep_stockcmu)
+		e8895_rs_map();
+	return ret;
+}
+static const struct kernel_param_ops e8895_sc_param_ops = {
+	.set = e8895_sc_param_set, .get = param_get_uint,
+};
+module_param_cb(sleep_stockcmu, &e8895_sc_param_ops, &sleep_stockcmu, 0644);
 static u32 e8895_sc_save[ARRAY_SIZE(e8895_rs)];
 static DECLARE_BITMAP(e8895_sc_done, ARRAY_SIZE(e8895_rs));
 
@@ -1973,12 +1991,20 @@ static void e8895_stockcmu_set(void)
 {
 	int i, n[5] = { 0 };
 
-	if (!sleep_stockcmu || !e8895_rs_mapped)
+	if (!sleep_stockcmu)
 		return;
+	if (!e8895_rs_mapped) {
+		pr_err("exynos8895-pm: DEBUG stockcmu 0x%x: register table not mapped, nothing set\n",
+		       sleep_stockcmu);
+		return;
+	}
 	for (i = 0; i < ARRAY_SIZE(e8895_rs); i++) {
 		u32 v;
 
-		if (!(e8895_rs[i].cls & sleep_stockcmu) || !e8895_rs_va[i])
+		bool top_md = (sleep_stockcmu & 8) && !e8895_rs[i].cls &&
+			      e8895_rs[i].pa >= 0x15a81000 && e8895_rs[i].pa < 0x15a82000;
+
+		if ((!(e8895_rs[i].cls & sleep_stockcmu) && !top_md) || !e8895_rs_va[i])
 			continue;
 		v = readl(e8895_rs_va[i]);
 		if (v == e8895_rs[i].sus)
@@ -1986,10 +2012,13 @@ static void e8895_stockcmu_set(void)
 		e8895_sc_save[i] = v;
 		writel(e8895_rs[i].sus, e8895_rs_va[i]);
 		__set_bit(i, e8895_sc_done);
-		n[e8895_rs[i].cls]++;
+		n[top_md ? 0 : e8895_rs[i].cls]++;
+		if (top_md)
+			pr_info("exynos8895-pm: DEBUG stockcmu top %08x: %08x -> %08x\n",
+				e8895_rs[i].pa, v, e8895_rs[i].sus);
 	}
-	pr_info("exynos8895-pm: DEBUG stockcmu 0x%x: %d gates, %d qch, %d user muxes set to stock pre-SMC\n",
-		sleep_stockcmu, n[1], n[2], n[4]);
+	pr_info("exynos8895-pm: DEBUG stockcmu 0x%x: %d gates, %d qch, %d user muxes, %d CMU_TOP mux/div set to stock pre-SMC\n",
+		sleep_stockcmu, n[1], n[2], n[4], n[0]);
 }
 
 static void e8895_stockcmu_restore(void)
