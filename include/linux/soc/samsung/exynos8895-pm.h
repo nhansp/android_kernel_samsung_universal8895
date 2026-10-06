@@ -26,6 +26,9 @@ struct e8895_idle_stats {		/* read by the L7 heartbeat printer */
 	atomic_t c2[8];			/* successful C2 (any flavour) per logical CPU */
 	atomic_t cpd;			/* cluster 0 power-downs completed */
 	atomic_t cpd_boot;		/* DEBUG cpd_boot: boot-cluster power-downs completed */
+	atomic_t cpd_ok[2];		/* DEBUG: CPD whose SMC returned 0 (a real power-down), per phys cluster */
+	atomic_t cpd_early[2];		/* DEBUG: CPD whose SMC returned early (<0), per phys cluster */
+	int cpd_last_ret[2];		/* DEBUG: the last early return value, per phys cluster */
 	atomic_t sicd;			/* SICD entries completed */
 	atomic_t sicd_try;		/* SICD candidate (all CPUs idle long enough / in s2idle) */
 	atomic_t sicd_veto;		/* candidate refused by a veto */

@@ -75,6 +75,19 @@ static int e8895_cpdb_get(char *buf, const struct kernel_param *kp)
 static const struct kernel_param_ops e8895_cpdb_ops = { .get = e8895_cpdb_get };
 module_param_cb(cpd_boot_count, &e8895_cpdb_ops, NULL, 0444);
 
+/* DEBUG: CPD SMCs that powered down (ok) vs returned early, per physical cluster (0 = M2) */
+static int e8895_cpds_get(char *buf, const struct kernel_param *kp)
+{
+	return sysfs_emit(buf, "cl0 ok=%d early=%d last=%d cl1 ok=%d early=%d last=%d\n",
+			  atomic_read(&e8895_stats.cpd_ok[0]), atomic_read(&e8895_stats.cpd_early[0]),
+			  READ_ONCE(e8895_stats.cpd_last_ret[0]),
+			  atomic_read(&e8895_stats.cpd_ok[1]), atomic_read(&e8895_stats.cpd_early[1]),
+			  READ_ONCE(e8895_stats.cpd_last_ret[1]));
+}
+
+static const struct kernel_param_ops e8895_cpds_ops = { .get = e8895_cpds_get };
+module_param_cb(cpd_stats, &e8895_cpds_ops, NULL, 0444);
+
 /*
  * DEBUG (bring-up of image 0074, which hung ~7 ms after this driver registered):
  * boot-time switches that isolate one variable of the C2 path per boot.
@@ -354,6 +367,17 @@ static __cpuidle int __e8895_enter_c2(struct cpuidle_device *dev, int idx, bool 
 		pr_info("exynos8895_idle: cpu%u mode=%u enter 0x%08x conf_ok=%d\n",
 			cpu, mode, state, e8895_pmu_cpu_conf_ok(cpu));
 	ret = e8895_psci_suspend(state);			/* S:drivers/cpuidle/cpuidle-exynos64.c:136 */
+	if (state == E8895_PSCI_CPD) {				/* DEBUG: real vs early CPD */
+		unsigned int cl = e8895_phycluster(cpu) & 1;
+
+		if (ret) {
+			atomic_inc(&e8895_stats.cpd_early[cl]);
+			/* the SMC's own result: 0 = SUCCESS without a power-down */
+			WRITE_ONCE(e8895_stats.cpd_last_ret[cl], per_cpu(e8895_dbg_fin_ret, cpu));
+		} else {
+			atomic_inc(&e8895_stats.cpd_ok[cl]);
+		}
+	}
 	if (mode != 2)
 		e8895_c2_finish(cpu, ret != 0);
 	if (c2_trace && cpu < 8)
