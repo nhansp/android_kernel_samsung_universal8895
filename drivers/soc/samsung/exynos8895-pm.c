@@ -1633,24 +1633,48 @@ static void e8895_apm_dump(void)
 #include "exynos8895-regsnap.h"
 
 static bool sleep_regdiff;
-module_param(sleep_regdiff, bool, 0644);
 static void __iomem *e8895_rs_va[ARRAY_SIZE(e8895_rs)];
+static void e8895_rs_map(void);
 
-static void e8895_rs_map(struct device *dev)
+static int e8895_rs_sleep_set(const char *val, const struct kernel_param *kp)
+{
+	int ret = param_set_bool(val, kp);
+
+	if (!ret && sleep_regdiff)
+		e8895_rs_map();				/* process context, before any suspend */
+	return ret;
+}
+static const struct kernel_param_ops e8895_rs_sleep_ops = {
+	.set = e8895_rs_sleep_set, .get = param_get_bool,
+};
+module_param_cb(sleep_regdiff, &e8895_rs_sleep_ops, &sleep_regdiff, 0644);
+
+/*
+ * Mapped on first use in process context (regdiff_now, or PM_SUSPEND_PREPARE with
+ * sleep_regdiff), never at probe: image 0162 mapped the 82 pages in probe and never reached
+ * userspace (stuck at the splash, no panic record), while 0161 without it boots.
+ */
+static bool e8895_rs_mapped;
+
+static void e8895_rs_map(void)
 {
 	void __iomem *page = NULL;
 	u32 cur = 0;
 	int i;
 
+	if (e8895_rs_mapped)
+		return;
 	for (i = 0; i < ARRAY_SIZE(e8895_rs); i++) {	/* sorted: one mapping per 4K page */
 		u32 pg = e8895_rs[i].pa & ~0xfffu;
 
 		if (!page || pg != cur) {
-			page = devm_ioremap(dev, pg, SZ_4K);
+			page = ioremap(pg, SZ_4K);
 			cur = pg;
 		}
 		e8895_rs_va[i] = page ? page + (e8895_rs[i].pa & 0xfff) : NULL;
 	}
+	e8895_rs_mapped = true;
+	pr_info("exynos8895-pm: DEBUG rd: %zu registers mapped\n", ARRAY_SIZE(e8895_rs));
 }
 
 static void e8895_rs_diff(bool sus, const char *tag)
@@ -1658,6 +1682,10 @@ static void e8895_rs_diff(bool sus, const char *tag)
 	char line[160];
 	int i, len = 0, k = 0, n = 0, skipped = 0;
 
+	if (!e8895_rs_mapped) {
+		pr_info("exynos8895-pm: DEBUG rd %s: not mapped\n", tag);
+		return;
+	}
 	for (i = 0; i < ARRAY_SIZE(e8895_rs); i++) {
 		u32 v, exp = sus ? e8895_rs[i].sus : e8895_rs[i].rt;
 
@@ -1691,6 +1719,7 @@ static int e8895_rs_now_set(const char *val, const struct kernel_param *kp)
 		return ret;
 	if (which != 1 && which != 2)
 		return -EINVAL;
+	e8895_rs_map();
 	e8895_rs_diff(which == 2, which == 2 ? "now-vs-presmc" : "now-vs-runtime");
 	return 0;
 }
@@ -2426,7 +2455,6 @@ static int e8895_pm_probe(struct platform_device *pdev)
 		of_node_put(np);
 	}
 	e8895_hwacg_map(dev);				/* DEBUG sleep_hwacg */
-	e8895_rs_map(dev);				/* DEBUG sleep_regdiff */
 	register_pm_notifier(&e8895_sicd_dbg_pm_nb);	/* DEBUG sicd_wdt/sicd_hwacg */
 	/* DEBUG e8895_apm_dump(): the mailbox driver owns the region, so no claim here */
 	np = of_find_compatible_node(NULL, NULL, "samsung,exynos8895-mbox");
