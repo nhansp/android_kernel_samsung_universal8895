@@ -586,6 +586,11 @@ module_param(cp_check, bool, 0644);
 static bool sleep_trace;
 static unsigned int sleep_mode;
 static long sleep_wkmask0 = -1;	/* long: a 32-bit mask with bit 31 set must fit (sleepm31) */
+/* DEBUG sleep_wkmask4=<v>: write <v> to the extra wakeup mask (0x644, FDT:4460) instead of
+ * stock's 0x4. sleepm31b woke after ~1 s with EXTRA_WAKEUP_STAT (0x640) bit 3, which stock's
+ * wakes never show (work/l7c/stock44-suspend/dmesg-real.txt:1431-1433: 0x80000001 / 0). */
+static long sleep_wkmask4 = -1;
+module_param(sleep_wkmask4, long, 0644);
 static unsigned int sleep_psci;
 module_param(sleep_trace, bool, 0644);
 module_param(sleep_mode, uint, 0644);
@@ -2507,6 +2512,8 @@ static int e8895_sleep_arm(const char **why)
 		pmu_raw_writel(e8895_wkmask_sleep[i], e8895_wkmask_off[i]);		/* :633-635 */
 	if (sleep_wkmask0 >= 0 && sleep_wkmask0 <= U32_MAX)				/* DEBUG */
 		pmu_raw_writel((u32)sleep_wkmask0, e8895_wkmask_off[0]);
+	if (sleep_wkmask4 >= 0 && sleep_wkmask4 <= U32_MAX)				/* DEBUG */
+		pmu_raw_writel((u32)sleep_wkmask4, e8895_wkmask_off[3]);
 	t = e8895_tab(e8895_mode);
 	e8895_save(t->t[1], t->n[1]);			/* S:drivers/soc/samsung/cal-if/pmucal_system.c:31 */
 	arm0 = pmu_raw_readl(0x0200);			/* DEBUG sleep_noarm */
@@ -2779,8 +2786,9 @@ static int e8895_pm_enter(suspend_state_t state)
 		u32 st = pmu_raw_readl(E8895_WAKEUP_STAT);
 
 		pmu_raw_writel(0, E8895_WAKEUP_STAT);
-		pr_info("exynos8895-pm: DEBUG wkclr: WAKEUP_STAT %08x -> %08x, 0x640 %08x\n",
-			st, pmu_raw_readl(E8895_WAKEUP_STAT), pmu_raw_readl(E8895_EXTRA_WAKEUP_STAT));
+		pr_info("exynos8895-pm: DEBUG wkclr: WAKEUP_STAT %08x -> %08x, 0x640 %08x, 0x644 %08x\n",
+			st, pmu_raw_readl(E8895_WAKEUP_STAT), pmu_raw_readl(E8895_EXTRA_WAKEUP_STAT),
+			pmu_raw_readl(0x0644));
 	}
 	e8895_apmlog_print();					/* DEBUG APM fwlog front at the SMC */
 	e8895_apmlog_take("pre-SMC");
