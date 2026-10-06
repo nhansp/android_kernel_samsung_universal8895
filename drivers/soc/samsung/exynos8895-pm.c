@@ -359,6 +359,11 @@ static bool e8895_veto_busy(const struct e8895_veto *v)
 	return true;
 }
 
+/* DEBUG sleep_sicd: set while the system suspend arms SICD; runtime PM is disabled for every
+ * device then (A:drivers/base/power/main.c device_suspend_late()), which the RPM vetoes read
+ * as busy, and every device has been suspended anyway */
+static bool e8895_sicd_in_suspend;
+
 static bool e8895_sicd_vetoed(void)
 {
 	unsigned int i;
@@ -377,7 +382,7 @@ static bool e8895_sicd_vetoed(void)
 		WRITE_ONCE(e8895_last_veto, "apm");
 		return true;
 	}
-	for (i = 0; i < e8895_nveto; i++)
+	for (i = 0; i < e8895_nveto && !e8895_sicd_in_suspend; i++)
 		if (e8895_veto_busy(&e8895_vetoes[i])) {
 			WRITE_ONCE(e8895_last_veto, e8895_vetoes[i].name);
 			return true;
@@ -2151,7 +2156,11 @@ static int e8895_sleep_arm(const char **why)
 	u32 arm0, arm1;		/* DEBUG sleep_noarm: pre-enter CENTRAL bits */
 
 	if (sleep_sicd) {					/* DEBUG sleep_sicd */
-		int r = e8895_sicd_prepare();
+		int r;
+
+		e8895_sicd_in_suspend = true;
+		r = e8895_sicd_prepare();
+		e8895_sicd_in_suspend = false;
 
 		if (r) {
 			*why = r == -EBUSY ? "sleep_sicd: SICD vetoed" : "sleep_sicd: SICD enter list failed";
