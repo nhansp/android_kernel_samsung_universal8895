@@ -992,6 +992,24 @@ static int exynos5_i2c_suspend_noirq(struct device *dev)
 	struct exynos5_i2c *i2c = dev_get_drvdata(dev);
 
 	i2c_mark_adapter_suspended(&i2c->adap);
+
+	/*
+	 * Exynos8895: an idle controller left out of reset keeps its clock requested under
+	 * hardware auto clock gating, and the SoC's system power-down cannot complete. Stock
+	 * held it in reset over suspend (S:drivers/i2c/busses/i2c-exynos5.c:1874-1885 under
+	 * CONFIG_I2C_SAMSUNG_HWACG=y, exynos8895-greatlte_defconfig:2186; released again by
+	 * exynos5_i2c_reset() in its resume, :1921-1923). The DBG_NFO of HSI2C_CAM0-3 read
+	 * "active" at the SLEEP SMC on 6.18 and idle on stock (TESTCARD-deep-0157).
+	 */
+	if (i2c->variant->hw == I2C_TYPE_EXYNOS8895 &&
+	    !clk_enable(i2c->pclk)) {
+		if (!clk_enable(i2c->clk)) {
+			writel(HSI2C_SW_RST, i2c->regs + HSI2C_CTL);
+			clk_disable(i2c->clk);
+		}
+		clk_disable(i2c->pclk);
+	}
+
 	clk_unprepare(i2c->clk);
 	clk_unprepare(i2c->pclk);
 
@@ -1010,6 +1028,10 @@ static int exynos5_i2c_resume_noirq(struct device *dev)
 	ret = clk_prepare_enable(i2c->clk);
 	if (ret)
 		goto err_pclk;
+
+	/* release the suspend-time reset first, as stock's exynos5_i2c_reset() did */
+	if (i2c->variant->hw == I2C_TYPE_EXYNOS8895)
+		writel(readl(i2c->regs + HSI2C_CTL) & ~HSI2C_SW_RST, i2c->regs + HSI2C_CTL);
 
 	ret = exynos5_hsi2c_clock_setup(i2c);
 	if (ret)
