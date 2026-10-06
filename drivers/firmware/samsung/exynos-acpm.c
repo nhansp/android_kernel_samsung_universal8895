@@ -564,6 +564,32 @@ static void acpm_fwlog_cancel(void *data)
 	cancel_delayed_work_sync(&acpm->fwlog_work);
 }
 
+/* DEBUG (L7): the firmware-log ring as found at probe, see acpm_fwlog_init() */
+#define ACPM_FWLOG_BOOT_MAX	64
+static u32 acpm_fwlog_boot_n;
+static u32 acpm_fwlog_boot_idx[3];			/* ktime index, rear, front */
+static u32 acpm_fwlog_boot_raw[ACPM_FWLOG_BOOT_MAX * 4];
+
+static int acpm_fwlog_boot_get(char *buf, const struct kernel_param *kp)
+{
+	int len, i;
+
+	len = scnprintf(buf, PAGE_SIZE, "ktime_index=%u rear=%u front=%u\n", acpm_fwlog_boot_idx[0],
+			acpm_fwlog_boot_idx[1], acpm_fwlog_boot_idx[2]);
+	for (i = 0; i < acpm_fwlog_boot_n; i++) {
+		const u32 *e = &acpm_fwlog_boot_raw[i * 4];
+		char str[9];
+
+		memcpy(str, &e[1], 8);
+		str[8] = '\0';
+		len += scnprintf(buf + len, PAGE_SIZE - len, "%02d %08x %-8s %08x\n",
+				 i, e[0], str, e[3]);
+	}
+	return len;
+}
+static const struct kernel_param_ops acpm_fwlog_boot_ops = { .get = acpm_fwlog_boot_get };
+module_param_cb(fwlog_boot, &acpm_fwlog_boot_ops, NULL, 0444);
+
 /**
  * acpm_fwlog_init() - locate and check the firmware-log ring (fwlog SoCs).
  * @acpm:	driver data.
@@ -611,25 +637,19 @@ static void acpm_fwlog_init(struct acpm_info *acpm)
 	/*
 	 * DEBUG (L7 deep suspend, 2026-10-06): the whole ring as S-Boot's APM restart left it,
 	 * before the first drain, so that entries the APM wrote during a SLEEP attempt that
-	 * ended in a watchdog reset show up if the SRAM kept them. Entry: header (ID [30:28],
-	 * level 23, time index [28:24]... as acpm_fwlog_drain), es - 8 string bytes, value.
+	 * ended in a watchdog reset can be read back if the SRAM kept them. The kernel log is
+	 * overrun within 20 s of boot here, so the copy is kept and printed by reading the
+	 * fwlog_boot parameter (acpm_fwlog_boot_get()).
 	 */
-	{
-		char str[64 - 8 + 1];
-		void __iomem *e;
-		u32 i, hdr;
+	if (es == 16 && el <= ACPM_FWLOG_BOOT_MAX) {
+		u32 i;
 
-		dev_info(acpm->dev, "acpm: fwlog boot ktime_index=%u front=%u rear=%u\n",
-			 readl(acpm->sram_base + ti), readl(acpm->sram_base + lf),
-			 readl(acpm->sram_base + lr));
-		for (i = 0; i < el; i++) {
-			e = acpm->sram_base + ld + es * i;
-			hdr = readl(e);
-			memcpy_fromio(str, e + 4, es - 8);
-			str[es - 8] = '\0';
-			dev_info(acpm->dev, "acpm: fwlog boot[%02u] hdr=%08x %s val=%08x\n",
-				 i, hdr, str, readl(e + es - 4));
-		}
+		acpm_fwlog_boot_n = el;
+		acpm_fwlog_boot_idx[0] = readl(acpm->sram_base + ti);
+		acpm_fwlog_boot_idx[1] = readl(acpm->sram_base + lr);
+		acpm_fwlog_boot_idx[2] = readl(acpm->sram_base + lf);
+		for (i = 0; i < el * 4; i++)
+			acpm_fwlog_boot_raw[i] = readl(acpm->sram_base + ld + 4 * i);
 	}
 
 	if (devm_add_action_or_reset(acpm->dev, acpm_fwlog_cancel, acpm))
