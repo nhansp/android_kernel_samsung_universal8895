@@ -585,11 +585,11 @@ module_param(cp_check, bool, 0644);
  */
 static bool sleep_trace;
 static unsigned int sleep_mode;
-static int sleep_wkmask0 = -1;
+static long sleep_wkmask0 = -1;	/* long: a 32-bit mask with bit 31 set must fit (sleepm31) */
 static unsigned int sleep_psci;
 module_param(sleep_trace, bool, 0644);
 module_param(sleep_mode, uint, 0644);
-module_param(sleep_wkmask0, int, 0644);
+module_param(sleep_wkmask0, long, 0644);
 module_param(sleep_psci, uint, 0644);
 static bool sleep_pdoff;
 module_param(sleep_pdoff, bool, 0644);
@@ -2067,6 +2067,17 @@ module_param_cb(regdiff_now, &e8895_rs_now_ops, NULL, 0200);
 #define E8895_DBG_STATUS	0x4044		/* S:...pmucal_local_exynos8895.h:125 */
 
 static bool sleep_qch;
+
+/*
+ * DEBUG (L7, 2026-10-07) sleep_wkclr=1: write 0 to WAKEUP_STAT right before the SMC. sleepfix
+ * (0179, the first SLEEP that powered TOP down) and sleepm31 woke ~1 s after the SMC with
+ * WAKEUP_STAT 0x80000000, and the pre-SMC line already read 0x80000000: a status left over
+ * from before the attempt. Neither stock 8895's kernel (S:drivers/soc/samsung/exynos-pm.c:156)
+ * nor A:arch/arm/mach-exynos/suspend.c:555 writes it, so whether EL3 or the PMU clears it on
+ * stock is unknown; this tests whether the stale bit is what ends the SLEEP after ~1 s.
+ */
+static bool sleep_wkclr;
+module_param(sleep_wkclr, bool, 0644);
 static void __iomem *e8895_qch_va[ARRAY_SIZE(e8895_qch_blks)];
 
 static int e8895_qch_map(void)
@@ -2494,8 +2505,8 @@ static int e8895_sleep_arm(const char **why)
 	pmu_raw_writel(exynos_pinctrl_get_eint_wake_mask(), E8895_EINT_WAKEUP_MASK);	/* :625-631 */
 	for (i = 0; i < 4; i++)
 		pmu_raw_writel(e8895_wkmask_sleep[i], e8895_wkmask_off[i]);		/* :633-635 */
-	if (sleep_wkmask0 >= 0)								/* DEBUG */
-		pmu_raw_writel(sleep_wkmask0, e8895_wkmask_off[0]);
+	if (sleep_wkmask0 >= 0 && sleep_wkmask0 <= U32_MAX)				/* DEBUG */
+		pmu_raw_writel((u32)sleep_wkmask0, e8895_wkmask_off[0]);
 	t = e8895_tab(e8895_mode);
 	e8895_save(t->t[1], t->n[1]);			/* S:drivers/soc/samsung/cal-if/pmucal_system.c:31 */
 	arm0 = pmu_raw_readl(0x0200);			/* DEBUG sleep_noarm */
@@ -2763,6 +2774,13 @@ static int e8895_pm_enter(suspend_state_t state)
 	if (sleep_qch) {					/* DEBUG sleep_qch */
 		udelay(10);		/* the QCH_CON writes above hand the clocks to HWACG */
 		e8895_qch_dump("pre-SMC");
+	}
+	if (sleep_wkclr) {					/* DEBUG sleep_wkclr */
+		u32 st = pmu_raw_readl(E8895_WAKEUP_STAT);
+
+		pmu_raw_writel(0, E8895_WAKEUP_STAT);
+		pr_info("exynos8895-pm: DEBUG wkclr: WAKEUP_STAT %08x -> %08x, 0x640 %08x\n",
+			st, pmu_raw_readl(E8895_WAKEUP_STAT), pmu_raw_readl(E8895_EXTRA_WAKEUP_STAT));
 	}
 	e8895_apmlog_print();					/* DEBUG APM fwlog front at the SMC */
 	e8895_apmlog_take("pre-SMC");
