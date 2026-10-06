@@ -96,6 +96,7 @@ struct s3c24xx_serial_drv_data {
 	const struct s3c24xx_uart_info	info;
 	const struct s3c2410_uartcfg	def_cfg;
 	const unsigned int		fifosize[UART_NR];
+	bool				suspend_mode_off;	/* clear UCON Rx/Tx mode in suspend */
 };
 
 struct s3c24xx_uart_dma {
@@ -2085,9 +2086,39 @@ static void s3c24xx_serial_remove(struct platform_device *dev)
 static int s3c24xx_serial_suspend(struct device *dev)
 {
 	struct uart_port *port = s3c24xx_dev_to_port(dev);
+	struct s3c24xx_uart_port *ourport;
+	u32 ucon;
 
-	if (port)
-		uart_suspend_port(&s3c24xx_uart_drv, port);
+	if (!port)
+		return 0;
+
+	uart_suspend_port(&s3c24xx_uart_drv, port);
+
+	/*
+	 * With hardware auto clock gating, a port whose UCON Rx/Tx mode is still set keeps its
+	 * clock requested, open or not, and the SoC's system power-down cannot complete. Stock
+	 * cleared both modes here (S:drivers/tty/serial/samsung.c:2072-2085 under
+	 * CONFIG_SERIAL_SAMSUNG_HWACG=y, exynos8895-greatlte_defconfig:2089). Exynos 8895: the
+	 * DBG_NFO of UART_DBG and UART_BT read "active" at the SLEEP SMC on 6.18 and idle on
+	 * stock (TESTCARD-deep-0157, qchsicd vs qch44). Resume restores UCON through
+	 * s3c24xx_serial_resetport() and uart_resume_port().
+	 */
+	ourport = to_ourport(port);
+	if (!ourport->drv_data->suspend_mode_off)
+		return 0;
+
+	clk_prepare_enable(ourport->clk);
+	if (!IS_ERR(ourport->baudclk))
+		clk_prepare_enable(ourport->baudclk);
+	ucon = rd_regl(port, S3C2410_UCON);
+	ucon &= ~(S3C2410_UCON_RXIRQMODE | S3C2410_UCON_TXIRQMODE);
+	wr_regl(port, S3C2410_UCON, ucon);
+	if (!IS_ERR(ourport->baudclk))
+		clk_disable_unprepare(ourport->baudclk);
+	clk_disable_unprepare(ourport->clk);
+
+	ourport->rx_enabled = 0;
+	ourport->tx_enabled = 0;
 
 	return 0;
 }
@@ -2512,6 +2543,7 @@ static const struct s3c24xx_serial_drv_data exynos8895_serial_drv_data = {
 	EXYNOS_COMMON_SERIAL_DRV_DATA,
 	/* samsung,uart-fifosize must be specified in the device tree. */
 	.fifosize = { 0 },
+	.suspend_mode_off = true,
 };
 
 static const struct s3c24xx_serial_drv_data gs101_serial_drv_data = {
