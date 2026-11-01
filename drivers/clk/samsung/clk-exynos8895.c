@@ -2022,8 +2022,11 @@ static const struct samsung_cmu_info fsys1_cmu_info __initconst = {
 #define CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI02_IPCLKPORT_I_SCLK_USI			0x2054
 #define CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI03_IPCLKPORT_I_PCLK				0x2058
 #define CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI03_IPCLKPORT_I_SCLK_USI			0x205c
-/* CAL:cmucal-sfr.c:1784; ENABLE bit 0, CLOCK_REQ bit 1 (CAL:cmucal-sfr.c:7163-7164) */
+/* CAL:cmucal-sfr.c:1784-1787; ENABLE bit 0, CLOCK_REQ bit 1 (CAL:cmucal-sfr.c:7163-7173) */
 #define QCH_CON_USI00_QCH							0x3020
+#define QCH_CON_USI01_QCH							0x3024
+#define QCH_CON_USI02_QCH							0x3028
+#define QCH_CON_USI03_QCH							0x302c
 
 static const unsigned long peric0_clk_regs[] __initconst = {
 	PLL_CON0_MUX_CLKCMU_PERIC0_BUS_USER,
@@ -2038,8 +2041,12 @@ static const unsigned long peric0_clk_regs[] __initconst = {
 	PLL_CON2_MUX_CLKCMU_PERIC0_USI02_USER,
 	PLL_CON0_MUX_CLKCMU_PERIC0_USI03_USER,
 	PLL_CON2_MUX_CLKCMU_PERIC0_USI03_USER,
-	/* outside the gate range: save/restore only, as stock's PMUCAL list */
+	/* outside the gate range: save/restore only, as stock's PMUCAL list
+	 * (CAL:pmucal_system_exynos8895.h:1143-1146) */
 	QCH_CON_USI00_QCH,
+	QCH_CON_USI01_QCH,
+	QCH_CON_USI02_QCH,
+	QCH_CON_USI03_QCH,
 };
 
 /* List of parent clocks for Muxes in CMU_PERIC0 */
@@ -2128,22 +2135,36 @@ static const struct samsung_gate_clock peric0_gate_clks[] __initconst = {
 	     "mout_peric0_usi00_user",
 	     CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI00_IPCLKPORT_I_SCLK_USI,
 	     21, 0, 0),
+	/*
+	 * USI01-03 Q-channel requests (stock GATE_USI01-03 = USIxx_QCH,
+	 * VCLK_GATE | VCLK_QCH_DIS, S:drivers/clk/samsung/clk-exynos8895.c:
+	 * 376-378): CLOCK_REQ (bit 1, ENABLE cleared at probe) is the parent of
+	 * the USI's PCLK, which every consumer takes (exynos8895.dtsi usi1-3),
+	 * so the USI clock runs exactly while a consumer holds the PCLK
+	 * (S:drivers/soc/samsung/cal-if/ra.c:469-486, :600-601).
+	 */
+	GATE(0, "gout_peric0_usi01_qch", "mout_peric0_bus_user",
+	     QCH_CON_USI01_QCH, 1, 0, 0),
 	GATE(CLK_GOUT_PERIC0_USI01_I_PCLK, "gout_peric0_usi01_i_pclk",
-	     "mout_peric0_bus_user",
+	     "gout_peric0_usi01_qch",
 	     CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI01_IPCLKPORT_I_PCLK, 21, 0, 0),
 	GATE(CLK_GOUT_PERIC0_USI01_I_SCLK_USI, "gout_peric0_usi01_i_sclk_usi",
 	     "mout_peric0_usi01_user",
 	     CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI01_IPCLKPORT_I_SCLK_USI,
 	     21, 0, 0),
+	GATE(0, "gout_peric0_usi02_qch", "mout_peric0_bus_user",
+	     QCH_CON_USI02_QCH, 1, 0, 0),
 	GATE(CLK_GOUT_PERIC0_USI02_I_PCLK, "gout_peric0_usi02_i_pclk",
-	     "mout_peric0_bus_user",
+	     "gout_peric0_usi02_qch",
 	     CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI02_IPCLKPORT_I_PCLK, 21, 0, 0),
 	GATE(CLK_GOUT_PERIC0_USI02_I_SCLK_USI, "gout_peric0_usi02_i_sclk_usi",
 	     "mout_peric0_usi02_user",
 	     CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI02_IPCLKPORT_I_SCLK_USI,
 	     21, 0, 0),
+	GATE(0, "gout_peric0_usi03_qch", "mout_peric0_bus_user",
+	     QCH_CON_USI03_QCH, 1, 0, 0),
 	GATE(CLK_GOUT_PERIC0_USI03_I_PCLK, "gout_peric0_usi03_i_pclk",
-	     "mout_peric0_bus_user",
+	     "gout_peric0_usi03_qch",
 	     CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI03_IPCLKPORT_I_PCLK, 21, 0, 0),
 	GATE(CLK_GOUT_PERIC0_USI03_I_SCLK_USI, "gout_peric0_usi03_i_sclk_usi",
 	     "mout_peric0_usi03_user",
@@ -2254,6 +2275,17 @@ static const struct samsung_cmu_info peric0_cmu_info __initconst = {
 #define CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI13_IPCLKPORT_I_PCLK				0x20cc
 #define CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI13_IPCLKPORT_I_SCLK_USI			0x20d0
 #define CLK_CON_GAT_GOUT_BLK_PERIC1_UID_XIU_P_PERIC1_IPCLKPORT_ACLK			0x20d4
+/* CAL:cmucal-sfr.c:1886-1895; ENABLE bit 0, CLOCK_REQ bit 1 (CAL:cmucal-sfr.c:7424-7452) */
+#define QCH_CON_USI04_QCH							0x3044
+#define QCH_CON_USI05_QCH							0x3048
+#define QCH_CON_USI06_QCH							0x304c
+#define QCH_CON_USI07_QCH							0x3050
+#define QCH_CON_USI08_QCH							0x3054
+#define QCH_CON_USI09_QCH							0x3058
+#define QCH_CON_USI10_QCH							0x305c
+#define QCH_CON_USI11_QCH							0x3060
+#define QCH_CON_USI12_QCH							0x3064
+#define QCH_CON_USI13_QCH							0x3068
 
 static const unsigned long peric1_clk_regs[] __initconst = {
 	PLL_CON0_MUX_CLKCMU_PERIC1_BUS_USER,
@@ -2286,6 +2318,18 @@ static const unsigned long peric1_clk_regs[] __initconst = {
 	PLL_CON2_MUX_CLKCMU_PERIC1_USI12_USER,
 	PLL_CON0_MUX_CLKCMU_PERIC1_USI13_USER,
 	PLL_CON2_MUX_CLKCMU_PERIC1_USI13_USER,
+	/* outside the gate range: save/restore only, as stock's PMUCAL list
+	 * (CAL:pmucal_system_exynos8895.h:1116-1125) */
+	QCH_CON_USI04_QCH,
+	QCH_CON_USI05_QCH,
+	QCH_CON_USI06_QCH,
+	QCH_CON_USI07_QCH,
+	QCH_CON_USI08_QCH,
+	QCH_CON_USI09_QCH,
+	QCH_CON_USI10_QCH,
+	QCH_CON_USI11_QCH,
+	QCH_CON_USI12_QCH,
+	QCH_CON_USI13_QCH,
 };
 
 /* List of parent clocks for Muxes in CMU_PERIC1 */
@@ -2481,71 +2525,96 @@ static const struct samsung_gate_clock peric1_gate_clks[] __initconst = {
 	GATE(CLK_GOUT_PERIC1_UART_BT_PCLK, "gout_peric1_uart_bt_pclk",
 	     "mout_peric1_bus_user",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_UART_BT_IPCLKPORT_PCLK, 21, 0, 0),
+	/*
+	 * USI04-13 Q-channel requests (stock GATE_USI04-13, VCLK_GATE |
+	 * VCLK_QCH_DIS, S:drivers/clk/samsung/clk-exynos8895.c:409-418): as
+	 * USI01-03 in CMU_PERIC0, CLOCK_REQ is the parent of the USI's PCLK.
+	 */
+	GATE(0, "gout_peric1_usi04_qch", "mout_peric1_bus_user",
+	     QCH_CON_USI04_QCH, 1, 0, 0),
 	GATE(CLK_GOUT_PERIC1_USI04_I_PCLK, "gout_peric1_usi04_i_pclk",
-	     "mout_peric1_bus_user",
+	     "gout_peric1_usi04_qch",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI04_IPCLKPORT_I_PCLK, 21, 0, 0),
 	GATE(CLK_GOUT_PERIC1_USI04_I_SCLK_USI, "gout_peric1_usi04_i_sclk_usi",
 	     "mout_peric1_usi04_user",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI04_IPCLKPORT_I_SCLK_USI,
 	     21, 0, 0),
+	GATE(0, "gout_peric1_usi05_qch", "mout_peric1_bus_user",
+	     QCH_CON_USI05_QCH, 1, 0, 0),
 	GATE(CLK_GOUT_PERIC1_USI05_I_PCLK, "gout_peric1_usi05_i_pclk",
-	     "mout_peric1_bus_user",
+	     "gout_peric1_usi05_qch",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI05_IPCLKPORT_I_PCLK, 21, 0, 0),
 	GATE(CLK_GOUT_PERIC1_USI05_I_SCLK_USI, "gout_peric1_usi05_i_sclk_usi",
 	     "mout_peric1_usi05_user",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI05_IPCLKPORT_I_SCLK_USI,
 	     21, 0, 0),
+	GATE(0, "gout_peric1_usi06_qch", "mout_peric1_bus_user",
+	     QCH_CON_USI06_QCH, 1, 0, 0),
 	GATE(CLK_GOUT_PERIC1_USI06_I_PCLK, "gout_peric1_usi06_i_pclk",
-	     "mout_peric1_bus_user",
+	     "gout_peric1_usi06_qch",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI06_IPCLKPORT_I_PCLK, 21, 0, 0),
 	GATE(CLK_GOUT_PERIC1_USI06_I_SCLK_USI, "gout_peric1_usi06_i_sclk_usi",
 	     "mout_peric1_usi06_user",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI06_IPCLKPORT_I_SCLK_USI,
 	     21, 0, 0),
+	GATE(0, "gout_peric1_usi07_qch", "mout_peric1_bus_user",
+	     QCH_CON_USI07_QCH, 1, 0, 0),
 	GATE(CLK_GOUT_PERIC1_USI07_I_PCLK, "gout_peric1_usi07_i_pclk",
-	     "mout_peric1_bus_user",
+	     "gout_peric1_usi07_qch",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI07_IPCLKPORT_I_PCLK, 21, 0, 0),
 	GATE(CLK_GOUT_PERIC1_USI07_I_SCLK_USI, "gout_peric1_usi07_i_sclk_usi",
 	     "mout_peric1_usi07_user",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI07_IPCLKPORT_I_SCLK_USI,
 	     21, 0, 0),
+	GATE(0, "gout_peric1_usi08_qch", "mout_peric1_bus_user",
+	     QCH_CON_USI08_QCH, 1, 0, 0),
 	GATE(CLK_GOUT_PERIC1_USI08_I_PCLK, "gout_peric1_usi08_i_pclk",
-	     "mout_peric1_bus_user",
+	     "gout_peric1_usi08_qch",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI08_IPCLKPORT_I_PCLK, 21, 0, 0),
 	GATE(CLK_GOUT_PERIC1_USI08_I_SCLK_USI, "gout_peric1_usi08_i_sclk_usi",
 	     "mout_peric1_usi08_user",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI08_IPCLKPORT_I_SCLK_USI,
 	     21, 0, 0),
+	GATE(0, "gout_peric1_usi09_qch", "mout_peric1_bus_user",
+	     QCH_CON_USI09_QCH, 1, 0, 0),
 	GATE(CLK_GOUT_PERIC1_USI09_I_PCLK, "gout_peric1_usi09_i_pclk",
-	     "mout_peric1_bus_user",
+	     "gout_peric1_usi09_qch",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI09_IPCLKPORT_I_PCLK, 21, 0, 0),
 	GATE(CLK_GOUT_PERIC1_USI09_I_SCLK_USI, "gout_peric1_usi09_i_sclk_usi",
 	     "mout_peric1_usi09_user",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI09_IPCLKPORT_I_SCLK_USI,
 	     21, 0, 0),
+	GATE(0, "gout_peric1_usi10_qch", "mout_peric1_bus_user",
+	     QCH_CON_USI10_QCH, 1, 0, 0),
 	GATE(CLK_GOUT_PERIC1_USI10_I_PCLK, "gout_peric1_usi10_i_pclk",
-	     "mout_peric1_bus_user",
+	     "gout_peric1_usi10_qch",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI10_IPCLKPORT_I_PCLK, 21, 0, 0),
 	GATE(CLK_GOUT_PERIC1_USI10_I_SCLK_USI, "gout_peric1_usi10_i_sclk_usi",
 	     "mout_peric1_usi10_user",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI10_IPCLKPORT_I_SCLK_USI,
 	     21, 0, 0),
+	GATE(0, "gout_peric1_usi11_qch", "mout_peric1_bus_user",
+	     QCH_CON_USI11_QCH, 1, 0, 0),
 	GATE(CLK_GOUT_PERIC1_USI11_I_PCLK, "gout_peric1_usi11_i_pclk",
-	     "mout_peric1_bus_user",
+	     "gout_peric1_usi11_qch",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI11_IPCLKPORT_I_PCLK, 21, 0, 0),
 	GATE(CLK_GOUT_PERIC1_USI11_I_SCLK_USI, "gout_peric1_usi11_i_sclk_usi",
 	     "mout_peric1_usi11_user",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI11_IPCLKPORT_I_SCLK_USI,
 	     21, 0, 0),
+	GATE(0, "gout_peric1_usi12_qch", "mout_peric1_bus_user",
+	     QCH_CON_USI12_QCH, 1, 0, 0),
 	GATE(CLK_GOUT_PERIC1_USI12_I_PCLK, "gout_peric1_usi12_i_pclk",
-	     "mout_peric1_bus_user",
+	     "gout_peric1_usi12_qch",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI12_IPCLKPORT_I_PCLK, 21, 0, 0),
 	GATE(CLK_GOUT_PERIC1_USI12_I_SCLK_USI, "gout_peric1_usi12_i_sclk_usi",
 	     "mout_peric1_usi12_user",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI12_IPCLKPORT_I_SCLK_USI,
 	     21, 0, 0),
+	GATE(0, "gout_peric1_usi13_qch", "mout_peric1_bus_user",
+	     QCH_CON_USI13_QCH, 1, 0, 0),
 	GATE(CLK_GOUT_PERIC1_USI13_I_PCLK, "gout_peric1_usi13_i_pclk",
-	     "mout_peric1_bus_user",
+	     "gout_peric1_usi13_qch",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI13_IPCLKPORT_I_PCLK, 21, 0, 0),
 	GATE(CLK_GOUT_PERIC1_USI13_I_SCLK_USI, "gout_peric1_usi13_i_sclk_usi",
 	     "mout_peric1_usi13_user",
@@ -6918,23 +6987,41 @@ static const struct samsung_cmu_info vts_cmu_info __initconst = {
 /* ---- CMU probe glue ------------------------------------------------------ */
 
 /*
- * USI00 Q-channel of CMU_PERIC0 (L6F REQ-L1-10): stock registers "fp-spi-pclk"
- * with VCLK_QCH_DIS, and cal_vclk_qch_init() -> cal_qch_init(id, 0) ->
+ * USI Q-channels of CMU_PERIC0/1 (USI00: L6F REQ-L1-10): stock registers
+ * GATE_USI00-13 with VCLK_QCH_DIS (S:drivers/clk/samsung/clk-exynos8895.c:
+ * 372-378,409-418), and cal_vclk_qch_init() -> cal_qch_init(id, 0) ->
  * ra_set_qch(id, 0, 0, 0) clears ENABLE and CLOCK_REQ once at clock
- * registration (S:drivers/clk/samsung/composite.c:1578-1589,
+ * registration (S:drivers/clk/samsung/composite.c:1578-1589,1748,
  * S:drivers/soc/samsung/cal-if/cal-if.c:144-151,
- * S:drivers/soc/samsung/cal-if/ra.c:426-467). Do the same, after the CMU's bus
- * clock is on. From then on CLK_GOUT_PERIC0_USI00_QCH drives CLOCK_REQ.
+ * S:drivers/soc/samsung/cal-if/ra.c:426-467); stock reads 0x003f0000 on all
+ * fourteen at run time and before the SLEEP SMC. Do the same before the
+ * clocks are registered, so no consumer can hold a request yet; the CMU
+ * stays accessible, its bus gates being under HWACG (gate policy above).
+ * From then on the gout_*_usiNN_qch gates drive CLOCK_REQ.
  */
-static void __init exynos8895_peric0_qch_init(struct device_node *np)
+static const u16 exynos8895_peric0_usi_qch[] __initconst = {
+	QCH_CON_USI00_QCH, QCH_CON_USI01_QCH, QCH_CON_USI02_QCH,
+	QCH_CON_USI03_QCH,
+};
+
+static const u16 exynos8895_peric1_usi_qch[] __initconst = {
+	QCH_CON_USI04_QCH, QCH_CON_USI05_QCH, QCH_CON_USI06_QCH,
+	QCH_CON_USI07_QCH, QCH_CON_USI08_QCH, QCH_CON_USI09_QCH,
+	QCH_CON_USI10_QCH, QCH_CON_USI11_QCH, QCH_CON_USI12_QCH,
+	QCH_CON_USI13_QCH,
+};
+
+static void __init exynos8895_usi_qch_init(struct device_node *np,
+					   const u16 *qch, unsigned int n)
 {
 	void __iomem *base = of_iomap(np, 0);
+	unsigned int i;
 
 	if (!base)
 		return;
 
-	writel(readl(base + QCH_CON_USI00_QCH) & ~(BIT(1) | BIT(0)),
-	       base + QCH_CON_USI00_QCH);
+	for (i = 0; i < n; i++)
+		writel(readl(base + qch[i]) & ~(BIT(1) | BIT(0)), base + qch[i]);
 	iounmap(base);
 }
 
@@ -6944,10 +7031,15 @@ static int __init exynos8895_cmu_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 
 	info = of_device_get_match_data(dev);
-	exynos_arm64_register_cmu(dev, dev->of_node, info);
 
 	if (info == &peric0_cmu_info)
-		exynos8895_peric0_qch_init(dev->of_node);
+		exynos8895_usi_qch_init(dev->of_node, exynos8895_peric0_usi_qch,
+					ARRAY_SIZE(exynos8895_peric0_usi_qch));
+	else if (info == &peric1_cmu_info)
+		exynos8895_usi_qch_init(dev->of_node, exynos8895_peric1_usi_qch,
+					ARRAY_SIZE(exynos8895_peric1_usi_qch));
+
+	exynos_arm64_register_cmu(dev, dev->of_node, info);
 
 	return 0;
 }
