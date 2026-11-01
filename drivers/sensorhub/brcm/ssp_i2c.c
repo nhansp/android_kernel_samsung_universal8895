@@ -233,6 +233,13 @@ int send_instruction(struct ssp_data *data, u8 uInst,
 		return FAIL;
 	}
 
+	/* DZC3:drivers/sensorhub/brcm/ssp_i2c.c:236-240: ADD_SENSOR/CHANGE_DELAY index per-sensor arrays */
+	if (uSensorType >= SENSOR_MAX && (uInst == ADD_SENSOR || uInst == CHANGE_DELAY)){
+		pr_err("[SSP]: %s - Invalid SensorType! - %u\n",
+			__func__, uSensorType);
+		return FAIL;
+	}
+
 	switch (uInst) {
 	case REMOVE_SENSOR:
 		command = MSG2SSP_INST_BYPASS_SENSOR_REMOVE;
