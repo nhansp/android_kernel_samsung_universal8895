@@ -156,6 +156,9 @@ struct s3c24xx_uart_port {
 
 	/* L6D 5.6: wake-peer callback (stock uart_ops.wake_peer S:drivers/tty/serial/samsung.c:1253-1259,1322) */
 	void (*wake_peer)(struct uart_port *port);
+
+	/* UMCON[7:5] RTS trigger level under auto flow control, "samsung,rts-trig-level" */
+	u32				umcon_rts_trig;
 };
 
 static void s3c24xx_serial_tx_chars(struct s3c24xx_uart_port *ourport);
@@ -1585,8 +1588,14 @@ static void s3c24xx_serial_set_termios(struct uart_port *port,
 	umcon = rd_regl(port, S3C2410_UMCON);
 	if (termios->c_cflag & CRTSCTS) {
 		umcon |= S3C2410_UMCOM_AFC;
-		/* Disable RTS when RX FIFO contains 63 bytes */
+		/*
+		 * Disable RTS when RX FIFO contains 63 bytes; on a 256-byte FIFO level 0 is 255
+		 * bytes. With "samsung,rts-trig-level" the level comes from the DT instead
+		 * (DZC3:drivers/tty/serial/samsung.c:1612-1615 in resetport, where DZC3 dropped
+		 * this clear from set_termios, :1310); it only matters with AFC set.
+		 */
 		umcon &= ~S3C2412_UMCON_AFC_8;
+		umcon |= ourport->umcon_rts_trig;
 		port->status = UPSTAT_AUTOCTS;
 	} else {
 		umcon &= ~S3C2410_UMCOM_AFC;
@@ -1965,6 +1974,7 @@ static int s3c24xx_serial_probe(struct platform_device *pdev)
 	struct s3c24xx_uart_port *ourport;
 	int index = probe_index;
 	int ret, prop = 0, fifosize_prop = 1;
+	u32 rts_trig_level;
 
 	if (np) {
 		ret = of_alias_get_id(np, "serial");
@@ -2006,6 +2016,15 @@ static int s3c24xx_serial_probe(struct platform_device *pdev)
 	if (np) {
 		fifosize_prop = of_property_read_u32(np, "samsung,uart-fifosize",
 				&ourport->port.fifosize);
+
+		/*
+		 * DZC3:drivers/tty/serial/samsung.c:2107-2110, :1612-1615: UMCON[7:5] =
+		 * level (S5PV210_UMCON_RTSTRIG255 = 0 ... RTSTRIG32 = 7, 32-byte steps
+		 * on a 256-byte FIFO, DZC3:include/linux/serial_s3c.h:241-249).
+		 */
+		ourport->umcon_rts_trig = 0;
+		if (!of_property_read_u32(np, "samsung,rts-trig-level", &rts_trig_level))
+			ourport->umcon_rts_trig = (rts_trig_level << 5) & S3C2412_UMCON_AFC_8;
 
 		if (of_property_read_u32(np, "reg-io-width", &prop) == 0) {
 			switch (prop) {
