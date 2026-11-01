@@ -3165,6 +3165,11 @@ static ssize_t zmc_count_store(struct device *dev,
 static ssize_t mif_buff_mng_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
+	/* g_mif_buff_mng is only set when the modem has a MIF buffer
+	 * (DZC3:drivers/misc/modem_v1/link_device_shmem.c:3115-3117) */
+	if (!g_mif_buff_mng)
+		return 0;
+
 	return sprintf(buf, "used(%d)/free(%d)/total(%d)\n",
 			g_mif_buff_mng->used_cell_count, g_mif_buff_mng->free_cell_count,
 			g_mif_buff_mng->cell_count);
