@@ -98,6 +98,7 @@ struct s3c24xx_serial_drv_data {
 	const struct s3c2410_uartcfg	def_cfg;
 	const unsigned int		fifosize[UART_NR];
 	bool				suspend_mode_off;	/* clear UCON Rx/Tx mode in suspend */
+	bool				rx_ack_first;		/* clear UINTP.RXD before draining */
 };
 
 struct s3c24xx_uart_dma {
@@ -967,8 +968,20 @@ static irqreturn_t s3c64xx_serial_handle_irq(int irq, void *id)
 	irqreturn_t ret = IRQ_HANDLED;
 
 	if (pend & S3C64XX_UINTM_RXD_MSK) {
-		ret = s3c24xx_serial_rx_irq(ourport);
-		wr_regl(port, S3C64XX_UINTP, S3C64XX_UINTM_RXD_MSK);
+		/*
+		 * Clearing the Rx pending bit after the drain can drop the event of a byte that lands
+		 * between the last FIFO read and the clear: below the trigger level it then waits in
+		 * the FIFO for the next byte's timeout. DZC3 clears it before reading the FIFO
+		 * (DZC3:drivers/tty/serial/samsung.c:600-601; DSC6 cleared it only on seeing the
+		 * FIFO empty, S:drivers/tty/serial/samsung.c:495-498).
+		 */
+		if (ourport->drv_data->rx_ack_first) {
+			wr_regl(port, S3C64XX_UINTP, S3C64XX_UINTM_RXD_MSK);
+			ret = s3c24xx_serial_rx_irq(ourport);
+		} else {
+			ret = s3c24xx_serial_rx_irq(ourport);
+			wr_regl(port, S3C64XX_UINTP, S3C64XX_UINTM_RXD_MSK);
+		}
 	}
 	if (pend & S3C64XX_UINTM_TXD_MSK) {
 		ret = s3c24xx_serial_tx_irq(ourport);
@@ -2666,6 +2679,7 @@ static const struct s3c24xx_serial_drv_data exynos8895_serial_drv_data = {
 	/* samsung,uart-fifosize must be specified in the device tree. */
 	.fifosize = { 0 },
 	.suspend_mode_off = true,
+	.rx_ack_first = true,
 };
 
 static const struct s3c24xx_serial_drv_data gs101_serial_drv_data = {
