@@ -85,7 +85,33 @@
 	};
 };
 
+/* UART_BT nRTS/TXD held high over suspend: FDT:160-181, DZC3:arch/arm64/boot/dts/exynos/exynos8895-pinctrl.dtsi:75-90 */
+&pinctrl_alive {
+	uart1_bus_rts: uart1-bus-rts-pins {
+		samsung,pins = "gpa4-4";				/* FDT:161 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;	/* FDT:162 0x01 */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;		/* FDT:163 0x00 */
+		samsung,pin-val = <1>;					/* FDT:164 0x01: nRTS high = peer holds */
+	};
+
+	uart1_bus_tx_dat: uart1-bus-tx-dat-pins {
+		samsung,pins = "gpa4-3";				/* FDT:170 */
+		samsung,pin-val = <1>;					/* FDT:171 0x01; data bit only, the mux stays */
+	};
+
+	uart1_bus_tx_con: uart1-bus-tx-con-pins {
+		samsung,pins = "gpa4-3";				/* FDT:177 */
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;	/* FDT:178 0x01 */
+	};
+};
+
 &serial_1 {
 	status = "okay";			/* FDT:4802; ACK node A:.../exynos8895.dtsi:536-547 already has SPI 389 (FDT:4795 0x185),
 						 * uart1_bus pins (FDT:4797 -> 0x27), fifo 256 (FDT:4793) */
+	samsung,rts-gpio-control;		/* FDT:4791, DZC3:arch/arm64/boot/dts/exynos/exynos8895.dtsi:1128 */
+	samsung,rts-trig-level = <1>;		/* FDT:4794, DZC3:.../exynos8895.dtsi:1131: nRTS drops at 224 of 256 bytes */
+	pinctrl-names = "default", "rts", "tx_dat";		/* FDT:4796, DZC3:.../exynos8895.dtsi:1133 */
+	pinctrl-0 = <&uart1_bus>;				/* FDT:4797 0x27 */
+	pinctrl-1 = <&uart1_bus_rts &uart1_bus_tx_con>;		/* FDT:4798 <0x28 0x29> */
+	pinctrl-2 = <&uart1_bus_tx_dat>;			/* FDT:4799 0x2a */
 };
