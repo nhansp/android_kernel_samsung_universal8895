@@ -471,8 +471,10 @@ bool check_wait_event(struct ssp_data *data)
 	int check_sensors[2] = {ACCELEROMETER_SENSOR, LIGHT_SENSOR};
 	int i, sensor;
 	bool res = false;
+	/* DZC3:drivers/sensorhub/brcm/ssp_debug.c:475-477: from Pie on, the light sensor is not checked */
+	int arrSize = (ANDROID_VERSION < 90000 ? 2 : 1);
 
-	for (i = 0 ; i < 2 ; i++) {
+	for (i = 0 ; i < arrSize ; i++) {
 		sensor = check_sensors[i];
 		//the sensor is registered
 		if ((atomic64_read(&data->aSensorEnable) & (1 << sensor))
