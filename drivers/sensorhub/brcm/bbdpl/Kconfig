@@ -16,4 +16,4 @@ config BBD_PATCH_BUILTIN
 	  1 MiB of rodata) instead of loading
 	  /vendor/firmware/bbd_patch_great_p.bin with request_firmware() on the
 	  first open of /dev/bbd_patch (spec L6C D-18). Both give lhd the same
-	  1,030,766 bytes.
+	  1,033,086 bytes (the DZC3 patch, CustomerVersion 2022072500).

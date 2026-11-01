@@ -131,11 +131,11 @@ static struct bbd_device bbd;
  */
 #ifdef CONFIG_BBD_PATCH_BUILTIN
 static const unsigned char bbd_patch[] = {
-#include "bbd_patch_file_great_p.h"	/* stock branch CONFIG_SENSORS_SSP_GREAT + ANDROID_VERSION >= 90000 */
+#include "bbd_patch_file_great_p.h"	/* stock branch CONFIG_SENSORS_SSP_GREAT + ANDROID_VERSION >= 90000; DZC3 copy */
 };
 #else
 #include <linux/firmware.h>
-#define BBD_PATCH_FW_NAME	"bbd_patch_great_p.bin"	/* L6C D-18: /vendor/firmware, 1030766 B */
+#define BBD_PATCH_FW_NAME	"bbd_patch_great_p.bin"	/* L6C D-18: /vendor/firmware, 1033086 B (DZC3) */
 static const struct firmware *bbd_patch_fw;
 static DEFINE_MUTEX(bbd_patch_fw_lock);
 #endif

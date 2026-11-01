@@ -20,7 +20,7 @@
 #elif ANDROID_VERSION < 90000
 #define SSP_FIRMWARE_REVISION_BCM	18071100  /*Android O*/
 #else
-#define SSP_FIRMWARE_REVISION_BCM	19011400  /*Android P*/
+#define SSP_FIRMWARE_REVISION_BCM	22072500  /*Android P*/
 #endif
 #elif defined(CONFIG_SENSORS_SSP_GREAT)
 #if ANDROID_VERSION < 80000
@@ -28,7 +28,8 @@
 #elif ANDROID_VERSION < 90000
 #define SSP_FIRMWARE_REVISION_BCM	18020700  /*Android O*/
 #else
-#define SSP_FIRMWARE_REVISION_BCM	19011400  /*Android P*/
+/* DZC3:drivers/sensorhub/brcm/ssp_firmware.c:31, paired with the 2022072500 BBD patch */
+#define SSP_FIRMWARE_REVISION_BCM	22072500  /*Android P*/
 #endif
 #elif defined(CONFIG_SENSORS_SSP_VLTE)
 #define SSP_FIRMWARE_REVISION_BCM   17063000
