@@ -33,6 +33,7 @@
 #include <linux/math.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/serial.h>
 #include <linux/serial_core.h>
@@ -159,6 +160,12 @@ struct s3c24xx_uart_port {
 
 	/* UMCON[7:5] RTS trigger level under auto flow control, "samsung,rts-trig-level" */
 	u32				umcon_rts_trig;
+
+	/* "samsung,rts-gpio-control": nRTS (and TXD) held high as GPIOs over system suspend */
+	struct pinctrl			*rts_pinctrl;
+	struct pinctrl_state		*pins_default;
+	struct pinctrl_state		*pins_rts;
+	struct pinctrl_state		*pins_tx_dat;
 };
 
 static void s3c24xx_serial_tx_chars(struct s3c24xx_uart_port *ourport);
@@ -2026,6 +2033,25 @@ static int s3c24xx_serial_probe(struct platform_device *pdev)
 		if (!of_property_read_u32(np, "samsung,rts-trig-level", &rts_trig_level))
 			ourport->umcon_rts_trig = (rts_trig_level << 5) & S3C2412_UMCON_AFC_8;
 
+		/* DZC3:drivers/tty/serial/samsung.c:2088-2106; the driver core already selected "default" */
+		ourport->rts_pinctrl = NULL;
+		if (of_property_read_bool(np, "samsung,rts-gpio-control")) {
+			struct pinctrl *pinctrl = devm_pinctrl_get(&pdev->dev);
+
+			if (IS_ERR(pinctrl)) {
+				dev_err(&pdev->dev, "Can't get uart pinctrl!!!\n");
+			} else {
+				ourport->rts_pinctrl = pinctrl;
+				ourport->pins_rts = pinctrl_lookup_state(pinctrl, "rts");
+				if (IS_ERR(ourport->pins_rts))
+					dev_err(&pdev->dev, "Can't get RTS pinstate!!!\n");
+				ourport->pins_tx_dat = pinctrl_lookup_state(pinctrl, "tx_dat");
+				ourport->pins_default = pinctrl_lookup_state(pinctrl, "default");
+				if (IS_ERR(ourport->pins_default))
+					dev_err(&pdev->dev, "Can't get Default pinstate!!!\n");
+			}
+		}
+
 		if (of_property_read_u32(np, "reg-io-width", &prop) == 0) {
 			switch (prop) {
 			case 1:
@@ -2102,6 +2128,70 @@ static void s3c24xx_serial_remove(struct platform_device *dev)
 
 /* UART power management code */
 #ifdef CONFIG_PM_SLEEP
+/*
+ * "samsung,rts-gpio-control" (DZC3:drivers/tty/serial/samsung.c:211-238 change_uart_gpio(),
+ * probe :2088-2106): over system suspend nRTS is a GPIO output driven high, so the peer (the
+ * BT controller on UART_BT) holds its data while the UART is off, and TXD is a GPIO output
+ * high, the line idle. "tx_dat" presets TXD's data bit while the pin is still the UART's, then
+ * "rts" turns nRTS and TXD into outputs; "default" gives the pins back to the UART. Stock
+ * cleared pinctrl->state before each select to force a re-apply; 6.18 keeps struct pinctrl
+ * private, and every transition here is between different states, so a plain select applies.
+ */
+static void s3c24xx_serial_rts_pins(struct s3c24xx_uart_port *ourport, bool hold)
+{
+	struct device *dev = ourport->port.dev;
+
+	if (!ourport->rts_pinctrl)
+		return;
+
+	if (!hold) {
+		if (!IS_ERR(ourport->pins_default) &&
+		    pinctrl_select_state(ourport->rts_pinctrl, ourport->pins_default))
+			dev_err(dev, "Can't set default uart pins!!!\n");
+		return;
+	}
+
+	if (!IS_ERR(ourport->pins_tx_dat)) {
+		if (pinctrl_select_state(ourport->rts_pinctrl, ourport->pins_tx_dat))
+			dev_err(dev, "Can't set TXD uart pins!!!\n");
+		else
+			udelay(10);
+	}
+	if (!IS_ERR(ourport->pins_rts) &&
+	    pinctrl_select_state(ourport->rts_pinctrl, ourport->pins_rts))
+		dev_err(dev, "Can't set RTS uart pins!!!\n");
+}
+
+/*
+ * DZC3:drivers/tty/serial/samsung.c:1797-1827, called from suspend after nRTS went high: let
+ * the Rx interrupt empty what is still in the Rx FIFO, for up to 1 s, before
+ * uart_suspend_port() shuts the port down and the next startup resets the FIFO. Stock polled
+ * with the port lock held, which the Rx handler also takes, so it could only time out; here
+ * the poll runs unlocked. Only an open port: a closed one has its clocks off.
+ */
+static void s3c24xx_serial_rx_fifo_wait(struct s3c24xx_uart_port *ourport)
+{
+	struct uart_port *port = &ourport->port;
+	unsigned long timeout = jiffies + HZ;
+	unsigned long flags;
+
+	if (!port->state || !tty_port_initialized(&port->state->port))
+		return;
+	if (ourport->info->type != TYPE_S3C6400)
+		return;
+	if (!s3c24xx_serial_rx_fifocnt(ourport, rd_regl(port, S3C2410_UFSTAT)))
+		return;
+
+	uart_port_lock_irqsave(port, &flags);
+	s3c24xx_clear_bit(port, S3C64XX_UINTM_RXD, S3C64XX_UINTM);
+	ourport->rx_enabled = 1;
+	uart_port_unlock_irqrestore(port, flags);
+
+	while (s3c24xx_serial_rx_fifocnt(ourport, rd_regl(port, S3C2410_UFSTAT)) &&
+	       time_before(jiffies, timeout))
+		usleep_range(50, 100);
+}
+
 static int s3c24xx_serial_suspend(struct device *dev)
 {
 	struct uart_port *port = s3c24xx_dev_to_port(dev);
@@ -2110,6 +2200,17 @@ static int s3c24xx_serial_suspend(struct device *dev)
 
 	if (!port)
 		return 0;
+
+	ourport = to_ourport(port);
+	if (ourport->rts_pinctrl) {
+		/*
+		 * DZC3:drivers/tty/serial/samsung.c:2336-2344: nRTS high, 300 us, drain the Rx FIFO.
+		 * Stock waited and drained on every port; here only on the ones with nRTS control.
+		 */
+		s3c24xx_serial_rts_pins(ourport, true);
+		udelay(300);
+		s3c24xx_serial_rx_fifo_wait(ourport);
+	}
 
 	uart_suspend_port(&s3c24xx_uart_drv, port);
 
@@ -2122,7 +2223,6 @@ static int s3c24xx_serial_suspend(struct device *dev)
 	 * stock (TESTCARD-deep-0157, qchsicd vs qch44). Resume restores UCON through
 	 * s3c24xx_serial_resetport() and uart_resume_port().
 	 */
-	ourport = to_ourport(port);
 	if (!ourport->drv_data->suspend_mode_off)
 		return 0;
 
@@ -2157,6 +2257,9 @@ static int s3c24xx_serial_resume(struct device *dev)
 		clk_disable_unprepare(ourport->clk);
 
 		uart_resume_port(&s3c24xx_uart_drv, port);
+
+		/* DZC3:drivers/tty/serial/samsung.c:2395-2396: pins back to the UART after the restart */
+		s3c24xx_serial_rts_pins(ourport, false);
 	}
 
 	return 0;
