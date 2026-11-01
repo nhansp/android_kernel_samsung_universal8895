@@ -11820,7 +11820,10 @@ dhd_preinit_ioctls(dhd_pub_t *dhd)
 #endif /* PNO_SUPPORT */
 	/* enable dongle roaming event */
 #ifdef WL_CFG80211
+	/* stock leaves WLC_E_ROAM masked, WLC_E_BSSID reports the roam (DZC3:drivers/net/wireless/bcmdhd4361/dhd_linux.c:11736-11739, Makefile:175; document/ChangeHistory.txt:70) */
+#if !defined(ROAM_EVT_DISABLE)
 	setbit(eventmask, WLC_E_ROAM);
+#endif /* !ROAM_EVT_DISABLE */
 	setbit(eventmask, WLC_E_BSSID);
 #endif /* WL_CFG80211 */
 #ifdef BCMCCX
