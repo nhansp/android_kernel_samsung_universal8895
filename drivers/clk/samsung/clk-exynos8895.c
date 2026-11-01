@@ -1716,6 +1716,28 @@ static const struct samsung_gate_clock fsys0_gate_clks[] __initconst = {
 	     21, CLK_IS_CRITICAL, 0),
 };
 
+/*
+ * USER muxes on OSCCLK for SLEEP, written by the samsung_clk syscore suspend
+ * after it saved clk_regs[] and put back by its resume. Stock has 0 (MUX_SEL,
+ * bit 4, CAL:cmucal-sfr.c:5302) in these words before the SLEEP SMC: each is
+ * a UMUX_* vclk, the parent of its consumers' gate vclks
+ * (S:drivers/clk/samsung/clk-exynos8895.c:204-223), and the last clk_disable
+ * of a child disables it, cal_vclk_disable() -> vclk_set_disable() ->
+ * ra_set_enable() -> ra_set_div_mux(clk, 0)
+ * (S:drivers/clk/samsung/composite.c:1396-1410,
+ * S:drivers/soc/samsung/cal-if/vclk.c:278-294,
+ * S:drivers/soc/samsung/cal-if/ra.c:172-195,593-595). PMUCAL's SLEEP list
+ * only saves and restores them (CAL:pmucal_system_exynos8895.h:987-1025).
+ * Our USER muxes are plain muxes that no disable reaches, so they stayed on
+ * the CMU_TOP source (0x10). Only the muxes stock has at 0 then are listed;
+ * DPGTC and MMC_EMBD stay at 0x10 on stock too.
+ */
+static const struct samsung_clk_reg_dump fsys0_suspend_regs[] = {
+	{ PLL_CON0_MUX_CLKCMU_FSYS0_BUS_USER, 0x0 },		/* CAL:cmucal-sfr.c:1138 */
+	{ PLL_CON0_MUX_CLKCMU_FSYS0_UFS_EMBD_USER, 0x0 },	/* :1134 */
+	{ PLL_CON0_MUX_CLKCMU_FSYS0_USBDRD30_USER, 0x0 },	/* :1140 */
+};
+
 static const struct samsung_cmu_info fsys0_cmu_info __initconst = {
 	.mux_clks		= fsys0_mux_clks,
 	.nr_mux_clks		= ARRAY_SIZE(fsys0_mux_clks),
@@ -1724,6 +1746,8 @@ static const struct samsung_cmu_info fsys0_cmu_info __initconst = {
 	.nr_clk_ids		= CLKS_NR_FSYS0,
 	.clk_regs		= fsys0_clk_regs,
 	.nr_clk_regs		= ARRAY_SIZE(fsys0_clk_regs),
+	.suspend_regs		= fsys0_suspend_regs,
+	.nr_suspend_regs	= ARRAY_SIZE(fsys0_suspend_regs),
 	.clk_name		= "bus",
 	.hwacg_gates		= true,
 };
@@ -2181,6 +2205,18 @@ static const struct samsung_gate_clock peric0_gate_clks[] __initconst = {
 	     "gout_peric0_usi00_i_pclk", QCH_CON_USI00_QCH, 1, 0, 0),
 };
 
+/*
+ * USER muxes on OSCCLK for SLEEP, as fsys0_suspend_regs[] (stock UMUX_* vclks
+ * S:drivers/clk/samsung/clk-exynos8895.c:359-362, parents of GATE_USI00-03
+ * :372-378). BUS and UART_DBG stay at 0x10 on stock.
+ */
+static const struct samsung_clk_reg_dump peric0_suspend_regs[] = {
+	{ PLL_CON0_MUX_CLKCMU_PERIC0_USI00_USER, 0x0 },	/* CAL:cmucal-sfr.c:1753 */
+	{ PLL_CON0_MUX_CLKCMU_PERIC0_USI01_USER, 0x0 },	/* :1755 */
+	{ PLL_CON0_MUX_CLKCMU_PERIC0_USI02_USER, 0x0 },	/* :1757 */
+	{ PLL_CON0_MUX_CLKCMU_PERIC0_USI03_USER, 0x0 },	/* :1759 */
+};
+
 static const struct samsung_cmu_info peric0_cmu_info __initconst = {
 	.mux_clks		= peric0_mux_clks,
 	.nr_mux_clks		= ARRAY_SIZE(peric0_mux_clks),
@@ -2189,6 +2225,8 @@ static const struct samsung_cmu_info peric0_cmu_info __initconst = {
 	.nr_clk_ids		= CLKS_NR_PERIC0,
 	.clk_regs		= peric0_clk_regs,
 	.nr_clk_regs		= ARRAY_SIZE(peric0_clk_regs),
+	.suspend_regs		= peric0_suspend_regs,
+	.nr_suspend_regs	= ARRAY_SIZE(peric0_suspend_regs),
 	.clk_name		= "bus",
 	.hwacg_gates		= true,
 };
@@ -2626,6 +2664,26 @@ static const struct samsung_gate_clock peric1_gate_clks[] __initconst = {
 	     21, CLK_IS_CRITICAL, 0),
 };
 
+/*
+ * USER muxes on OSCCLK for SLEEP, as fsys0_suspend_regs[] (stock UMUX_* vclks
+ * S:drivers/clk/samsung/clk-exynos8895.c:382-396, parents of the PERIC1 gate
+ * vclks :398-420). SPEEDY2, USI04 and USI07 stay at 0x10 on stock.
+ */
+static const struct samsung_clk_reg_dump peric1_suspend_regs[] = {
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_BUS_USER, 0x0 },		/* CAL:cmucal-sfr.c:1836 */
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_SPI_CAM0_USER, 0x0 },	/* :1846 */
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_SPI_CAM1_USER, 0x0 },	/* :1848 */
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_UART_BT_USER, 0x0 },	/* :1804 */
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_USI05_USER, 0x0 },		/* :1807 */
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_USI06_USER, 0x0 },		/* :1809 */
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_USI08_USER, 0x0 },		/* :1813 */
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_USI09_USER, 0x0 },		/* :1815 */
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_USI10_USER, 0x0 },		/* :1817 */
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_USI11_USER, 0x0 },		/* :1819 */
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_USI12_USER, 0x0 },		/* :1821 */
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_USI13_USER, 0x0 },		/* :1823 */
+};
+
 static const struct samsung_cmu_info peric1_cmu_info __initconst = {
 	.mux_clks		= peric1_mux_clks,
 	.nr_mux_clks		= ARRAY_SIZE(peric1_mux_clks),
@@ -2634,6 +2692,8 @@ static const struct samsung_cmu_info peric1_cmu_info __initconst = {
 	.nr_clk_ids		= CLKS_NR_PERIC1,
 	.clk_regs		= peric1_clk_regs,
 	.nr_clk_regs		= ARRAY_SIZE(peric1_clk_regs),
+	.suspend_regs		= peric1_suspend_regs,
+	.nr_suspend_regs	= ARRAY_SIZE(peric1_suspend_regs),
 	.clk_name		= "bus",
 	.hwacg_gates		= true,
 };
