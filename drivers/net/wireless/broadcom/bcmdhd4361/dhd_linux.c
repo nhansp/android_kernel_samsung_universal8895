@@ -7265,6 +7265,8 @@ dhd_add_monitor_if(dhd_info_t *dhd)
 		DHD_ERROR(("%s, register_netdev failed for %s\n",
 			__FUNCTION__, dev->name));
 		free_netdev(dev);
+		/* do not carry on with the freed netdev (DZC3:drivers/net/wireless/bcmdhd4361/dhd_linux.c:7202-7207) */
+		return;
 	}
 
 	if (FW_SUPPORTED((&dhd->pub), monitor)) {
