@@ -206,10 +206,16 @@ static int exynos_usi_configure(struct exynos_usi *usi)
 	if (ret)
 		return ret;
 
-	if (usi->data->ver == USI_VER1)
-		ret = clk_bulk_prepare_enable(usi->data->num_clks,
-					      usi->clks);
-	else if (usi->data->ver == USI_VER2)
+	/*
+	 * USIv1 (Exynos8895): SW_CONF is a sysreg word, written through the
+	 * sysreg's own clock, so no USI clock is held. Stock wrote it with none
+	 * at probe and resume (S:drivers/soc/samsung/usi.c:105,140; its usi
+	 * nodes have no clocks, S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:
+	 * 1337-1343). Holding pclk kept the USI's Q-channel CLOCK_REQ set (the
+	 * request gate is the PCLK's parent) through suspend, and every resume
+	 * took one more enable.
+	 */
+	if (usi->data->ver == USI_VER2)
 		ret = exynos_usi_enable(usi);
 
 	return ret;
@@ -221,10 +227,8 @@ static void exynos_usi_unconfigure(void *data)
 	u32 val;
 	int ret;
 
-	if (usi->data->ver == USI_VER1) {
-		clk_bulk_disable_unprepare(usi->data->num_clks, usi->clks);
+	if (usi->data->ver == USI_VER1)
 		return;
-	}
 
 	ret = clk_bulk_prepare_enable(usi->data->num_clks, usi->clks);
 	if (ret)
