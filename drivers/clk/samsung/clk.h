@@ -339,6 +339,9 @@ struct samsung_clock_reg_cache {
  * @nr_suspend_regs: count of clock registers in @suspend_regs
  * @clk_name: name of the parent clock needed for CMU register access
  * @manual_plls: Enable manual control for PLL clocks
+ * @hwacg_gates: Leave the CLK_CON_GAT_* registers (0x2000-0x2fff) of this CMU
+ *	under hardware auto clock gating: they are never written and their
+ *	clocks are 1:1 pass-throughs. Gates at other offsets stay real gates.
  */
 struct samsung_cmu_info {
 	const struct samsung_pll_clock *pll_clks;
@@ -366,6 +369,7 @@ struct samsung_cmu_info {
 
 	/* ARM64 Exynos CMUs */
 	bool manual_plls;
+	bool hwacg_gates;
 };
 
 struct samsung_clk_provider *samsung_clk_init(struct device *dev,

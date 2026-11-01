@@ -46,18 +46,31 @@
 #define CLKS_NR_VTS	(CLK_GOUT_VTS_DMIC + 1)
 
 /*
- * Gate policy (greatlte, rewrite/spec/L1_platform.md 5.2 and Appendix A).
- * exynos_arm64_init_clocks() switches every gate register listed in a CMU's
- * clk_regs[] from hardware auto-gating (HWACG) to manual mode. Stock 4.4 never
- * did that: every gate except the Q-channel-disabled USI/UAIF/DSIF/JPEG set
- * stayed in HWACG mode, where CG_VAL is ignored
- * (S:drivers/clk/samsung/composite.c:1372-1373,
- * S:drivers/soc/samsung/cal-if/ra.c:377-417). The gate registers of the
- * INFRA, HIDDEN, TOP-FW, TOP-BUS, TOP-MM and IP-KEEP classes (143 of 246) are
- * therefore not listed in the clk_regs[] arrays below and stay in the mode
- * S-Boot left; only IP and TOP-IP gates are switched to manual. The same
- * classes carry CLK_IS_CRITICAL or CLK_IGNORE_UNUSED, so clk_disable_unused()
- * never stops them.
+ * Gate policy (greatlte; replaces rewrite/spec/L1_platform.md 5.2 for the
+ * always-on CMUs). TOP, PERIS, FSYS0, FSYS1, PERIC0, PERIC1 and BUSC set
+ * .hwacg_gates: every CLK_CON_GAT_* register of theirs stays in hardware
+ * auto-gating (HWACG) as S-Boot left it and is never written. Their GATE()s
+ * register as 1:1 pass-throughs (samsung_clk_register_hwacg_gate()), and no
+ * gate offset is in their clk_regs[], so exynos_arm64_init_clocks() does not
+ * switch one to manual and syscore does not restore one. This is what stock
+ * 4.4 did: a gate vclk without VCLK_QCH_DIS returns before any CAL access
+ * (S:drivers/clk/samsung/composite.c:1372-1373,1402-1403), the UFS_EMBD/PCIE/
+ * USI rate vclks are VCLK ids, whose enable/disable write nothing
+ * (S:drivers/soc/samsung/cal-if/vclk.c:269-270,287-288), and all 323 gate
+ * registers of these CMUs read 0x00200000 (MANUAL 0, CG_VAL 1, auto-gating
+ * enable 0; S:drivers/soc/samsung/cal-if/ra.c:404-417) at run time and right
+ * before the SLEEP SMC (stock 4.4.302 snapshot of 2026-10-06,
+ * drivers/soc/samsung/exynos8895-regsnap.h).
+ * The L1 policy switched the 103 IP/TOP-IP gates to manual. Their consumers
+ * then held 12 CMU_TOP gates on through suspend (UFS_EMBD, FSYS1_PCIE,
+ * PERIC0_USI01-03, PERIC1_USI05/08-13), and the PMU's SLEEP sequence stalled
+ * at DISABLE_PLL_CMU_TOP until the stock CMU values (these gates among them)
+ * were forced before the SMC (exynos8895-pm.c sleep_stockcmu).
+ * Gates at other offsets (the USI Q-channel CLOCK_REQ bits in QCH_CON) stay
+ * real gates. CLK_IS_CRITICAL and CLK_IGNORE_UNUSED on a pass-through only
+ * hold the enable count of its parent chain. The CMUs inside power domains
+ * keep real gates on registers left in S-Boot's mode (set_manual = false,
+ * exynos8895_cmu_pd_probe()).
  */
 
 /* ---- CMU_TOP ------------------------------------------------------------- */
@@ -410,31 +423,6 @@ static const unsigned long top_clk_regs[] __initconst = {
 	CLK_CON_DIV_DIV_PLL_SHARED2_DIV2,
 	CLK_CON_DIV_DIV_PLL_SHARED3_DIV2,
 	CLK_CON_DIV_DIV_PLL_SHARED4_DIV2,
-	CLK_CON_GAT_GATE_CLKCMU_FSYS0_DPGTC,
-	CLK_CON_GAT_GATE_CLKCMU_FSYS0_MMC_EMBD,
-	CLK_CON_GAT_GATE_CLKCMU_FSYS0_UFS_EMBD,
-	CLK_CON_GAT_GATE_CLKCMU_FSYS0_USBDRD30,
-	CLK_CON_GAT_GATE_CLKCMU_FSYS1_MMC_CARD,
-	CLK_CON_GAT_GATE_CLKCMU_FSYS1_PCIE,
-	CLK_CON_GAT_GATE_CLKCMU_FSYS1_UFS_CARD,
-	CLK_CON_GAT_GATE_CLKCMU_PERIC0_USI00,
-	CLK_CON_GAT_GATE_CLKCMU_PERIC0_USI01,
-	CLK_CON_GAT_GATE_CLKCMU_PERIC0_USI02,
-	CLK_CON_GAT_GATE_CLKCMU_PERIC0_USI03,
-	CLK_CON_GAT_GATE_CLKCMU_PERIC1_SPEEDY2,
-	CLK_CON_GAT_GATE_CLKCMU_PERIC1_SPI_CAM0,
-	CLK_CON_GAT_GATE_CLKCMU_PERIC1_SPI_CAM1,
-	CLK_CON_GAT_GATE_CLKCMU_PERIC1_UART_BT,
-	CLK_CON_GAT_GATE_CLKCMU_PERIC1_USI04,
-	CLK_CON_GAT_GATE_CLKCMU_PERIC1_USI05,
-	CLK_CON_GAT_GATE_CLKCMU_PERIC1_USI06,
-	CLK_CON_GAT_GATE_CLKCMU_PERIC1_USI07,
-	CLK_CON_GAT_GATE_CLKCMU_PERIC1_USI08,
-	CLK_CON_GAT_GATE_CLKCMU_PERIC1_USI09,
-	CLK_CON_GAT_GATE_CLKCMU_PERIC1_USI10,
-	CLK_CON_GAT_GATE_CLKCMU_PERIC1_USI11,
-	CLK_CON_GAT_GATE_CLKCMU_PERIC1_USI12,
-	CLK_CON_GAT_GATE_CLKCMU_PERIC1_USI13,
 };
 
 static const struct samsung_pll_rate_table pll_shared0_rate_table[] __initconst = {
@@ -1129,8 +1117,8 @@ static const struct samsung_gate_clock top_gate_clks[] __initconst = {
 	 * CRITICAL, not IGNORE_UNUSED (L5 4.9 item 4, plan X-9): CMU_DPU0
 	 * runtime-suspends right after registration and disables its "bus"
 	 * parent, which ends here; the enable count must stay above 0 under the
-	 * live splash. The register stays out of top_clk_regs[] (TOP-MM), so the
-	 * CRITICAL enable only sets CG_VAL.
+	 * live splash. Like every CMU_TOP gate it is a pass-through (gate policy
+	 * above), so the CRITICAL enable writes no register.
 	 */
 	GATE(CLK_GOUT_CMU_DPU_BUS, "gout_cmu_dpu_bus", "mout_cmu_dpu_bus",
 	     CLK_CON_GAT_GATE_CLKCMU_DPU_BUS, 21, CLK_IS_CRITICAL, 0),
@@ -1279,6 +1267,7 @@ static const struct samsung_cmu_info top_cmu_info __initconst = {
 	.nr_clk_ids		= CLKS_NR_TOP,
 	.clk_regs		= top_clk_regs,
 	.nr_clk_regs		= ARRAY_SIZE(top_clk_regs),
+	.hwacg_gates		= true,
 };
 
 static void __init exynos8895_cmu_top_init(struct device_node *np)
@@ -1335,7 +1324,6 @@ static const unsigned long peris_clk_regs[] __initconst = {
 	PLL_CON0_MUX_CLKCMU_PERIS_BUS_USER,
 	PLL_CON2_MUX_CLKCMU_PERIS_BUS_USER,
 	CLK_CON_MUX_MUX_CLK_PERIS_GIC,
-	CLK_CON_GAT_GOUT_BLK_PERIS_UID_MCT_IPCLKPORT_PCLK,
 };
 
 /* List of parent clocks for Muxes in CMU_PERIS */
@@ -1482,6 +1470,7 @@ static const struct samsung_cmu_info peris_cmu_info __initconst = {
 	.clk_regs		= peris_clk_regs,
 	.nr_clk_regs		= ARRAY_SIZE(peris_clk_regs),
 	.clk_name		= "bus",
+	.hwacg_gates		= true,
 };
 
 static void __init exynos8895_cmu_peris_init(struct device_node *np)
@@ -1554,17 +1543,6 @@ static const unsigned long fsys0_clk_regs[] __initconst = {
 	PLL_CON2_MUX_CLKCMU_FSYS0_UFS_EMBD_USER,
 	PLL_CON0_MUX_CLKCMU_FSYS0_USBDRD30_USER,
 	PLL_CON2_MUX_CLKCMU_FSYS0_USBDRD30_USER,
-	CLK_CON_GAT_GOUT_BLK_FSYS0_UID_DP_LINK_IPCLKPORT_I_GTC_EXT_CLK,
-	CLK_CON_GAT_GOUT_BLK_FSYS0_UID_DP_LINK_IPCLKPORT_I_PCLK,
-	CLK_CON_GAT_GOUT_BLK_FSYS0_UID_MMC_EMBD_IPCLKPORT_I_ACLK,
-	CLK_CON_GAT_GOUT_BLK_FSYS0_UID_MMC_EMBD_IPCLKPORT_SDCLKIN,
-	CLK_CON_GAT_GOUT_BLK_FSYS0_UID_UFS_EMBD_IPCLKPORT_I_ACLK,
-	CLK_CON_GAT_GOUT_BLK_FSYS0_UID_UFS_EMBD_IPCLKPORT_I_CLK_UNIPRO,
-	CLK_CON_GAT_GOUT_BLK_FSYS0_UID_USBTV_IPCLKPORT_I_USB30DRD_ACLK,
-	CLK_CON_GAT_GOUT_BLK_FSYS0_UID_USBTV_IPCLKPORT_I_USB30DRD_REF_CLK,
-	CLK_CON_GAT_GOUT_BLK_FSYS0_UID_USBTV_IPCLKPORT_I_USB30DRD_SUSPEND_CLK,
-	CLK_CON_GAT_GOUT_BLK_FSYS0_UID_USBTV_IPCLKPORT_I_USBTVH_AHB_CLK,
-	CLK_CON_GAT_GOUT_BLK_FSYS0_UID_USBTV_IPCLKPORT_I_USBTVH_CORE_CLK,
 };
 
 /* List of parent clocks for Muxes in CMU_FSYS0 */
@@ -1747,6 +1725,7 @@ static const struct samsung_cmu_info fsys0_cmu_info __initconst = {
 	.clk_regs		= fsys0_clk_regs,
 	.nr_clk_regs		= ARRAY_SIZE(fsys0_clk_regs),
 	.clk_name		= "bus",
+	.hwacg_gates		= true,
 };
 
 /* ---- CMU_FSYS1 ---------------------------------------------------------- */
@@ -1810,23 +1789,6 @@ static const unsigned long fsys1_clk_regs[] __initconst = {
 	PLL_CON2_MUX_CLKCMU_FSYS1_PCIE_USER,
 	PLL_CON0_MUX_CLKCMU_FSYS1_UFS_CARD_USER,
 	PLL_CON2_MUX_CLKCMU_FSYS1_UFS_CARD_USER,
-	CLK_CON_GAT_CLK_BLK_FSYS1_UID_PCIE_IPCLKPORT_PHY_REF_CLK_IN,
-	CLK_CON_GAT_GOUT_BLK_FSYS1_UID_MMC_CARD_IPCLKPORT_I_ACLK,
-	CLK_CON_GAT_GOUT_BLK_FSYS1_UID_MMC_CARD_IPCLKPORT_SDCLKIN,
-	CLK_CON_GAT_GOUT_BLK_FSYS1_UID_PCIE_IPCLKPORT_DBI_ACLK_0,
-	CLK_CON_GAT_GOUT_BLK_FSYS1_UID_PCIE_IPCLKPORT_DBI_ACLK_1,
-	CLK_CON_GAT_GOUT_BLK_FSYS1_UID_PCIE_IPCLKPORT_IEEE1500_WRAPPER_FOR_PCIE_PHY_LC_X2_INST_0_I_SCL_APB_PCLK,
-	CLK_CON_GAT_GOUT_BLK_FSYS1_UID_PCIE_IPCLKPORT_MSTR_ACLK_0,
-	CLK_CON_GAT_GOUT_BLK_FSYS1_UID_PCIE_IPCLKPORT_MSTR_ACLK_1,
-	CLK_CON_GAT_GOUT_BLK_FSYS1_UID_PCIE_IPCLKPORT_PCIE_SUB_CTRL_INST_0_I_DRIVER_APB_CLK,
-	CLK_CON_GAT_GOUT_BLK_FSYS1_UID_PCIE_IPCLKPORT_PCIE_SUB_CTRL_INST_1_I_DRIVER_APB_CLK,
-	CLK_CON_GAT_GOUT_BLK_FSYS1_UID_PCIE_IPCLKPORT_PIPE2_DIGITAL_X2_WRAP_INST_0_I_APB_PCLK_SCL,
-	CLK_CON_GAT_GOUT_BLK_FSYS1_UID_PCIE_IPCLKPORT_SLV_ACLK_0,
-	CLK_CON_GAT_GOUT_BLK_FSYS1_UID_PCIE_IPCLKPORT_SLV_ACLK_1,
-	CLK_CON_GAT_GOUT_BLK_FSYS1_UID_TOE_WIFI0_IPCLKPORT_I_CLK,
-	CLK_CON_GAT_GOUT_BLK_FSYS1_UID_TOE_WIFI1_IPCLKPORT_I_CLK,
-	CLK_CON_GAT_GOUT_BLK_FSYS1_UID_UFS_CARD_IPCLKPORT_I_ACLK,
-	CLK_CON_GAT_GOUT_BLK_FSYS1_UID_UFS_CARD_IPCLKPORT_I_CLK_UNIPRO,
 };
 
 /* List of parent clocks for Muxes in CMU_FSYS1 */
@@ -2023,6 +1985,7 @@ static const struct samsung_cmu_info fsys1_cmu_info __initconst = {
 	.clk_regs		= fsys1_clk_regs,
 	.nr_clk_regs		= ARRAY_SIZE(fsys1_clk_regs),
 	.clk_name		= "bus",
+	.hwacg_gates		= true,
 };
 
 /* ---- CMU_PERIC0 ---------------------------------------------------------- */
@@ -2075,16 +2038,6 @@ static const unsigned long peric0_clk_regs[] __initconst = {
 	PLL_CON2_MUX_CLKCMU_PERIC0_USI02_USER,
 	PLL_CON0_MUX_CLKCMU_PERIC0_USI03_USER,
 	PLL_CON2_MUX_CLKCMU_PERIC0_USI03_USER,
-	CLK_CON_GAT_GOUT_BLK_PERIC0_UID_PWM_IPCLKPORT_I_PCLK_S0,
-	CLK_CON_GAT_GOUT_BLK_PERIC0_UID_SPEEDY2_TSP_IPCLKPORT_CLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI00_IPCLKPORT_I_PCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI00_IPCLKPORT_I_SCLK_USI,
-	CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI01_IPCLKPORT_I_PCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI01_IPCLKPORT_I_SCLK_USI,
-	CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI02_IPCLKPORT_I_PCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI02_IPCLKPORT_I_SCLK_USI,
-	CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI03_IPCLKPORT_I_PCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC0_UID_USI03_IPCLKPORT_I_SCLK_USI,
 	/* outside the gate range: save/restore only, as stock's PMUCAL list */
 	QCH_CON_USI00_QCH,
 };
@@ -2216,6 +2169,7 @@ static const struct samsung_cmu_info peric0_cmu_info __initconst = {
 	.clk_regs		= peric0_clk_regs,
 	.nr_clk_regs		= ARRAY_SIZE(peric0_clk_regs),
 	.clk_name		= "bus",
+	.hwacg_gates		= true,
 };
 
 /* ---- CMU_PERIC1 ---------------------------------------------------------- */
@@ -2332,45 +2286,6 @@ static const unsigned long peric1_clk_regs[] __initconst = {
 	PLL_CON2_MUX_CLKCMU_PERIC1_USI12_USER,
 	PLL_CON0_MUX_CLKCMU_PERIC1_USI13_USER,
 	PLL_CON2_MUX_CLKCMU_PERIC1_USI13_USER,
-	CLK_CON_GAT_CLK_BLK_PERIC1_UID_RSTNSYNC_CLK_PERIC1_SPEEDY2_IPCLKPORT_CLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_HSI2C_CAM0_IPCLKPORT_IPCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_HSI2C_CAM1_IPCLKPORT_IPCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_HSI2C_CAM2_IPCLKPORT_IPCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_HSI2C_CAM3_IPCLKPORT_IPCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_SPEEDY2_DDI1_IPCLKPORT_CLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_SPEEDY2_DDI1_IPCLKPORT_SCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_SPEEDY2_DDI2_IPCLKPORT_CLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_SPEEDY2_DDI2_IPCLKPORT_SCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_SPEEDY2_DDI_IPCLKPORT_CLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_SPEEDY2_DDI_IPCLKPORT_SCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_SPEEDY2_TSP1_IPCLKPORT_CLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_SPEEDY2_TSP2_IPCLKPORT_CLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_SPI_CAM0_IPCLKPORT_PCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_SPI_CAM0_IPCLKPORT_SPI_EXT_CLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_SPI_CAM1_IPCLKPORT_PCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_SPI_CAM1_IPCLKPORT_SPI_EXT_CLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_UART_BT_IPCLKPORT_EXT_UCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_UART_BT_IPCLKPORT_PCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI04_IPCLKPORT_I_PCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI04_IPCLKPORT_I_SCLK_USI,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI05_IPCLKPORT_I_PCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI05_IPCLKPORT_I_SCLK_USI,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI06_IPCLKPORT_I_PCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI06_IPCLKPORT_I_SCLK_USI,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI07_IPCLKPORT_I_PCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI07_IPCLKPORT_I_SCLK_USI,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI08_IPCLKPORT_I_PCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI08_IPCLKPORT_I_SCLK_USI,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI09_IPCLKPORT_I_PCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI09_IPCLKPORT_I_SCLK_USI,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI10_IPCLKPORT_I_PCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI10_IPCLKPORT_I_SCLK_USI,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI11_IPCLKPORT_I_PCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI11_IPCLKPORT_I_SCLK_USI,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI12_IPCLKPORT_I_PCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI12_IPCLKPORT_I_SCLK_USI,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI13_IPCLKPORT_I_PCLK,
-	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI13_IPCLKPORT_I_SCLK_USI,
 };
 
 /* List of parent clocks for Muxes in CMU_PERIC1 */
@@ -2651,6 +2566,7 @@ static const struct samsung_cmu_info peric1_cmu_info __initconst = {
 	.clk_regs		= peric1_clk_regs,
 	.nr_clk_regs		= ARRAY_SIZE(peric1_clk_regs),
 	.clk_name		= "bus",
+	.hwacg_gates		= true,
 };
 
 /* ---- CMU_APM ------------------------------------------------------------- */
@@ -6282,6 +6198,7 @@ static const struct samsung_cmu_info busc_cmu_info __initconst = {
 	.nr_gate_clks		= ARRAY_SIZE(busc_gate_clks),
 	.nr_clk_ids		= CLKS_NR_BUSC,
 	.clk_name		= "bus",
+	.hwacg_gates		= true,
 };
 
 /* ---- CMU_G3D ------------------------------------------------------------- */

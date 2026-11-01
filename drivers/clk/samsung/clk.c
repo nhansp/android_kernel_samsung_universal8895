@@ -249,6 +249,45 @@ void __init samsung_clk_register_gate(struct samsung_clk_provider *ctx,
 	}
 }
 
+/* CLK_CON_GAT_* range of an ARM64 Exynos CMU (GATE_OFF_* in clk-exynos-arm64.c) */
+#define SAMSUNG_HWACG_GATE_OFF_START	0x2000
+#define SAMSUNG_HWACG_GATE_OFF_END	0x2fff
+
+/*
+ * Gates of a CMU with @hwacg_gates: a CLK_CON_GAT_* register stays in the mode
+ * the boot loader left (hardware auto clock gating) and is never written, as
+ * stock Exynos kernels ran these CMUs (their gate vclk enable/disable return
+ * before any register access). The clock is registered as a 1:1 fixed factor
+ * with the gate's name, parent and flags, so consumers, rates, enable counts
+ * and CLK_IS_CRITICAL stay as they were. Other offsets, e.g. a Q-channel
+ * CLOCK_REQ bit, are registered as real gates.
+ */
+static void __init samsung_clk_register_hwacg_gate(struct samsung_clk_provider *ctx,
+				const struct samsung_gate_clock *list,
+				unsigned int nr_clk)
+{
+	struct clk_hw *clk_hw;
+	unsigned int idx;
+
+	for (idx = 0; idx < nr_clk; idx++, list++) {
+		if (list->offset < SAMSUNG_HWACG_GATE_OFF_START ||
+		    list->offset > SAMSUNG_HWACG_GATE_OFF_END) {
+			samsung_clk_register_gate(ctx, list, 1);
+			continue;
+		}
+
+		clk_hw = clk_hw_register_fixed_factor(ctx->dev, list->name,
+				list->parent_name, list->flags, 1, 1);
+		if (IS_ERR(clk_hw)) {
+			pr_err("%s: failed to register clock %s\n", __func__,
+				list->name);
+			continue;
+		}
+
+		samsung_clk_add_lookup(ctx, clk_hw, list->id);
+	}
+}
+
 /*
  * obtain the clock speed of all external fixed clock sources from device
  * tree and register it
@@ -340,7 +379,10 @@ void __init samsung_cmu_register_clocks(struct samsung_clk_provider *ctx,
 		samsung_clk_register_mux(ctx, cmu->mux_clks, cmu->nr_mux_clks);
 	if (cmu->div_clks)
 		samsung_clk_register_div(ctx, cmu->div_clks, cmu->nr_div_clks);
-	if (cmu->gate_clks)
+	if (cmu->gate_clks && cmu->hwacg_gates)
+		samsung_clk_register_hwacg_gate(ctx, cmu->gate_clks,
+						cmu->nr_gate_clks);
+	else if (cmu->gate_clks)
 		samsung_clk_register_gate(ctx, cmu->gate_clks,
 					  cmu->nr_gate_clks);
 	if (cmu->fixed_clks)

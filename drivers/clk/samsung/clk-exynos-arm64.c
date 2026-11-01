@@ -81,6 +81,9 @@ static bool is_pll_con1_reg(unsigned long off)
  * - "kept": not in clk_regs[], left in S-Boot's mode; kept_manual counts those
  *   S-Boot left in manual mode (bit 20), where the L1 flag (CRITICAL or
  *   IGNORE_UNUSED) is what protects them.
+ * A CMU with hwacg_gates lists no gate register (manual = 0) and registers
+ * every gate register as a pass-through that no enable or disable writes, so
+ * a kept_manual register there keeps S-Boot's CG_VAL for good, as on stock.
  */
 static void __init greatlte_l1_gate_census(struct device_node *np,
 					   const struct samsung_cmu_info *cmu,
@@ -121,8 +124,8 @@ static void __init greatlte_l1_gate_census(struct device_node *np,
 		}
 	}
 
-	pr_err("L1cmu %pOFP gates=%u manual=%u kept=%u kept_manual=%u hwacg_cg0=%u\n",
-	       np, gates, manual, kept, kept_manual, cg0);
+	pr_err("L1cmu %pOFP gates=%u manual=%u kept=%u kept_manual=%u hwacg_cg0=%u hwacg_gates=%d\n",
+	       np, gates, manual, kept, kept_manual, cg0, cmu->hwacg_gates);
 }
 #else
 static inline void greatlte_l1_gate_census(struct device_node *np,

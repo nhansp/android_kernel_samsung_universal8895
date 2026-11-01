@@ -326,6 +326,7 @@ static bool e8895_veto_busy(const struct e8895_veto *v)
 	switch (v->kind) {
 	case E8895_SICD_VETO_CLK:
 		/* gate of an always-on CMU without runtime PM: a plain register read,
+		 * or the enable count of an HWACG pass-through gate (no .is_enabled),
 		 * A:drivers/clk/clk.c:315-361 */
 		return __clk_is_enabled(v->clk);
 	case E8895_SICD_VETO_RPM:

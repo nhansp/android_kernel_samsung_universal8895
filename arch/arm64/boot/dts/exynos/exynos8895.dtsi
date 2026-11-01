@@ -1809,7 +1809,9 @@
 			 * PCIE_STATE_HISTORY_CHECK) takes a synchronous external abort. Channel 1 shares the PHY and
 			 * sub-controller with channel 0 (FDT:8220/8256); held here, they keep the stock state. */
 			/* stock claims none (FDT:8239-8240, HWACG Q-channel gates S:drivers/clk/samsung/clk-exynos8895.c:236-245);
-			 * ACK gates are manual, class IP (L1_platform.md:484) -> held here; ids/offsets RL-5 */
+			 * ids/offsets RL-5. The 0063/0064 abort was with the L1 manual gates (L1_platform.md:484); CMU_FSYS1
+			 * gates are now HWACG pass-throughs (clk-exynos8895.c gate policy) that no enable, disable or
+			 * clk_disable_unused writes, so these claims only hold enable counts. */
 			samsung,pmu-syscon = <&pmu_system_controller>;	/* FDT:8223 samsung,syscon-phandle = <0x1f> (PMU); 0x610, 0x71C */
 			samsung,fsys-sysreg = <&syscon_fsys1 0x1044>;	/* FDT:8220 "sysreg" 0x11421044 = syscon_fsys1 0x11420000 + 0x1044; FDT:8224 */
 			#address-cells = <3>;			/* FDT:8228 */
