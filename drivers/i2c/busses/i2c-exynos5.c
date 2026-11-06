@@ -162,7 +162,12 @@
 #define HSI2C_MASTER_ID(x)			((x & 0xff) << 24)
 #define MASTER_ID(x)				((x & 0x7) + 0x08)
 
-#define EXYNOS5_I2C_TIMEOUT (msecs_to_jiffies(100))
+/*
+ * Whole-message timeout.  Stock waits one second (S:drivers/i2c/busses/
+ * i2c-exynos5.c:219); the camera EEPROM driver reads 16 KiB in one message,
+ * which takes 16384 * 9 / 400 kHz = 369 ms on the wire.
+ */
+#define EXYNOS5_I2C_TIMEOUT (msecs_to_jiffies(1000))
 
 enum i2c_type_exynos {
 	I2C_TYPE_EXYNOS5,
