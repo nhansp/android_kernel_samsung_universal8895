@@ -16,9 +16,6 @@
 #include <linux/errno.h>
 #include <linux/platform_device.h>
 #include <linux/io.h>
-#if defined(CONFIG_SECURE_CAMERA_USE)
-#include <linux/smc.h>
-#endif
 #include <linux/videodev2.h>
 #include <linux/videodev2_exynos_camera.h>
 

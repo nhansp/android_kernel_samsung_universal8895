@@ -31,7 +31,7 @@
 #include <linux/bug.h>
 #include <linux/i2c.h>
 #if defined(CONFIG_SECURE_CAMERA_USE)
-#include <linux/smc.h>
+#include <soc/samsung/exynos8895-smc.h>
 #endif
 
 #include "fimc-is-core.h"
@@ -2036,7 +2036,7 @@ int fimc_is_sensor_s_input(struct fimc_is_device_sensor *device,
 				goto p_err;
 			}
 
-			ret = exynos_smc(MC_SECURE_CAMERA_SYSREG_PROT, 1, 0, 0);
+			ret = (int)exynos8895_smc(MC_SECURE_CAMERA_SYSREG_PROT, 1, 0, 0);
 			if (ret) {
 				core->secure_state = FIMC_IS_STATE_UNSECURE;
 				mutex_unlock(&core->secure_state_lock);
@@ -2050,7 +2050,7 @@ int fimc_is_sensor_s_input(struct fimc_is_device_sensor *device,
 		}
 		mutex_unlock(&core->secure_state_lock);
 
-		ret = exynos_smc(MC_SECURE_CAMERA_PREPARE, 0, 0, 0);
+		ret = (int)exynos8895_smc(MC_SECURE_CAMERA_PREPARE, 0, 0, 0);
 		if(ret != 0) {
 			merr("[SMC] MC_SECURE_CAMERA_PREPARE fail(%d)\n", device, ret);
 			goto p_err;
@@ -2186,7 +2186,7 @@ p_err:
 #if defined(CONFIG_SECURE_CAMERA_USE)
 	if (ret && (device->pdata->scenario == SENSOR_SCENARIO_SECURE)) {
 		if (device->smc_state == FIMC_IS_SENSOR_SMC_PREPARE) {
-			ret = exynos_smc(MC_SECURE_CAMERA_UNPREPARE, 0, 0, 0);
+			ret = (int)exynos8895_smc(MC_SECURE_CAMERA_UNPREPARE, 0, 0, 0);
 			if (ret != 0) {
 				merr("[SMC] MC_SECURE_CAMERA_UNPREPARE fail(%d)\n", device, ret);
 			} else {
@@ -2200,7 +2200,7 @@ p_err:
 		if (core->secure_state == FIMC_IS_STATE_SECURED) {
 			mdbgd_sensor("configure ischain to unsecure\n", device);
 
-			ret = exynos_smc(MC_SECURE_CAMERA_SYSREG_PROT, 0, 0, 0);
+			ret = (int)exynos8895_smc(MC_SECURE_CAMERA_SYSREG_PROT, 0, 0, 0);
 			if (ret) {
 				merr("[SMC] failed to unsecure fimc-is: (%d)",
 									device, ret);
@@ -3274,7 +3274,7 @@ int fimc_is_sensor_front_stop(struct fimc_is_device_sensor *device)
 
 #if defined(CONFIG_SECURE_CAMERA_USE)
 	if (device->pdata->scenario == SENSOR_SCENARIO_SECURE) {
-		ret = exynos_smc(MC_SECURE_CAMERA_UNPREPARE, 0, 0, 0);
+		ret = (int)exynos8895_smc(MC_SECURE_CAMERA_UNPREPARE, 0, 0, 0);
 		if(ret != 0) {
 			merr("[SMC] MC_SECURE_CAMERA_UNPREPARE fail(%d)\n", device, ret);
 		} else {
@@ -3287,7 +3287,7 @@ int fimc_is_sensor_front_stop(struct fimc_is_device_sensor *device)
 		if (core->secure_state == FIMC_IS_STATE_SECURED) {
 			mdbgd_sensor("configure ischain to unsecure\n", device);
 
-			ret = exynos_smc(MC_SECURE_CAMERA_SYSREG_PROT, 0, 0, 0);
+			ret = (int)exynos8895_smc(MC_SECURE_CAMERA_SYSREG_PROT, 0, 0, 0);
 			if (ret) {
 				merr("[SMC] failed to unsecure fimc-is: (%d)",
 									device, ret);
@@ -3329,7 +3329,7 @@ p_err:
 #if defined(CONFIG_SECURE_CAMERA_USE)
 	if (device->pdata->scenario == SENSOR_SCENARIO_SECURE) {
 		if (device->smc_state == FIMC_IS_SENSOR_SMC_PREPARE) {
-			smc_ret = exynos_smc(MC_SECURE_CAMERA_UNPREPARE, 0, 0, 0);
+			smc_ret = (int)exynos8895_smc(MC_SECURE_CAMERA_UNPREPARE, 0, 0, 0);
 			if (smc_ret != 0) {
 				merr("[SMC] MC_SECURE_CAMERA_UNPREPARE fail(%d)\n", device, smc_ret);
 			} else {
@@ -3344,7 +3344,7 @@ p_err:
 		if (core->secure_state == FIMC_IS_STATE_SECURED) {
 			mdbgd_sensor("configure ischain to unsecure\n", device);
 
-			smc_ret = exynos_smc(MC_SECURE_CAMERA_SYSREG_PROT, 0, 0, 0);
+			smc_ret = (int)exynos8895_smc(MC_SECURE_CAMERA_SYSREG_PROT, 0, 0, 0);
 			if (smc_ret) {
 				merr("[SMC] failed to unsecure fimc-is: (%d)",
 									device, smc_ret);
