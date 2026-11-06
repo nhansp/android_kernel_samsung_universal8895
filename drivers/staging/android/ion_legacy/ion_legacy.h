@@ -26,6 +26,7 @@
 
 struct cma;
 struct device;
+struct gen_pool;
 struct page;
 
 /* heap id 0 is the system heap (S:drivers/staging/android/ion/exynos/exynos_ion.c:52-56) */
@@ -38,6 +39,19 @@ struct page;
 enum ionl_heap_type {
 	IONL_HEAP_SYSTEM,	/* page allocator, stock ion_system_heap.c */
 	IONL_HEAP_CMA,		/* a reusable shared-dma-pool, stock ion_cma_heap.c */
+	IONL_HEAP_SECURE,	/* an "ion,secure" carveout (secure_camera), stock ion_carveout_heap.c */
+};
+
+/*
+ * What EL3 reads by physical address for SMC_DRM_PPMP_PROT / _UNPROT: stock
+ * struct ion_buffer_prot_info (S:drivers/staging/android/ion/ion_priv.h:42-48), same layout.
+ */
+struct ionl_prot_info {
+	unsigned int chunk_count;
+	unsigned int dma_addr;		/* secure IOVA the secure camera DMA uses */
+	unsigned int flags;		/* heap id (S:drivers/staging/android/ion/ion_carveout_heap.c:141) */
+	unsigned int chunk_size;
+	unsigned long bus_address;	/* physical address of the buffer (one chunk) */
 };
 
 /* Immutable after probe; the counters are atomics (no lock). */
@@ -47,6 +61,7 @@ struct ionl_heap {
 	enum ionl_heap_type type;
 	const char *name;		/* "<memory-region-name>_heap"; dma-buf exp_name (L6A 5.2.8 item 2) */
 	struct cma *cma;		/* IONL_HEAP_CMA: rmem->priv of rmem_cma_setup */
+	struct gen_pool *pool;		/* IONL_HEAP_SECURE: the region, PAGE_SIZE granules */
 	atomic_t nr_buffers;		/* live buffers (debugfs heaps) */
 	atomic_long_t nr_bytes;		/* their bytes */
 };
@@ -65,6 +80,7 @@ struct ionl_buffer {
 	size_t size;
 	struct sg_table sgt;		/* DMA-mapped once for the ION device */
 	struct page *cma_page;		/* IONL_HEAP_CMA: first page of the cma_alloc() range */
+	struct ionl_prot_info *prot;	/* IONL_HEAP_SECURE: EL3 descriptor, one cache line of its own */
 	struct mutex lock;		/* protects vaddr, vmap_cnt */
 	void *vaddr;
 	int vmap_cnt;
@@ -91,6 +107,19 @@ struct ionl_device {
 };
 
 extern struct ionl_device ionl_dev;
+
+/*
+ * A buffer of the secure heap is always ION_FLAG_PROTECTED (ionl_alloc() offers the
+ * secure heap to nothing else): EL3 owns its memory, so the kernel never maps,
+ * flushes or DMA-maps it.  Stock refuses user mmap (S:drivers/staging/android/ion/
+ * ion.c:1472-1476), returns the secure IOVA from ion_iovmm_map() instead of
+ * mapping (:2675-2683) and ignores the unmap (:2726-2728); the vmap / CPU-access / sync refusals are additions
+ * of this shim, for memory the CPU must not touch once EL3 protects it.
+ */
+static inline bool ionl_buffer_protected(const struct ionl_buffer *buf)
+{
+	return buf->heap->type == IONL_HEAP_SECURE;
+}
 
 /* heartbeat counters (L6A 5.2.8 item 5, 8.1); read lock-free */
 struct ionl_stats {

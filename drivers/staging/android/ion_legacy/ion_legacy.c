@@ -11,8 +11,9 @@
  * S:drivers/staging/android/ion/ion.c:582-909, :1179-1298, :1641-1737,
  * :1900-2078; the heap-id parsing S:drivers/staging/android/ion/exynos/exynos_ion.c:318-347;
  * the compat ioctl S:drivers/staging/android/ion/compat_ion.c:58-244.
- * Deliberate deviations (L6A 5.2.5 item 3, 4.3): no protected or secure heap,
- * ION_FLAG_PROTECTED fails -ENODEV.
+ * Deliberate deviations (L6A 5.2.5 item 3, 4.3): no protected content path;
+ * ION_FLAG_PROTECTED fails -ENODEV except on the secure_camera heap of the iris
+ * (spec L6N_iris G-6, ion_legacy_heap.c).
  */
 
 #define pr_fmt(fmt) "ion-legacy: " fmt
@@ -318,14 +319,22 @@ static struct ionl_handle *ionl_alloc(struct ionl_client *client, size_t len,
 	if (heap_id_mask == 0)
 		return ERR_PTR(-EINVAL);
 
-	/* L6A 5.2.5 item 3: no protected content path in this build (4.3, O-6A-4) */
-	if (flags & ION_FLAG_PROTECTED)
-		return ERR_PTR(-ENODEV);
-
 	for (i = 0; i < ionl_dev.nr_heaps; i++) {		/* :856-870, descending id */
 		struct ionl_heap *heap = &ionl_dev.heaps[i];
 
 		if (!(BIT(heap->id) & heap_id_mask))
+			continue;
+		/*
+		 * L6A 5.2.5 item 3: no protected content path in this build (4.3, O-6A-4),
+		 * except the secure_camera heap of the iris (L6N G-6): ION_FLAG_PROTECTED is
+		 * served by a secure heap only, and a secure heap serves only it.  Deviation:
+		 * stock also serves an unprotected request on the secure carveout, with the
+		 * region's memory as the secure world left it (zeroed only at free,
+		 * S:.../ion_carveout_heap.c:168-179; ion_is_heap_available() is always true,
+		 * exynos_ion.c:312-316, ion_carveout_heap.c:113-114).  Here that request skips
+		 * the heap and ends at -ENODEV below, like PROTECTED on any other heap.
+		 */
+		if (!!(flags & ION_FLAG_PROTECTED) != (heap->type == IONL_HEAP_SECURE))
 			continue;
 		buf = ionl_buffer_create(heap, len, align, flags);
 		if (!IS_ERR(buf))

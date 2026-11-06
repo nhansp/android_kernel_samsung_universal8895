@@ -13,6 +13,7 @@
 
 #include <linux/cma.h>
 #include <linux/device.h>
+#include <linux/genalloc.h>
 #include <linux/gfp.h>
 #include <linux/mm.h>
 #include <linux/of.h>
@@ -20,6 +21,10 @@
 #include <linux/slab.h>
 #include <linux/sort.h>
 #include <linux/string.h>
+#include <linux/sizes.h>
+
+#include <asm/cacheflush.h>
+#include <soc/samsung/exynos8895-smc.h>
 
 #include "ion_legacy.h"
 
@@ -142,9 +147,180 @@ static int ionl_cma_allocate(struct ionl_heap *heap, struct ionl_buffer *buf,
 	return 0;
 }
 
+
+/*
+ * The secure_camera heap (id 11, mask 0x800), iris path only (spec L6N_iris G-6).
+ * Stock: a carveout heap over the "ion,secure" reserved region (FDT:42-47,
+ * S:drivers/staging/android/ion/exynos/exynos_ion.c:380,451-453,474) whose
+ * ION_FLAG_PROTECTED buffers are handed to EL3 with SMC_DRM_PPMP_PROT
+ * (S:drivers/staging/android/ion/ion_carveout_heap.c:124-150, exynos_ion.c:208-261)
+ * together with a secure IOVA from a pool the secure SysMMU context uses.  Stock
+ * builds all of it under CONFIG_EXYNOS_CONTENT_PATH_PROTECTION=y (IKC:4327;
+ * exynos_ion.c:126, ion.c:2675); this shim has it for the secure_camera heap only.
+ */
+#define IONL_PROTECTED_BUF_ALIGN	SZ_64K		/* S:include/linux/exynos_ion.h:113 */
+#define IONL_SECURE_IOVA_BASE		0x10000000UL	/* S:.../exynos_ion.c:32 */
+#define IONL_SECURE_IOVA_END		0xE0000000UL	/* S:.../exynos_ion.c:33 */
+#define IONL_SMC_DRM_PPMP_PROT		0x82002110	/* S:include/linux/smc.h:47 */
+#define IONL_SMC_DRM_PPMP_UNPROT	0x82002111	/* S:include/linux/smc.h:48 */
+#define IONL_DRMDRV_OK			0		/* DRMDRV_OK, S:include/linux/smc.h:163 */
+
+static struct gen_pool *ionl_siova_pool;
+
+/* stock ion_secure_iova_pool_create() (S:.../exynos_ion.c:175-191); gen_pool has its own lock, stock's siova_pool_lock :129 */
+static int ionl_siova_pool_create(void)
+{
+	if (ionl_siova_pool)
+		return 0;
+
+	ionl_siova_pool = gen_pool_create(PAGE_SHIFT, -1);
+	if (!ionl_siova_pool)
+		return -ENOMEM;
+
+	if (gen_pool_add(ionl_siova_pool, IONL_SECURE_IOVA_BASE,
+			 IONL_SECURE_IOVA_END - IONL_SECURE_IOVA_BASE, -1)) {
+		gen_pool_destroy(ionl_siova_pool);
+		ionl_siova_pool = NULL;
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+/*
+ * stock ion_carveout_heap_allocate() PROTECTED branch + ion_secure_protect()
+ * (S:.../ion_carveout_heap.c:98-161, exynos_ion.c:208-261). Deviations: ionl_alloc()
+ * never offers this heap to a request without ION_FLAG_PROTECTED (stock handed the
+ * CPU the region's memory as the secure world left it, zeroed only at free,
+ * ion_carveout_heap.c:168-179), the secure IOVA is returned when EL3
+ * refuses (stock leaked it, exynos_ion.c:230-234), and an error is -errno instead
+ * of the raw DRMDRV code.  Every buffer reaching here is PROTECTED.
+ */
+static int ionl_secure_allocate(struct ionl_heap *heap, struct ionl_buffer *buf,
+				unsigned long len, unsigned long align)
+{
+	struct genpool_data_align data = { .align = IONL_PROTECTED_BUF_ALIGN };
+	unsigned long plen = ALIGN(len, IONL_PROTECTED_BUF_ALIGN);	/* ion_carveout_heap.c:125-126 */
+	unsigned long paddr, iova;
+	struct ionl_prot_info *prot;
+	int ret;
+
+	if ((align > PAGE_SIZE) && (align & (align - 1)))		/* ion_carveout_heap.c:110-111 */
+		return -EINVAL;
+
+	/* kmalloc of a power-of-two size is size-aligned: the descriptor owns its cache lines */
+	prot = kzalloc(ARCH_DMA_MINALIGN, GFP_KERNEL);
+	if (!prot)
+		return -ENOMEM;
+
+	paddr = gen_pool_alloc_algo(heap->pool, plen, gen_pool_first_fit_align, &data);
+	if (!paddr) {
+		ret = -ENOMEM;
+		goto err_prot;
+	}
+
+	iova = gen_pool_alloc(ionl_siova_pool, plen);			/* exynos_ion.c:219-223 */
+	if (!iova) {
+		pr_err("%s: no secure IOVA for %lu bytes\n", __func__, plen);
+		ret = -ENOMEM;
+		goto err_pool;
+	}
+
+	ret = sg_alloc_table(&buf->sgt, 1, GFP_KERNEL);
+	if (ret)
+		goto err_iova;
+	sg_set_page(buf->sgt.sgl, pfn_to_page(PFN_DOWN(paddr)), len, 0);	/* ion_carveout_heap.c:136 */
+
+	prot->chunk_count = 1;						/* ion_carveout_heap.c:139-143 */
+	prot->flags = heap->id;
+	prot->chunk_size = plen;
+	prot->bus_address = paddr;
+	prot->dma_addr = iova;						/* exynos_ion.c:223 */
+	dcache_clean_inval_poc((unsigned long)prot, (unsigned long)prot + sizeof(*prot));
+
+	ret = (int)exynos8895_smc(IONL_SMC_DRM_PPMP_PROT, virt_to_phys(prot), 0, 0);	/* exynos_ion.c:230 */
+	if (ret != IONL_DRMDRV_OK) {
+		pr_err("%s: SMC_DRM_PPMP_PROT failed, err=%#x\n", __func__, ret);
+		ret = -EIO;
+		goto err_sgt;
+	}
+
+	buf->prot = prot;
+	return 0;
+
+err_sgt:
+	sg_free_table(&buf->sgt);
+err_iova:
+	gen_pool_free(ionl_siova_pool, iova, plen);
+err_pool:
+	gen_pool_free(heap->pool, paddr, plen);
+err_prot:
+	kfree(prot);
+	return ret;
+}
+
+/*
+ * stock ion_carveout_heap_free() PROTECTED branch + ion_secure_unprotect()
+ * (S:.../ion_carveout_heap.c:163-188, exynos_ion.c:263-304). No zeroing: the
+ * memory is EL3's until SMC_DRM_PPMP_UNPROT. The secure IOVA goes back to its pool
+ * whatever EL3 answers, as stock (exynos_ion.c:270-276): it is only a number of
+ * the secure window, not memory.  The physical range is the fail-closed part: if
+ * EL3 refuses UNPROT it stays out of the pool (still protected), where stock
+ * returned it to the allocator (ion_carveout_heap.c:181-185).
+ */
+static void ionl_secure_free(struct ionl_buffer *buf)
+{
+	struct ionl_prot_info *prot = buf->prot;
+	unsigned long plen = ALIGN(buf->size, IONL_PROTECTED_BUF_ALIGN);
+	int ret;
+
+	ret = (int)exynos8895_smc(IONL_SMC_DRM_PPMP_UNPROT, virt_to_phys(prot), 0, 0);
+	gen_pool_free(ionl_siova_pool, prot->dma_addr, plen);
+	if (ret != IONL_DRMDRV_OK)
+		pr_err("%s: SMC_DRM_PPMP_UNPROT failed, err=%#x; %#lx stays protected\n",
+		       __func__, ret, prot->bus_address);
+	else
+		gen_pool_free(buf->heap->pool, prot->bus_address, plen);
+
+	kfree(prot);
+	buf->prot = NULL;
+}
+
+/*
+ * stock ion_carveout_heap_create() (S:.../ion_carveout_heap.c:231-262): a pool
+ * over the region (:245-252), and the region cleaned and invalidated once (:257-260) so that no
+ * dirty line can be written back into it after EL3 protects a buffer.
+ */
+static int ionl_secure_heap_init(struct device *dev, struct ionl_heap *h,
+				 struct reserved_mem *rmem)
+{
+	int ret;
+
+	ret = ionl_siova_pool_create();
+	if (ret)
+		return ret;
+
+	h->pool = devm_gen_pool_create(dev, PAGE_SHIFT, -1, NULL);
+	if (IS_ERR(h->pool))
+		return PTR_ERR(h->pool);
+	ret = gen_pool_add(h->pool, rmem->base, rmem->size, -1);
+	if (ret)
+		return ret;
+
+	if (pfn_valid(PHYS_PFN(rmem->base)))
+		dcache_clean_inval_poc((unsigned long)phys_to_virt(rmem->base),
+				       (unsigned long)phys_to_virt(rmem->base) + rmem->size);
+
+	h->type = IONL_HEAP_SECURE;
+	return 0;
+}
+
 int ionl_heap_allocate(struct ionl_heap *heap, struct ionl_buffer *buf,
 		       unsigned long len, unsigned long align)
 {
+	if (heap->type == IONL_HEAP_SECURE)
+		return ionl_secure_allocate(heap, buf, len, align);
+
 	if (heap->type == IONL_HEAP_CMA)
 		return ionl_cma_allocate(heap, buf, len, align);
 
@@ -154,6 +330,12 @@ int ionl_heap_allocate(struct ionl_heap *heap, struct ionl_buffer *buf,
 /* L6A 5.2.5 item 9: the heap's pages, then the table */
 void ionl_heap_free(struct ionl_buffer *buf)
 {
+	if (buf->heap->type == IONL_HEAP_SECURE) {
+		ionl_secure_free(buf);
+		sg_free_table(&buf->sgt);
+		return;
+	}
+
 	if (buf->heap->type == IONL_HEAP_CMA)
 		cma_release(buf->heap->cma, buf->cma_page,
 			    PAGE_ALIGN(buf->size) >> PAGE_SHIFT);	/* ion_cma_heap.c:134-137 */
@@ -176,6 +358,9 @@ void ionl_heap_free(struct ionl_buffer *buf)
  */
 bool ionl_heap_flush_at_alloc(struct ionl_buffer *buf)
 {
+	if (ionl_buffer_protected(buf))
+		return false;
+
 	if (!(buf->flags & ION_FLAG_CACHED))
 		return true;
 
@@ -225,21 +410,23 @@ int ionl_heaps_init(struct device *dev)
 		struct reserved_mem *rmem = NULL;
 		struct device_node *rnp;
 		const char *rname;
-		bool cma_pool;
+		bool cma_pool, secure;
 		int ret;
 
 		rnp = of_parse_phandle(np, "memory-region", i);
 		if (!rnp)
 			return -EINVAL;
+		/* stock "ion,secure" (S:.../exynos_ion.c:380): a carveout whose buffers EL3 protects */
+		secure = of_property_read_bool(rnp, "ion,secure");
 		/* only rmem_cma_setup() accepts a reusable shared-dma-pool (A:kernel/dma/contiguous.c:483-485) */
-		cma_pool = of_device_is_compatible(rnp, "shared-dma-pool") &&
+		cma_pool = !secure && of_device_is_compatible(rnp, "shared-dma-pool") &&
 			   of_property_read_bool(rnp, "reusable");
-		if (cma_pool)
+		if (secure || cma_pool)
 			rmem = of_reserved_mem_lookup(rnp);
 		of_node_put(rnp);
-		if (!rmem || !rmem->priv ||
-		    cma_get_base(rmem->priv) != rmem->base) {
-			dev_err(dev, "memory-region %d is not a reusable shared-dma-pool CMA area\n", i);
+		if (!rmem || (!secure && (!rmem->priv ||
+					  cma_get_base(rmem->priv) != rmem->base))) {
+			dev_err(dev, "memory-region %d is neither an ion,secure region nor a reusable shared-dma-pool CMA area\n", i);
 			return -EINVAL;
 		}
 
@@ -265,8 +452,14 @@ int ionl_heaps_init(struct device *dev)
 			}
 		}
 
-		h->type = IONL_HEAP_CMA;
-		h->cma = rmem->priv;
+		if (secure) {
+			ret = ionl_secure_heap_init(dev, h, rmem);
+			if (ret)
+				return ret;
+		} else {
+			h->type = IONL_HEAP_CMA;
+			h->cma = rmem->priv;
+		}
 		h->name = devm_kasprintf(dev, GFP_KERNEL, "%s_heap", rname);
 		if (!h->name)
 			return -ENOMEM;
