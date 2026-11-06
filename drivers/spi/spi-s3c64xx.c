@@ -227,6 +227,7 @@ struct s3c64xx_spi_driver_data {
 	unsigned int			fifo_depth;
 	u32				rx_fifomask;
 	u32				tx_fifomask;
+	bool				swap_mode;
 };
 
 static void s3c64xx_flush_fifo(struct s3c64xx_spi_driver_data *sdd)
@@ -728,18 +729,39 @@ static int s3c64xx_spi_config(struct s3c64xx_spi_driver_data *sdd)
 	val &= ~(S3C64XX_SPI_MODE_BUS_TSZ_MASK
 			| S3C64XX_SPI_MODE_CH_TSZ_MASK);
 
+	/*
+	 * "swap-mode" (stock S:drivers/spi/spi-s3c64xx.c:745-775): byte-swap the
+	 * 32-bit (and half-word swap) / 16-bit words in the FIFO so that a
+	 * little-endian buffer goes out in memory order.
+	 */
 	switch (sdd->cur_bpw) {
 	case 32:
 		val |= S3C64XX_SPI_MODE_BUS_TSZ_WORD;
 		val |= S3C64XX_SPI_MODE_CH_TSZ_WORD;
+		if (sdd->swap_mode)
+			writel(S3C64XX_SPI_SWAP_TX_EN |
+			       S3C64XX_SPI_SWAP_TX_BYTE |
+			       S3C64XX_SPI_SWAP_TX_HALF_WORD |
+			       S3C64XX_SPI_SWAP_RX_EN |
+			       S3C64XX_SPI_SWAP_RX_BYTE |
+			       S3C64XX_SPI_SWAP_RX_HALF_WORD,
+			       regs + S3C64XX_SPI_SWAP_CFG);
 		break;
 	case 16:
 		val |= S3C64XX_SPI_MODE_BUS_TSZ_HALFWORD;
 		val |= S3C64XX_SPI_MODE_CH_TSZ_HALFWORD;
+		if (sdd->swap_mode)
+			writel(S3C64XX_SPI_SWAP_TX_EN |
+			       S3C64XX_SPI_SWAP_TX_BYTE |
+			       S3C64XX_SPI_SWAP_RX_EN |
+			       S3C64XX_SPI_SWAP_RX_BYTE,
+			       regs + S3C64XX_SPI_SWAP_CFG);
 		break;
 	default:
 		val |= S3C64XX_SPI_MODE_BUS_TSZ_BYTE;
 		val |= S3C64XX_SPI_MODE_CH_TSZ_BYTE;
+		if (sdd->swap_mode)
+			writel(0, regs + S3C64XX_SPI_SWAP_CFG);
 		break;
 	}
 
@@ -1280,6 +1302,7 @@ static int s3c64xx_spi_probe(struct platform_device *pdev)
 	sdd->host = host;
 	sdd->cntrlr_info = sci;
 	sdd->pdev = pdev;
+	sdd->swap_mode = of_property_read_bool(pdev->dev.of_node, "swap-mode");
 
 	ret = s3c64xx_spi_set_port_id(pdev, sdd);
 	if (ret)

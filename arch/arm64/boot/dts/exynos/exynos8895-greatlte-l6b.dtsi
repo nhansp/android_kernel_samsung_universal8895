@@ -1811,6 +1811,7 @@
 	pinctrl-2 = <&fimc_is_spi_pin0_fn>;
 	cs-gpios = <&gpc3 1 GPIO_ACTIVE_LOW>;	/* stock controller-data cs-gpio cs-gpio = <&gpc3 0x01 0x00>; */
 	num-cs = <1>;
+	swap-mode;	/* FDT:6202; the FROM read goes out as 32-bit words (fimc_is_spi_read) */
 	status = "okay";
 	/* FDT:6214-6230 */
 	fimc_is_spi_0@0 {
@@ -1839,6 +1840,7 @@
 	pinctrl-2 = <&fimc_is_spi_pin1_fn>;
 	cs-gpios = <&gpc3 5 GPIO_ACTIVE_LOW>;	/* stock controller-data cs-gpio cs-gpio = <&gpc3 0x05 0x00>; */
 	num-cs = <1>;
+	swap-mode;	/* FDT:6239; the companion read/write use 32/16-bit words */
 	status = "okay";
 	/* FDT:6251-6265 */
 	fimc_is_spi_1@0 {	/* stock "@1", reg = <0> */
