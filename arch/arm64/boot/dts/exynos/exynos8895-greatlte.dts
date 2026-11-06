@@ -169,6 +169,7 @@
 		 */
 		secure_camera_mem: secure-camera@d0000000 {
 			reg = <0x0 0xd0000000 0x1400000>;
+			ion,secure;	/* FDT:44; the legacy ION heap 11 hands its buffers to EL3 */
 		};
 
 		/* ABOX debug-dump buffer, IOMMU-mapped by the ABOX driver (L6).
