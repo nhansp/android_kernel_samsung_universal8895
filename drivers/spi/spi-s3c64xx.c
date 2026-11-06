@@ -820,6 +820,20 @@ static size_t s3c64xx_spi_max_transfer_size(struct spi_device *spi)
 	return ctlr->can_dma ? S3C64XX_SPI_PACKET_CNT_MASK : SIZE_MAX;
 }
 
+/*
+ * Length of one PIO chunk of a transfer longer than the FIFO: one byte short of
+ * the FIFO (the RX ready level is a 6-bit field), but a whole number of words.
+ * A chunk of fifo_depth - 1 bytes is not a multiple of 2 or 4 for 16 and 32 bit
+ * words: the controller then clocks fewer bytes than the chunk length (the
+ * packet count is len * 8 / bpw) and the RX FIFO never reaches the chunk length.
+ * Stock splits at the full, word aligned FIFO size
+ * (S:drivers/spi/spi-s3c64xx.c:898, :959, :1043).
+ */
+static unsigned int s3c64xx_spi_pio_chunk(struct s3c64xx_spi_driver_data *sdd)
+{
+	return rounddown(sdd->fifo_depth - 1, sdd->cur_bpw / 8);
+}
+
 static int s3c64xx_spi_transfer_one(struct spi_controller *host,
 				    struct spi_device *spi,
 				    struct spi_transfer *xfer)
@@ -861,7 +875,7 @@ static int s3c64xx_spi_transfer_one(struct spi_controller *host,
 		rx_buf = xfer->rx_buf;
 		origin_len = xfer->len;
 		target_len = xfer->len;
-		xfer->len = fifo_len - 1;
+		xfer->len = s3c64xx_spi_pio_chunk(sdd);
 	}
 
 	do {
@@ -957,7 +971,7 @@ static int s3c64xx_spi_transfer_one(struct spi_controller *host,
 				xfer->rx_buf += xfer->len;
 
 			if (target_len >= fifo_len)
-				xfer->len = fifo_len - 1;
+				xfer->len = s3c64xx_spi_pio_chunk(sdd);
 			else
 				xfer->len = target_len;
 		}
