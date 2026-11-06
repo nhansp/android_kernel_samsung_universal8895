@@ -130,7 +130,14 @@ int fimc_is_spi_read(struct fimc_is_spi *spi, void *buf, u32 addr, size_t size)
 
 	t_c.tx_buf = req_data;
 	t_c.len = 4;
-	t_c.cs_change = 1;
+	/*
+	 * Stock sets cs_change = 1 here, but its s3c64xx driver honours it only on the
+	 * last transfer of a message (S:drivers/spi/spi-s3c64xx.c:1020-1026), so
+	 * command and data stay in one CS assertion.  The 6.18 SPI core also pulses
+	 * CS between two transfers when the first has cs_change set, which aborts
+	 * the read command: keep CS low across both transfers.
+	 */
+	t_c.cs_change = 0;
 	t_c.bits_per_word = 32;
 
 	t_r.rx_buf = buf;
