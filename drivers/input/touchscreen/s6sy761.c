@@ -1041,11 +1041,60 @@ static ssize_t cmd_list_show(struct device *dev, struct device_attribute *attr, 
 }
 static DEVICE_ATTR_RO(cmd_list);
 
+/*
+ * /sys/class/sec/tsp/pressure_enable, stock pressure_enable_show()/_strore()
+ * (sec_ts_y661/sec_ts_fn.c:528-590, mode S_IRUGO | S_IWUSR | S_IWGRP, :783): shows whether the
+ * FORCE_KEY bit is set; takes "0"/"2" (off) or "1"/"3" (on; 0/1 factory and game tools, 2/3
+ * the settings app) and sends the sponge mode byte again. Anything else, or a chip without the
+ * library, is -EINVAL. Stock sends it at once; here it is also sent at the next power-on when
+ * the chip is off, as stock does at every start (sec_ts.c:864-865).
+ */
+static ssize_t pressure_enable_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct s6sy761_data *sdata = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", !!(sdata->lowpower_mode & S6SY661_MODE_FORCE_KEY));
+}
+
+static ssize_t pressure_enable_store(struct device *dev, struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct s6sy761_data *sdata = dev_get_drvdata(dev);
+	unsigned long value;
+	int ret;
+
+	if (count > 2)
+		return -EINVAL;
+
+	ret = kstrtoul(buf, 10, &value);
+	if (ret)
+		return ret;
+
+	if (!sdata->pressure_key)
+		return -EINVAL;
+
+	if (value != 0 && value != 1 && value != 2 && value != 3)
+		return -EINVAL;
+
+	mutex_lock(&sdata->power_lock);
+	if (value == 1 || value == 3)
+		sdata->lowpower_mode |= S6SY661_MODE_FORCE_KEY;
+	else
+		sdata->lowpower_mode &= ~S6SY661_MODE_FORCE_KEY;
+	if (sdata->powered)
+		ret = s6sy661_sponge_write(sdata);
+	mutex_unlock(&sdata->power_lock);
+
+	return ret ?: count;
+}
+static DEVICE_ATTR(pressure_enable, 0664, pressure_enable_show, pressure_enable_store);
+
 static struct attribute *s6sy661_cmd_attrs[] = {
 	&dev_attr_cmd.attr,
 	&dev_attr_cmd_status.attr,
 	&dev_attr_cmd_result.attr,
 	&dev_attr_cmd_list.attr,
+	&dev_attr_pressure_enable.attr,
 	NULL
 };
 ATTRIBUTE_GROUPS(s6sy661_cmd);
