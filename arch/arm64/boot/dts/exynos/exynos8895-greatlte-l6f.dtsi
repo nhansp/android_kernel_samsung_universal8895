@@ -53,6 +53,9 @@
 		pinctrl-names = "default", "sleep";	/* FDT:5687 "on_state", "off_state" */
 		pinctrl-0 = <&attn_irq>;		/* FDT:5688 0x66 */
 		pinctrl-1 = <&attn_input>;		/* FDT:5689 0x67 */
+		samsung,sponge-model = "N950";		/* stock sec,project_name = "GREAT", "N950" (S:arch/arm64/boot/dts/exynos/
+							   exynos8895-greatlte_common.dtsi:3256; model_name = entry 1, sec_ts.c:1801-1802)
+							   and pressure-sensor = "Y" (:3245): the under-display pressure home key */
 		panel = <&panel>;			/* run 7: DRM panel follower, 5.12 item 13 (closes O-TS3); label from
 							   L5 (REQ-L5-1); delete to keep touch powered while awake */
 	};
