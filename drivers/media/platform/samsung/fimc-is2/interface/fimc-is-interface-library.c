@@ -20,6 +20,7 @@
 #include <asm/neon.h>
 
 #include "fimc-is-interface-library.h"
+#include "fimc-is-interface-jopp.h"
 #include "fimc-is-interface-vra.h"
 #include "../fimc-is-device-ischain.h"
 #include "fimc-is-vender.h"
@@ -1840,68 +1841,116 @@ bool fimc_is_lib_in_interrupt(void)
 		return false;
 }
 
+FIMC_IS_JOPP_ENTRY(fimc_is_log_write_console);
+FIMC_IS_JOPP_ENTRY(fimc_is_alloc_reserved_buffer);
+FIMC_IS_JOPP_ENTRY(fimc_is_free_reserved_buffer);
+FIMC_IS_JOPP_ENTRY(fimc_is_assert);
+FIMC_IS_JOPP_ENTRY(fimc_is_sema_init);
+FIMC_IS_JOPP_ENTRY(fimc_is_sema_finish);
+FIMC_IS_JOPP_ENTRY(fimc_is_sema_up);
+FIMC_IS_JOPP_ENTRY(fimc_is_sema_down);
+FIMC_IS_JOPP_ENTRY(fimc_is_mutex_init);
+FIMC_IS_JOPP_ENTRY(fimc_is_mutex_finish);
+FIMC_IS_JOPP_ENTRY(fimc_is_mutex_lock);
+FIMC_IS_JOPP_ENTRY(fimc_is_mutex_tryLock);
+FIMC_IS_JOPP_ENTRY(fimc_is_mutex_unlock);
+FIMC_IS_JOPP_ENTRY(fimc_is_timer_create);
+FIMC_IS_JOPP_ENTRY(fimc_is_timer_delete);
+FIMC_IS_JOPP_ENTRY(fimc_is_timer_reset);
+FIMC_IS_JOPP_ENTRY(fimc_is_timer_query);
+FIMC_IS_JOPP_ENTRY(fimc_is_timer_enable);
+FIMC_IS_JOPP_ENTRY(fimc_is_timer_disable);
+FIMC_IS_JOPP_ENTRY(fimc_is_register_interrupt);
+FIMC_IS_JOPP_ENTRY(fimc_is_unregister_interrupt);
+FIMC_IS_JOPP_ENTRY(fimc_is_enable_interrupt);
+FIMC_IS_JOPP_ENTRY(fimc_is_disable_interrupt);
+FIMC_IS_JOPP_ENTRY(fimc_is_clear_interrupt);
+FIMC_IS_JOPP_ENTRY(fimc_is_svc_spin_lock_save);
+FIMC_IS_JOPP_ENTRY(fimc_is_svc_spin_unlock_restore);
+FIMC_IS_JOPP_ENTRY(get_random_u32);
+FIMC_IS_JOPP_ENTRY(fimc_is_add_task);
+FIMC_IS_JOPP_ENTRY(fimc_is_get_usec);
+FIMC_IS_JOPP_ENTRY(fimc_is_log_write);
+FIMC_IS_JOPP_ENTRY(fimc_is_translate_taaisp_kva_to_dva);
+FIMC_IS_JOPP_ENTRY(fimc_is_translate_taaisp_dva_to_kva);
+FIMC_IS_JOPP_ENTRY(fimc_is_sleep);
+FIMC_IS_JOPP_ENTRY(fimc_is_taaisp_cache_invalid);
+FIMC_IS_JOPP_ENTRY(fimc_is_alloc_reserved_taaisp_dma_buffer);
+FIMC_IS_JOPP_ENTRY(fimc_is_free_reserved_taaisp_dma_buffer);
+FIMC_IS_JOPP_ENTRY(fimc_is_spin_lock_init);
+FIMC_IS_JOPP_ENTRY(fimc_is_spin_lock_finish);
+FIMC_IS_JOPP_ENTRY(fimc_is_spin_lock);
+FIMC_IS_JOPP_ENTRY(fimc_is_spin_unlock);
+FIMC_IS_JOPP_ENTRY(fimc_is_spin_lock_irq);
+FIMC_IS_JOPP_ENTRY(fimc_is_spin_unlock_irq);
+FIMC_IS_JOPP_ENTRY(fimc_is_spin_lock_irqsave);
+FIMC_IS_JOPP_ENTRY(fimc_is_spin_unlock_irqrestore);
+FIMC_IS_JOPP_ENTRY(get_reg_addr);
+FIMC_IS_JOPP_ENTRY(fimc_is_lib_in_interrupt);
+FIMC_IS_JOPP_ENTRY(fimc_is_lib_flush_task_handler);
+
 static void set_os_system_funcs(os_system_func_t *funcs)
 {
-	funcs[0] = (os_system_func_t)(void *)fimc_is_log_write_console;
+	funcs[0] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_log_write_console);
 
-	funcs[1] = (os_system_func_t)(void *)fimc_is_alloc_reserved_buffer;
-	funcs[2] = (os_system_func_t)(void *)fimc_is_free_reserved_buffer;
+	funcs[1] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_alloc_reserved_buffer);
+	funcs[2] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_free_reserved_buffer);
 
-	funcs[3] = (os_system_func_t)(void *)fimc_is_assert;
+	funcs[3] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_assert);
 
-	funcs[4] = (os_system_func_t)(void *)fimc_is_sema_init;
-	funcs[5] = (os_system_func_t)(void *)fimc_is_sema_finish;
-	funcs[6] = (os_system_func_t)(void *)fimc_is_sema_up;
-	funcs[7] = (os_system_func_t)(void *)fimc_is_sema_down;
+	funcs[4] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_sema_init);
+	funcs[5] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_sema_finish);
+	funcs[6] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_sema_up);
+	funcs[7] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_sema_down);
 
-	funcs[8] = (os_system_func_t)(void *)fimc_is_mutex_init;
-	funcs[9] = (os_system_func_t)(void *)fimc_is_mutex_finish;
-	funcs[10] = (os_system_func_t)(void *)fimc_is_mutex_lock;
-	funcs[11] = (os_system_func_t)(void *)fimc_is_mutex_tryLock;
-	funcs[12] = (os_system_func_t)(void *)fimc_is_mutex_unlock;
+	funcs[8] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_mutex_init);
+	funcs[9] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_mutex_finish);
+	funcs[10] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_mutex_lock);
+	funcs[11] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_mutex_tryLock);
+	funcs[12] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_mutex_unlock);
 
-	funcs[13] = (os_system_func_t)(void *)fimc_is_timer_create;
-	funcs[14] = (os_system_func_t)(void *)fimc_is_timer_delete;
-	funcs[15] = (os_system_func_t)(void *)fimc_is_timer_reset;
-	funcs[16] = (os_system_func_t)(void *)fimc_is_timer_query;
-	funcs[17] = (os_system_func_t)(void *)fimc_is_timer_enable;
-	funcs[18] = (os_system_func_t)(void *)fimc_is_timer_disable;
+	funcs[13] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_timer_create);
+	funcs[14] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_timer_delete);
+	funcs[15] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_timer_reset);
+	funcs[16] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_timer_query);
+	funcs[17] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_timer_enable);
+	funcs[18] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_timer_disable);
 
-	funcs[19] = (os_system_func_t)(void *)fimc_is_register_interrupt;
-	funcs[20] = (os_system_func_t)(void *)fimc_is_unregister_interrupt;
-	funcs[21] = (os_system_func_t)(void *)fimc_is_enable_interrupt;
-	funcs[22] = (os_system_func_t)(void *)fimc_is_disable_interrupt;
-	funcs[23] = (os_system_func_t)(void *)fimc_is_clear_interrupt;
+	funcs[19] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_register_interrupt);
+	funcs[20] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_unregister_interrupt);
+	funcs[21] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_enable_interrupt);
+	funcs[22] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_disable_interrupt);
+	funcs[23] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_clear_interrupt);
 
-	funcs[24] = (os_system_func_t)(void *)fimc_is_svc_spin_lock_save;
-	funcs[25] = (os_system_func_t)(void *)fimc_is_svc_spin_unlock_restore;
-	funcs[26] = (os_system_func_t)(void *)get_random_u32;	/* stock get_random_int */
-	funcs[27] = (os_system_func_t)(void *)fimc_is_add_task;
+	funcs[24] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_svc_spin_lock_save);
+	funcs[25] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_svc_spin_unlock_restore);
+	funcs[26] = (os_system_func_t)FIMC_IS_JOPP_ADDR(get_random_u32);	/* stock get_random_int */
+	funcs[27] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_add_task);
 
-	funcs[28] = (os_system_func_t)(void *)fimc_is_get_usec;
-	funcs[29] = (os_system_func_t)(void *)fimc_is_log_write;
+	funcs[28] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_get_usec);
+	funcs[29] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_log_write);
 
-	funcs[30] = (os_system_func_t)(void *)fimc_is_translate_taaisp_kva_to_dva;
-	funcs[31] = (os_system_func_t)(void *)fimc_is_translate_taaisp_dva_to_kva;
-	funcs[32] = (os_system_func_t)(void *)fimc_is_sleep;
-	funcs[33] = (os_system_func_t)(void *)fimc_is_taaisp_cache_invalid;
-	funcs[34] = (os_system_func_t)(void *)fimc_is_alloc_reserved_taaisp_dma_buffer;
-	funcs[35] = (os_system_func_t)(void *)fimc_is_free_reserved_taaisp_dma_buffer;
+	funcs[30] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_translate_taaisp_kva_to_dva);
+	funcs[31] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_translate_taaisp_dva_to_kva);
+	funcs[32] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_sleep);
+	funcs[33] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_taaisp_cache_invalid);
+	funcs[34] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_alloc_reserved_taaisp_dma_buffer);
+	funcs[35] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_free_reserved_taaisp_dma_buffer);
 
-	funcs[36] = (os_system_func_t)(void *)fimc_is_spin_lock_init;
-	funcs[37] = (os_system_func_t)(void *)fimc_is_spin_lock_finish;
-	funcs[38] = (os_system_func_t)(void *)fimc_is_spin_lock;
-	funcs[39] = (os_system_func_t)(void *)fimc_is_spin_unlock;
-	funcs[40] = (os_system_func_t)(void *)fimc_is_spin_lock_irq;
-	funcs[41] = (os_system_func_t)(void *)fimc_is_spin_unlock_irq;
-	funcs[42] = (os_system_func_t)(void *)fimc_is_spin_lock_irqsave;
-	funcs[43] = (os_system_func_t)(void *)fimc_is_spin_unlock_irqrestore;
-	funcs[44] = (os_system_func_t)(void *)fimc_is_alloc_reserved_buffer;
-	funcs[45] = (os_system_func_t)(void *)fimc_is_free_reserved_buffer;
-	funcs[46] = (os_system_func_t)(void *)get_reg_addr;
+	funcs[36] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_spin_lock_init);
+	funcs[37] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_spin_lock_finish);
+	funcs[38] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_spin_lock);
+	funcs[39] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_spin_unlock);
+	funcs[40] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_spin_lock_irq);
+	funcs[41] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_spin_unlock_irq);
+	funcs[42] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_spin_lock_irqsave);
+	funcs[43] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_spin_unlock_irqrestore);
+	funcs[44] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_alloc_reserved_buffer);
+	funcs[45] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_free_reserved_buffer);
+	funcs[46] = (os_system_func_t)FIMC_IS_JOPP_ADDR(get_reg_addr);
 
-	funcs[47] = (os_system_func_t)(void *)fimc_is_lib_in_interrupt;
-	funcs[48] = (os_system_func_t)(void *)fimc_is_lib_flush_task_handler;
+	funcs[47] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_lib_in_interrupt);
+	funcs[48] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_lib_flush_task_handler);
 }
 
 #ifdef USE_RTA_BINARY
@@ -1930,56 +1979,66 @@ static void fimc_is_get_version(char **ddk, char **rta, char **setfile, char **c
 		info("%s ddk:%s rta:%s setfile:%s companion:%s", __func__, *ddk, *rta, *setfile, *companion);
 }
 
+#if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
+FIMC_IS_JOPP_ENTRY(fimc_is_fwrite);
+#endif
+FIMC_IS_JOPP_ENTRY(fimc_is_register_general_interrupt);
+FIMC_IS_JOPP_ENTRY(fimc_is_unregister_general_interrupt);
+FIMC_IS_JOPP_ENTRY(fimc_is_add_task_rta);
+FIMC_IS_JOPP_ENTRY(fimc_is_udelay);
+FIMC_IS_JOPP_ENTRY(fimc_is_usleep);
+FIMC_IS_JOPP_ENTRY(fimc_is_get_version);
+
 static void set_os_system_funcs_for_rta(os_system_func_t *funcs)
 {
 	/* Index 0 => log, assert */
-	funcs[0] = (os_system_func_t)(void *)fimc_is_log_write;
-	funcs[1] = (os_system_func_t)(void *)fimc_is_log_write_console;
-	funcs[2] = (os_system_func_t)(void *)fimc_is_assert;
+	funcs[0] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_log_write);
+	funcs[1] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_log_write_console);
+	funcs[2] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_assert);
 
 #if defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
 	funcs[9] = NULL;
 #else
-	funcs[9] = (os_system_func_t)(void *)fimc_is_fwrite;
+	funcs[9] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_fwrite);
 #endif
 
 	/* Index 10 => memory : alloc/free */
-	funcs[10] = (os_system_func_t)(void *)fimc_is_alloc_reserved_buffer;
-	funcs[11] = (os_system_func_t)(void *)fimc_is_free_reserved_buffer;
+	funcs[10] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_alloc_reserved_buffer);
+	funcs[11] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_free_reserved_buffer);
 
 	/* Index 20 => memory : misc */
 
 	/* Index 30 => interrupt */
-	funcs[30] = (os_system_func_t)(void *)fimc_is_register_general_interrupt;
-	funcs[31] = (os_system_func_t)(void *)fimc_is_unregister_general_interrupt;
+	funcs[30] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_register_general_interrupt);
+	funcs[31] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_unregister_general_interrupt);
 
 	/* Index 40 => task */
-	funcs[40] = (os_system_func_t)(void *)fimc_is_add_task_rta;
+	funcs[40] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_add_task_rta);
 
 	/* Index 50 => timer, delay, sleep */
-	funcs[50] = (os_system_func_t)(void *)fimc_is_timer_create;
-	funcs[51] = (os_system_func_t)(void *)fimc_is_timer_delete;
-	funcs[52] = (os_system_func_t)(void *)fimc_is_timer_reset;
-	funcs[53] = (os_system_func_t)(void *)fimc_is_timer_query;
-	funcs[54] = (os_system_func_t)(void *)fimc_is_timer_enable;
-	funcs[55] = (os_system_func_t)(void *)fimc_is_timer_disable;
-	funcs[56] = (os_system_func_t)(void *)fimc_is_udelay;
-	funcs[57] = (os_system_func_t)(void *)fimc_is_usleep;
-	funcs[58] = (os_system_func_t)(void *)fimc_is_sleep;
+	funcs[50] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_timer_create);
+	funcs[51] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_timer_delete);
+	funcs[52] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_timer_reset);
+	funcs[53] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_timer_query);
+	funcs[54] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_timer_enable);
+	funcs[55] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_timer_disable);
+	funcs[56] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_udelay);
+	funcs[57] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_usleep);
+	funcs[58] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_sleep);
 
 	/* Index 60 => locking : semaphore */
-	funcs[60] = (os_system_func_t)(void *)fimc_is_sema_init;
-	funcs[61] = (os_system_func_t)(void *)fimc_is_sema_finish;
-	funcs[62] = (os_system_func_t)(void *)fimc_is_sema_up;
-	funcs[63] = (os_system_func_t)(void *)fimc_is_sema_down;
+	funcs[60] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_sema_init);
+	funcs[61] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_sema_finish);
+	funcs[62] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_sema_up);
+	funcs[63] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_sema_down);
 
 	/* Index 70 => locking : mutex */
 
 	/* Index 80 => locking : spinlock */
 
 	/* Index 90 => misc */
-	funcs[90] = (os_system_func_t)(void *)fimc_is_get_usec;
-	funcs[91] = (os_system_func_t)(void *)fimc_is_get_version;
+	funcs[90] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_get_usec);
+	funcs[91] = (os_system_func_t)FIMC_IS_JOPP_ADDR(fimc_is_get_version);
 }
 #endif
 

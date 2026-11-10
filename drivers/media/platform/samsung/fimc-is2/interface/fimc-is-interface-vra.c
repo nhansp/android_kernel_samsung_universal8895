@@ -11,6 +11,7 @@
  */
 
 #include "fimc-is-interface-vra.h"
+#include "fimc-is-interface-jopp.h"
 #include <linux/fs.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
@@ -421,6 +422,12 @@ int fimc_is_lib_vra_free_memory(struct fimc_is_lib_vra *lib_vra)
 	return 0;
 }
 
+FIMC_IS_JOPP_ENTRY(fimc_is_lib_vra_callback_frw_abort);
+FIMC_IS_JOPP_ENTRY(fimc_is_lib_vra_callback_frw_hw_err);
+FIMC_IS_JOPP_ENTRY(fimc_is_lib_vra_callback_output_ready);
+FIMC_IS_JOPP_ENTRY(fimc_is_lib_vra_callback_end_input);
+FIMC_IS_JOPP_ENTRY(fimc_is_lib_vra_callback_frame_error);
+
 static int __nocfi fimc_is_lib_vra_init_frame_work(struct fimc_is_lib_vra *lib_vra,
 	void __iomem *base_addr, enum fimc_is_lib_vra_input_type input_type)
 {
@@ -471,11 +478,11 @@ static int __nocfi fimc_is_lib_vra_init_frame_work(struct fimc_is_lib_vra *lib_v
 		lib_vra->fr_work_init.hw_regs_base_adr);
 
 	callbacks = &lib_vra->fr_work_init.call_backs;
-	callbacks->frw_abort_func_ptr     = fimc_is_lib_vra_callback_frw_abort;
-	callbacks->frw_hw_err_func_ptr    = fimc_is_lib_vra_callback_frw_hw_err;
-	callbacks->sen_out_ready_func_ptr = fimc_is_lib_vra_callback_output_ready;
-	callbacks->sen_end_input_proc_ptr = fimc_is_lib_vra_callback_end_input;
-	callbacks->sen_error_ptr          = fimc_is_lib_vra_callback_frame_error;
+	callbacks->frw_abort_func_ptr     = FIMC_IS_JOPP(fimc_is_lib_vra_callback_frw_abort);
+	callbacks->frw_hw_err_func_ptr    = FIMC_IS_JOPP(fimc_is_lib_vra_callback_frw_hw_err);
+	callbacks->sen_out_ready_func_ptr = FIMC_IS_JOPP(fimc_is_lib_vra_callback_output_ready);
+	callbacks->sen_end_input_proc_ptr = FIMC_IS_JOPP(fimc_is_lib_vra_callback_end_input);
+	callbacks->sen_error_ptr          = FIMC_IS_JOPP(fimc_is_lib_vra_callback_frame_error);
 	callbacks->sen_stat_collected_ptr = NULL;
 
 	lib_vra->fr_work_init.hw_clock_freq_mhz = 533; /* Not used */
@@ -1036,29 +1043,47 @@ static void fimc_is_lib_vra_assert(void)
 	BUG_ON(1);
 }
 
+FIMC_IS_JOPP_ENTRY(fimc_is_lib_vra_set_event_control);
+FIMC_IS_JOPP_ENTRY(fimc_is_lib_vra_set_event_fw_algs);
+FIMC_IS_JOPP_ENTRY(fimc_is_translate_vra_kva_to_dva);
+FIMC_IS_JOPP_ENTRY(fimc_is_vra_cache_invalid);
+FIMC_IS_JOPP_ENTRY(fimc_is_vra_cache_flush);
+FIMC_IS_JOPP_ENTRY(fimc_is_log_write_console);
+FIMC_IS_JOPP_ENTRY(fimc_is_log_write);
+FIMC_IS_JOPP_ENTRY(fimc_is_spin_lock_init);
+FIMC_IS_JOPP_ENTRY(fimc_is_spin_lock_finish);
+FIMC_IS_JOPP_ENTRY(fimc_is_spin_lock);
+FIMC_IS_JOPP_ENTRY(fimc_is_spin_unlock);
+FIMC_IS_JOPP_ENTRY(fimc_is_spin_lock_irq);
+FIMC_IS_JOPP_ENTRY(fimc_is_spin_unlock_irq);
+FIMC_IS_JOPP_ENTRY(fimc_is_spin_lock_irqsave);
+FIMC_IS_JOPP_ENTRY(fimc_is_spin_unlock_irqrestore);
+FIMC_IS_JOPP_ENTRY(fimc_is_lib_vra_assert);
+FIMC_IS_JOPP_ENTRY(fimc_is_lib_in_interrupt);
+
 void __nocfi fimc_is_lib_vra_os_funcs(void)
 {
 	struct fimc_is_lib_vra_os_system_funcs funcs;
 
-	funcs.control_task_set_event = fimc_is_lib_vra_set_event_control;
-	funcs.fw_algs_task_set_event = fimc_is_lib_vra_set_event_fw_algs;
-	funcs.set_dram_adr_from_core_to_vdma = fimc_is_translate_vra_kva_to_dva;
-	funcs.clean_cache_region             = fimc_is_vra_cache_invalid;
-	funcs.invalidate_cache_region        = fimc_is_vra_cache_invalid;
-	funcs.data_write_back_cache_region   = fimc_is_vra_cache_flush;
-	funcs.log_write_console              = fimc_is_log_write_console;
-	funcs.log_write                      = fimc_is_log_write;
+	funcs.control_task_set_event = FIMC_IS_JOPP(fimc_is_lib_vra_set_event_control);
+	funcs.fw_algs_task_set_event = FIMC_IS_JOPP(fimc_is_lib_vra_set_event_fw_algs);
+	funcs.set_dram_adr_from_core_to_vdma = FIMC_IS_JOPP(fimc_is_translate_vra_kva_to_dva);
+	funcs.clean_cache_region             = FIMC_IS_JOPP(fimc_is_vra_cache_invalid);
+	funcs.invalidate_cache_region        = FIMC_IS_JOPP(fimc_is_vra_cache_invalid);
+	funcs.data_write_back_cache_region   = FIMC_IS_JOPP(fimc_is_vra_cache_flush);
+	funcs.log_write_console              = FIMC_IS_JOPP(fimc_is_log_write_console);
+	funcs.log_write                      = FIMC_IS_JOPP(fimc_is_log_write);
 
-	funcs.spin_lock_init	     = fimc_is_spin_lock_init;
-	funcs.spin_lock_finish	     = fimc_is_spin_lock_finish;
-	funcs.spin_lock              = fimc_is_spin_lock;
-	funcs.spin_unlock            = fimc_is_spin_unlock;
-	funcs.spin_lock_irq          = fimc_is_spin_lock_irq;
-	funcs.spin_unlock_irq        = fimc_is_spin_unlock_irq;
-	funcs.spin_lock_irqsave      = fimc_is_spin_lock_irqsave;
-	funcs.spin_unlock_irqrestore = fimc_is_spin_unlock_irqrestore;
-	funcs.lib_assert       = fimc_is_lib_vra_assert;
-	funcs.lib_in_interrupt = fimc_is_lib_in_interrupt;
+	funcs.spin_lock_init	     = FIMC_IS_JOPP(fimc_is_spin_lock_init);
+	funcs.spin_lock_finish	     = FIMC_IS_JOPP(fimc_is_spin_lock_finish);
+	funcs.spin_lock              = FIMC_IS_JOPP(fimc_is_spin_lock);
+	funcs.spin_unlock            = FIMC_IS_JOPP(fimc_is_spin_unlock);
+	funcs.spin_lock_irq          = FIMC_IS_JOPP(fimc_is_spin_lock_irq);
+	funcs.spin_unlock_irq        = FIMC_IS_JOPP(fimc_is_spin_unlock_irq);
+	funcs.spin_lock_irqsave      = FIMC_IS_JOPP(fimc_is_spin_lock_irqsave);
+	funcs.spin_unlock_irqrestore = FIMC_IS_JOPP(fimc_is_spin_unlock_irqrestore);
+	funcs.lib_assert       = FIMC_IS_JOPP(fimc_is_lib_vra_assert);
+	funcs.lib_in_interrupt = FIMC_IS_JOPP(fimc_is_lib_in_interrupt);
 
 #ifdef ENABLE_FPSIMD_FOR_USER
 	fpsimd_get();

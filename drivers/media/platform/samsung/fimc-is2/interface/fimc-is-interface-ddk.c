@@ -9,6 +9,7 @@
  */
 
 #include "fimc-is-interface-ddk.h"
+#include "fimc-is-interface-jopp.h"
 #include "fimc-is-hw-control.h"
 #include "sfr/fimc-is-sfr-isp-v310.h"
 #include "fimc-is-err.h"
@@ -361,9 +362,12 @@ static void fimc_is_lib_camera_callback(void *this, enum lib_cb_event_type event
 	return;
 };
 
+FIMC_IS_JOPP_ENTRY(fimc_is_lib_camera_callback);
+FIMC_IS_JOPP_ENTRY(fimc_is_lib_io_callback);
+
 struct lib_callback_func fimc_is_lib_cb_func = {
-	.camera_callback	= fimc_is_lib_camera_callback,
-	.io_callback		= fimc_is_lib_io_callback,
+	.camera_callback	= FIMC_IS_JOPP(fimc_is_lib_camera_callback),
+	.io_callback		= FIMC_IS_JOPP(fimc_is_lib_io_callback),
 };
 
 int __nocfi fimc_is_lib_isp_chain_create(struct fimc_is_hw_ip *hw_ip,
