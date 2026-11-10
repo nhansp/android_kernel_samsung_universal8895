@@ -330,6 +330,7 @@ struct s3cfb {
 	u64 fence_ctx;
 	u64 tl_value, tl_max;
 	struct list_head fences;	/* unsignalled, in seqno order, one reference each */
+	bool release_armed;		/* a commit's frame start owes the previous frame's step */
 
 	/* vsync (L6A 5.3.3, 5.3.9) */
 	spinlock_t vs_lock;
@@ -430,6 +431,48 @@ static void s3cfb_timeline_inc(struct s3cfb *s, bool all)
 		list_del(&f->node);
 		dma_fence_put(&f->base);
 	}
+}
+
+/*
+ * The previous frame's timeline step belongs to the next frame's start, where
+ * stock signals it: decon_update_regs() triggers the update, waits for vsync
+ * and for the shadow registers to latch (decon_wait_for_vstatus(),
+ * S:.../dpu/decon_core.c:2279-2283), then releases the old buffers and
+ * signals (:2336-2338); from that point the DMA reads only the new buffers.
+ * The blocking commit returns at frame done instead, a whole panel transfer
+ * later, which kept every app's buffers two frames. The worker arms the step
+ * before its commit; the DECON's frame start (exynos8895_decon_set_frame_start_cb())
+ * takes it, and the worker takes it after the commit when no frame started
+ * (rejected commit, display off). Exactly one of the two signals.
+ */
+static void s3cfb_release_arm(struct s3cfb *s)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&s->fence_lock, flags);
+	s->release_armed = true;
+	spin_unlock_irqrestore(&s->fence_lock, flags);
+}
+
+static bool s3cfb_release_take(struct s3cfb *s)
+{
+	unsigned long flags;
+	bool armed;
+
+	spin_lock_irqsave(&s->fence_lock, flags);
+	armed = s->release_armed;
+	s->release_armed = false;
+	spin_unlock_irqrestore(&s->fence_lock, flags);
+	return armed;
+}
+
+/* hard interrupt context (exynos8895_decon_set_frame_start_cb()) */
+static void s3cfb_frame_start(void *data)
+{
+	struct s3cfb *s = data;
+
+	if (s3cfb_release_take(s))
+		s3cfb_timeline_inc(s, false);
 }
 
 /*
@@ -1318,7 +1361,7 @@ static void s3cfb_apply(struct kthread_work *work)
 {
 	struct s3cfb_frame *fr = container_of(work, struct s3cfb_frame, work);
 	struct s3cfb *s = fr->s;
-	bool buffers = false;
+	bool buffers = false, step = true;
 	int w, ret;
 
 	/*
@@ -1356,15 +1399,19 @@ static void s3cfb_apply(struct kthread_work *work)
 
 	/* 3./4. one commit; a rejected frame leaves the previous one on screen */
 	if ((buffers || fr->dsu.needupdate) && !READ_ONCE(s->dead)) {
+		s3cfb_release_arm(s);
 		ret = s3cfb_commit(s, fr);
 		if (ret) {
 			pr_err_ratelimited("s3cfb: WIN_CONFIG rejected by atomic_check: %d\n", ret);
 			greatlte_l6a_s3cfb_inc(GL6A_ON, s3e);
 		}
+		/* false when this frame's start already signalled (s3cfb_frame_start()) */
+		step = s3cfb_release_take(s);
 	}
 
-	/* 5. the previous frame's fence (:2336-2338) */
-	s3cfb_timeline_inc(s, false);
+	/* 5. the previous frame's fence (:2336-2338), unless the frame start did */
+	if (step)
+		s3cfb_timeline_inc(s, false);
 	greatlte_l6a_s3cfb_inc(GL6A_ON, s3f);
 	s3cfb_frame_free(fr);
 }
@@ -1699,6 +1746,7 @@ static void s3cfb_teardown(struct s3cfb *s)
 
 	device_init_wakeup(s->h.dev, false);
 	exynos8895_decon_set_vsync_cb(s->h.dev, NULL, NULL);
+	exynos8895_decon_set_frame_start_cb(s->h.dev, NULL, NULL);
 	spin_lock_irqsave(&s->vs_lock, flags);
 	s->vsync_on = false;
 	spin_unlock_irqrestore(&s->vs_lock, flags);
@@ -1885,6 +1933,7 @@ static int s3cfb_create(struct drm_device *drm)
 	s3cfb_fill_info(s->info);
 
 	exynos8895_decon_set_vsync_cb(s->h.dev, s3cfb_te, s);
+	exynos8895_decon_set_frame_start_cb(s->h.dev, s3cfb_frame_start, s);
 	/*
 	 * One-shot trigger (L6A REQ-L5-8): each commit sends its frame and the
 	 * HW trigger is masked after it, as the vendor driver runs after every
@@ -1903,6 +1952,7 @@ static int s3cfb_create(struct drm_device *drm)
 		kref_put(&s->ref, s3cfb_free);
 		device_init_wakeup(s->h.dev, false);
 		exynos8895_decon_set_vsync_cb(s->h.dev, NULL, NULL);
+		exynos8895_decon_set_frame_start_cb(s->h.dev, NULL, NULL);
 		framebuffer_release(s->info);
 		goto err_kn;
 	}

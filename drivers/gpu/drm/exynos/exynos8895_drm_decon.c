@@ -426,6 +426,8 @@ struct decon8895_ctx {
 	spinlock_t vsync_lock;
 	void (*vsync_cb)(void *data, ktime_t ts);
 	void *vsync_data;
+	void (*fs_cb)(void *data);	/* frame start of a flushed frame, vsync_lock */
+	void *fs_data;
 
 	/* colour windows of an in-kernel client (L6A REQ-L5-4) */
 	spinlock_t cw_lock;
@@ -2689,7 +2691,12 @@ static irqreturn_t d8895_irq(int irq, void *dev_id)
 		atomic_inc(&ctx->fs_cnt);
 		greatlte_l5_inc(GL5_ON, fs);
 		/* the first frame after the flush latched its shadow registers */
-		atomic_cmpxchg(&ctx->oneshot_state, 1, 2);
+		if (atomic_cmpxchg(&ctx->oneshot_state, 1, 2) == 1) {
+			spin_lock(&ctx->vsync_lock);
+			if (ctx->fs_cb)
+				ctx->fs_cb(ctx->fs_data);
+			spin_unlock(&ctx->vsync_lock);
+		}
 	}
 	if (pend & D8895_DPU_FRAME_DONE_INT_PEND) {
 		d_write(ctx, D8895_INTERRUPT_PENDING, D8895_DPU_FRAME_DONE_INT_PEND);
@@ -3026,6 +3033,28 @@ void exynos8895_decon_set_vsync_cb(struct device *dev,
 	spin_lock_irqsave(&ctx->vsync_lock, flags);
 	ctx->vsync_cb = cb;
 	ctx->vsync_data = data;
+	spin_unlock_irqrestore(&ctx->vsync_lock, flags);
+}
+
+/*
+ * Called from the DECON interrupt handler (hard interrupt context) when the
+ * first frame after a flush starts, i.e. its shadow registers latched and the
+ * DMA reads the new buffers: the point where decon_update_regs() is done
+ * waiting (decon_wait_for_vsync() and decon_wait_for_vstatus(),
+ * S:.../dpu/decon_core.c:2279-2283) and releases
+ * the old buffers (:2336-2338). One-shot mode only; @cb NULL removes it.
+ */
+void exynos8895_decon_set_frame_start_cb(struct device *dev,
+					 void (*cb)(void *data), void *data)
+{
+	struct decon8895_ctx *ctx = d8895_ctx_of(dev);
+	unsigned long flags;
+
+	if (!ctx)
+		return;
+	spin_lock_irqsave(&ctx->vsync_lock, flags);
+	ctx->fs_cb = cb;
+	ctx->fs_data = data;
 	spin_unlock_irqrestore(&ctx->vsync_lock, flags);
 }
 
