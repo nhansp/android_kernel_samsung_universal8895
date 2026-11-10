@@ -137,8 +137,11 @@
 	 * dvfs_cpucl1 table (sboot.bin SB+0x463cc); every ASV table (versions 1-8)
 	 * enables L3..L11 = 1690000..455000 kHz, and stock "min-freq = <455000>;"
 	 * (S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:473). Nine levels = the
-	 * nine A53 "current" entries (:189). No opp-microvolt: the APM applies
-	 * the voltage itself, and there is no cpu-supply.
+	 * nine A53 "current" entries (:189). opp-microvolt feeds only the energy
+	 * model (no cpu-supply, so the OPP core never applies it; the APM keeps
+	 * its own voltage): ECT ASV block, dvfs_cpucl1, table version 8, group 0
+	 * (the highest voltage of each level in that table; Lnn = ECT level), as
+	 * the Mongoose table below (spec/L2c_thermal.md 4.3).
 	 * clock-latency: S:drivers/cpufreq/exynos-acme.h:101 "#define TRANSITION_LATENCY 100000" (ns).
 	 */
 	cpucl1_opp_table: opp-table-cl1 {
@@ -147,39 +150,48 @@
 
 		opp-455000000 {
 			opp-hz = /bits/ 64 <455000000>;
+			opp-microvolt = <668750>;	/* L11 */
 			clock-latency-ns = <100000>;
 		};
 		opp-598000000 {
 			opp-hz = /bits/ 64 <598000000>;
+			opp-microvolt = <693750>;	/* L10 */
 			clock-latency-ns = <100000>;
 		};
 		opp-715000000 {
 			opp-hz = /bits/ 64 <715000000>;
+			opp-microvolt = <731250>;	/* L9 */
 			clock-latency-ns = <100000>;
 		};
 		opp-832000000 {
 			opp-hz = /bits/ 64 <832000000>;
+			opp-microvolt = <768750>;	/* L8 */
 			clock-latency-ns = <100000>;
 		};
 		opp-949000000 {
 			opp-hz = /bits/ 64 <949000000>;
+			opp-microvolt = <806250>;	/* L7 */
 			clock-latency-ns = <100000>;
 		};
 		opp-1053000000 {
 			/* ASV boot level L6 */
 			opp-hz = /bits/ 64 <1053000000>;
+			opp-microvolt = <843750>;	/* L6 */
 			clock-latency-ns = <100000>;
 		};
 		opp-1248000000 {
 			opp-hz = /bits/ 64 <1248000000>;
+			opp-microvolt = <906250>;	/* L5 */
 			clock-latency-ns = <100000>;
 		};
 		opp-1456000000 {
 			opp-hz = /bits/ 64 <1456000000>;
+			opp-microvolt = <1025000>;	/* L4 */
 			clock-latency-ns = <100000>;
 		};
 		opp-1690000000 {
 			opp-hz = /bits/ 64 <1690000000>;
+			opp-microvolt = <1168750>;	/* L3 */
 			clock-latency-ns = <100000>;
 		};
 	};
@@ -3341,24 +3353,64 @@
 	clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CPUCL1>;
 	operating-points-v2 = <&cpucl1_opp_table>;
 	#cooling-cells = <2>;
+	/*
+	 * Not stock: the energy model that energy-aware scheduling needs on every
+	 * CPU (A:kernel/sched/topology.c:352-361). Stock ran HMP, not EAS, and its
+	 * ECT gives APOLLO no coefficient (DTM_PWR_Coeff[1] = 0, SB:0x4b288). The
+	 * Cortex-A53 value of the nearest-process upstream SoC, Qualcomm QCM2290
+	 * (11 nm; A:arch/arm64/boot/dts/qcom/qcm2290.dtsi:52). With the voltages of
+	 * cpucl1_opp_table it gives ~231 mW per core at 1690 MHz against ~1.35 W
+	 * per Mongoose core at 2314 MHz (465, cpu4).
+	 */
+	dynamic-power-coefficient = <100>;
 };
 
 &cpu1 {
 	clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CPUCL1>;
 	operating-points-v2 = <&cpucl1_opp_table>;
 	#cooling-cells = <2>;
+	/*
+	 * Not stock: the energy model that energy-aware scheduling needs on every
+	 * CPU (A:kernel/sched/topology.c:352-361). Stock ran HMP, not EAS, and its
+	 * ECT gives APOLLO no coefficient (DTM_PWR_Coeff[1] = 0, SB:0x4b288). The
+	 * Cortex-A53 value of the nearest-process upstream SoC, Qualcomm QCM2290
+	 * (11 nm; A:arch/arm64/boot/dts/qcom/qcm2290.dtsi:52). With the voltages of
+	 * cpucl1_opp_table it gives ~231 mW per core at 1690 MHz against ~1.35 W
+	 * per Mongoose core at 2314 MHz (465, cpu4).
+	 */
+	dynamic-power-coefficient = <100>;
 };
 
 &cpu2 {
 	clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CPUCL1>;
 	operating-points-v2 = <&cpucl1_opp_table>;
 	#cooling-cells = <2>;
+	/*
+	 * Not stock: the energy model that energy-aware scheduling needs on every
+	 * CPU (A:kernel/sched/topology.c:352-361). Stock ran HMP, not EAS, and its
+	 * ECT gives APOLLO no coefficient (DTM_PWR_Coeff[1] = 0, SB:0x4b288). The
+	 * Cortex-A53 value of the nearest-process upstream SoC, Qualcomm QCM2290
+	 * (11 nm; A:arch/arm64/boot/dts/qcom/qcm2290.dtsi:52). With the voltages of
+	 * cpucl1_opp_table it gives ~231 mW per core at 1690 MHz against ~1.35 W
+	 * per Mongoose core at 2314 MHz (465, cpu4).
+	 */
+	dynamic-power-coefficient = <100>;
 };
 
 &cpu3 {
 	clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_CPUCL1>;
 	operating-points-v2 = <&cpucl1_opp_table>;
 	#cooling-cells = <2>;
+	/*
+	 * Not stock: the energy model that energy-aware scheduling needs on every
+	 * CPU (A:kernel/sched/topology.c:352-361). Stock ran HMP, not EAS, and its
+	 * ECT gives APOLLO no coefficient (DTM_PWR_Coeff[1] = 0, SB:0x4b288). The
+	 * Cortex-A53 value of the nearest-process upstream SoC, Qualcomm QCM2290
+	 * (11 nm; A:arch/arm64/boot/dts/qcom/qcm2290.dtsi:52). With the voltages of
+	 * cpucl1_opp_table it gives ~231 mW per core at 1690 MHz against ~1.35 W
+	 * per Mongoose core at 2314 MHz (465, cpu4).
+	 */
+	dynamic-power-coefficient = <100>;
 };
 
 &cpu4 {
