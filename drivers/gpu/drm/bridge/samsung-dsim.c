@@ -33,6 +33,7 @@
 #include <drm/drm_panel.h>
 #include <drm/drm_print.h>
 #include <drm/exynos8895_hiber.h>
+#include <drm/exynos8895_panel.h>
 
 /* DEBUG: greatlte heartbeat counters (greatlte-hb-l5.c), only when built in */
 #define GL5_ON	IS_BUILTIN(CONFIG_DRM_SAMSUNG_DSIM)
@@ -2619,6 +2620,75 @@ static int samsung_dsim_ulps_exit_cb(void *data)
 	return samsung_dsim_exit_ulps(data);
 }
 
+/*
+ * dsim_set_dsu_update() / DSIM_IOC_SET_DSU
+ * (S:drivers/video/fbdev/exynos/dpu/dsim_reg.c:1846-1884,
+ * S:drivers/video/fbdev/exynos/dpu/dsim_drv.c:1511-1522)
+ */
+static int dsim8895_set_dsu_update(struct samsung_dsim *dsi,
+				   const struct dsu_info *dsu)
+{
+	const struct dsu_info_dt *dt = exynos8895_panel_get_dsu_dt();
+	const struct dsu_res_info *res;
+	unsigned int xres, yres, threshold, num_of_transfer, slices, slice_w;
+	bool dsc;
+	u32 val;
+
+	if (!dsi->driver_data->has_8895_link)
+		return -ENODEV;
+	if (!dsu || !dt || !dt->dsu_en)
+		return -EINVAL;
+	if (dsu->mode < DSU_MODE_1 || dsu->mode >= DSU_MODE_MAX)
+		return -EINVAL;
+	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO)
+		return 0;
+
+	res = &dt->res_info[dsu->mode - DSU_MODE_1];
+	xres = res->width;
+	yres = res->height;
+	dsc = res->dsc_en != 0;
+
+	/* dsim_reg_set_cm_underrun_lp_ref (S:dpu/dsim_reg.c:1097-1103, 1858) */
+	dsim8895_mask(dsi, DSIM8895_UNDERRUN_CTRL, dsi->cmd_underrun_lp_ref, 0xffff);
+
+	/* dsim_reg_set_threshold (S:dpu/dsim_reg.c:1105-1111, 1860-1864) */
+	threshold = dsc ? xres / 3 : xres;
+	num_of_transfer = dsc ? xres * yres / threshold / 3 : xres * yres / threshold;
+	dsim8895_mask(dsi, DSIM8895_THRESHOLD, threshold, 0xffff);
+
+	/* dsim_reg_set_vresol / dsim_reg_set_hresol (S:dpu/dsim_reg.c:658-677, 1866-1867) */
+	dsim8895_mask(dsi, 0x3c, (yres & 0x1fff) << 16, 0x1fff << 16);
+	dsim8895_mask(dsi, 0x3c, (dsc ? xres / 3 : xres) & 0x1fff, 0x1fff);
+
+	/* dsim_reg_set_num_of_transfer (S:dpu/dsim_reg.c:1129-1135, 1870) */
+	dsim8895_mask(dsi, DSIM8895_NUM_OF_TRANSFER, num_of_transfer, 0xfffff);
+
+	/* dsim_reg_enable_dsc (S:dpu/dsim_reg.c:730-735, 1872) */
+	dsim8895_mask(dsi, 0x4c, dsc ? DSIM8895_CPRS_EN : 0, DSIM8895_CPRS_EN);
+	if (dsc) {
+		slices = dsi->dsc ? dsi->dsc->slice_count : 2;
+		slice_w = xres / slices;
+		/* dsim_reg_set_num_of_slice (S:dpu/dsim_reg.c:737-742, 1876) */
+		dsim8895_mask(dsi, DSIM8895_CPRS_CTRL, slices, 0x7);
+		/* dsim_reg_set_multi_slice (S:dpu/dsim_reg.c:751-767, 1877) */
+		dsim8895_mask(dsi, DSIM8895_CPRS_CTRL, DSIM8895_MULTI_SLICE_PACKET,
+			      DSIM8895_MULTI_SLICE_PACKET);
+		/* dsim_reg_set_size_of_slice (S:dpu/dsim_reg.c:769-813, 1878) */
+		val = ((slice_w & 0x1fff) << 16) | (slice_w & 0x1fff);
+		dsim8895_write(dsi, DSIM8895_SLICE01, val);
+		dsim8895_write(dsi, DSIM8895_SLICE23, val);
+	}
+
+	dev_info(dsi->dev, "dsu mode : %d, %d:%d-%d:%d\n", dsu->mode,
+		 dsu->left, dsu->top, dsu->right, dsu->bottom);
+	return 0;
+}
+
+static int samsung_dsim_set_dsu_cb(void *data, const struct dsu_info *dsu)
+{
+	return dsim8895_set_dsu_update(data, dsu);
+}
+
 /* one DSIM0 on this SoC; registered once at probe, stays valid */
 static struct exynos8895_dsim_hooks dsim8895_hiber_hooks;
 
@@ -2626,6 +2696,7 @@ static void samsung_dsim_register_hiber_hooks(struct samsung_dsim *dsi)
 {
 	dsim8895_hiber_hooks.enter_ulps = samsung_dsim_ulps_enter_cb;
 	dsim8895_hiber_hooks.exit_ulps = samsung_dsim_ulps_exit_cb;
+	dsim8895_hiber_hooks.set_dsu = samsung_dsim_set_dsu_cb;
 	dsim8895_hiber_hooks.data = dsi;
 	exynos8895_decon_set_dsim_hooks(&dsim8895_hiber_hooks);
 }
