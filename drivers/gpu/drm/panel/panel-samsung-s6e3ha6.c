@@ -118,22 +118,72 @@ static inline struct panel_device *s6e3ha6_stock(struct s6e3ha6 *ctx)
 }
 
 /*
- * PPS of DSU mode 1, 1440x2960 with 720x40 slices, sent verbatim
- * (great_a3_sa_pps_table[0], s6e3ha6_great_a3_sa_panel.h:1230-1249;
- * great_a2_s3_pps_table[0] :1281-1300 is identical).
+ * Per-DSU-mode PPS, scaler, CASET and PASET tables
+ * (S:drivers/video/fbdev/exynos/panel/s6e3ha6/s6e3ha6_great_a3_sa_panel.h:1229-1314;
+ * S:drivers/video/fbdev/exynos/panel/s6e3ha6/s6e3ha6_great_a2_s3_panel.h:1280-1365
+ * is identical).
  */
-static const u8 s6e3ha6_pps[128] = {
-	0x11, 0x00, 0x00, 0x89, 0x30, 0x80, 0x0B, 0x90,
-	0x05, 0xA0, 0x00, 0x28, 0x02, 0xD0, 0x02, 0xD0,
-	0x02, 0x00, 0x02, 0x68, 0x00, 0x20, 0x04, 0x6C,
-	0x00, 0x0A, 0x00, 0x0C, 0x02, 0x77, 0x01, 0xE9,
-	0x18, 0x00, 0x10, 0xF0, 0x03, 0x0C, 0x20, 0x00,
-	0x06, 0x0B, 0x0B, 0x33, 0x0E, 0x1C, 0x2A, 0x38,
-	0x46, 0x54, 0x62, 0x69, 0x70, 0x77, 0x79, 0x7B,
-	0x7D, 0x7E, 0x01, 0x02, 0x01, 0x00, 0x09, 0x40,
-	0x09, 0xBE, 0x19, 0xFC, 0x19, 0xFA, 0x19, 0xF8,
-	0x1A, 0x38, 0x1A, 0x78, 0x1A, 0xB6, 0x2A, 0xF6,
-	0x2B, 0x34, 0x2B, 0x74, 0x3B, 0x74, 0x6B, 0xF4,
+static const u8 s6e3ha6_pps_table[MAX_DSU_RES_NUMBER][128] = {
+	{
+		/* DSU_MODE_1: 1440x2960, slice 720x40 (:1230-1249) */
+		0x11, 0x00, 0x00, 0x89, 0x30, 0x80, 0x0B, 0x90,
+		0x05, 0xA0, 0x00, 0x28, 0x02, 0xD0, 0x02, 0xD0,
+		0x02, 0x00, 0x02, 0x68, 0x00, 0x20, 0x04, 0x6C,
+		0x00, 0x0A, 0x00, 0x0C, 0x02, 0x77, 0x01, 0xE9,
+		0x18, 0x00, 0x10, 0xF0, 0x03, 0x0C, 0x20, 0x00,
+		0x06, 0x0B, 0x0B, 0x33, 0x0E, 0x1C, 0x2A, 0x38,
+		0x46, 0x54, 0x62, 0x69, 0x70, 0x77, 0x79, 0x7B,
+		0x7D, 0x7E, 0x01, 0x02, 0x01, 0x00, 0x09, 0x40,
+		0x09, 0xBE, 0x19, 0xFC, 0x19, 0xFA, 0x19, 0xF8,
+		0x1A, 0x38, 0x1A, 0x78, 0x1A, 0xB6, 0x2A, 0xF6,
+		0x2B, 0x34, 0x2B, 0x74, 0x3B, 0x74, 0x6B, 0xF4,
+	},
+	{
+		/* DSU_MODE_2: 1080x2220, slice 540x30 (:1250-1267) */
+		0x11, 0x00, 0x00, 0x89, 0x30, 0x80, 0x08, 0xAC,
+		0x04, 0x38, 0x00, 0x1E, 0x02, 0x1C, 0x02, 0x1C,
+		0x02, 0x00, 0x02, 0x0E, 0x00, 0x20, 0x02, 0xE3,
+		0x00, 0x07, 0x00, 0x0C, 0x03, 0x50, 0x03, 0x64,
+		0x18, 0x00, 0x10, 0xF0, 0x03, 0x0C, 0x20, 0x00,
+		0x06, 0x0B, 0x0B, 0x33, 0x0E, 0x1C, 0x2A, 0x38,
+		0x46, 0x54, 0x62, 0x69, 0x70, 0x77, 0x79, 0x7B,
+		0x7D, 0x7E, 0x01, 0x02, 0x01, 0x00, 0x09, 0x40,
+		0x09, 0xBE, 0x19, 0xFC, 0x19, 0xFA, 0x19, 0xF8,
+		0x1A, 0x38, 0x1A, 0x78, 0x1A, 0xB6, 0x2A, 0xF6,
+		0x2B, 0x34, 0x2B, 0x74, 0x3B, 0x74, 0x6B, 0xF4,
+	},
+	{
+		/* DSU_MODE_3: 720x1048, slice 360x74 (:1268-1286) */
+		0x11, 0x00, 0x00, 0x89, 0x30, 0x80, 0x05, 0xC8,
+		0x02, 0xD0, 0x00, 0x4A, 0x01, 0x68, 0x01, 0x68,
+		0x02, 0x00, 0x01, 0xB4, 0x00, 0x20, 0x05, 0xBA,
+		0x00, 0x05, 0x00, 0x0C, 0x01, 0x51, 0x02, 0x10,
+		0x18, 0x00, 0x10, 0xF0, 0x03, 0x0C, 0x20, 0x00,
+		0x06, 0x0B, 0x0B, 0x33, 0x0E, 0x1C, 0x2A, 0x38,
+		0x46, 0x54, 0x62, 0x69, 0x70, 0x77, 0x79, 0x7B,
+		0x7D, 0x7E, 0x01, 0x02, 0x01, 0x00, 0x09, 0x40,
+		0x09, 0xBE, 0x19, 0xFC, 0x19, 0xFA, 0x19, 0xF8,
+		0x1A, 0x38, 0x1A, 0x78, 0x1A, 0xB6, 0x2A, 0xF6,
+		0x2B, 0x34, 0x2B, 0x74, 0x3B, 0x74, 0x6B, 0xF4,
+	},
+};
+
+static const u8 s6e3ha6_scaler_table[MAX_DSU_RES_NUMBER][7] = {
+	{ 0x01, 0x02, 0x06, 0x08, 0x08, 0x1E, 0x03 },	/* 1440x2960, scaler off (:1289-1291) */
+	{ 0x02, 0x02, 0x06, 0x08, 0x08, 0x1E, 0x03 },	/* 1080x2220, 1.78x scaler (:1292-1293) */
+	{ 0x00, 0x02, 0x06, 0x08, 0x08, 0x1E, 0x03 },	/* 720x1048, 4x scaler (:1294-1295) */
+};
+
+static const u8 s6e3ha6_caset_table[MAX_DSU_RES_NUMBER][4] = {
+	{ 0x00, 0x00, 0x05, 0x9F },	/* 0..1439 (:1298-1300) */
+	{ 0x00, 0x00, 0x04, 0x37 },	/* 0..1079 (:1301-1302) */
+	{ 0x00, 0x00, 0x02, 0xCF },	/* 0..719 (:1303-1304) */
+};
+
+static const u8 s6e3ha6_paset_table[MAX_DSU_RES_NUMBER][4] = {
+	{ 0x00, 0x00, 0x0B, 0x8F },	/* 0..2959 (:1307-1309) */
+	{ 0x00, 0x00, 0x08, 0xAB },	/* 0..2219 (:1310-1311) */
+	{ 0x00, 0x00, 0x05, 0xC7 },	/* 0..1479 (:1312-1313) */
 };
 
 /* test keys (s6e3ha6_great_a3_sa_panel.h:1420-1425) */
@@ -158,7 +208,7 @@ static void s6e3ha6_init_seq(struct mipi_dsi_multi_context *ctx)
 	mipi_dsi_compression_mode_multi(ctx, true);
 	/* DSI_PKT_TYPE_PPS (:1734) */
 	mipi_dsi_picture_parameter_set_multi(ctx,
-		(const struct drm_dsc_picture_parameter_set *)s6e3ha6_pps);
+		(const struct drm_dsc_picture_parameter_set *)s6e3ha6_pps_table[0]);
 	s6e3ha6_key1_off(ctx);
 	mipi_dsi_dcs_exit_sleep_mode_multi(ctx);		/* 0x11 :1426 */
 	mipi_dsi_msleep(ctx, 10);				/* wait_sleep_out :1912 */
@@ -191,6 +241,37 @@ static void s6e3ha6_init_seq(struct mipi_dsi_multi_context *ctx)
 	mipi_dsi_dcs_write_seq_multi(ctx, 0xb0, 0x08);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0xf6, 0x80);
 	s6e3ha6_key2_off(ctx);
+}
+
+/*
+ * great_a3_sa_dsu_mode_cmdtbl / great_a2_s3_dsu_mode_cmdtbl
+ * (S:drivers/video/fbdev/exynos/panel/s6e3ha6/s6e3ha6_great_a3_sa_panel.h:2148-2158,
+ * S:drivers/video/fbdev/exynos/panel/s6e3ha6/s6e3ha6_great_a2_s3_panel.h:2201-2211)
+ * for the fallback fixed-sequence path when the stock panel framework is off.
+ */
+static int s6e3ha6_dsu_seq(struct s6e3ha6 *ctx, unsigned int mode)
+{
+	struct mipi_dsi_multi_context dctx = { .dsi = ctx->dsi };
+	unsigned int idx = (mode >= DSU_MODE_1 && mode < DSU_MODE_MAX) ?
+			   (mode - DSU_MODE_1) : 0;
+	bool dsc_en = ctx->dsu_dt.res_info[idx].dsc_en != 0;
+	const u8 *caset = s6e3ha6_caset_table[idx];
+	const u8 *paset = s6e3ha6_paset_table[idx];
+	const u8 *sc = s6e3ha6_scaler_table[idx];
+
+	s6e3ha6_key1_on(&dctx);
+	mipi_dsi_compression_mode_multi(&dctx, dsc_en);
+	mipi_dsi_picture_parameter_set_multi(&dctx,
+		(const struct drm_dsc_picture_parameter_set *)s6e3ha6_pps_table[idx]);
+	s6e3ha6_key1_off(&dctx);
+	mipi_dsi_dcs_write_var_seq_multi(&dctx, 0x2a, caset[0], caset[1], caset[2], caset[3]);
+	mipi_dsi_dcs_write_var_seq_multi(&dctx, 0x2b, paset[0], paset[1], paset[2], paset[3]);
+	s6e3ha6_key2_on(&dctx);
+	mipi_dsi_dcs_write_var_seq_multi(&dctx, 0xba,
+					 sc[0], sc[1], sc[2], sc[3], sc[4], sc[5], sc[6]);
+	s6e3ha6_key2_off(&dctx);
+
+	return dctx.accum_err;
 }
 
 static int s6e3ha6_power_on(struct s6e3ha6 *ctx)
@@ -328,6 +409,39 @@ static bool s6e3ha6_stock_hmd_on(void *data)
 	struct s6e3ha6 *ctx = data;
 
 	return READ_ONCE(ctx->stock->state.hmd_on) == PANEL_HMD_ON;
+}
+
+/*
+ * PANEL_IOC_SET_DSU from DECON dsu_update_config
+ * (S:drivers/video/fbdev/exynos/dpu/dsu_update.c:127,
+ * S:drivers/video/fbdev/exynos/panel/panel_drv.c:990-1056).
+ */
+static int s6e3ha6_set_dsu(void *data, const struct dsu_info *dsu)
+{
+	struct s6e3ha6 *ctx = data;
+	struct panel_device *stock = s6e3ha6_stock(ctx);
+
+	if (!dsu || !ctx->dsu_dt.dsu_en)
+		return -EINVAL;
+	if (dsu->mode < DSU_MODE_1 || dsu->mode >= DSU_MODE_MAX)
+		return -EINVAL;
+
+	ctx->dsu_mode = dsu->mode;
+	if (stock && ctx->stock_probed)
+		return panel_drv_ioctl(stock, PANEL_IOC_SET_DSU, (void *)dsu);
+
+	if (stock) {
+		unsigned int idx = dsu->mode - DSU_MODE_1;
+
+		stock->lcd_info.xres = ctx->dsu_dt.res_info[idx].width;
+		stock->lcd_info.yres = ctx->dsu_dt.res_info[idx].height;
+		stock->lcd_info.dsu_mode = dsu->mode;
+		stock->lcd_info.dsc_enabled = ctx->dsu_dt.res_info[idx].dsc_en;
+		stock->lcd_info.dsc_slice_h = ctx->dsu_dt.res_info[idx].dsc_height;
+	}
+	if (!ctx->on)
+		return 0;
+	return s6e3ha6_dsu_seq(ctx, dsu->mode);
 }
 
 /*
@@ -919,6 +1033,9 @@ static int s6e3ha6_probe(struct mipi_dsi_device *dsi)
 	ctx->dsu_mode = DSU_MODE_1;	/* S:.../panel/panel_drv.c:2067 */
 	s6e3ha6_parse_dsu_dt(dev, &ctx->dsu_dt);
 	WRITE_ONCE(s6e3ha6_dsu_dt, &ctx->dsu_dt);
+	ctx->decon_hooks.set_dsu = s6e3ha6_set_dsu;
+	ctx->decon_hooks.data = ctx;
+	exynos8895_decon_set_panel_hooks(&ctx->decon_hooks);
 
 	/* the vendor panel_drv_probe() state: connected unless S-Boot left it off */
 	connected = ctx->booted || !init_at_boot;
@@ -1018,6 +1135,7 @@ err_wq:
 		destroy_workqueue(ctx->det_wq);
 	/* every path above reaches err_rails, so the bright devices go here */
 err_rails:
+	exynos8895_decon_set_panel_hooks(NULL);
 	WRITE_ONCE(s6e3ha6_dsu_dt, NULL);
 	if (ctx->bright) {
 		s6e3ha6_bright_unregister(ctx->bright);
@@ -1037,8 +1155,7 @@ static void s6e3ha6_remove(struct mipi_dsi_device *dsi)
 	greatlte_l5_set(GL5_ON, det, NULL);
 	WRITE_ONCE(s6e3ha6_dsu_dt, NULL);
 	/* the DECON must not call into this ctx once it is gone */
-	if (ctx->stock_probed)
-		exynos8895_decon_set_panel_hooks(NULL);
+	exynos8895_decon_set_panel_hooks(NULL);
 	if (ctx->bright) {
 		s6e3ha6_bright_unregister(ctx->bright);
 		ctx->bright = NULL;

@@ -851,6 +851,73 @@ do_exit:
 
 
 
+/* panel_set_dsu() (S:drivers/video/fbdev/exynos/panel/panel_drv.c:990-1056) */
+static int panel_set_dsu(struct panel_device *panel, struct dsu_info *dsu)
+{
+	int ret = 0;
+	int xres, yres;
+	int actual_mode;
+	struct decon_lcd *lcd_info;
+	struct dsu_info_dt *dt_dsu_info;
+
+	if (unlikely(!panel)) {
+		panel_err("PANEL:ERR:%s:panel is null\n", __func__);
+		ret = -EINVAL;
+		goto do_exit;
+	}
+	if (unlikely(!dsu)) {
+		panel_err("PANEL:ERR:%s:dsu is null\n", __func__);
+		ret = -EINVAL;
+		goto do_exit;
+	}
+
+	lcd_info = &panel->lcd_info;
+	dt_dsu_info = &lcd_info->dt_dsu_info;
+
+	if (dt_dsu_info->dsu_en == 0) {
+		panel_err("PANEL:ERR:%s:this panel does not support dsu\n", __func__);
+		ret = -EINVAL;
+		goto do_exit;
+	}
+
+	if (dsu->right > dsu->left)
+		xres = dsu->right - dsu->left;
+	else
+		xres = dsu->left - dsu->right;
+
+	if (dsu->bottom > dsu->top)
+		yres = dsu->bottom - dsu->top;
+	else
+		yres = dsu->top - dsu->bottom;
+
+	panel_info("dsu mode : %d, %d:%d-%d:%d", dsu->mode,
+		dsu->left, dsu->top, dsu->right, dsu->bottom);
+	panel_info("dsu_mode : xres : %d, yres : %d\n", xres, yres);
+
+	actual_mode = dsu->mode - DSU_MODE_1;
+	if (actual_mode < 0 || actual_mode >= dt_dsu_info->dsu_number) {
+		panel_err("PANEL:ERR:%s:Wrong actual mode : %d , number : %d\n",
+			__func__, actual_mode, dt_dsu_info->dsu_number);
+		actual_mode = 0;
+	}
+	lcd_info->xres = xres;
+	lcd_info->yres = yres;
+	lcd_info->dsu_mode = dsu->mode;
+
+	lcd_info->dsc_enabled = dt_dsu_info->res_info[actual_mode].dsc_en;
+	lcd_info->dsc_slice_h = dt_dsu_info->res_info[actual_mode].dsc_height;
+
+	ret = panel_do_seqtbl_by_index(panel, PANEL_DSU_SEQ);
+	if (unlikely(ret < 0)) {
+		panel_err("PANEL:ERR:%s, failed to write init seqtbl\n", __func__);
+	}
+
+	return 0;
+
+do_exit:
+	return ret;
+}
+
 static int panel_ioctl_display_on(struct panel_device *panel, void *arg)
 {
 	int ret = 0;
@@ -921,6 +988,9 @@ long panel_drv_ioctl(struct panel_device *panel, unsigned int cmd, void *arg)
 			panel_info("PANEL:INFO:%s:PANEL_IOC_DOZE\n", __func__);
 			ret = panel_doze(panel);
 			mdnie_update(&panel->mdnie);
+			break;
+		case PANEL_IOC_SET_DSU:
+			ret = panel_set_dsu(panel, arg);
 			break;
 		case PANEL_IOC_DISP_ON:
 			panel_info("PANEL:INFO:%s:PANEL_IOC_DISP_ON\n", __func__);

@@ -233,8 +233,8 @@ struct panel_device {
  * The calls the vendor DSIM and DECON made through the panel's v4l2 subdev
  * (S:drivers/video/fbdev/exynos/panel/panel_drv.h:268-295), numbers kept; the
  * DRM panel makes them with panel_drv_ioctl(). Not ported: DSIM_PROBE,
- * DECON_PROBE, GET_PANEL_STATE, DSIM_PUT_MIPI_OPS, REG_RESET_CB (the DRM panel
- * fills panel_device itself and owns ESD) and SET_DSU (one resolution).
+ * DECON_PROBE, GET_PANEL_STATE, DSIM_PUT_MIPI_OPS and REG_RESET_CB (the DRM
+ * panel fills panel_device itself and owns ESD).
  */
 #define PANEL_IOC_BASE	'P'
 
@@ -253,6 +253,7 @@ struct panel_device {
 #define PANEL_IOC_EVT_VSYNC				_IOW(PANEL_IOC_BASE, 12, struct timespec64 *)
 
 #define PANEL_IOC_DOZE					_IO(PANEL_IOC_BASE, 13)
+#define PANEL_IOC_SET_DSU				_IOW(PANEL_IOC_BASE, 14, struct dsu_info *)
 
 int panel_drv_init(struct panel_device *panel, struct device *dev,
 		   bool init_at_boot, bool connected);
