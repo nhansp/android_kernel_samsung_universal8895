@@ -41,23 +41,9 @@ struct stdphy_pms {
 };
 
 
+#include <drm/exynos8895_panel.h>
+
 #define LDI_NAME_LENGTH	32
-
-#define MAX_DSU_RES_NUMBER 5
-
-struct dsu_res_info {
-	unsigned int width;
-	unsigned int height;
-	unsigned int dsc_en;
-	unsigned int dsc_width;
-	unsigned int dsc_height;
-};
-
-struct dsu_info_dt {
-	unsigned int dsu_en;
-	unsigned int dsu_number;
-	struct dsu_res_info res_info[MAX_DSU_RES_NUMBER];
-};
 
 #define HDR_CAPA_NUM		4
 

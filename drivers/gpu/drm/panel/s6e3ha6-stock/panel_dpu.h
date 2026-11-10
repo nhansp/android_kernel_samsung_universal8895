@@ -25,14 +25,7 @@ enum dsim_state {
 	DSIM_STATE_OFF		/* DSIM is suspend state */
 };
 
-/* S:.../dpu/decon.h:92-98 */
-enum {
-	DSU_MODE_NONE = 0,
-	DSU_MODE_1,
-	DSU_MODE_2,
-	DSU_MODE_3,
-	DSU_MODE_MAX,
-};
+#include <drm/exynos8895_panel.h>
 
 /* what the vendor dsim.h pulled in for its includers (S:.../dpu/dsim.h:28-29) */
 #include "decon_lcd.h"

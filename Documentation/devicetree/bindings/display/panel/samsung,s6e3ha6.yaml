@@ -47,6 +47,54 @@ properties:
   width-mm: true
   height-mm: true
 
+  dsu_en:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    enum: [0, 1]
+    description:
+      Dynamic Screen Scaling (DSU) support flag (1 = enabled, 0 = disabled).
+
+  dsu_number:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 1
+    maximum: 5
+    description:
+      Number of active DSU resolution modes exposed from the DSU mode arrays.
+
+  dsu_width:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    minItems: 1
+    maxItems: 5
+    description:
+      Horizontal active resolution (in pixels) for each DSU mode entry.
+
+  dsu_height:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    minItems: 1
+    maxItems: 5
+    description:
+      Vertical active resolution (in pixels) for each DSU mode entry.
+
+  dsu_dsc_width:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    minItems: 1
+    maxItems: 5
+    description:
+      DSC slice width (in pixels) for each DSU mode entry.
+
+  dsu_dsc_height:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    minItems: 1
+    maxItems: 5
+    description:
+      DSC slice height (in lines) for each DSU mode entry.
+
+  dsu_dsc_en:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    minItems: 1
+    maxItems: 5
+    description:
+      DSC enable flag (1 = enabled, 0 = disabled) for each DSU mode entry.
+
   port: true
 
 required:

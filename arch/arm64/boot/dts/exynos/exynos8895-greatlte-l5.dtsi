@@ -178,6 +178,22 @@
 		width-mm = <71>;				/* FDT:10083 size = <0x47 0x91> */
 		height-mm = <145>;
 
+		/*
+		 * Dynamic Screen Scaling (DSU) mode table (FDT:10100-10106,
+		 * S:arch/arm64/boot/dts/exynos/exynos8895-display-lcd.dtsi:153-159):
+		 * stock carries 3 entries (1440x2960 DSC 720x40, 1080x2220 DSC 540x30,
+		 * 720x1480 uncompressed). dsu_number is set to 2 to disable 720p,
+		 * matching LineageOS android_kernel_samsung_exynos9820 commit 96630448d
+		 * ("ARM64: boot: dts: Exynos9820: Disable 720p resolution").
+		 */
+		dsu_en = <1>;					/* FDT:10100 dsu_en = <0x01> */
+		dsu_number = <2>;				/* FDT:10101 <0x03>; 2 per LineageOS exynos9820 96630448d */
+		dsu_width = <1440 1080 720>;			/* FDT:10102 <0x5a0 0x438 0x2d0> */
+		dsu_height = <2960 2220 1480>;			/* FDT:10103 <0xb90 0x8ac 0x5c8> */
+		dsu_dsc_width = <720 540 360>;			/* FDT:10104 <0x2d0 0x21c 0x168> */
+		dsu_dsc_height = <40 30 74>;			/* FDT:10105 <0x28 0x1e 0x4a> */
+		dsu_dsc_en = <1 1 0>;				/* FDT:10106 <0x01 0x01 0x00> */
+
 		port {
 			panel_from_dsi: endpoint {
 				remote-endpoint = <&dsi_to_panel>;

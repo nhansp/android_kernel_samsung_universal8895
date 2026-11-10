@@ -1047,7 +1047,12 @@ int panel_drv_init(struct panel_device *panel, struct device *dev,
 	 * of the "ddi_info" node s6e3ha6_great_ddi (FDT:10079-10114)
 	 */
 	lcd_info->ldi_name = "s6e3ha6";		/* ldi_name, FDT:10080 */
+	lcd_info->xres = 1440;			/* resolution = <0x5a0 0xb90>, FDT:10082 */
+	lcd_info->yres = 2960;
 	lcd_info->dsc_enabled = 1;		/* dsc_en = <0x01>, FDT:10094 */
+	lcd_info->dsc_cnt = 2;			/* dsc_cnt = <0x02>, FDT:10095 */
+	lcd_info->dsc_slice_num = 2;		/* dsc_slice_num = <0x02>, FDT:10096 */
+	lcd_info->dsc_slice_h = 40;		/* dsc_slice_h = <0x28>, FDT:10097 */
 
 	for (i = 0; i < ARRAY_SIZE(panel_great_names); i++)
 		lut_info->names[i] = panel_great_names[i];

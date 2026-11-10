@@ -81,6 +81,8 @@ struct s6e3ha6 {
 	struct work_struct det_work;
 	u32 lcdtype;
 	const char *variant;
+	struct dsu_info_dt dsu_dt;
+	unsigned int dsu_mode;
 
 	/*
 	 * The vendor panel framework (DESIGN 2.2): the DRM ops call it as the
@@ -747,6 +749,70 @@ static const char *s6e3ha6_variant(u32 id)
 	return "a2_s3";
 }
 
+static const struct dsu_info_dt *s6e3ha6_dsu_dt;
+
+const struct dsu_info_dt *exynos8895_panel_get_dsu_dt(void)
+{
+	return READ_ONCE(s6e3ha6_dsu_dt);
+}
+EXPORT_SYMBOL_GPL(exynos8895_panel_get_dsu_dt);
+
+/*
+ * DSU mode table from the panel node, parsed as panel_parse_lcd_info()
+ * (S:drivers/video/fbdev/exynos/panel/panel_drv.c:1710-1752).
+ */
+static void s6e3ha6_parse_dsu_dt(struct device *dev, struct dsu_info_dt *dt_dsu_info)
+{
+	struct device_node *node = dev->of_node;
+	u32 dsu_res[MAX_DSU_RES_NUMBER];
+	u32 dsu_number = 0;
+	unsigned int i;
+
+	of_property_read_u32(node, "dsu_en", &dt_dsu_info->dsu_en);
+	dev_info(dev, "dsu_en : %u\n", dt_dsu_info->dsu_en);
+	if (!dt_dsu_info->dsu_en)
+		return;
+
+	of_property_read_u32(node, "dsu_number", &dsu_number);
+	dev_info(dev, "dsu_number : %u\n", dsu_number);
+	if (dsu_number > MAX_DSU_RES_NUMBER) {
+		dev_err(dev, "Exceed dsu res number : %u\n", dsu_number);
+		dsu_number = MAX_DSU_RES_NUMBER;
+	}
+	dt_dsu_info->dsu_number = dsu_number;
+
+	if (!of_property_read_u32_array(node, "dsu_width", dsu_res, dsu_number)) {
+		for (i = 0; i < dsu_number; i++) {
+			dt_dsu_info->res_info[i].width = dsu_res[i];
+			dev_info(dev, "width[%u]:%u\n", i, dsu_res[i]);
+		}
+	}
+	if (!of_property_read_u32_array(node, "dsu_height", dsu_res, dsu_number)) {
+		for (i = 0; i < dsu_number; i++) {
+			dt_dsu_info->res_info[i].height = dsu_res[i];
+			dev_info(dev, "height[%u]:%u\n", i, dsu_res[i]);
+		}
+	}
+	if (!of_property_read_u32_array(node, "dsu_dsc_en", dsu_res, dsu_number)) {
+		for (i = 0; i < dsu_number; i++) {
+			dt_dsu_info->res_info[i].dsc_en = dsu_res[i];
+			dev_info(dev, "dsc_en[%u]:%u\n", i, dsu_res[i]);
+		}
+	}
+	if (!of_property_read_u32_array(node, "dsu_dsc_width", dsu_res, dsu_number)) {
+		for (i = 0; i < dsu_number; i++) {
+			dt_dsu_info->res_info[i].dsc_width = dsu_res[i];
+			dev_info(dev, "dsc_width[%u]:%u\n", i, dsu_res[i]);
+		}
+	}
+	if (!of_property_read_u32_array(node, "dsu_dsc_height", dsu_res, dsu_number)) {
+		for (i = 0; i < dsu_number; i++) {
+			dt_dsu_info->res_info[i].dsc_height = dsu_res[i];
+			dev_info(dev, "dsc_height[%u]:%u\n", i, dsu_res[i]);
+		}
+	}
+}
+
 /*
  * The framework's panel_device with the pads this driver took (the vendor
  * panel_parse_gpio()/panel_parse_regulator(), rails in the same order) and
@@ -770,6 +836,7 @@ static int s6e3ha6_stock_init(struct s6e3ha6 *ctx, bool init_at_boot, bool conne
 		stock->pad.regulator[i] = ctx->supplies[i];
 
 	panel_drv_init(stock, &ctx->dsi->dev, init_at_boot, connected);
+	stock->lcd_info.dt_dsu_info = ctx->dsu_dt;
 	panel_dsi_init(stock, ctx->dsi);
 	mutex_init(&ctx->stock_lock);
 	ctx->stock = stock;
@@ -849,6 +916,9 @@ static int s6e3ha6_probe(struct mipi_dsi_device *dsi)
 	ctx->dsi = dsi;
 	mipi_dsi_set_drvdata(dsi, ctx);
 	ctx->on = ctx->booted;
+	ctx->dsu_mode = DSU_MODE_1;	/* S:.../panel/panel_drv.c:2067 */
+	s6e3ha6_parse_dsu_dt(dev, &ctx->dsu_dt);
+	WRITE_ONCE(s6e3ha6_dsu_dt, &ctx->dsu_dt);
 
 	/* the vendor panel_drv_probe() state: connected unless S-Boot left it off */
 	connected = ctx->booted || !init_at_boot;
@@ -948,6 +1018,7 @@ err_wq:
 		destroy_workqueue(ctx->det_wq);
 	/* every path above reaches err_rails, so the bright devices go here */
 err_rails:
+	WRITE_ONCE(s6e3ha6_dsu_dt, NULL);
 	if (ctx->bright) {
 		s6e3ha6_bright_unregister(ctx->bright);
 		ctx->bright = NULL;
@@ -964,6 +1035,7 @@ static void s6e3ha6_remove(struct mipi_dsi_device *dsi)
 
 	greatlte_l5_set(GL5_ON, panel, false);
 	greatlte_l5_set(GL5_ON, det, NULL);
+	WRITE_ONCE(s6e3ha6_dsu_dt, NULL);
 	/* the DECON must not call into this ctx once it is gone */
 	if (ctx->stock_probed)
 		exynos8895_decon_set_panel_hooks(NULL);
