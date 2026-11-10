@@ -372,6 +372,49 @@ struct devfreq_simple_interactive_data {
 };
 #endif
 
+#if IS_ENABLED(CONFIG_DEVFREQ_GOV_TABLE_INTERACTIVE)
+#define DEVFREQ_GOV_TABLE_INTERACTIVE	"tbl_interactive"
+
+/**
+ * struct devfreq_table_interactive_level - one row of the load table
+ * @freq_hz:	frequency of the level
+ * @min_load:	step down when the load (percent) is below this
+ * @max_load:	step up when the load (percent) is above this
+ * @down_staycount: polls below @min_load before stepping down from the level
+ *		(on arrival at the level, as stock down_staycount)
+ */
+struct devfreq_table_interactive_level {
+	unsigned long freq_hz;
+	unsigned int min_load;
+	unsigned int max_load;
+	unsigned int down_staycount;
+};
+
+/**
+ * struct devfreq_table_interactive_data - ``void *data`` fed to struct
+ *	devfreq and devfreq_add_device for the "tbl_interactive" governor
+ *	(the stock Exynos Mali "interactive" DVFS governor)
+ * @levels:	the table, ascending frequency
+ * @nlevels:	number of rows in @levels
+ * @highspeed_hz: level jumped to straight from a lower one when the load
+ *		is above both @highspeed_load and the level's max_load, 0 = off
+ * @highspeed_load: load (percent) above which the jump is made
+ * @highspeed_delay: polls the jump condition must hold before it is made
+ * @down_requirement: governor private: polls left below min_load
+ * @delay_count: governor private: polls the jump condition has held
+ */
+struct devfreq_table_interactive_data {
+	const struct devfreq_table_interactive_level *levels;
+	unsigned int nlevels;
+	unsigned long highspeed_hz;
+	unsigned int highspeed_load;
+	unsigned int highspeed_delay;
+	/* private */
+	unsigned int down_requirement;
+	unsigned int delay_count;
+};
+#endif
+
 #if !defined(CONFIG_PM_DEVFREQ)
 static inline struct devfreq *devfreq_add_device(struct device *dev,
 					struct devfreq_dev_profile *profile,

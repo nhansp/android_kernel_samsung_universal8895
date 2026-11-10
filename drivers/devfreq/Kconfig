@@ -170,6 +170,15 @@ config DEVFREQ_GOV_SIMPLE_INTERACTIVE
 	  Chooses frequency based on the requested PM QoS from target device.
 	  And This governor uses timer when change frequency.
 
+config DEVFREQ_GOV_TABLE_INTERACTIVE
+	bool "Table Interactive"
+	help
+	  Steps the frequency one table level at a time on the load of each
+	  poll, with per-level thresholds, a stay count before a decrease and
+	  a jump to a high-speed level, as the stock Exynos Mali DVFS
+	  "interactive" governor does. The table comes from the device
+	  driver as governor data.
+
 config ARM_EXYNOS8895_BUS_DEVFREQ
 	bool "ARM Exynos8895 Memory Bus DEVFREQ Driver"
 	depends on ARCH_EXYNOS || COMPILE_TEST
