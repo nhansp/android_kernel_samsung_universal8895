@@ -340,6 +340,8 @@ static void s6sy761_handle_coordinates(struct s6sy761_data *sdata, u8 *event)
 	}
 }
 
+static int s6sy661_sponge_write(struct s6sy761_data *sdata);
+
 static void s6sy761_handle_events(struct s6sy761_data *sdata, u8 n_events)
 {
 	int i;
@@ -349,7 +351,7 @@ static void s6sy761_handle_events(struct s6sy761_data *sdata, u8 n_events)
 		u8 event_id = event[0] & S6SY761_MASK_EID;
 
 		if (!event[0])
-			return;
+			continue;
 
 		switch (event_id) {
 
@@ -394,8 +396,12 @@ static irqreturn_t s6sy761_irq_handler(int irq, void *dev)
 		return IRQ_HANDLED;
 
 	n_events = sdata->data[7] & S6SY761_MASK_LEFT_EVENTS;
-	if (unlikely(n_events > S6SY761_EVENT_COUNT - 1))
+	if (unlikely(n_events > S6SY761_EVENT_COUNT - 1)) {
+		/* event buffer overflow: clear event stack, stock sec_ts.c:993-1001 */
+		if (sdata->variant->s6sy661)
+			i2c_smbus_write_byte(sdata->client, S6SY761_CLEAR_EVENT_STACK);
 		return IRQ_HANDLED;
+	}
 
 	if (n_events) {
 		ret = s6sy761_read_events(sdata, n_events);
@@ -413,6 +419,18 @@ static irqreturn_t s6sy761_irq_handler(int irq, void *dev)
 static int s6sy761_input_open(struct input_dev *dev)
 {
 	struct s6sy761_data *sdata = input_get_drvdata(dev);
+	int ret;
+
+	/* stock sec_ts_start_device(): sec_ts_set_custom_library() before SENSE_ON, sec_ts.c:2961,3000 */
+	if (sdata->variant->s6sy661 && sdata->pressure_key) {
+		mutex_lock(&sdata->power_lock);
+		if (sdata->powered && !sdata->lpm) {
+			ret = s6sy661_sponge_write(sdata);
+			if (ret)
+				dev_warn(&sdata->client->dev, "failed to configure the pressure key\n");
+		}
+		mutex_unlock(&sdata->power_lock);
+	}
 
 	return i2c_smbus_write_byte(sdata->client, S6SY761_SENSE_ON);
 }
@@ -640,6 +658,13 @@ static int s6sy661_enter_lpm(struct s6sy761_data *sdata)
 		input_mt_slot(sdata->input, i);
 		input_mt_report_slot_inactive(sdata->input);
 	}
+	/* sec_ts_locked_release_all_finger() also releases KEY_HOMEPAGE, sec_ts.c:2482,2536 */
+	if (sdata->home_key_down || sdata->wake_key_down) {
+		input_report_key(sdata->input, KEY_HOMEPAGE, 0);
+		input_report_key(sdata->input, KEY_WAKEUP, 0);
+		sdata->home_key_down = false;
+		sdata->wake_key_down = false;
+	}
 	s6sy761_sync(sdata);
 
 	WRITE_ONCE(sdata->lpm, true);
@@ -721,15 +746,22 @@ static int s6sy661_start(struct s6sy761_data *sdata)
 
 	if (sdata->lpm) {
 		ret = s6sy661_exit_lpm(sdata);
-		if (!ret)
+		if (!ret) {
+			/* stock sec_ts_start_device(): sec_ts_set_custom_library(), sec_ts.c:2961 */
+			if (sdata->pressure_key && s6sy661_sponge_write(sdata))
+				dev_warn(&sdata->client->dev, "failed to configure the pressure key\n");
 			return 0;
+		}
 		/* the chip did not leave the low-power mode: power-cycle it */
 		dev_err(&sdata->client->dev, "leaving the low-power mode failed: %d\n", ret);
 		s6sy661_power_off(sdata);
 	}
 
-	if (sdata->powered)
+	if (sdata->powered) {
+		if (sdata->pressure_key && s6sy661_sponge_write(sdata))
+			dev_warn(&sdata->client->dev, "failed to configure the pressure key\n");
 		return 0;
+	}
 
 	pinctrl_pm_select_default_state(&sdata->client->dev);
 	ret = s6sy661_power_on(sdata, false);
