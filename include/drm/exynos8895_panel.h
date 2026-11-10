@@ -75,6 +75,11 @@ struct exynos8895_panel_hooks {
 	 * 2320-2323). Called with a spinlock held, must not sleep.
 	 */
 	bool (*hmd_on)(void *data);
+	/*
+	 * PANEL_IOC_SET_DSU (S:drivers/video/fbdev/exynos/dpu/dsu_update.c:133-135,
+	 * S:drivers/video/fbdev/exynos/panel/panel_drv.c:990-1046). Process context.
+	 */
+	int (*set_dsu)(void *data, const struct dsu_info *dsu);
 	void *data;
 };
 

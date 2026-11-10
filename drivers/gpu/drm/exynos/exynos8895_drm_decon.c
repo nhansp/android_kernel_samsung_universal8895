@@ -70,6 +70,7 @@
 #define D8895_DPP_CH(n)		(0x1000 * (n))
 
 #define D8895_SHADOW_TIMEOUT_US	(100 * 1000)	/* S:.../dpu/decon.h:112 */
+#define D8895_IDLE_TIMEOUT_US	(50 * 1000)	/* S:.../dpu/decon.h:113 IDLE_WAIT_TIMEOUT */
 #define D8895_RUN_TIMEOUT_US	(20 * 1000)	/* decon_reg.c:2105,2199 */
 #define D8895_ACLK_KHZ_DEFAULT	630000		/* decon_core.c:1640 */
 #define D8895_INIT_RCV_NUM	630000		/* S:.../dpu/dpp.h:45 */
@@ -89,11 +90,13 @@
 #define D8895_BND_COEF_1_M_ALPHA_MULT	0xb
 #define D8895_ALPHA_MULT_SRC_SEL_AF	2
 
-/* S:.../dpu/decon.h:385, :509, :518, :201 */
+/* S:.../dpu/decon.h:370, :385, :509, :518, :201, :204 */
+#define D8895_DPATH_NOCOMP_FF0_FORMATTER0_DSIMIF0		0x001
 #define D8895_DPATH_DSCC_DSCENC01_FF01_FORMATTER0_DSIMIF0	0x0b1
 #define D8895_ENHANCEPATH_ENHANCE_ALL_OFF			0x0
 #define D8895_SHAREPATH_DQE_USE					0x0
 #define D8895_DECON_RGB						0x0
+#define D8895_DECON_BGR						0x4
 
 /* DPP scaler ratio thresholds, S:.../dpu/dpp_reg.c:20-25 */
 #define D8895_SC_RATIO_MAX	((1 << 20) * 8 / 8)
@@ -429,6 +432,11 @@ struct decon8895_ctx {
 	u8 cw_on;
 	struct exynos8895_color_win cw[D8895_NR_WIN];
 
+	/* DSU mode state and staged update (S:.../dpu/decon.h:768, 1251) */
+	spinlock_t dsu_lock;
+	struct dsu_info dsu;
+	struct dsu_info pending_dsu;
+
 	/*
 	 * Bus votes (spec L2b REQ-2B-L5-1, S:drivers/video/fbdev/exynos/dpu/
 	 * bts.c): the DISP floor of every frame plus the MIF/INT floors the
@@ -548,6 +556,21 @@ static void d8895_int_disable(struct decon8895_ctx *ctx)
 {
 	d8895_clear_int_all(ctx);
 	d_mask(ctx, D8895_INTERRUPT_ENABLE, 0, D8895_DPU_EXTRA_INT_EN | D8895_DPU_INT_EN);
+}
+
+/* decon_reg_wait_idle_status_timeout() (S:.../dpu/decon_reg.c:840-869) */
+static int d8895_wait_idle(struct decon8895_ctx *ctx)
+{
+	u32 val;
+	int ret;
+
+	ret = readl_poll_timeout(ctx->regs + D8895_GLOBAL_CONTROL, val,
+				 val & D8895_GLOBAL_CONTROL_IDLE_STATUS, 10,
+				 D8895_IDLE_TIMEOUT_US);
+	if (ret)
+		dev_err(ctx->dev, "decon0 wait timeout decon idle status(%u)\n",
+			!!(val & D8895_GLOBAL_CONTROL_IDLE_STATUS));
+	return ret;
 }
 
 /*
@@ -956,32 +979,106 @@ static void d8895_dsc_program(struct decon8895_ctx *ctx, u32 base, const struct 
 }
 
 /*
- * decon_reg_config_data_path_size() for dual DSC on DSIM_IF0
- * (decon_reg.c:596-645) with width = width_per_enc.
+ * decon_reg_config_data_path_size() for DSIM_IF0 (decon_reg.c:596-645)
+ * with width = width_per_enc when dual_dsc is true, or xres when false.
  */
-static void d8895_data_path_size(struct decon8895_ctx *ctx, u32 width, u32 height)
+static void d8895_data_path_size(struct decon8895_ctx *ctx, u32 width, u32 height,
+				 bool dual_dsc)
 {
+	u32 fmt_w = dual_dsc ? width * 2 : width;
+
 	/* splitter (:252-270): width * 2, split index = width, no overlap */
 	d_write(ctx, D8895_SPLITTER_SIZE_CONTROL_0,
 		D8895_SPLITTER_HEIGHT_F(height) | D8895_SPLITTER_WIDTH_F(width * 2));
 	d_write(ctx, D8895_SPLITTER_SIZE_CONTROL_1, height * width);
 	d_write(ctx, D8895_SPLITTER_SPLIT_IDX_CONTROL, width);
 	d_write(ctx, D8895_SPLITTER_OVERLAP_CONTROL, D8895_SPLITTER_OVERLAP_F(0));
-	/* frame FIFO 0 and 1 (dual DSC) (:297-318) */
+	/* frame FIFO 0, and 1 when dual DSC (:297-318, :618-620) */
 	d_write(ctx, D8895_FRAME_FIFO_0_SIZE_CONTROL_0,
 		D8895_FRAME_FIFO_HEIGHT_F(height) | D8895_FRAME_FIFO_WIDTH_F(width));
 	d_write(ctx, D8895_FRAME_FIFO_0_SIZE_CONTROL_1, height * width);
 	d_mask(ctx, D8895_FRAME_FIFO_TH_CONTROL_0, D8895_FRAME_FIFO_0_TH_F(width),
 	       D8895_FRAME_FIFO_0_TH_MASK);
-	d_write(ctx, D8895_FRAME_FIFO_1_SIZE_CONTROL_0,
-		D8895_FRAME_FIFO_HEIGHT_F(height) | D8895_FRAME_FIFO_WIDTH_F(width));
-	d_write(ctx, D8895_FRAME_FIFO_1_SIZE_CONTROL_1, height * width);
-	d_mask(ctx, D8895_FRAME_FIFO_TH_CONTROL_0, D8895_FRAME_FIFO_1_TH_F(width),
-	       D8895_FRAME_FIFO_1_TH_MASK);
-	/* formatter 0, dual DSC -> width * 2 (:403-420, :623-628) */
+	if (dual_dsc) {
+		d_write(ctx, D8895_FRAME_FIFO_1_SIZE_CONTROL_0,
+			D8895_FRAME_FIFO_HEIGHT_F(height) | D8895_FRAME_FIFO_WIDTH_F(width));
+		d_write(ctx, D8895_FRAME_FIFO_1_SIZE_CONTROL_1, height * width);
+		d_mask(ctx, D8895_FRAME_FIFO_TH_CONTROL_0, D8895_FRAME_FIFO_1_TH_F(width),
+		       D8895_FRAME_FIFO_1_TH_MASK);
+	}
+	/* formatter 0 (:403-420, :623-628) */
 	d_write(ctx, D8895_FORMATTER0_SIZE_CONTROL_0,
-		D8895_FORMATTER_HEIGHT_F(height) | D8895_FORMATTER_WIDTH_F(width * 2));
-	d_write(ctx, D8895_FORMATTER0_SIZE_CONTROL_1, height * width * 2);
+		D8895_FORMATTER_HEIGHT_F(height) | D8895_FORMATTER_WIDTH_F(fmt_w));
+	d_write(ctx, D8895_FORMATTER0_SIZE_CONTROL_1, height * fmt_w);
+}
+
+/*
+ * decon_set_dsu_update() for DECON0, single DSI, dsc_cnt = 2
+ * (S:.../dpu/decon_reg.c:2653-2697; dsc_reg_init() :1879-1900).
+ */
+static void d8895_set_dsu_update(struct decon8895_ctx *ctx, const struct dsu_info *dsu)
+{
+	const struct dsu_info_dt *dt = exynos8895_panel_get_dsu_dt();
+	const struct dsu_res_info *res;
+	u32 width, height, rgb, d_path;
+	unsigned long flags = 0;
+	struct d8895_dsc d;
+	int idx, i;
+
+	if (!dt || !dt->dsu_en)
+		return;
+	idx = dsu->mode - DSU_MODE_1;
+	if (idx < 0 || idx >= dt->dsu_number)
+		return;
+	res = &dt->res_info[idx];
+	width = res->width;
+	height = res->height;
+
+	/* decon_reg_set_blender_bg_image_size() (:439-455, :2665) */
+	d_mask(ctx, D8895_BLENDER_BG_IMAGE_SIZE_0,
+	       D8895_BLENDER_BG_HEIGHT_F(height) | D8895_BLENDER_BG_WIDTH_F(width),
+	       D8895_BLENDER_BG_HEIGHT_MASK | D8895_BLENDER_BG_WIDTH_MASK);
+	d_write(ctx, D8895_BLENDER_BG_IMAGE_SIZE_1, height * width);
+	/* decon_reg_set_dispif_porch() is DECON2-only (:50-66, :2666) */
+
+	if (res->dsc_en) {
+		rgb = D8895_DECON_RGB;
+		d_path = D8895_DPATH_DSCC_DSCENC01_FF01_FORMATTER0_DSIMIF0;
+		d_mask(ctx, D8895_DATA_PATH_CONTROL_2,
+		       D8895_ENHANCE_LOGIC_PATH_F(D8895_ENHANCEPATH_ENHANCE_ALL_OFF) |
+		       D8895_COMP_LINKIF_WB_PATH_F(d_path),
+		       D8895_ENHANCE_LOGIC_PATH_MASK | D8895_COMP_LINKIF_WB_PATH_MASK);
+		d8895_dsc_calc(width, height, 2, res->dsc_height, &d);
+		for (i = 0; i < 2; i++)
+			d8895_dsc_program(ctx, i ? D8895_DSC1_OFFSET : D8895_DSC0_OFFSET, &d);
+		d8895_data_path_size(ctx, d.width_per_enc, height, true);
+	} else {
+		rgb = D8895_DECON_BGR;
+		d_path = D8895_DPATH_NOCOMP_FF0_FORMATTER0_DSIMIF0;
+		d_mask(ctx, D8895_DATA_PATH_CONTROL_2,
+		       D8895_ENHANCE_LOGIC_PATH_F(D8895_ENHANCEPATH_ENHANCE_ALL_OFF) |
+		       D8895_COMP_LINKIF_WB_PATH_F(d_path),
+		       D8895_ENHANCE_LOGIC_PATH_MASK | D8895_COMP_LINKIF_WB_PATH_MASK);
+		d8895_data_path_size(ctx, width, height, false);
+		/* decon_reg_set_dispif_size() is DECON2-only (:69-81, :2691) */
+	}
+
+	/* decon_reg_set_rgb_order() (:382-395, :2694) */
+	d_mask(ctx, D8895_FORMATTER_CONTROL, D8895_FORMATTER_OUT_RGB_ORDER_F(rgb),
+	       D8895_FORMATTER_OUT_RGB_ORDER_MASK);
+
+	/* BTS lcd_w, lcd_h, resol_clk for the new resolution (S:dpu/bts.c:41, 128-130, 256-258) */
+	ctx->bts_xres = width;
+	ctx->bts_yres = height;
+	ctx->bts_resol_clk = (u32)((u64)width * (u64)height * D8895_BTS_LCD_REFRESH *
+				   11 / 10 / 1000 + 1);
+
+	if (IS_ENABLED(CONFIG_DRM_PANIC) && ctx->panic_vaddr) {
+		drm_panic_lock(ctx->drm, flags);
+		ctx->panic_w = width;
+		ctx->panic_h = height;
+		drm_panic_unlock(ctx->drm, flags);
+	}
 }
 
 /*
@@ -1032,7 +1129,7 @@ static void d8895_hw_init(struct decon8895_ctx *ctx, const struct drm_display_mo
 	d8895_dsc_calc(xres, yres, dsc->slice_count, dsc->slice_height, &d);
 	for (i = 0; i < 2; i++)
 		d8895_dsc_program(ctx, i ? D8895_DSC1_OFFSET : D8895_DSC0_OFFSET, &d);
-	d8895_data_path_size(ctx, d.width_per_enc, yres);
+	d8895_data_path_size(ctx, d.width_per_enc, yres, true);
 	d_mask(ctx, D8895_DATA_PATH_CONTROL_2, D8895_APS_PATH_F(D8895_SHAREPATH_DQE_USE),
 	       D8895_APS_PATH_MASK);
 	d_mask(ctx, D8895_DATA_PATH_CONTROL_2, D8895_HSC_PATH_F(D8895_SHAREPATH_DQE_USE),
@@ -1281,6 +1378,20 @@ static void d8895_panel_frame_done(void)
 	spin_unlock(&d8895_panel_hooks_lock);
 }
 
+static int d8895_panel_set_dsu(const struct dsu_info *dsu)
+{
+	const struct exynos8895_panel_hooks *hooks;
+	unsigned long flags;
+
+	spin_lock_irqsave(&d8895_panel_hooks_lock, flags);
+	hooks = d8895_panel_hooks;
+	spin_unlock_irqrestore(&d8895_panel_hooks_lock, flags);
+
+	if (!hooks || !hooks->set_dsu)
+		return 0;
+	return hooks->set_dsu(hooks->data, dsu);
+}
+
 /* ---- display hibernation (DESIGN 2.5; S:.../dpu/decon_dsi.c:1037-1250) --- */
 
 #define D8895_HIBER_ON	IS_ENABLED(CONFIG_DRM_EXYNOS8895_DECON_HIBER)
@@ -1299,6 +1410,20 @@ void exynos8895_decon_set_dsim_hooks(const struct exynos8895_dsim_hooks *hooks)
 	spin_unlock_irqrestore(&d8895_dsim_hooks_lock, flags);
 }
 EXPORT_SYMBOL_GPL(exynos8895_decon_set_dsim_hooks);
+
+static int d8895_dsim_set_dsu(const struct dsu_info *dsu)
+{
+	const struct exynos8895_dsim_hooks *hooks;
+	unsigned long flags;
+
+	spin_lock_irqsave(&d8895_dsim_hooks_lock, flags);
+	hooks = d8895_dsim_hooks;
+	spin_unlock_irqrestore(&d8895_dsim_hooks_lock, flags);
+
+	if (!hooks || !hooks->set_dsu)
+		return 0;
+	return hooks->set_dsu(hooks->data, dsu);
+}
 
 /* the one DECON0 context, for the hibernation exports below */
 static struct decon8895_ctx *d8895_hiber_ctx;
@@ -1998,6 +2123,45 @@ static int d8895_start(struct decon8895_ctx *ctx)
 	return 0;
 }
 
+/*
+ * dpu_set_dsu_update_config() (S:.../dpu/dsu_update.c:114-156), called after
+ * the HW trigger is masked in __decon_update_regs() (decon_core.c:1671-1677):
+ * wait for DECON idle, send PANEL_IOC_SET_DSU, update DSIM (DSIM_IOC_SET_DSU),
+ * update DECON (decon_set_dsu_update), and commit the new mode state.
+ */
+static void d8895_dsu_update_config(struct decon8895_ctx *ctx)
+{
+	struct dsu_info cur_dsu;
+	unsigned long flags;
+
+	spin_lock_irqsave(&ctx->dsu_lock, flags);
+	cur_dsu = ctx->pending_dsu;
+	ctx->pending_dsu.needupdate = 0;
+	spin_unlock_irqrestore(&ctx->dsu_lock, flags);
+
+	if (!cur_dsu.needupdate)
+		return;
+
+	if (ctx->dsu.mode == cur_dsu.mode) {
+		dev_info(ctx->dev, "DECON:INFO:%s:already set dsu mode : %d\n",
+			 __func__, cur_dsu.mode);
+		return;
+	}
+
+	d8895_wait_idle(ctx);
+	d8895_panel_set_dsu(&cur_dsu);
+	d8895_dsim_set_dsu(&cur_dsu);
+	d8895_set_dsu_update(ctx, &cur_dsu);
+
+	spin_lock_irqsave(&ctx->dsu_lock, flags);
+	ctx->dsu.mode = cur_dsu.mode;
+	ctx->dsu.top = cur_dsu.top;
+	ctx->dsu.bottom = cur_dsu.bottom;
+	ctx->dsu.left = cur_dsu.left;
+	ctx->dsu.right = cur_dsu.right;
+	spin_unlock_irqrestore(&ctx->dsu_lock, flags);
+}
+
 static void d8895_atomic_flush(struct exynos_drm_crtc *crtc)
 {
 	struct decon8895_ctx *ctx = crtc->ctx;
@@ -2022,6 +2186,8 @@ static void d8895_atomic_flush(struct exynos_drm_crtc *crtc)
 		ctx->needs_init = false;
 		d8895_int_enable(ctx);
 	}
+
+	d8895_dsu_update_config(ctx);
 
 	drm_for_each_plane_mask(plane, ctx->drm, cs->plane_mask) {
 		struct d8895_plane *dp = to_d8895_plane(plane);
@@ -2190,12 +2356,16 @@ static int d8895_plane_atomic_check(struct drm_plane *plane, struct drm_atomic_s
 {
 	struct drm_plane_state *st = drm_atomic_get_new_plane_state(state, plane);
 	struct d8895_plane_state *ps = to_d8895_pstate(st);
-	unsigned int ch = to_d8895_plane(plane)->ch;
+	struct d8895_plane *dp = to_d8895_plane(plane);
+	unsigned int ch = dp->ch;
+	struct decon8895_ctx *ctx = container_of(dp, struct decon8895_ctx, planes[ch]);
 	struct drm_framebuffer *fb = st->fb;
 	int min_scale = DRM_PLANE_NO_SCALING, max_scale = DRM_PLANE_NO_SCALING;
 	const struct d8895_fmt *f;
 	struct drm_crtc_state *cs;
 	u32 sx, sy, sw, sh, dw, dh, fw, al;
+	unsigned long flags;
+	int max_w, max_h;
 	int ret;
 
 	if (!st->crtc || !fb)
@@ -2215,9 +2385,15 @@ static int d8895_plane_atomic_check(struct drm_plane *plane, struct drm_atomic_s
 	if (!st->visible)
 		return 0;
 
-	/* the whole window on the screen, whole source pixels */
+	spin_lock_irqsave(&ctx->dsu_lock, flags);
+	max_w = ctx->pending_dsu.needupdate ? ctx->pending_dsu.right : ctx->dsu.right;
+	max_h = ctx->pending_dsu.needupdate ? ctx->pending_dsu.bottom : ctx->dsu.bottom;
+	spin_unlock_irqrestore(&ctx->dsu_lock, flags);
+
+	/* the whole window on the screen (active DSU resolution), whole source pixels */
 	if (st->dst.x1 != st->crtc_x || st->dst.y1 != st->crtc_y ||
 	    drm_rect_width(&st->dst) != st->crtc_w || drm_rect_height(&st->dst) != st->crtc_h ||
+	    (max_w > 0 && st->dst.x2 > max_w) || (max_h > 0 && st->dst.y2 > max_h) ||
 	    ((st->src.x1 | st->src.y1 | st->src.x2 | st->src.y2) & 0xffff))
 		return -EINVAL;
 
@@ -2835,6 +3011,25 @@ void exynos8895_decon_set_oneshot(struct device *dev, bool oneshot)
 		WRITE_ONCE(ctx->oneshot, oneshot);
 }
 
+/*
+ * Stage a DSU mode switch (@dsu == NULL clears any pending update) for the
+ * next atomic_flush (S:.../dpu/dsu_update.c:73-78, 114-156).
+ */
+void exynos8895_decon_set_dsu(struct device *dev, const struct dsu_info *dsu)
+{
+	struct decon8895_ctx *ctx = d8895_ctx_of(dev);
+	unsigned long flags;
+
+	if (!ctx)
+		return;
+	spin_lock_irqsave(&ctx->dsu_lock, flags);
+	if (dsu && dsu->needupdate)
+		ctx->pending_dsu = *dsu;
+	else
+		ctx->pending_dsu.needupdate = 0;
+	spin_unlock_irqrestore(&ctx->dsu_lock, flags);
+}
+
 /* ---- probe / PM ---------------------------------------------------------- */
 
 static int d8895_probe(struct platform_device *pdev)
@@ -2851,8 +3046,15 @@ static int d8895_probe(struct platform_device *pdev)
 	ctx->dev = dev;
 	spin_lock_init(&ctx->vblank_lock);
 	spin_lock_init(&ctx->cw_lock);
+	spin_lock_init(&ctx->dsu_lock);
 	spin_lock_init(&ctx->trig_lock);
 	spin_lock_init(&ctx->vsync_lock);
+	/* initial DSU mode 1 (1440x2960, S:.../dpu/decon_core.c:4223-4228) */
+	ctx->dsu.left = 0;
+	ctx->dsu.top = 0;
+	ctx->dsu.right = 1440;
+	ctx->dsu.bottom = 2960;
+	ctx->dsu.mode = DSU_MODE_1;
 	platform_set_drvdata(pdev, ctx);
 
 	/* 1. resources */

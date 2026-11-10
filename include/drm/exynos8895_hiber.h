@@ -10,10 +10,14 @@
 #ifndef __DRM_EXYNOS8895_HIBER_H__
 #define __DRM_EXYNOS8895_HIBER_H__
 
+struct dsu_info;
+
 struct exynos8895_dsim_hooks {
 	/* samsung_dsim_enter_ulps() / samsung_dsim_exit_ulps(). Process context. */
 	int (*enter_ulps)(void *data);
 	int (*exit_ulps)(void *data);
+	/* DSIM_IOC_SET_DSU / dsim_set_dsu_update() (S:dpu/dsim_drv.c:1511-1522). Process context. */
+	int (*set_dsu)(void *data, const struct dsu_info *dsu);
 	void *data;
 };
 

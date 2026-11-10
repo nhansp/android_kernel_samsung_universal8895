@@ -1172,10 +1172,6 @@ static void s3cfb_set_color_wins(struct s3cfb *s, const struct exynos8895_color_
 		exynos8895_decon_set_color_win(s->h.dev, w, (on & BIT(w)) ? &cw[w] : NULL);
 }
 
-void __weak exynos8895_decon_set_dsu(struct device *dev, const struct dsu_info *dsu)
-{
-}
-
 /*
  * One atomic state on L5's CRTC and six planes (plane index = channel,
  * REQ-L5-1): @fr NULL turns the CRTC off with every plane off (blank);
