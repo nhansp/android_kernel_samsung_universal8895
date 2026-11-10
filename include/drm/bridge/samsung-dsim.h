@@ -149,6 +149,7 @@ struct samsung_dsim {
 	u32 cmd_underrun_lp_ref;
 	u32 ddi_type;	/* panel DDI type for the ULPS handshake (S:panel_drv.c:1678
 			 * "type_of_ddi"; 0 = SM-DDI); parsed, defaults to 0 */
+	u32 dsu_mode;	/* active DSU mode across ULPS/suspend (S:dpu/dsim_reg.c:1308-1402) */
 	bool handover;
 	struct mutex cmd_lock;		/* one packet in flight */
 	struct completion ph_empty;	/* INTSRC SFR_PH_FIFO_EMPTY */

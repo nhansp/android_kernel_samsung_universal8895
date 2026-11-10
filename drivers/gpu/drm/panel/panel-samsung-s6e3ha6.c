@@ -200,25 +200,36 @@ static const u8 s6e3ha6_paset_table[MAX_DSU_RES_NUMBER][4] = {
  * tables computed from MTP reads; L5 OPEN-B1), and without the
  * DUMP_SELF_DIAG read (CONFIG_DISPLAY_USE_INFO) and COPR.
  */
-static void s6e3ha6_init_seq(struct mipi_dsi_multi_context *ctx)
+static void s6e3ha6_init_seq(struct mipi_dsi_multi_context *ctx,
+			     const struct s6e3ha6 *panel_ctx)
 {
+	unsigned int idx = (panel_ctx->dsu_mode >= DSU_MODE_1 &&
+			    panel_ctx->dsu_mode < DSU_MODE_MAX) ?
+			   (panel_ctx->dsu_mode - DSU_MODE_1) : 0;
+	bool dsc_en = panel_ctx->dsu_dt.dsu_en ?
+		      (panel_ctx->dsu_dt.res_info[idx].dsc_en != 0) : true;
+	const u8 *caset = s6e3ha6_caset_table[idx];
+	const u8 *paset = s6e3ha6_paset_table[idx];
+	const u8 *sc = s6e3ha6_scaler_table[idx];
+
 	mipi_dsi_msleep(ctx, 5);				/* wait_5msec :1911 */
 	s6e3ha6_key1_on(ctx);
-	/* DSI_PKT_TYPE_COMP 0x01 (great_a3_sa_dsc_table[1], :1225-1228) */
-	mipi_dsi_compression_mode_multi(ctx, true);
+	/* DSI_PKT_TYPE_COMP (great_a3_sa_dsc_table, :1225-1228) */
+	mipi_dsi_compression_mode_multi(ctx, dsc_en);
 	/* DSI_PKT_TYPE_PPS (:1734) */
 	mipi_dsi_picture_parameter_set_multi(ctx,
-		(const struct drm_dsc_picture_parameter_set *)s6e3ha6_pps_table[0]);
+		(const struct drm_dsc_picture_parameter_set *)s6e3ha6_pps_table[idx]);
 	s6e3ha6_key1_off(ctx);
 	mipi_dsi_dcs_exit_sleep_mode_multi(ctx);		/* 0x11 :1426 */
 	mipi_dsi_msleep(ctx, 10);				/* wait_sleep_out :1912 */
 
-	/* CONFIG_SUPPORT_DSU block: scaler off, full-size CASET/PASET, OMOK */
+	/* CONFIG_SUPPORT_DSU block: active DSU scaler, CASET/PASET, OMOK */
 	s6e3ha6_key2_on(ctx);
-	mipi_dsi_dcs_write_seq_multi(ctx, 0xba, 0x01, 0x02, 0x06, 0x08, 0x08, 0x1e, 0x03);
+	mipi_dsi_dcs_write_var_seq_multi(ctx, 0xba,
+					 sc[0], sc[1], sc[2], sc[3], sc[4], sc[5], sc[6]);
 	s6e3ha6_key2_off(ctx);
-	mipi_dsi_dcs_write_seq_multi(ctx, 0x2a, 0x00, 0x00, 0x05, 0x9f);	/* 0..1439 */
-	mipi_dsi_dcs_write_seq_multi(ctx, 0x2b, 0x00, 0x00, 0x0b, 0x8f);	/* 0..2959 */
+	mipi_dsi_dcs_write_var_seq_multi(ctx, 0x2a, caset[0], caset[1], caset[2], caset[3]);
+	mipi_dsi_dcs_write_var_seq_multi(ctx, 0x2b, paset[0], paset[1], paset[2], paset[3]);
 	s6e3ha6_key3_on(ctx);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0xb0, 0x05);		/* OMOK 2CH latch :1340-1346 */
 	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x01);
@@ -595,7 +606,7 @@ static int s6e3ha6_enable(struct drm_panel *panel)
 
 	for (try = 1; try <= S6E3HA6_INIT_TRIES; try++) {
 		dctx.accum_err = 0;
-		s6e3ha6_init_seq(&dctx);
+		s6e3ha6_init_seq(&dctx, ctx);
 		if (!dctx.accum_err && s6e3ha6_det_ok(ctx))
 			break;
 		dev_err(&ctx->dsi->dev, "disp-det low after init (try %d/%d), err %d\n",

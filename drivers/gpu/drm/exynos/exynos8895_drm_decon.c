@@ -1083,14 +1083,30 @@ static void d8895_set_dsu_update(struct decon8895_ctx *ctx, const struct dsu_inf
 
 /*
  * decon_reg_init() full path for DECON0, MIPI command mode, HW trigger,
- * single DSI, dual DSC (decon_reg.c:2047-2094).
+ * single DSI, dual DSC (decon_reg.c:2047-2094). Uses the active DSU mode
+ * dimensions and DSC state when DSU is enabled, matching stock's shared
+ * decon->lcd_info across hibernation and power-off/on
+ * (S:drivers/video/fbdev/exynos/dpu/decon_reg.c:1902-1965, 2047-2094).
  */
 static void d8895_hw_init(struct decon8895_ctx *ctx, const struct drm_display_mode *m,
 			  const struct drm_dsc_config *dsc)
 {
-	u32 xres = m->hdisplay, yres = m->vdisplay, val;
+	const struct dsu_info_dt *dt = exynos8895_panel_get_dsu_dt();
+	u32 xres = m->hdisplay, yres = m->vdisplay;
+	u32 slice_h = dsc->slice_height, val;
+	bool dsc_en = true;
 	struct d8895_dsc d;
-	int i;
+	int idx, i;
+
+	if (dt && dt->dsu_en) {
+		idx = ctx->dsu.mode - DSU_MODE_1;
+		if (idx >= 0 && idx < dt->dsu_number) {
+			xres = dt->res_info[idx].width;
+			yres = dt->res_info[idx].height;
+			dsc_en = dt->res_info[idx].dsc_en != 0;
+			slice_h = dt->res_info[idx].dsc_height;
+		}
+	}
 
 	/*
 	 * Resolution clock for the bus votes (S:dpu/bts.c:410-421
@@ -1119,17 +1135,29 @@ static void d8895_hw_init(struct decon8895_ctx *ctx, const struct drm_display_mo
 	       D8895_BLENDER_BG_HEIGHT_MASK | D8895_BLENDER_BG_WIDTH_MASK);
 	d_write(ctx, D8895_BLENDER_BG_IMAGE_SIZE_1, yres * xres);
 
-	/* decon_reg_configure_lcd() (:1902-1965): RGB order with DSC (:1921-1925) */
-	d_mask(ctx, D8895_FORMATTER_CONTROL, D8895_FORMATTER_OUT_RGB_ORDER_F(D8895_DECON_RGB),
-	       D8895_FORMATTER_OUT_RGB_ORDER_MASK);
-	d_mask(ctx, D8895_DATA_PATH_CONTROL_2,
-	       D8895_ENHANCE_LOGIC_PATH_F(D8895_ENHANCEPATH_ENHANCE_ALL_OFF) |
-	       D8895_COMP_LINKIF_WB_PATH_F(D8895_DPATH_DSCC_DSCENC01_FF01_FORMATTER0_DSIMIF0),
-	       D8895_ENHANCE_LOGIC_PATH_MASK | D8895_COMP_LINKIF_WB_PATH_MASK);
-	d8895_dsc_calc(xres, yres, dsc->slice_count, dsc->slice_height, &d);
-	for (i = 0; i < 2; i++)
-		d8895_dsc_program(ctx, i ? D8895_DSC1_OFFSET : D8895_DSC0_OFFSET, &d);
-	d8895_data_path_size(ctx, d.width_per_enc, yres, true);
+	/* decon_reg_configure_lcd() (:1902-1965): RGB with DSC, BGR without (:1921-1925) */
+	if (dsc_en) {
+		d_mask(ctx, D8895_FORMATTER_CONTROL,
+		       D8895_FORMATTER_OUT_RGB_ORDER_F(D8895_DECON_RGB),
+		       D8895_FORMATTER_OUT_RGB_ORDER_MASK);
+		d_mask(ctx, D8895_DATA_PATH_CONTROL_2,
+		       D8895_ENHANCE_LOGIC_PATH_F(D8895_ENHANCEPATH_ENHANCE_ALL_OFF) |
+		       D8895_COMP_LINKIF_WB_PATH_F(D8895_DPATH_DSCC_DSCENC01_FF01_FORMATTER0_DSIMIF0),
+		       D8895_ENHANCE_LOGIC_PATH_MASK | D8895_COMP_LINKIF_WB_PATH_MASK);
+		d8895_dsc_calc(xres, yres, dsc->slice_count, slice_h, &d);
+		for (i = 0; i < 2; i++)
+			d8895_dsc_program(ctx, i ? D8895_DSC1_OFFSET : D8895_DSC0_OFFSET, &d);
+		d8895_data_path_size(ctx, d.width_per_enc, yres, true);
+	} else {
+		d_mask(ctx, D8895_FORMATTER_CONTROL,
+		       D8895_FORMATTER_OUT_RGB_ORDER_F(D8895_DECON_BGR),
+		       D8895_FORMATTER_OUT_RGB_ORDER_MASK);
+		d_mask(ctx, D8895_DATA_PATH_CONTROL_2,
+		       D8895_ENHANCE_LOGIC_PATH_F(D8895_ENHANCEPATH_ENHANCE_ALL_OFF) |
+		       D8895_COMP_LINKIF_WB_PATH_F(D8895_DPATH_NOCOMP_FF0_FORMATTER0_DSIMIF0),
+		       D8895_ENHANCE_LOGIC_PATH_MASK | D8895_COMP_LINKIF_WB_PATH_MASK);
+		d8895_data_path_size(ctx, xres, yres, false);
+	}
 	d_mask(ctx, D8895_DATA_PATH_CONTROL_2, D8895_APS_PATH_F(D8895_SHAREPATH_DQE_USE),
 	       D8895_APS_PATH_MASK);
 	d_mask(ctx, D8895_DATA_PATH_CONTROL_2, D8895_HSC_PATH_F(D8895_SHAREPATH_DQE_USE),
@@ -1258,6 +1286,10 @@ static void d8895_panic_alloc(struct decon8895_ctx *ctx, const struct drm_displa
 {
 	struct device *dma_dev = to_dma_dev(ctx->drm);
 	size_t size = (size_t)m->hdisplay * m->vdisplay * 4;
+	u32 pw = ctx->dsu.right > ctx->dsu.left ?
+		 (u32)(ctx->dsu.right - ctx->dsu.left) : m->hdisplay;
+	u32 ph = ctx->dsu.bottom > ctx->dsu.top ?
+		 (u32)(ctx->dsu.bottom - ctx->dsu.top) : m->vdisplay;
 	void *vaddr = NULL, *old_vaddr;
 	dma_addr_t dma = 0, old_dma;
 	unsigned long flags = 0;
@@ -1268,8 +1300,8 @@ static void d8895_panic_alloc(struct decon8895_ctx *ctx, const struct drm_displa
 
 	if (ctx->panic_vaddr && ctx->panic_size == size) {
 		drm_panic_lock(ctx->drm, flags);
-		ctx->panic_w = m->hdisplay;
-		ctx->panic_h = m->vdisplay;
+		ctx->panic_w = pw;
+		ctx->panic_h = ph;
 		drm_panic_unlock(ctx->drm, flags);
 		return;
 	}
@@ -1287,8 +1319,8 @@ static void d8895_panic_alloc(struct decon8895_ctx *ctx, const struct drm_displa
 	ctx->panic_vaddr = vaddr;
 	ctx->panic_dma = dma;
 	ctx->panic_size = vaddr ? size : 0;
-	ctx->panic_w = m->hdisplay;
-	ctx->panic_h = m->vdisplay;
+	ctx->panic_w = pw;
+	ctx->panic_h = ph;
 	drm_panic_unlock(ctx->drm, flags);
 
 	if (old_vaddr)
