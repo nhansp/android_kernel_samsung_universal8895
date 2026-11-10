@@ -116,6 +116,23 @@
 #define S6SY661_TT_GLOVE		3
 #define S6SY661_TT_PALM			5
 #define S6SY661_TT_WET			6
+/*
+ * The under-display pressure home key. The touch firmware's "sponge" library reports a hard
+ * press on the lower screen; stock calls it SPONGE FORCE_KEY. Paths are S:.../sec_ts_y661/.
+ */
+#define S6SY661_SPONGE_GET_INFO		0x90	/* SEC_TS_CMD_SPONGE_GET_INFO, sec_ts.h:217 */
+#define S6SY661_SPONGE_WRITE_PARAM	0x91	/* sec_ts.h:218 */
+#define S6SY661_SPONGE_NOTIFY_PACKET	0x93	/* sec_ts.h:220 */
+#define S6SY661_SPONGE_INFO_SIZE	10	/* u8 data[10], sec_ts.c:1993-1998 */
+#define S6SY661_SPONGE_MODEL_LEN	4	/* strncmp(data, model_name, 4), sec_ts.c:2009 */
+#define S6SY661_MODE_FORCE_KEY		BIT(6)	/* SEC_TS_MODE_SPONGE_FORCE_KEY, sec_ts.h:488 */
+/* status event type SPONGE_INFO (sec_ts.h:100) in byte 0 [5:2], id FORCE_KEY (sec_ts.h:328) */
+#define S6SY661_MASK_STYPE		0x3c
+#define S6SY661_STATUS_SPONGE_INFO	6
+#define S6SY661_SPONGE_FORCE_KEY	0x00
+/* status_data_1 (byte 2), sec_ts.h:497-498 */
+#define S6SY661_SPONGE_TOUCHED		BIT(6)
+#define S6SY661_SPONGE_RELEASED		BIT(7)
 /* the sec/tsp command node, S:drivers/input/sec_cmd.c, S:include/linux/input/sec_cmd.h */
 #define S6SY661_CMD_STR_LEN		256	/* SEC_CMD_STR_LEN, sec_cmd.h:37 */
 #define S6SY661_CMD_PARAM_NUM		8	/* SEC_CMD_PARAM_NUM, sec_cmd.h:39 */
@@ -155,6 +172,9 @@ struct s6sy761_data {
 	struct mutex power_lock;	/* powered, the rails, the IRQ disable depth */
 	bool powered;
 	u16 touch_functions;		/* TOUCH_FUNCTION word, rewritten at every power-on */
+	bool pressure_key;		/* the firmware has the sponge library: home key reported */
+	u8 lowpower_mode;		/* sponge mode byte, stock ts->lowpower_mode */
+	bool home_key_down;		/* IRQ thread only */
 	struct drm_panel_follower follower;
 	struct work_struct power_on_work;
 	struct mutex cmd_lock;
@@ -238,6 +258,30 @@ static void s6sy761_report_release(struct s6sy761_data *sdata,
 	s6sy761_sync(sdata);
 }
 
+/*
+ * Status event SPONGE_INFO / FORCE_KEY: a press (bit 6) or release (bit 7) of the pressure home
+ * key, stock sec_ts.c:1070-1118. Stock reports KEY_HOMEPAGE for it (:1090,1097) and, when the
+ * press arrives with the screen on, only the Samsung-specific KEY_BLACK_UI_GESTURE; this port
+ * reports KEY_HOMEPAGE for both so that a generic Android input stack sees a home key.
+ * A release always releases the key, as stock's does for a press that started while the screen
+ * was off (:1074-1080).
+ */
+static void s6sy661_handle_pressure(struct s6sy761_data *sdata, u8 *event)
+{
+	if (((event[0] & S6SY661_MASK_STYPE) >> 2) != S6SY661_STATUS_SPONGE_INFO ||
+	    event[1] != S6SY661_SPONGE_FORCE_KEY)
+		return;
+
+	if (event[2] & S6SY661_SPONGE_TOUCHED) {
+		sdata->home_key_down = true;
+		input_report_key(sdata->input, KEY_HOMEPAGE, 1);
+	} else {
+		sdata->home_key_down = false;
+		input_report_key(sdata->input, KEY_HOMEPAGE, 0);
+	}
+	input_sync(sdata->input);
+}
+
 static void s6sy761_handle_coordinates(struct s6sy761_data *sdata, u8 *event)
 {
 	u8 tid;
@@ -291,6 +335,8 @@ static void s6sy761_handle_events(struct s6sy761_data *sdata, u8 n_events)
 			break;
 
 		case S6SY761_EVENT_ID_STATUS:
+			if (sdata->pressure_key)
+				s6sy661_handle_pressure(sdata, event);
 			break;
 
 		default:
@@ -415,6 +461,25 @@ static int s6sy761_power_on(struct s6sy761_data *sdata)
 }
 
 /*
+ * Tell the sponge library which features to run, stock sec_ts_set_custom_library()
+ * (sec_ts.c:1971-1990): three bytes at SPONGE_WRITE_PARAM (offset 0, 0, then the mode byte),
+ * then a NOTIFY_PACKET with no data. Stock sends it at every start (sec_ts.c:864-865) and at
+ * the end of probe (:2354-2357). Caller holds power_lock or is probe.
+ */
+static int s6sy661_sponge_write(struct s6sy761_data *sdata)
+{
+	u8 data[3] = { 0, 0, sdata->lowpower_mode };
+	int ret;
+
+	ret = i2c_smbus_write_i2c_block_data(sdata->client, S6SY661_SPONGE_WRITE_PARAM,
+					     sizeof(data), data);
+	if (ret)
+		return ret;
+
+	return i2c_smbus_write_byte(sdata->client, S6SY661_SPONGE_NOTIFY_PACKET);
+}
+
+/*
  * S6SY661 power-on, stock sec_ts_power(on) + sec_ts_start_device()
  * (S:drivers/input/touchscreen/sec_ts_y661/sec_ts.c:1673-1686, 2911-2923): tsp_io ("vdd")
  * first, 1 ms, tsp_avdd ("avdd"), 70 ms. Only the power-on at probe skips the 70 ms when
@@ -471,6 +536,9 @@ static int s6sy661_power_on(struct s6sy761_data *sdata, bool probe)
 	if (ret)
 		goto err_avdd;
 
+	if (sdata->pressure_key && s6sy661_sponge_write(sdata))
+		dev_warn(&sdata->client->dev, "failed to configure the pressure key\n");
+
 	sdata->powered = true;
 	return 0;
 
@@ -499,6 +567,11 @@ static void s6sy661_power_off(struct s6sy761_data *sdata)
 		for (i = 0; i < S6SY661_MAX_SLOTS; i++) {
 			input_mt_slot(sdata->input, i);
 			input_mt_report_slot_inactive(sdata->input);
+		}
+		/* sec_ts_locked_release_all_finger() also releases KEY_HOMEPAGE, sec_ts.c:2482,2536 */
+		if (sdata->home_key_down) {
+			input_report_key(sdata->input, KEY_HOMEPAGE, 0);
+			sdata->home_key_down = false;
 		}
 		s6sy761_sync(sdata);
 	}
@@ -596,6 +669,36 @@ static void s6sy661_cancel_power_on_work(void *data)
 	struct s6sy761_data *sdata = data;
 
 	cancel_work_sync(&sdata->power_on_work);
+}
+
+/*
+ * stock sec_ts_check_custom_library() (sec_ts.c:1993-2018): read the 10 info bytes at
+ * SPONGE_GET_INFO and compare the first four characters with the model name from the DT; a
+ * match means the firmware has the sponge library. Stock additionally needs the DT
+ * pressure-sensor property (:2192), which samsung,sponge-model stands for. Chip is powered.
+ */
+static void s6sy661_pressure_init(struct s6sy761_data *sdata)
+{
+	struct device *dev = &sdata->client->dev;
+	u8 info[S6SY661_SPONGE_INFO_SIZE];
+	const char *model;
+	int ret;
+
+	if (device_property_read_string(dev, "samsung,sponge-model", &model))
+		return;
+
+	ret = i2c_smbus_read_i2c_block_data(sdata->client, S6SY661_SPONGE_GET_INFO,
+					    sizeof(info), info);
+	if (ret != sizeof(info) || strncmp(info, model, S6SY661_SPONGE_MODEL_LEN)) {
+		dev_info(dev, "no sponge library for %s, pressure key off\n", model);
+		return;
+	}
+
+	/* stock sec_ts.c:2192-2193: the key is on by default */
+	sdata->lowpower_mode = S6SY661_MODE_FORCE_KEY;
+	sdata->pressure_key = true;
+	if (s6sy661_sponge_write(sdata))
+		dev_warn(dev, "failed to configure the pressure key\n");
 }
 
 static int s6sy761_hw_init(struct s6sy761_data *sdata,
@@ -903,6 +1006,9 @@ static int s6sy761_probe(struct i2c_client *client)
 	if (err)
 		return err;
 
+	if (sdata->variant->s6sy661)
+		s6sy661_pressure_init(sdata);
+
 	sdata->input = devm_input_allocate_device(&client->dev);
 	if (!sdata->input)
 		return -ENOMEM;
@@ -919,6 +1025,9 @@ static int s6sy761_probe(struct i2c_client *client)
 	input_set_abs_params(sdata->input, ABS_MT_TOUCH_MAJOR, 0, 255, 0, 0);
 	input_set_abs_params(sdata->input, ABS_MT_TOUCH_MINOR, 0, 255, 0, 0);
 	input_set_abs_params(sdata->input, ABS_MT_PRESSURE, 0, 255, 0, 0);
+
+	if (sdata->pressure_key)
+		input_set_capability(sdata->input, EV_KEY, KEY_HOMEPAGE);	/* sec_ts.c:2055 */
 
 	touchscreen_parse_properties(sdata->input, true, &sdata->prop);
 
