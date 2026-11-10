@@ -533,7 +533,12 @@ static const u32 fimc_is_isp_fps[FIMC_IS_ISP_COOLING_STATES] = { 60, 15, 5 };
 
 static unsigned int fimc_is_isp_state_of_fps(u32 fps)
 {
-	if (fps >= 60)
+	/*
+	 * limited_fps == 0 is "no limit": the stock notifier clears it for
+	 * ISP_NORMAL, ISP_COLD and an fps >= 60 throttle (S:fimc-is-resourcemgr.c:455-467), and
+	 * the shot path applies it only when non-zero (S:fimc-is-groupmgr.c:2442).
+	 */
+	if (!fps || fps >= 60)
 		return 0;	/* unlimited */
 	if (fps <= 5)
 		return 2;
