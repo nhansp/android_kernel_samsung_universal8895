@@ -2697,6 +2697,21 @@ static irqreturn_t d8895_irq(int irq, void *dev_id)
 				ctx->fs_cb(ctx->fs_data);
 			spin_unlock(&ctx->vsync_lock);
 		}
+		/*
+		 * The flip completes when the new frame starts: its shadow registers
+		 * latched and the DMA reads the new buffers. decon_update_regs()
+		 * returns at that point too (decon_wait_for_vsync() and
+		 * decon_wait_for_vstatus(), S:.../dpu/decon_core.c:2279-2283), so
+		 * the next update is written while this frame is still transferring
+		 * and latches at the next TE. Completing at frame done held the
+		 * commit for the whole transfer: the next flush often missed the
+		 * following TE (33 ms commits) and frames queued behind it.
+		 */
+		if (READ_ONCE(ctx->vblank_on)) {
+			spin_lock(&ctx->vblank_lock);
+			drm_crtc_handle_vblank(&ctx->crtc->base);
+			spin_unlock(&ctx->vblank_lock);
+		}
 	}
 	if (pend & D8895_DPU_FRAME_DONE_INT_PEND) {
 		d_write(ctx, D8895_INTERRUPT_PENDING, D8895_DPU_FRAME_DONE_INT_PEND);
@@ -2714,11 +2729,6 @@ static irqreturn_t d8895_irq(int irq, void *dev_id)
 		    !(d_read(ctx, D8895_SHADOW_REG_UPDATE_REQ) & D8895_SHADOW_REG_UPDATE_REQ_GLOBAL) &&
 		    atomic_cmpxchg(&ctx->oneshot_state, 2, 0) == 2)
 			d8895_trigger(ctx, false);
-		if (READ_ONCE(ctx->vblank_on)) {
-			spin_lock(&ctx->vblank_lock);
-			drm_crtc_handle_vblank(&ctx->crtc->base);
-			spin_unlock(&ctx->vblank_lock);
-		}
 		d8895_panel_frame_done();
 	}
 	if (pend & D8895_DPU_DQE_DIMMING_START_INT_PEND)
