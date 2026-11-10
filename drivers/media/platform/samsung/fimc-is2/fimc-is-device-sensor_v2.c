@@ -1558,6 +1558,22 @@ static int fimc_is_sensor_probe(struct platform_device *pdev)
 		goto p_err;
 	}
 
+	/*
+	 * Creating the link during probe runtime-resumes fimc_is
+	 * (A:drivers/base/core.c:890-892 device_link_add(): pm_runtime_resume(
+	 * supplier) for a PM_RUNTIME link in DL_STATE_CONSUMER_PROBE) and nothing
+	 * puts it back. rpm_resume() queues an async idle when it finishes
+	 * (A:drivers/base/power/runtime.c:953-954), but a second consumer's
+	 * pm_runtime_resume() of the already active fimc_is clears that request
+	 * (runtime.c:816, request = RPM_REQ_NONE), so fimc_is stays RPM_ACTIVE
+	 * with no user: fimc_is_ischain_runtime_resume() took the INTCAM/CAM/INT
+	 * mm-qos requests (fimc-is-device-ischain.c:2273-2282) and they are only
+	 * dropped by runtime_suspend (ischain.c:2195-2204). That held bus-intcam/
+	 * bus-cam at 690000 from boot. Stock has no links and suspends fimc_is
+	 * after probe. Idle it again; -EAGAIN if a user holds it.
+	 */
+	pm_runtime_idle(&core->pdev->dev);
+
 	set_bit(FIMC_IS_SENSOR_PROBE, &device->state);
 
 p_err:
