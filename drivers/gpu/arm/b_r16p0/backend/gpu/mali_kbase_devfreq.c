@@ -356,7 +356,8 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 	dp = &kbdev->devfreq_profile;
 
 	dp->initial_freq = kbdev->current_freq;
-	dp->polling_ms = 100;
+	/* stock gpu_dvfs_polling_time = <30> ms (stock dtsi:799, K:platform/exynos/gpu_integration_callbacks.c:547) */
+	dp->polling_ms = 30;
 	dp->target = kbase_devfreq_target;
 	dp->get_dev_status = kbase_devfreq_status;
 	dp->get_cur_freq = kbase_devfreq_cur_freq;
@@ -376,7 +377,8 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 		return err;
 
 	kbdev->devfreq = devfreq_add_device(kbdev->dev, dp,
-				"simple_ondemand", NULL);
+				DEVFREQ_GOV_TABLE_INTERACTIVE,
+				&exynos8895_gpu_dvfs_data);
 	if (IS_ERR(kbdev->devfreq)) {
 		kfree(dp->freq_table);
 		return PTR_ERR(kbdev->devfreq);

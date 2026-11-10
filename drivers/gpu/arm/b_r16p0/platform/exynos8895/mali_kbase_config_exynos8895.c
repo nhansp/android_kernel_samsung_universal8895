@@ -11,6 +11,8 @@
  */
 
 #include <linux/clk.h>
+#include <linux/devfreq.h>
+#include <linux/limits.h>
 #include <linux/device.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
@@ -20,6 +22,7 @@
 #include <linux/seq_file.h>
 
 #include <dt-bindings/clock/samsung,exynos8895-acpm.h>
+#include <soc/samsung/exynos8895-mm-qos.h>
 
 #include <mali_kbase.h>
 #include <mali_kbase_defs.h>
@@ -35,25 +38,87 @@
 #define EXYNOS8895_G3D_START_HZ		260000000UL
 
 /*
- * Stock gpu_dvfs_table column 4 (mem_freq) per GPU frequency (FDT:4648,
- * S:drivers/gpu/arm/b_r16p0/platform/exynos/mali_kbase_platform.c:393;
- * spec L2b 2.2 REQ-2B-L6A-1).
+ * Stock gpu_dvfs_table (FDT:4648; S:arch/arm64/boot/dts/exynos/exynos8895.dtsi:766-774;
+ * S: = the stock kernel, K: = S:drivers/gpu/arm/b_r16p0), the rows of the
+ * OPPs this tree has: gpu_max_clock 546000 kHz and gpu_min_clock 260000 kHz
+ * (dtsi:779,781) bound the rows the stock driver keeps
+ * (K:platform/exynos/mali_kbase_platform.c:383), which drops the 572-839 MHz
+ * rows. Columns (gpu_pmqos_cpu_cluster_num = 2, dtsi:776;
+ * K:...mali_kbase_platform.c:390-394,405): clock, min_threshold,
+ * max_threshold, down_staycount, mem_freq, cpu_little_min_freq,
+ * cpu_big_max_freq (0 = CPU_MAX = INT_MAX, :405, K:...mali_kbase_platform.h:46).
+ * Stock has no INT column
+ * (gpu_pmqos_int_disable = <1>, dtsi:800). Ascending, as the governor wants.
+ *
+ *	clock  min max stay mif     little   big      dtsi line
+ *	260000  78  85  1   421000        0     0       :774
+ *	338000  78  85  1  1014000   949000     0       :773
+ *	385000  78  85  1  1352000  1248000     0       :772
+ *	455000  78  85  1  1540000  1456000  2002000    :771
+ *	546000  78  99  1  1794000  1690000  2002000    :770
  */
-static s32 exynos8895_gpu_to_mif_khz(unsigned long gpu_rate_hz)
+static const struct devfreq_table_interactive_level exynos8895_gpu_levels[] = {
+	{ 260000000UL, 78, 85, 1 },
+	{ 338000000UL, 78, 85, 1 },
+	{ 385000000UL, 78, 85, 1 },
+	{ 455000000UL, 78, 85, 1 },
+	{ 546000000UL, 78, 99, 1 },
+};
+
+struct exynos8895_gpu_qos {
+	unsigned int khz;
+	s32 mif_khz;		/* K:...gpu_pmqos.c:107 PM_QOS_BUS_THROUGHPUT min */
+	s32 cl0_min_khz;	/* :118 PM_QOS_CLUSTER0_FREQ_MIN */
+	s32 cl1_max_khz;	/* :121 PM_QOS_CLUSTER1_FREQ_MAX */
+};
+
+static const struct exynos8895_gpu_qos exynos8895_gpu_qos_tbl[] = {
+	{ 260000,  421000,       0, INT_MAX },
+	{ 338000, 1014000,  949000, INT_MAX },
+	{ 385000, 1352000, 1248000, INT_MAX },
+	{ 455000, 1540000, 1456000, 2002000 },
+	{ 546000, 1794000, 1690000, 2002000 },
+};
+
+static_assert(ARRAY_SIZE(exynos8895_gpu_levels) == ARRAY_SIZE(exynos8895_gpu_qos_tbl));
+
+/*
+ * The governor: interactive_info = <455000 95 0> (dtsi:764): highspeed
+ * clock, highspeed load, highspeed delay (K:...mali_kbase_platform.c:247-252).
+ */
+struct devfreq_table_interactive_data exynos8895_gpu_dvfs_data = {
+	.levels = exynos8895_gpu_levels,
+	.nlevels = ARRAY_SIZE(exynos8895_gpu_levels),
+	.highspeed_hz = 455000000UL,
+	.highspeed_load = 95,
+	.highspeed_delay = 0,
+};
+
+/* the row of the highest table clock not above @gpu_rate_hz, NULL below the table */
+static const struct exynos8895_gpu_qos *exynos8895_gpu_qos_of(unsigned long gpu_rate_hz)
 {
 	unsigned long khz = gpu_rate_hz / 1000;
+	int i;
 
-	if (khz >= 546000)
-		return 1794000;
-	if (khz >= 455000)
-		return 1540000;
-	if (khz >= 385000)
-		return 1352000;
-	if (khz >= 338000)
-		return 1014000;
-	if (khz >= 260000)
-		return 421000;
-	return 0;
+	for (i = ARRAY_SIZE(exynos8895_gpu_qos_tbl) - 1; i >= 0; i--)
+		if (khz >= exynos8895_gpu_qos_tbl[i].khz)
+			return &exynos8895_gpu_qos_tbl[i];
+	return NULL;
+}
+
+/*
+ * Stock GPU_CONTROL_PM_QOS_SET (K:platform/exynos/gpu_pmqos.c:101-121): the
+ * per-level MIF and CPU votes. gpu_pmqos_int_disable = <1> (dtsi:800): no INT
+ * vote (K:...mali_kbase_platform.c:302). NULL = GPU_CONTROL_PM_QOS_RESET
+ * (:145-164): MIF 0, little min 0, big max INT_MAX.
+ */
+static void exynos8895_gpu_qos_apply(struct exynos8895_gpu *gpu, unsigned long rate)
+{
+	const struct exynos8895_gpu_qos *q = exynos8895_gpu_qos_of(rate);
+
+	exynos_bus_qos_update_request(&gpu->mif_req, q ? q->mif_khz : 0);
+	mm_qos_update_request(&gpu->cl0_min_req, q ? q->cl0_min_khz : 0);
+	mm_qos_update_request(&gpu->cl1_max_req, q ? q->cl1_max_khz : INT_MAX);
 }
 
 /* Every member NULL: the core tests each one (L6A 5.1.2) */
@@ -70,27 +135,25 @@ static struct kbase_device *exynos8895_kbdev;
 int exynos8895_gpu_set_rate(struct kbase_device *kbdev, unsigned long rate)
 {
 	struct exynos8895_gpu *gpu = kbdev->platform_context;
-	s32 old_mif, new_mif;
-	bool active;
+	bool active, is_up;
 
 	mutex_lock(&gpu->lock);
-	old_mif = exynos8895_gpu_to_mif_khz(gpu->cur_rate);
-	new_mif = exynos8895_gpu_to_mif_khz(rate);
+	is_up = rate > gpu->cur_rate;
 	gpu->want_rate = rate;
 	active = (pm_runtime_get_if_active(kbdev->dev) > 0);
 	mutex_unlock(&gpu->lock);
 
 	if (active) {
 		/* stock S:drivers/gpu/arm/b_r16p0/platform/exynos/gpu_control.c:184-198:
-		 * raise MIF floor before raising clock, lower MIF floor after */
-		if (new_mif > old_mif)
-			exynos_bus_qos_update_request(&gpu->mif_req, new_mif);
+		 * raise the MIF/CPU votes before raising the clock, lower them after */
+		if (is_up)
+			exynos8895_gpu_qos_apply(gpu, rate);
 		mutex_lock(&gpu->lock);
 		if (!clk_set_rate(gpu->clk, rate))
 			gpu->cur_rate = rate;
 		mutex_unlock(&gpu->lock);
-		if (new_mif < old_mif)
-			exynos_bus_qos_update_request(&gpu->mif_req, new_mif);
+		if (!is_up)
+			exynos8895_gpu_qos_apply(gpu, rate);
 		pm_runtime_put_autosuspend(kbdev->dev);
 	}
 
@@ -148,6 +211,9 @@ static int exynos8895_platform_init(struct kbase_device *kbdev)
 	 * (spec L2b REQ-2B-L6A-1)
 	 */
 	exynos_bus_qos_add_request(&gpu->mif_req, EXYNOS_BUS_QOS_MIF, 0);
+	/* :65-66: little cluster min at 0, big cluster max at INT_MAX */
+	mm_qos_add_request(&gpu->cl0_min_req, MM_QOS_CL0_MIN, 0);
+	mm_qos_add_request(&gpu->cl1_max_req, MM_QOS_CL1_MAX, INT_MAX);
 
 	/*
 	 * stock kbase_platform_exynos5_init() ends with
@@ -159,6 +225,8 @@ static int exynos8895_platform_init(struct kbase_device *kbdev)
 	 */
 	ret = exynos8895_gpu_create_sysfs(gpu);
 	if (ret) {
+		mm_qos_remove_request(&gpu->cl1_max_req);
+		mm_qos_remove_request(&gpu->cl0_min_req);
 		exynos_bus_qos_remove_request(&gpu->mif_req);
 		return ret;
 	}
@@ -177,6 +245,8 @@ static void exynos8895_platform_term(struct kbase_device *kbdev)
 	if (gpu) {
 		/* stock gpu_remove_sysfs_file(kbdev->dev), mali_kbase_platform.c:672 */
 		exynos8895_gpu_delete_sysfs(gpu);
+		mm_qos_remove_request(&gpu->cl1_max_req);
+		mm_qos_remove_request(&gpu->cl0_min_req);
 		exynos_bus_qos_remove_request(&gpu->mif_req);
 	}
 	exynos8895_kbdev = NULL;
@@ -246,8 +316,7 @@ static int exynos8895_pm_runtime_on(struct kbase_device *kbdev)
 	struct exynos8895_gpu *gpu = kbdev->platform_context;
 
 	/* stock S:drivers/gpu/arm/b_r16p0/platform/exynos/gpu_control.c:188 */
-	exynos_bus_qos_update_request(&gpu->mif_req,
-				      exynos8895_gpu_to_mif_khz(gpu->want_rate));
+	exynos8895_gpu_qos_apply(gpu, gpu->want_rate);
 
 	mutex_lock(&gpu->lock);
 	if (gpu->want_rate != gpu->cur_rate &&
@@ -263,8 +332,8 @@ static void exynos8895_pm_runtime_off(struct kbase_device *kbdev)
 {
 	struct exynos8895_gpu *gpu = kbdev->platform_context;
 
-	/* stock S:drivers/gpu/arm/b_r16p0/platform/exynos/gpu_control.c:274 */
-	exynos_bus_qos_update_request(&gpu->mif_req, 0);
+	/* stock S:drivers/gpu/arm/b_r16p0/platform/exynos/gpu_control.c:274: PM_QOS_RESET */
+	exynos8895_gpu_qos_apply(gpu, 0);
 }
 
 static void exynos8895_pm_resume(struct kbase_device *kbdev)

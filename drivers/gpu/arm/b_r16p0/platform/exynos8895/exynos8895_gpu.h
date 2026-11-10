@@ -17,6 +17,7 @@
 #include <linux/types.h>
 
 #include <soc/samsung/exynos8895-bus-qos.h>
+#include <soc/samsung/exynos8895-mm-qos.h>
 
 struct kbase_device;
 struct kbase_pm_policy;
@@ -28,6 +29,8 @@ struct exynos8895_gpu {
 	unsigned long cur_rate, want_rate;
 	u32 autosuspend_ms;
 	struct exynos_bus_qos_request mif_req;
+	struct mm_qos_request cl0_min_req;	/* little cluster min */
+	struct mm_qos_request cl1_max_req;	/* big cluster max */
 
 	/* The sysfs state of gpu_sysfs.c. Every clock is in kHz, as the stock
 	 * DVFS table (S:drivers/gpu/arm/b_r16p0/platform/exynos/gpu_dvfs_api.c:562-573

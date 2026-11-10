@@ -15,6 +15,7 @@
 struct kbase_context;
 struct kbase_device;
 struct seq_file;
+struct devfreq_table_interactive_data;
 
 /* K:platform/exynos/gpu_integration_defs.h:26-30 */
 /* kctx initialized with zero from vzalloc, so initialized value required only */
@@ -60,6 +61,9 @@ int gpu_vendor_dispatch(struct kbase_context *kctx, u32 flags);
 int gpu_is_power_on(void);
 int gpu_memory_seq_show(struct seq_file *sfile, void *data);
 struct kbase_device *gpu_get_device_structure(void);
+
+/* The stock DVFS table and interactive_info as governor data for kbase devfreq */
+extern struct devfreq_table_interactive_data exynos8895_gpu_dvfs_data;
 
 /* The G3D rate for kbase devfreq, applied only with pd_g3d on (L6A 5.1.4) */
 int exynos8895_gpu_set_rate(struct kbase_device *kbdev, unsigned long rate);
