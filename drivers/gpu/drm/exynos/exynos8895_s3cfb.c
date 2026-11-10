@@ -57,6 +57,10 @@
 
 #define MAX_DECON_WIN		6	/* S:.../dpu/decon.h:65 */
 #define MAX_PLANE_CNT		3	/* :58 */
+#define MIN_WIN_BLOCK_WIDTH	8	/* :67 */
+#define MIN_WIN_BLOCK_HEIGHT	1	/* :68 */
+#define DECON_WIN_UPDATE_IDX	6	/* :74, CONFIG_SOC_EXYNOS8895 */
+#define DECON_WIN_DSU_ID	(DECON_WIN_UPDATE_IDX + 1)	/* :80 */
 #define HDR_CAPA_NUM		4	/* S:.../dpu/decon_lcd.h:65 */
 
 /* :695-701 */
@@ -294,6 +298,7 @@ struct s3cfb_frame {
 	struct kthread_work work;
 	struct s3cfb *s;
 	struct s3cfb_win win[MAX_DECON_WIN];
+	struct dsu_info dsu;
 };
 
 struct s3cfb_fence {
@@ -338,6 +343,9 @@ struct s3cfb {
 	/* colour windows of the last successful commit (worker, or blank after a flush) */
 	struct exynos8895_color_win cw[MAX_DECON_WIN];
 	u8 cw_on;
+
+	/* current DSU mode and active resolution (S:.../dpu/decon.h:1251) */
+	struct dsu_info dsu;
 };
 
 /* the one front-end (DECON0 has one fb0) */
@@ -810,17 +818,117 @@ static int s3cfb_check_limitation(int w, const struct decon_win_config *c)
 }
 
 /*
+ * dsu_check_info() and dsu_win_config() (S:.../dpu/dsu_update.c:3-81):
+ * validate and stage a DSU mode switch request from config[DECON_WIN_DSU_ID].
+ */
+static int s3cfb_dsu_check_info(const struct decon_win_config *dsu_info,
+				const struct dsu_info_dt *dt_dsu_info)
+{
+	int actual_mode;
+	int width, height;
+
+	if (unlikely(dsu_info->mode < DSU_MODE_1 || dsu_info->mode >= DSU_MODE_MAX)) {
+		pr_err("DECON:ERR:%s:invalid dsu mode : %d\n", __func__, dsu_info->mode);
+		return -EINVAL;
+	}
+
+	actual_mode = dsu_info->mode - DSU_MODE_1;
+	if (unlikely(actual_mode >= dt_dsu_info->dsu_number)) {
+		pr_err("DECON:ERR:%s:invalid dsu mode : %d\n", __func__, dsu_info->mode);
+		return -EINVAL;
+	}
+
+	if (dsu_info->top != 0 || dsu_info->left != 0) {
+		pr_err("DECON:ERR:%s:wrong dsu info : mode:%d, top:%d, left:%d\n",
+		       __func__, dsu_info->mode, dsu_info->top, dsu_info->left);
+		return -EINVAL;
+	}
+
+	width = dsu_info->right - dsu_info->left;
+	height = dsu_info->bottom - dsu_info->top;
+
+	if (dt_dsu_info->res_info[actual_mode].width != width ||
+	    dt_dsu_info->res_info[actual_mode].height != height) {
+		pr_err("DECON:ERR:%s:wrong dsu info : mode:%d, width:%d, height:%d\n",
+		       __func__, dsu_info->mode, width, height);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int s3cfb_dsu_win_config(struct s3cfb *s, const struct decon_win_config *windata,
+				struct dsu_info *regs_dsu)
+{
+	const struct dsu_info_dt *dt_dsu_info = exynos8895_panel_get_dsu_dt();
+	const struct decon_win_config *new_dsu = &windata[DECON_WIN_DSU_ID];
+	struct dsu_info *cur_dsu = &s->dsu;
+	int ret;
+
+	if (likely(new_dsu->mode == DSU_MODE_NONE))
+		return 0;
+
+	if (likely(new_dsu->mode == cur_dsu->mode))
+		return 0;
+
+	if (unlikely(!dt_dsu_info || dt_dsu_info->dsu_en == 0)) {
+		pr_info("DECON_INFO:%s:this panel does not support dsu\n", __func__);
+		return 0;
+	}
+
+	pr_info("DECON:INFO:%s:DSU Info OLD mode:%d-NEW mode:%d(%d,%d-%d,%d)\n",
+		__func__, cur_dsu->mode, new_dsu->mode,
+		new_dsu->left, new_dsu->top, new_dsu->right, new_dsu->bottom);
+
+	ret = s3cfb_dsu_check_info(new_dsu, dt_dsu_info);
+	if (unlikely(ret != 0))
+		return ret;
+
+	regs_dsu->needupdate = 1;
+	regs_dsu->mode = new_dsu->mode;
+	regs_dsu->top = new_dsu->top;
+	regs_dsu->left = new_dsu->left;
+	regs_dsu->right = new_dsu->right;
+	regs_dsu->bottom = new_dsu->bottom;
+
+	return 0;
+}
+
+/*
+ * check_dsu_info() (S:.../dpu/decon_core.c:2511-2542): validate window bounds
+ * against the pending DSU update if present, otherwise the current DSU size.
+ */
+static int s3cfb_check_dsu_info(const struct s3cfb *s, const struct decon_win_config *config,
+				int idx, const struct s3cfb_frame *fr)
+{
+	const struct dsu_info *dsu = fr->dsu.needupdate ? &fr->dsu : &s->dsu;
+
+	if (config->dst.w > dsu->right || config->dst.h > dsu->bottom) {
+		pr_err("DSU ERR : win[%d] size is abnormal (w:%u, h:%u, x:%d, y:%d)\n",
+		       idx, config->dst.w, config->dst.h, config->dst.x, config->dst.y);
+		pr_err("%s dsu info : right :%d, bottom : %d\n",
+		       fr->dsu.needupdate ? "regs" : "decon", dsu->right, dsu->bottom);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/*
  * DECON_WIN_STATE_COLOR: window on, colour map on, no DMA; the alpha byte is
  * forced to 0xff (S:.../dpu/decon_core.c:2566-2575). Stock checked nothing
  * here; the checks of a buffer window that do not concern the buffer apply,
  * and it must lie on the screen: L5 writes its position unclipped
  * (exynos8895_decon_set_color_win()).
  */
-static int s3cfb_prep_color(const struct decon_win_config *c, struct s3cfb_win *win)
+static int s3cfb_prep_color(const struct s3cfb *s, const struct decon_win_config *c,
+			    const struct s3cfb_frame *fr, struct s3cfb_win *win)
 {
+	const struct dsu_info *dsu = fr->dsu.needupdate ? &fr->dsu : &s->dsu;
+
 	if (s3cfb_check_win(c))
 		return -EINVAL;
-	if ((u64)c->dst.x + c->dst.w > S3CFB_XRES || (u64)c->dst.y + c->dst.h > S3CFB_YRES)
+	if ((u64)c->dst.x + c->dst.w > dsu->right || (u64)c->dst.y + c->dst.h > dsu->bottom)
 		return -EINVAL;
 
 	win->state = DECON_WIN_STATE_COLOR;
@@ -835,11 +943,11 @@ static int s3cfb_prep_color(const struct decon_win_config *c, struct s3cfb_win *
 
 /*
  * DECON_WIN_STATE_BUFFER, decon_set_win_buffer() (S:.../dpu/decon_core.c:
- * 1353-1427): limitation check, import of every plane's buffer, acquire
- * fence, buffer size check; then the framebuffer.
+ * 1353-1427): limitation check, DSU bounds check, import of every plane's
+ * buffer, acquire fence, buffer size check; then the framebuffer.
  */
 static int s3cfb_prep_buffer(struct s3cfb *s, int w, const struct decon_win_config *c,
-			     struct s3cfb_win *win)
+			     const struct s3cfb_frame *fr, struct s3cfb_win *win)
 {
 	struct drm_device *drm = s->h.drm;
 	struct s3cfb_import *e[2] = { };
@@ -847,6 +955,9 @@ static int s3cfb_prep_buffer(struct s3cfb *s, int w, const struct decon_win_conf
 	struct drm_framebuffer *fb;
 	int i, ret;
 
+	ret = s3cfb_check_dsu_info(s, c, w, fr);
+	if (ret)
+		return ret;
 	ret = s3cfb_check_limitation(w, c);
 	if (ret)
 		return ret;
@@ -909,15 +1020,18 @@ static void s3cfb_frame_free(struct s3cfb_frame *fr)
 }
 
 /*
- * decon_prepare_win_config() (S:.../dpu/decon_core.c:2545-2627) for windows
- * 0..5; config[6] (window update) and config[7] (DSU) are ignored: full-frame
- * updates at one resolution (L6A 5.3.5, D-6). An unknown state fails with
- * -EINVAL (:2594-2599).
+ * decon_prepare_win_config() (S:.../dpu/decon_core.c:2545-2627, 2702-2707) for
+ * config[7] (DSU, dsu_win_config()) and windows 0..5; config[6] (window update)
+ * is ignored. An unknown state fails with -EINVAL (:2594-2599).
  */
 static int s3cfb_prepare(struct s3cfb *s, const struct decon_win_config_data *d,
 			 struct s3cfb_frame *fr)
 {
-	int w, ret = 0;
+	int w, ret;
+
+	ret = s3cfb_dsu_win_config(s, d->config, &fr->dsu);
+	if (ret)
+		return ret;
 
 	for (w = 0; w < MAX_DECON_WIN && !ret; w++) {
 		const struct decon_win_config *c = &d->config[w];
@@ -926,14 +1040,29 @@ static int s3cfb_prepare(struct s3cfb *s, const struct decon_win_config_data *d,
 		case DECON_WIN_STATE_DISABLED:
 			break;
 		case DECON_WIN_STATE_COLOR:
-			ret = s3cfb_prep_color(c, &fr->win[w]);
+			ret = s3cfb_prep_color(s, c, fr, &fr->win[w]);
 			break;
 		case DECON_WIN_STATE_BUFFER:
-			ret = s3cfb_prep_buffer(s, w, c, &fr->win[w]);
+			ret = s3cfb_prep_buffer(s, w, c, fr, &fr->win[w]);
 			break;
 		default:
 			ret = -EINVAL;
 			break;
+		}
+	}
+
+	if (!ret && fr->dsu.needupdate) {
+		WRITE_ONCE(s->dsu.mode, fr->dsu.mode);
+		WRITE_ONCE(s->dsu.top, fr->dsu.top);
+		WRITE_ONCE(s->dsu.bottom, fr->dsu.bottom);
+		WRITE_ONCE(s->dsu.left, fr->dsu.left);
+		WRITE_ONCE(s->dsu.right, fr->dsu.right);
+		if (s->info) {
+			s->info->var.xres = fr->dsu.right;
+			s->info->var.yres = fr->dsu.bottom;
+			s->info->var.xres_virtual = fr->dsu.right;
+			s->info->var.yres_virtual = fr->dsu.bottom;
+			s->info->fix.line_length = fr->dsu.right * S3CFB_BPP / 8;
 		}
 	}
 
@@ -1041,6 +1170,10 @@ static void s3cfb_set_color_wins(struct s3cfb *s, const struct exynos8895_color_
 
 	for (w = 0; w < MAX_DECON_WIN; w++)
 		exynos8895_decon_set_color_win(s->h.dev, w, (on & BIT(w)) ? &cw[w] : NULL);
+}
+
+void __weak exynos8895_decon_set_dsu(struct device *dev, const struct dsu_info *dsu)
+{
 }
 
 /*
@@ -1156,10 +1289,12 @@ static int s3cfb_atomic(struct s3cfb *s, const struct s3cfb_frame *fr,
 			goto out;
 	}
 
-	/* L5 applies the colour windows in the next atomic_flush; undone on failure */
+	/* L5 applies the colour windows and DSU request in the next atomic_flush; undone on failure */
 	s3cfb_set_color_wins(s, cw, cw_on);
+	exynos8895_decon_set_dsu(s->h.dev, (fr && fr->dsu.needupdate) ? &fr->dsu : NULL);
 	ret = drm_atomic_commit(state);	/* A:drm_atomic.c:1718, blocking */
 	if (ret) {
+		exynos8895_decon_set_dsu(s->h.dev, NULL);
 		s3cfb_set_color_wins(s, s->cw, s->cw_on);
 	} else {
 		memcpy(s->cw, cw, sizeof(cw));
@@ -1224,7 +1359,7 @@ static void s3cfb_apply(struct kthread_work *work)
 			buffers = true;
 
 	/* 3./4. one commit; a rejected frame leaves the previous one on screen */
-	if (buffers && !READ_ONCE(s->dead)) {
+	if ((buffers || fr->dsu.needupdate) && !READ_ONCE(s->dead)) {
 		ret = s3cfb_commit(s, fr);
 		if (ret) {
 			pr_err_ratelimited("s3cfb: WIN_CONFIG rejected by atomic_check: %d\n", ret);
@@ -1280,12 +1415,23 @@ static int s3cfb_power_off(struct s3cfb *s)
 
 /* ---- fb_ops (L6A 5.3.3, 5.3.4) ---- */
 
-/* 1440x2960x32 only; every other field as given (the composer's reserved[0..1]) */
+/*
+ * decon_check_var() (S:.../dpu/decon_dsi.c:797-883): validate against the
+ * current DSU mode resolution and 32 bpp; every other field as given (the
+ * composer's reserved[0..1]).
+ */
 static int s3cfb_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 {
-	if (var->xres != S3CFB_XRES || var->yres != S3CFB_YRES ||
+	struct s3cfb *s = s3cfb_of(info);
+	u32 xres = READ_ONCE(s->dsu.right);
+	u32 yres = READ_ONCE(s->dsu.bottom);
+
+	if (var->xres != xres || var->yres != yres ||
 	    var->bits_per_pixel != S3CFB_BPP)
 		return -EINVAL;
+	var->xres_virtual = max(var->xres_virtual, var->xres);
+	var->yres_virtual = max(var->yres_virtual, var->yres);
+	info->fix.line_length = var->xres_virtual * S3CFB_BPP / 8;
 	return 0;
 }
 
@@ -1500,12 +1646,31 @@ static DEVICE_ATTR_RO(vsync);
 /*
  * decon_show_psr_info() with SUPPORT_DSU (S:.../dpu/decon_dsi.c:650-684):
  * psr_mode, the mode count, then width, height, DSC slice width and height
- * and DSC enable per mode; one mode, no DSU (L6A D-6).
+ * (or MIN_WIN_BLOCK_WIDTH/HEIGHT when uncompressed) and DSC enable per mode.
  */
 static ssize_t psr_info_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	return sysfs_emit(buf, "%d\n%d\n%d\n%d\n%d\n%d\n%d\n", S3CFB_PSR_MODE, 1, S3CFB_XRES,
-			  S3CFB_YRES, S3CFB_DSC_WIDTH, S3CFB_DSC_HEIGHT, S3CFB_DSC_EN);
+	const struct dsu_info_dt *dsu_info = exynos8895_panel_get_dsu_dt();
+	unsigned int i;
+	ssize_t len;
+
+	if (!dsu_info || !dsu_info->dsu_en || !dsu_info->dsu_number)
+		return sysfs_emit(buf, "%d\n%d\n%d\n%d\n%d\n%d\n%d\n", S3CFB_PSR_MODE, 1,
+				  S3CFB_XRES, S3CFB_YRES, S3CFB_DSC_WIDTH, S3CFB_DSC_HEIGHT,
+				  S3CFB_DSC_EN);
+
+	len = sysfs_emit(buf, "%d\n%u\n", S3CFB_PSR_MODE, dsu_info->dsu_number);
+	for (i = 0; i < dsu_info->dsu_number; i++) {
+		const struct dsu_res_info *r = &dsu_info->res_info[i];
+
+		len += sysfs_emit_at(buf, len, "%u\n%u\n%u\n%u\n%u\n",
+				     r->width, r->height,
+				     r->dsc_en ? r->dsc_width : MIN_WIN_BLOCK_WIDTH,
+				     r->dsc_en ? r->dsc_height : MIN_WIN_BLOCK_HEIGHT,
+				     r->dsc_en);
+	}
+
+	return len;
 }
 static DEVICE_ATTR_RO(psr_info);
 
@@ -1655,6 +1820,13 @@ static int s3cfb_create(struct drm_device *drm)
 	hrtimer_setup(&s->soft, s3cfb_soft_vsync, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	/* S-Boot left the panel on; stock's DECON_STATE_INIT passes check_decon_state() */
 	s->power = true;
+	/* decon_probe() initial DSU state (S:.../dpu/decon_core.c:4223-4228) */
+	s->dsu.mode = DSU_MODE_1;
+	s->dsu.left = 0;
+	s->dsu.top = 0;
+	s->dsu.right = S3CFB_XRES;
+	s->dsu.bottom = S3CFB_YRES;
+	s->dsu.needupdate = 0;
 	/* A:drivers/dma-buf/dma-fence.c:187; DSI timeline starts at max 1 (S:.../dpu/helper.c:326-339) */
 	s->fence_ctx = dma_fence_context_alloc(1);
 	s->tl_max = 1;

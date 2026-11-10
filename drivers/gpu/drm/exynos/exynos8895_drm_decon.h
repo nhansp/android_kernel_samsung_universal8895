@@ -50,6 +50,7 @@ void exynos8895_decon_set_vsync_cb(struct device *dev,
 				   void (*cb)(void *data, ktime_t ts), void *data);
 void exynos8895_decon_set_oneshot(struct device *dev, bool oneshot);
 int exynos8895_decon_panel_power(enum exynos8895_panel_power req, bool active);
+void exynos8895_decon_set_dsu(struct device *dev, const struct dsu_info *dsu);
 #endif
 
 #endif /* _EXYNOS8895_DRM_DECON_H_ */
