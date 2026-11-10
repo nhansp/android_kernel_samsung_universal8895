@@ -16,6 +16,7 @@
 #include <linux/of.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/pm_runtime.h>
+#include <linux/pm_wakeup.h>
 #include <linux/regulator/consumer.h>
 #include <linux/sec_sysfs.h>
 #include <linux/sysfs.h>
@@ -126,6 +127,12 @@
 #define S6SY661_SPONGE_INFO_SIZE	10	/* u8 data[10], sec_ts.c:1993-1998 */
 #define S6SY661_SPONGE_MODEL_LEN	4	/* strncmp(data, model_name, 4), sec_ts.c:2009 */
 #define S6SY661_MODE_FORCE_KEY		BIT(6)	/* SEC_TS_MODE_SPONGE_FORCE_KEY, sec_ts.h:488 */
+/* SEC_TS_MODE_LOWPOWER_FLAG (sec_ts.h:490) limited to the one bit this driver supports */
+#define S6SY661_MODE_LOWPOWER_FLAG	S6SY661_MODE_FORCE_KEY
+#define S6SY661_WAKEUP_GESTURE_MODE	0x39	/* SEC_TS_CMD_WAKEUP_GESTURE_MODE, sec_ts.h:195 */
+#define S6SY661_PM_DELAY_MS		50	/* sec_ts_delay(50), sec_ts.c:2662 */
+#define S6SY661_PM_TRIES		5	/* retrycnt < 5, sec_ts.c:2670-2674 */
+#define S6SY661_LPM_WAKE_MS		(3 * MSEC_PER_SEC)	/* wake_lock_timeout, sec_ts.c:951-953 */
 /* status event type SPONGE_INFO (sec_ts.h:100) in byte 0 [5:2], id FORCE_KEY (sec_ts.h:328) */
 #define S6SY661_MASK_STYPE		0x3c
 #define S6SY661_STATUS_SPONGE_INFO	6
@@ -174,7 +181,10 @@ struct s6sy761_data {
 	u16 touch_functions;		/* TOUCH_FUNCTION word, rewritten at every power-on */
 	bool pressure_key;		/* the firmware has the sponge library: home key reported */
 	u8 lowpower_mode;		/* sponge mode byte, stock ts->lowpower_mode */
+	bool lpm;			/* in the low-power mode; written under power_lock */
+	bool irq_wake;			/* enable_irq_wake() is in effect */
 	bool home_key_down;		/* IRQ thread only */
+	bool wake_key_down;		/* IRQ thread only */
 	struct drm_panel_follower follower;
 	struct work_struct power_on_work;
 	struct mutex cmd_lock;
@@ -260,23 +270,36 @@ static void s6sy761_report_release(struct s6sy761_data *sdata,
 
 /*
  * Status event SPONGE_INFO / FORCE_KEY: a press (bit 6) or release (bit 7) of the pressure home
- * key, stock sec_ts.c:1070-1118. Stock reports KEY_HOMEPAGE for it (:1090,1097) and, when the
- * press arrives with the screen on, only the Samsung-specific KEY_BLACK_UI_GESTURE; this port
- * reports KEY_HOMEPAGE for both so that a generic Android input stack sees a home key.
- * A release always releases the key, as stock's does for a press that started while the screen
- * was off (:1074-1080).
+ * key, stock sec_ts.c:1070-1118. With the screen off (low-power mode) stock treats everything
+ * but a release as a press and reports KEY_HOMEPAGE (:1089-1107); Android's default key layout
+ * does not wake on KEY_HOMEPAGE, so this port reports KEY_WAKEUP, which it does, and it is the
+ * only way to wake a phone whose power button is broken. With the screen on stock reports the
+ * Samsung-only KEY_BLACK_UI_GESTURE (:1072-1087); this port reports KEY_HOMEPAGE for the press
+ * and the release. A release releases whichever key is down, as stock's does for a press that
+ * started in the low-power mode and ends after the screen came on (:1074-1080).
  */
 static void s6sy661_handle_pressure(struct s6sy761_data *sdata, u8 *event)
 {
+	bool lpm = READ_ONCE(sdata->lpm);
+	bool down;
+
 	if (((event[0] & S6SY661_MASK_STYPE) >> 2) != S6SY661_STATUS_SPONGE_INFO ||
 	    event[1] != S6SY661_SPONGE_FORCE_KEY)
 		return;
 
-	if (event[2] & S6SY661_SPONGE_TOUCHED) {
-		sdata->home_key_down = true;
-		input_report_key(sdata->input, KEY_HOMEPAGE, 1);
+	down = lpm ? !(event[2] & S6SY661_SPONGE_RELEASED) : event[2] & S6SY661_SPONGE_TOUCHED;
+	if (down) {
+		if (lpm) {
+			sdata->wake_key_down = true;
+			input_report_key(sdata->input, KEY_WAKEUP, 1);
+		} else {
+			sdata->home_key_down = true;
+			input_report_key(sdata->input, KEY_HOMEPAGE, 1);
+		}
 	} else {
+		sdata->wake_key_down = false;
 		sdata->home_key_down = false;
+		input_report_key(sdata->input, KEY_WAKEUP, 0);
 		input_report_key(sdata->input, KEY_HOMEPAGE, 0);
 	}
 	input_sync(sdata->input);
@@ -331,6 +354,9 @@ static void s6sy761_handle_events(struct s6sy761_data *sdata, u8 n_events)
 		switch (event_id) {
 
 		case S6SY761_EVENT_ID_COORDINATE:
+			/* sec_ts.c:1135-1138: "device is closed" */
+			if (sdata->variant->s6sy661 && READ_ONCE(sdata->lpm))
+				break;
 			s6sy761_handle_coordinates(sdata, event);
 			break;
 
@@ -350,6 +376,10 @@ static irqreturn_t s6sy761_irq_handler(int irq, void *dev)
 	struct s6sy761_data *sdata = dev;
 	int ret;
 	u8 n_events;
+
+	/* keep the system awake while the event is delivered, sec_ts.c:951-953 */
+	if (sdata->variant->s6sy661 && READ_ONCE(sdata->lpm))
+		pm_wakeup_event(&sdata->client->dev, S6SY661_LPM_WAKE_MS);
 
 	ret = i2c_smbus_read_i2c_block_data(sdata->client,
 					    S6SY761_READ_ONE_EVENT,
@@ -550,6 +580,97 @@ err_vdd:
 }
 
 /*
+ * Switch the application mode, stock sec_ts_set_lowpowermode() (sec_ts.c:2632-2712): write
+ * SET_POWER_MODE, wait 50 ms, read it back, up to five times until it reads back as written;
+ * stock goes on after the last try either way. Caller holds power_lock.
+ */
+static int s6sy661_set_power_mode(struct s6sy761_data *sdata, u8 mode)
+{
+	int i, ret;
+
+	for (i = 0; i < S6SY661_PM_TRIES; i++) {
+		ret = i2c_smbus_write_byte_data(sdata->client, S6SY761_APPLICATION_MODE, mode);
+		if (ret)
+			return ret;
+		msleep(S6SY661_PM_DELAY_MS);
+		ret = i2c_smbus_read_byte_data(sdata->client, S6SY761_APPLICATION_MODE);
+		if (ret < 0)
+			return ret;
+		if (ret == mode)
+			return 0;
+	}
+	dev_warn(&sdata->client->dev, "power mode %u reads back as %d\n", mode, ret);
+
+	return 0;
+}
+
+/*
+ * Screen off with the pressure key enabled: stock does not power the chip down, it enters the
+ * low-power mode (sec_ts_input_close(), sec_ts.c:2786-2799, sec_ts_set_lowpowermode(1),
+ * :2640-2711): sponge mode byte, WAKEUP_GESTURE_MODE with the mode bits shifted down by one,
+ * SET_POWER_MODE 1, arm the IRQ as a wake source, clear the event stack, release all fingers.
+ * Caller holds power_lock, the chip is powered.
+ */
+static int s6sy661_enter_lpm(struct s6sy761_data *sdata)
+{
+	struct i2c_client *client = sdata->client;
+	int i, ret;
+
+	ret = s6sy661_sponge_write(sdata);
+	if (ret)
+		return ret;
+
+	ret = i2c_smbus_write_byte_data(client, S6SY661_WAKEUP_GESTURE_MODE,
+					(sdata->lowpower_mode & S6SY661_MODE_LOWPOWER_FLAG) >> 1);
+	if (ret)
+		return ret;
+
+	ret = s6sy661_set_power_mode(sdata, S6SY761_APP_LOW_POWER);
+	if (ret)
+		return ret;
+
+	if (device_may_wakeup(&client->dev) && !enable_irq_wake(client->irq))
+		sdata->irq_wake = true;
+
+	ret = i2c_smbus_write_byte(client, S6SY761_CLEAR_EVENT_STACK);
+	if (ret)
+		goto err_wake;
+
+	for (i = 0; i < S6SY661_MAX_SLOTS; i++) {
+		input_mt_slot(sdata->input, i);
+		input_mt_report_slot_inactive(sdata->input);
+	}
+	s6sy761_sync(sdata);
+
+	WRITE_ONCE(sdata->lpm, true);
+	return 0;
+
+err_wake:
+	if (sdata->irq_wake) {
+		disable_irq_wake(client->irq);
+		sdata->irq_wake = false;
+	}
+	return ret;
+}
+
+/* screen on again, stock sec_ts_input_open() (sec_ts.c:2737-2742): SET_POWER_MODE 0 */
+static int s6sy661_exit_lpm(struct s6sy761_data *sdata)
+{
+	int ret;
+
+	ret = s6sy661_set_power_mode(sdata, S6SY761_APP_NORMAL);
+	if (ret)
+		return ret;
+
+	if (sdata->irq_wake) {
+		disable_irq_wake(sdata->client->irq);
+		sdata->irq_wake = false;
+	}
+	WRITE_ONCE(sdata->lpm, false);
+	return 0;
+}
+
+/*
  * S6SY661 power-off, stock sec_ts_stop_device() (sec_ts.c:2885-2898): IRQ off, every
  * finger released (sec_ts_locked_release_all_finger()), rails off in stock's order
  * tsp_io then tsp_avdd (sec_ts_power(off), sec_ts.c:1688-1689), pins to "sleep" = stock
@@ -569,12 +690,19 @@ static void s6sy661_power_off(struct s6sy761_data *sdata)
 			input_mt_report_slot_inactive(sdata->input);
 		}
 		/* sec_ts_locked_release_all_finger() also releases KEY_HOMEPAGE, sec_ts.c:2482,2536 */
-		if (sdata->home_key_down) {
+		if (sdata->home_key_down || sdata->wake_key_down) {
 			input_report_key(sdata->input, KEY_HOMEPAGE, 0);
+			input_report_key(sdata->input, KEY_WAKEUP, 0);
 			sdata->home_key_down = false;
+			sdata->wake_key_down = false;
 		}
 		s6sy761_sync(sdata);
 	}
+	if (sdata->irq_wake) {
+		disable_irq_wake(sdata->client->irq);
+		sdata->irq_wake = false;
+	}
+	WRITE_ONCE(sdata->lpm, false);
 	regulator_disable(sdata->regulators[S6SY761_REGULATOR_VDD].consumer);
 	regulator_disable(sdata->regulators[S6SY761_REGULATOR_AVDD].consumer);
 	pinctrl_pm_select_sleep_state(&sdata->client->dev);
@@ -590,6 +718,15 @@ static void s6sy661_power_off(struct s6sy761_data *sdata)
 static int s6sy661_start(struct s6sy761_data *sdata)
 {
 	int ret;
+
+	if (sdata->lpm) {
+		ret = s6sy661_exit_lpm(sdata);
+		if (!ret)
+			return 0;
+		/* the chip did not leave the low-power mode: power-cycle it */
+		dev_err(&sdata->client->dev, "leaving the low-power mode failed: %d\n", ret);
+		s6sy661_power_off(sdata);
+	}
 
 	if (sdata->powered)
 		return 0;
@@ -623,8 +760,9 @@ static void s6sy661_devm_power_off(void *data)
 /*
  * Screen-off power (spec L6F 5.12 item 13): the touch chip follows the DSI panel through
  * the DRM panel-follower API (A:drivers/gpu/drm/drm_panel.c:580-583), as i2c-hid does
- * (A:drivers/hid/i2c-hid/i2c-hid-core.c:1161-1189). Stock instead entered a low-power mode
- * for its under-display pressure home key, which LineageOS does not have (sec_ts.c:2755-2807).
+ * (A:drivers/hid/i2c-hid/i2c-hid-core.c:1161-1189). With the pressure home key enabled the
+ * chip is not powered down but put in stock's low-power mode (sec_ts.c:2786-2808), where it
+ * reports a hard press as KEY_WAKEUP and wakes the system.
  */
 static void s6sy661_power_on_work(struct work_struct *work)
 {
@@ -654,6 +792,12 @@ static int s6sy661_panel_unpreparing(struct drm_panel_follower *follower)
 
 	cancel_work_sync(&sdata->power_on_work);
 	mutex_lock(&sdata->power_lock);
+	/* stock: low-power mode if any sponge feature is on, else power off (sec_ts.c:2795-2808) */
+	if (sdata->powered && sdata->pressure_key && sdata->lowpower_mode &&
+	    !s6sy661_enter_lpm(sdata)) {
+		mutex_unlock(&sdata->power_lock);
+		return 0;
+	}
 	s6sy661_power_off(sdata);
 	mutex_unlock(&sdata->power_lock);
 	return 0;
@@ -921,6 +1065,13 @@ static int s6sy661_probe_finish(struct s6sy761_data *sdata)
 	struct device *sec_dev;
 	int err;
 
+	/* the pressure key wakes the system from the low-power mode: sec_ts.c:2352 */
+	if (sdata->pressure_key) {
+		err = devm_device_init_wakeup(dev);
+		if (err)
+			return err;
+	}
+
 	if (drm_is_panel_follower(dev)) {
 		/* registered first, so it runs after the follower is removed */
 		err = devm_add_action_or_reset(dev, s6sy661_cancel_power_on_work, sdata);
@@ -1026,8 +1177,10 @@ static int s6sy761_probe(struct i2c_client *client)
 	input_set_abs_params(sdata->input, ABS_MT_TOUCH_MINOR, 0, 255, 0, 0);
 	input_set_abs_params(sdata->input, ABS_MT_PRESSURE, 0, 255, 0, 0);
 
-	if (sdata->pressure_key)
+	if (sdata->pressure_key) {
 		input_set_capability(sdata->input, EV_KEY, KEY_HOMEPAGE);	/* sec_ts.c:2055 */
+		input_set_capability(sdata->input, EV_KEY, KEY_WAKEUP);
+	}
 
 	touchscreen_parse_properties(sdata->input, true, &sdata->prop);
 
