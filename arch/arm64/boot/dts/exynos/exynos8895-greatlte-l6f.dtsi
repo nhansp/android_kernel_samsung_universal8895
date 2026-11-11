@@ -248,6 +248,12 @@
 								   index 0 = default S:drivers/motor/max77865_haptic.c:726 */
 			maxim,max-duty-ns = <41503>;		/* FDT:12437 haptic,duty[0] 0xa21f (5.7) */
 			maxim,max-timeout-ms = <10000>;		/* FDT:12435 haptic,max_timeout = <0x2710> */
+			/*
+			 * Samsung's haptic,duty and haptic,period (exynos8895-greatlte_motor.dtsi):
+			 * alert, low, mid, high, 0, home key press, home key release
+			 */
+			maxim,multi-freq-duty-ns = <41503 48828 39063 29296 32551 37108 37108>;
+			maxim,multi-freq-period-ns = <48828 65104 52083 39062 43402 39062 39062>;
 		};
 
 		leds {
