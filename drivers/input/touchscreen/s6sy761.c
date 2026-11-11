@@ -126,9 +126,20 @@
 #define S6SY661_SPONGE_NOTIFY_PACKET	0x93	/* sec_ts.h:220 */
 #define S6SY661_SPONGE_INFO_SIZE	10	/* u8 data[10], sec_ts.c:1993-1998 */
 #define S6SY661_SPONGE_MODEL_LEN	4	/* strncmp(data, model_name, 4), sec_ts.c:2009 */
+#define S6SY661_MODE_AOD		BIT(2)	/* SEC_TS_MODE_SPONGE_AOD, sec_ts.h:486 */
+#define S6SY661_MODE_SINGLE_TAP		BIT(3)	/* SEC_TS_MODE_SPONGE_SINGLE_TAP, sec_ts.h:487 */
 #define S6SY661_MODE_FORCE_KEY		BIT(6)	/* SEC_TS_MODE_SPONGE_FORCE_KEY, sec_ts.h:488 */
-/* SEC_TS_MODE_LOWPOWER_FLAG (sec_ts.h:490) limited to the one bit this driver supports */
-#define S6SY661_MODE_LOWPOWER_FLAG	S6SY661_MODE_FORCE_KEY
+/* SEC_TS_MODE_LOWPOWER_FLAG (sec_ts.h:490-491) without SPAY (Samsung Pay), not ported */
+#define S6SY661_MODE_LOWPOWER_FLAG	(S6SY661_MODE_AOD | S6SY661_MODE_SINGLE_TAP | \
+					 S6SY661_MODE_FORCE_KEY)
+/* the AOD rectangle: sponge offset 2, then w, h, x, y as le16 (set_aod_rect(), sec_ts_fn.c:5131-5172) */
+#define S6SY661_SPONGE_OFFSET_AOD_RECT	0x02
+/* gesture event (SEC_TS_GESTURE_EVENT, sec_ts.h:290; struct sec_ts_gesture_status, :583-592) */
+#define S6SY661_EVENT_ID_GESTURE	0x02
+#define S6SY661_GESTURE_DOUBLE_TAP	0x01	/* SEC_TS_GESTURE_CODE_DOUBLE_TAP, sec_ts.h:296 */
+#define S6SY661_GESTURE_SINGLE_TAP	0x02	/* SEC_TS_GESTURE_CODE_SINGLE_TAP, sec_ts.h:297 */
+/* Samsung's KEY_BLACK_UI_GESTURE, S:include/uapi/linux/input-event-codes.h:525; free upstream */
+#define S6SY661_KEY_BLACK_UI_GESTURE	0x1c7
 #define S6SY661_WAKEUP_GESTURE_MODE	0x39	/* SEC_TS_CMD_WAKEUP_GESTURE_MODE, sec_ts.h:195 */
 #define S6SY661_PM_DELAY_MS		50	/* sec_ts_delay(50), sec_ts.c:2662 */
 #define S6SY661_PM_TRIES		5	/* retrycnt < 5, sec_ts.c:2670-2674 */
@@ -181,6 +192,7 @@ struct s6sy761_data {
 	u16 touch_functions;		/* TOUCH_FUNCTION word, rewritten at every power-on */
 	bool pressure_key;		/* the firmware has the sponge library: home key reported */
 	u8 lowpower_mode;		/* sponge mode byte, stock ts->lowpower_mode */
+	u16 aod_rect[4];		/* w, h, x, y, stock ts->rect_data */
 	bool lpm;			/* in the low-power mode; written under power_lock */
 	bool irq_wake;			/* enable_irq_wake() is in effect */
 	bool home_key_down;		/* IRQ thread only */
@@ -305,6 +317,48 @@ static void s6sy661_handle_pressure(struct s6sy761_data *sdata, u8 *event)
 	input_sync(sdata->input);
 }
 
+/*
+ * Gesture event, stock sec_ts.c:1367-1425: with the AOD or single-tap sponge mode on, the
+ * firmware reports a double tap (in the AOD rectangle) or a single tap as gesture id 1 or 2
+ * (subtype 0). Stock reads the sponge mode byte back, picks AOD double tap over single tap
+ * when both are on, and reports KEY_BLACK_UI_GESTURE with the kind in sysfs scrub_pos for the
+ * Samsung framework. This port takes the kind from the gesture id, so both can be on at once,
+ * and reports:
+ * - a double tap as KEY_WAKEUP, which Android wakes on, as for the pressure key (the
+ *   LineageOS power HAL turns it on for double-tap-to-wake with aod_enable/set_aod_rect);
+ * - a single tap as KEY_BLACK_UI_GESTURE, the key the LineageOS Samsung touch HAL gives its
+ *   "Single Tap" touchscreen gesture (hardware/samsung aidl/touch/TouchscreenGesture.cpp:25-26),
+ *   which it turns on with singletap_enable.
+ */
+static void s6sy661_handle_gesture(struct s6sy761_data *sdata, u8 *event)
+{
+	u8 mode = READ_ONCE(sdata->lowpower_mode);
+	unsigned int key;
+
+	if ((event[0] & S6SY661_MASK_STYPE) >> 2)
+		return;
+
+	switch (event[1]) {
+	case S6SY661_GESTURE_DOUBLE_TAP:
+		if (!(mode & S6SY661_MODE_AOD))
+			return;
+		key = KEY_WAKEUP;
+		break;
+	case S6SY661_GESTURE_SINGLE_TAP:
+		if (!(mode & S6SY661_MODE_SINGLE_TAP))
+			return;
+		key = S6SY661_KEY_BLACK_UI_GESTURE;
+		break;
+	default:
+		return;
+	}
+
+	input_report_key(sdata->input, key, 1);
+	input_sync(sdata->input);
+	input_report_key(sdata->input, key, 0);
+	input_sync(sdata->input);
+}
+
 static void s6sy761_handle_coordinates(struct s6sy761_data *sdata, u8 *event)
 {
 	u8 tid;
@@ -365,6 +419,11 @@ static void s6sy761_handle_events(struct s6sy761_data *sdata, u8 n_events)
 		case S6SY761_EVENT_ID_STATUS:
 			if (sdata->pressure_key)
 				s6sy661_handle_pressure(sdata, event);
+			break;
+
+		case S6SY661_EVENT_ID_GESTURE:
+			if (sdata->pressure_key)
+				s6sy661_handle_gesture(sdata, event);
 			break;
 
 		default:
@@ -528,6 +587,27 @@ static int s6sy661_sponge_write(struct s6sy761_data *sdata)
 }
 
 /*
+ * The AOD rectangle a double tap must land in, stock set_aod_rect() (sec_ts_fn.c:5131-5172):
+ * ten bytes at SPONGE_WRITE_PARAM (offset 2, 0, then w, h, x, y as le16), then NOTIFY_PACKET.
+ * Caller holds power_lock, the chip is powered.
+ */
+static int s6sy661_sponge_write_rect(struct s6sy761_data *sdata)
+{
+	u8 data[10] = { S6SY661_SPONGE_OFFSET_AOD_RECT, 0 };
+	int i, ret;
+
+	for (i = 0; i < 4; i++)
+		put_unaligned_le16(sdata->aod_rect[i], &data[i * 2 + 2]);
+
+	ret = i2c_smbus_write_i2c_block_data(sdata->client, S6SY661_SPONGE_WRITE_PARAM,
+					     sizeof(data), data);
+	if (ret)
+		return ret;
+
+	return i2c_smbus_write_byte(sdata->client, S6SY661_SPONGE_NOTIFY_PACKET);
+}
+
+/*
  * S6SY661 power-on, stock sec_ts_power(on) + sec_ts_start_device()
  * (S:drivers/input/touchscreen/sec_ts_y661/sec_ts.c:1673-1686, 2911-2923): tsp_io ("vdd")
  * first, 1 ms, tsp_avdd ("avdd"), 70 ms. Only the power-on at probe skips the 70 ms when
@@ -586,6 +666,12 @@ static int s6sy661_power_on(struct s6sy761_data *sdata, bool probe)
 
 	if (sdata->pressure_key && s6sy661_sponge_write(sdata))
 		dev_warn(&sdata->client->dev, "failed to configure the pressure key\n");
+
+	/* a power cycle loses the rectangle as a reset does; stock writes it again after
+	 * one (sec_ts_reinit(), sec_ts.c:883-900) */
+	if (sdata->pressure_key && (sdata->lowpower_mode & S6SY661_MODE_AOD) &&
+	    s6sy661_sponge_write_rect(sdata))
+		dev_warn(&sdata->client->dev, "failed to set the AOD rectangle\n");
 
 	sdata->powered = true;
 	return 0;
@@ -937,8 +1023,51 @@ static void s6sy761_power_off(void *data)
 }
 
 /*
- * sec/tsp command node for the LineageOS touch HAL's IGloveMode (spec L6F 5.12 item 12): the
- * synchronous path of stock sec_cmd (S:drivers/input/sec_cmd.c) with one command.
+ * aod_enable / singletap_enable (sec_ts_fn.c:5226-5281): set or clear the sponge mode bit and
+ * send the mode byte. Without the sponge library stock's aod_enable succeeds and does nothing
+ * and its singletap_enable fails. The chip takes the bit at once when powered, else at the next
+ * power-on (s6sy661_power_on()).
+ */
+static int s6sy661_cmd_sponge_mode(struct s6sy761_data *sdata, u8 bit, int on)
+{
+	int ret = 0;
+
+	if (on != 0 && on != 1)
+		return -EINVAL;
+	if (!sdata->pressure_key)
+		return bit == S6SY661_MODE_SINGLE_TAP ? -ENODEV : 0;
+
+	mutex_lock(&sdata->power_lock);
+	if (on)
+		sdata->lowpower_mode |= bit;
+	else
+		sdata->lowpower_mode &= ~bit;
+	if (sdata->powered)
+		ret = s6sy661_sponge_write(sdata);
+	mutex_unlock(&sdata->power_lock);
+
+	return ret;
+}
+
+/* set_aod_rect,w,h,x,y (sec_ts_fn.c:5131-5172): stored, and sent with the sponge library */
+static int s6sy661_cmd_aod_rect(struct s6sy761_data *sdata, const int *param)
+{
+	int i, ret = 0;
+
+	mutex_lock(&sdata->power_lock);
+	for (i = 0; i < 4; i++)
+		sdata->aod_rect[i] = param[i];
+	if (sdata->pressure_key && sdata->powered)
+		ret = s6sy661_sponge_write_rect(sdata);
+	mutex_unlock(&sdata->power_lock);
+
+	return ret;
+}
+
+/*
+ * sec/tsp command node for the LineageOS touch HAL (glove mode, spec L6F 5.12 item 12; the
+ * single-tap gesture) and power HAL (double-tap-to-wake): the synchronous path of stock sec_cmd
+ * (S:drivers/input/sec_cmd.c) with the commands below.
  */
 static int s6sy661_cmd_glove_mode(struct s6sy761_data *sdata, int mode)
 {
@@ -974,6 +1103,7 @@ static ssize_t cmd_store(struct device *dev, struct device_attribute *attr,
 	const char *result, *state;
 	size_t len = count;
 	int nparam = 0;
+	int ret;
 
 	/* sec_cmd.c:85-96 */
 	if (count >= S6SY661_CMD_STR_LEN || strlen(buf) >= S6SY661_CMD_STR_LEN)
@@ -1012,20 +1142,23 @@ static ssize_t cmd_store(struct device *dev, struct device_attribute *attr,
 		}
 	}
 
+	/* each: OK, or NG on a bad value or I/O failure */
 	if (!strcmp(name, "glove_mode")) {
-		/* sec_ts_fn.c glove_mode(): OK, or NG on a bad value or I/O failure */
-		if (s6sy661_cmd_glove_mode(sdata, param[0])) {
-			result = "NG";
-			state = "FAIL";
-		} else {
-			result = "OK";
-			state = "OK";
-		}
+		ret = s6sy661_cmd_glove_mode(sdata, param[0]);
+	} else if (!strcmp(name, "aod_enable")) {
+		ret = s6sy661_cmd_sponge_mode(sdata, S6SY661_MODE_AOD, param[0]);
+	} else if (!strcmp(name, "singletap_enable")) {
+		ret = s6sy661_cmd_sponge_mode(sdata, S6SY661_MODE_SINGLE_TAP, param[0]);
+	} else if (!strcmp(name, "set_aod_rect")) {
+		ret = s6sy661_cmd_aod_rect(sdata, param);
 	} else {
 		/* not_support_cmd(), sec_ts_fn.c:5745-5756 */
 		result = "NA";
 		state = "NOT_APPLICABLE";
+		goto out;
 	}
+	result = ret ? "NG" : "OK";
+	state = ret ? "FAIL" : "OK";
 
 out:
 	mutex_lock(&sdata->cmd_lock);
@@ -1066,10 +1199,17 @@ static ssize_t cmd_result_show(struct device *dev, struct device_attribute *attr
 }
 static DEVICE_ATTR_RO(cmd_result);
 
+/*
+ * Header, one name per line, then a final "\n" (sec_cmd.c:409-427). The LineageOS touch HAL
+ * offers a feature for each command it finds here, so the sponge commands are listed only when
+ * the firmware has the library (stock lists every command it has, sec_ts_fn.c:183-187).
+ */
 static ssize_t cmd_list_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	/* header, one name per line, then a final "\n" (sec_cmd.c:409-427) */
-	return sysfs_emit(buf, "++factory command list++\nglove_mode\n\n");
+	struct s6sy761_data *sdata = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "++factory command list++\nglove_mode\n%s\n",
+			  sdata->pressure_key ? "set_aod_rect\naod_enable\nsingletap_enable\n" : "");
 }
 static DEVICE_ATTR_RO(cmd_list);
 
@@ -1261,6 +1401,8 @@ static int s6sy761_probe(struct i2c_client *client)
 	if (sdata->pressure_key) {
 		input_set_capability(sdata->input, EV_KEY, KEY_HOMEPAGE);	/* sec_ts.c:2055 */
 		input_set_capability(sdata->input, EV_KEY, KEY_WAKEUP);
+		/* sec_ts.c:2037 */
+		input_set_capability(sdata->input, EV_KEY, S6SY661_KEY_BLACK_UI_GESTURE);
 	}
 
 	touchscreen_parse_properties(sdata->input, true, &sdata->prop);
