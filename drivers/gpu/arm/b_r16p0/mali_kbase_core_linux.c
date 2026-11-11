@@ -4234,15 +4234,20 @@ static int kbase_device_runtime_suspend(struct device *dev)
 	if (!kbdev)
 		return -ENODEV;
 
+/* MALI_SEC_INTEGRATION */
+	if (kbdev->pm.active_count > 0)
+		return -EBUSY;
+
+	/*
+	 * After the -EBUSY return, not before it as in Samsung's kernel, where
+	 * CONFIG_MALI_DEVFREQ is off: a failed runtime suspend gets no runtime
+	 * resume, so a devfreq suspend taken before it would never be undone.
+	 */
 #if defined(CONFIG_MALI_DEVFREQ) && \
 		(LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0))
 	if (kbdev->inited_subsys & inited_devfreq)
 		devfreq_suspend_device(kbdev->devfreq);
 #endif
-
-/* MALI_SEC_INTEGRATION */
-	if (kbdev->pm.active_count > 0)
-		return -EBUSY;
 
 	if (kbdev->pm.backend.callback_power_runtime_off) {
 		kbdev->pm.backend.callback_power_runtime_off(kbdev);
