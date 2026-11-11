@@ -450,7 +450,14 @@ typedef enum wl_vendor_event {
 	BRCM_VENDOR_EVENT_HANGED		= 33
 } wl_vendor_event_t;
 
+/*
+ * Numbered as the Android Wi-Fi HAL sends and reads them, from an INVALID 0
+ * (hardware/broadcom/wlan/bcmdhd/wifi_hal/wifi_hal.cpp:112-124: NUM_FEATURE_SET = 1 ...
+ * COUNTRY = 5); the stock driver counted from 0, one below the HAL, so every attribute of
+ * this family was read and written as its neighbour.
+ */
 enum andr_wifi_attr {
+	ANDR_WIFI_ATTRIBUTE_INVALID,
 	ANDR_WIFI_ATTRIBUTE_NUM_FEATURE_SET,
 	ANDR_WIFI_ATTRIBUTE_FEATURE_SET,
 	ANDR_WIFI_ATTRIBUTE_RANDOM_MAC_OUI,
