@@ -1262,17 +1262,26 @@ struct m2m1shot2_uaddr {
 	bool is_compat;
 };
 
+/* The release fence fds of one task: reserved and copied to userspace, not yet installed. */
+struct m2m1shot2_release_fds {
+	struct sync_file *sync_file;
+	unsigned int count;
+	int fd[M2M1SHOT2_MAX_IMAGES + 1];
+};
+
 static int m2m1shot2_create_release_fence(struct m2m1shot2_context *ctx,
-					  const struct m2m1shot2_uaddr *ua)
+					  const struct m2m1shot2_uaddr *ua,
+					  struct m2m1shot2_release_fds *rel)
 {
 	struct m2m1shot2_fence *mfence;
 	struct sync_file *sync_file;
 	struct dma_fence *fence;
 	unsigned int i, ifd = 0;
-	int fds[M2M1SHOT2_MAX_IMAGES + 1];
 	s32 __user *user_pfds[M2M1SHOT2_MAX_IMAGES + 1];
 	unsigned int num_fences = 0;
 	int ret = 0;
+
+	rel->count = 0;
 
 	for (i = 0; i < ctx->num_sources; i++) {
 		if (ctx->source[i].img.flags & M2M1SHOT2_IMGFLAG_RELEASE_FENCE)
@@ -1307,7 +1316,7 @@ static int m2m1shot2_create_release_fence(struct m2m1shot2_context *ctx,
 			ret = fd;
 			goto err;
 		}
-		fds[ifd++] = fd;
+		rel->fd[ifd++] = fd;
 
 		if (put_user(fd, user_pfds[i])) {
 			ret = -EFAULT;
@@ -1315,11 +1324,8 @@ static int m2m1shot2_create_release_fence(struct m2m1shot2_context *ctx,
 		}
 	}
 
-	for (i = 0; i < num_fences; i++) {
-		if (i > 0)
-			get_file(sync_file->file);
-		fd_install(fds[i], sync_file->file);
-	}
+	rel->sync_file = sync_file;
+	rel->count = num_fences;
 
 	ctx->timeline_max++;
 	ctx->release_fence = fence;
@@ -1328,10 +1334,39 @@ static int m2m1shot2_create_release_fence(struct m2m1shot2_context *ctx,
 
 err:
 	while (ifd-- > 0)
-		put_unused_fd(fds[ifd]);
+		put_unused_fd(rel->fd[ifd]);
 	fput(sync_file->file);
 	dma_fence_put(fence);
 	return ret;
+}
+
+/*
+ * Every release fence fd shares the one sync_file. Installed only once the
+ * task has started: a failed ioctl is never read back by the caller
+ * (libacryl's AcrylicCompositorM2M1SHOT2_G2D::executeG2D() drops the
+ * fences on failure), so fds installed before a failure would leak.
+ */
+static void m2m1shot2_install_release_fds(struct m2m1shot2_release_fds *rel)
+{
+	unsigned int i;
+
+	for (i = 0; i < rel->count; i++) {
+		if (i > 0)
+			get_file(rel->sync_file->file);
+		fd_install(rel->fd[i], rel->sync_file->file);
+	}
+}
+
+static void m2m1shot2_discard_release_fds(struct m2m1shot2_release_fds *rel)
+{
+	unsigned int i;
+
+	if (!rel->count)
+		return;
+
+	for (i = 0; i < rel->count; i++)
+		put_unused_fd(rel->fd[i]);
+	fput(rel->sync_file->file);
 }
 
 static int m2m1shot2_wait_put_user(struct m2m1shot2_context *ctx,
@@ -1394,6 +1429,7 @@ static int m2m1shot2_do_process(struct m2m1shot2_context *ctx,
 				const struct m2m1shot2_uaddr *ua)
 {
 	struct m2m1shot2_device *m21dev = ctx->m21dev;
+	struct m2m1shot2_release_fds rel;
 	int i, ret;
 
 	/* wait for completion of the previous task */
@@ -1417,8 +1453,9 @@ static int m2m1shot2_do_process(struct m2m1shot2_context *ctx,
 		return ret;
 
 	ctx->release_fence = NULL;
+	rel.count = 0;
 	if (data->flags & M2M1SHOT2_FLAG_NONBLOCK) {
-		ret = m2m1shot2_create_release_fence(ctx, ua);
+		ret = m2m1shot2_create_release_fence(ctx, ua, &rel);
 		if (ret < 0) {
 			m2m1shot2_put_images(ctx);
 			return ret;
@@ -1432,9 +1469,12 @@ static int m2m1shot2_do_process(struct m2m1shot2_context *ctx,
 			dma_fence_put(ctx->release_fence);
 			ctx->release_fence = NULL;
 		}
+		m2m1shot2_discard_release_fds(&rel);
 		m2m1shot2_put_images(ctx);
 		return ret;
 	}
+
+	m2m1shot2_install_release_fds(&rel);
 
 	if (!(data->flags & M2M1SHOT2_FLAG_NONBLOCK)) {
 		ret = m2m1shot2_wait_put_user(ctx, ua, data->flags);
