@@ -1535,10 +1535,12 @@ static int s3cfb_blank(int blank, struct fb_info *info)
  *   on the next enable, and, as UNBLANK here, the power flag is set and the
  *   first buffer frame enables the CRTC (L6A D-6). The DECON holds its
  *   wakeup source from then on (:2818).
- * - DOZE_SUSPEND, decon_set_doze_suspend() (:2864-2945): with the CRTC
- *   active the display pipe goes off with the panel left in its low-power
- *   mode, powered, and the wakeup source is released (:2922); with the CRTC
- *   off nothing happens (the vendor DSIM is off too, dsim_drv.c:1336-1337).
+ * - DOZE_SUSPEND, decon_set_doze_suspend() (:2864-2945): the queued frames
+ *   are flushed first (:2874), so that a frame posted in DOZE has enabled the
+ *   CRTC before its state is read; then, with the CRTC active, the display
+ *   pipe goes off with the panel left in its low-power mode, powered, and the
+ *   wakeup source is released (:2922); with the CRTC off nothing happens (the
+ *   vendor DSIM is off too, dsim_drv.c:1336-1337).
  */
 static int s3cfb_power_mode(struct s3cfb *s, u32 mode)
 {
@@ -1554,6 +1556,7 @@ static int s3cfb_power_mode(struct s3cfb *s, u32 mode)
 		}
 		return 0;
 	case DECON_PWR_DOZE_SUSPEND:
+		kthread_flush_worker(s->worker);
 		active = s3cfb_crtc_active(s);
 		exynos8895_decon_panel_power(EXYNOS8895_PANEL_DOZE_SUSPEND, active);
 		if (!active)
