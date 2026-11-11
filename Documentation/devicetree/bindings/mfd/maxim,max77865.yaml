@@ -54,6 +54,21 @@ properties:
         $ref: /schemas/types.yaml#/definitions/uint32
         description: Maximum vibration timeout in milliseconds.
 
+      maxim,multi-freq-duty-ns:
+        minItems: 7
+        maxItems: 7
+        description:
+          Duty cycle of each of the seven vibration frequencies (alert, low,
+          mid, high, 0, home key press, home key release). Entries 5 and 6
+          drive the tick of the pressure home key.
+
+      maxim,multi-freq-period-ns:
+        minItems: 7
+        maxItems: 7
+        description:
+          PWM period of each of the seven vibration frequencies, in the order
+          of maxim,multi-freq-duty-ns.
+
     required:
       - compatible
       - pwms
