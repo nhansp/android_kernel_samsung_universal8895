@@ -307,6 +307,16 @@
 		power-supplies = <&max77865_charger>;	/* STATUS needs a supplier (A:.../max17042_battery.c:119-127) */
 		monitored-battery = <&battery>;
 		samsung,battery-ntc = "battery-ntc";	/* host temperature source (L6F 5.4) */
+		/*
+		 * Samsung's DT: fuelgauge,capacity_max / _max_margin / _min (0x3e8, 0x12c, 0) and
+		 * battery,full_condition_vcell / _soc and recharge_condition_vcell (0x109a, 0x5d, 0x10b8)
+		 */
+		samsung,capacity-max = <1000>;
+		samsung,capacity-max-margin = <300>;
+		samsung,capacity-min = <0>;
+		samsung,full-condition-microvolt = <4250000>;
+		samsung,full-condition-percent = <93>;
+		samsung,recharge-condition-microvolt = <4280000>;
 	};
 };
 

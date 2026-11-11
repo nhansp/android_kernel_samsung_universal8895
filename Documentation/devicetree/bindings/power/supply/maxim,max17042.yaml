@@ -19,9 +19,21 @@ allOf:
     then:
       required:
         - samsung,battery-ntc
+        - samsung,capacity-max
+        - samsung,capacity-max-margin
+        - samsung,capacity-min
+        - samsung,full-condition-microvolt
+        - samsung,full-condition-percent
+        - samsung,recharge-condition-microvolt
     else:
       properties:
         samsung,battery-ntc: false
+        samsung,capacity-max: false
+        samsung,capacity-max-margin: false
+        samsung,capacity-min: false
+        samsung,full-condition-microvolt: false
+        samsung,full-condition-percent: false
+        samsung,recharge-condition-microvolt: false
 
 properties:
   compatible:
@@ -81,6 +93,44 @@ properties:
       maxim,max77865-battery only. Type of the thermal zone (battery NTC) whose
       temperature the driver writes to the TEMP register; required for that
       compatible, whose temperature is host-written (CONFIG.TEX set).
+
+  samsung,capacity-max:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    maximum: 1000
+    description:
+      maxim,max77865-battery only. Gauge state of charge, in tenths of a
+      percent, that is reported as 100 %. The driver lowers it at the end of a
+      charge when the gauge stops short of 100 %; this is its upper bound.
+
+  samsung,capacity-max-margin:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      maxim,max77865-battery only. How far below samsung,capacity-max the
+      learned value may go, in tenths of a percent.
+
+  samsung,capacity-min:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      maxim,max77865-battery only. Gauge state of charge, in tenths of a
+      percent, that is reported as 0 %.
+
+  samsung,full-condition-microvolt:
+    description:
+      maxim,max77865-battery only. Minimum cell voltage for the end of charge
+      the charger signals to count as a full battery.
+
+  samsung,full-condition-percent:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    maximum: 100
+    description:
+      maxim,max77865-battery only. A full battery is reported as charging
+      again once its capacity falls below this value and its cell voltage
+      below samsung,recharge-condition-microvolt minus 50 mV.
+
+  samsung,recharge-condition-microvolt:
+    description:
+      maxim,max77865-battery only. Cell voltage at which the charger restarts
+      a full battery; see samsung,full-condition-percent.
 
 required:
   - compatible

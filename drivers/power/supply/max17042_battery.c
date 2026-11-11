@@ -68,6 +68,22 @@ struct max17042_chip {
 	const char *tz_name;
 	struct power_supply_desc psy_desc;
 	struct delayed_work temp_work;
+	/* MAX77865: Samsung's capacity and full-charge policy, SOC values in 0.1 % */
+	struct delayed_work soc_work;
+	struct mutex soc_lock;
+	bool   soc_ready;
+	int    capacity_max_cfg;
+	int    capacity_margin;
+	int    capacity_min;
+	int    full_vcell_mv;
+	int    full_soc;
+	int    rechg_vcell_mv;
+	int    capacity_max;
+	int    capacity_old;
+	int    capacity;
+	int    soc_permille;
+	bool   initial_update;
+	bool   full;
 };
 
 static enum power_supply_property max17042_battery_props[] = {
@@ -124,10 +140,11 @@ static int max17042_get_status(struct max17042_chip *chip, int *status)
 	u32 data;
 
 	/*
-	 * MAX77865: while supplied, report the charger's policy status (NOT_CHARGING
-	 * during thermal/OVP/timer stops, FULL after the second top-off), as stock
-	 * reported sec_battery's (S:drivers/battery_v2/sec_battery.c:2066-2104,
-	 * :2556-2594). The charger never reads this STATUS (spec L6F 5.4 item 4).
+	 * MAX77865: while supplied, report the charger's status (NOT_CHARGING during
+	 * thermal/OVP/timer stops), as stock reported sec_battery's. The charger's end of
+	 * charge only counts as FULL once max77865_soc_work() has taken it
+	 * (sec_bat_fullcharged_check() in Samsung's drivers/battery_v2/sec_battery.c).
+	 * The charger never reads this STATUS.
 	 */
 	if (chip->host_temp && power_supply_am_i_supplied(chip->battery) > 0) {
 		union power_supply_propval v;
@@ -135,7 +152,12 @@ static int max17042_get_status(struct max17042_chip *chip, int *status)
 		ret = power_supply_get_property_from_supplier(chip->battery,
 							      POWER_SUPPLY_PROP_STATUS, &v);
 		if (ret == 0) {
-			*status = v.intval;
+			if (v.intval == POWER_SUPPLY_STATUS_CHARGING ||
+			    v.intval == POWER_SUPPLY_STATUS_FULL)
+				*status = READ_ONCE(chip->full) ? POWER_SUPPLY_STATUS_FULL :
+								  POWER_SUPPLY_STATUS_CHARGING;
+			else
+				*status = v.intval;
 			return 0;
 		}
 	}
@@ -340,6 +362,11 @@ static int max17042_get_property(struct power_supply *psy,
 		val->intval = data * 625 / 8;
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY:
+		if (chip->host_temp) {
+			/* sec_bat_get_property(): 100 while the battery is full */
+			val->intval = READ_ONCE(chip->full) ? 100 : READ_ONCE(chip->capacity);
+			break;
+		}
 		if (chip->pdata->enable_current_sense)
 			ret = regmap_read(map, MAX17042_RepSOC, &data);
 		else
@@ -377,6 +404,21 @@ static int max17042_get_property(struct power_supply *psy,
 		val->intval = data64;
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
+		if (chip->host_temp) {
+			/*
+			 * The remaining charge, design capacity times the scaled SOC, as
+			 * Samsung's max77865_fg_get_property() reports it. QH is a
+			 * coulomb counter without a zero point.
+			 */
+			ret = regmap_read(map, MAX17042_DesignCap, &data);
+			if (ret < 0)
+				return ret;
+
+			data64 = data * 5000000ll;
+			do_div(data64, chip->pdata->r_sns);
+			val->intval = div_u64(data64 * READ_ONCE(chip->soc_permille), 1000);
+			break;
+		}
 		ret = regmap_read(map, MAX17042_QH, &data);
 		if (ret < 0)
 			return ret;
@@ -976,6 +1018,172 @@ static void max17042_temp_worker(struct work_struct *work)
 	queue_delayed_work(system_freezable_wq, &chip->temp_work, 10 * HZ);
 }
 
+/*
+ * MAX77865: the capacity and full-charge policy of Samsung's max77865_fuelgauge.c and
+ * sec_battery.c (drivers/battery_v2), run every 30 s (battery,polling_time) and on every
+ * supply change. The gauge's RepSOC is scaled by capacity_max (get_scaled_capacity()) and
+ * moves one percent per pass (get_atomic_capacity(), capacity_calculation_type 0x1c). An end
+ * of charge from the charger with the cell at full_condition_vcell counts as FULL only at a
+ * scaled 100 %; below that, capacity_max is lowered to what the gauge reads
+ * (calculate_dynamic_scale(), from sec_bat_fullcharged_check()), so the level climbs to 100 %
+ * and then reads FULL. A FULL battery is charging again once it is below full_condition_soc
+ * and recharge_condition_vcell - 50 mV (sec_bat_voltage_check()).
+ *
+ * Not ported: the extra capacity_max correction in constant voltage between top-off and
+ * top-off + 300 mA (it needs the charger's CV state), and the software V-empty mode (it needs
+ * the gauge's ALRT interrupt, which this board does not wire).
+ */
+static void max77865_dynamic_scale(struct max17042_chip *chip, int raw, int capacity)
+{
+	int lo = chip->capacity_max_cfg - chip->capacity_margin;
+
+	if (raw < lo)
+		return;
+
+	chip->capacity_max = clamp_t(int, raw * 100 / (capacity + 1), lo,
+				     chip->capacity_max_cfg);
+	chip->capacity_old = capacity;
+}
+
+static void max77865_soc_work(struct work_struct *work)
+{
+	struct max17042_chip *chip = container_of(to_delayed_work(work),
+						  struct max17042_chip, soc_work);
+	union power_supply_propval v;
+	bool supplied, chg_full, full, changed;
+	int raw, soc, cap, vcell_mv, iavg;
+	u32 data;
+
+	mutex_lock(&chip->soc_lock);
+	full = chip->full;
+	cap = chip->capacity;
+
+	if (regmap_read(chip->regmap, MAX17042_RepSOC, &data))
+		goto rearm;
+	raw = min_t(int, data * 100 / 256 / 10, 1000);
+	if (regmap_read(chip->regmap, MAX17042_VCELL, &data))
+		goto rearm;
+	vcell_mv = data * 625 / 8 / 1000;
+	if (regmap_read(chip->regmap, MAX17042_AvgCurrent, &data))
+		goto rearm;
+	iavg = sign_extend32(data, 15);
+
+	/* max77865_get_fuelgauge_soc() */
+	soc = (vcell_mv < 3400 && iavg < 0 && raw <= 10) ? 0 : raw;
+
+	supplied = power_supply_am_i_supplied(chip->battery) > 0;
+
+	/* max77865_fg_get_scaled_capacity() */
+	soc = soc < chip->capacity_min ? 0 :
+	      (soc - chip->capacity_min) * 1000 / (chip->capacity_max - chip->capacity_min);
+	soc = clamp(soc, 0, 1000);
+	WRITE_ONCE(chip->soc_permille, soc);
+	cap = soc / 10;
+
+	/* max77865_fg_get_atomic_capacity(); a fresh start after probe and resume */
+	if (chip->initial_update) {
+		chip->initial_update = false;
+	} else {
+		if (chip->capacity_old < cap)
+			cap = chip->capacity_old + 1;
+		else if (chip->capacity_old > cap)
+			cap = chip->capacity_old - 1;
+		if (!supplied && chip->capacity_old < cap)
+			cap = chip->capacity_old;
+	}
+	chip->capacity_old = cap;
+
+	chg_full = false;
+	if (supplied && !power_supply_get_property_from_supplier(chip->battery,
+								  POWER_SUPPLY_PROP_STATUS, &v)) {
+		if (v.intval == POWER_SUPPLY_STATUS_FULL)
+			chg_full = true;
+		else if (v.intval != POWER_SUPPLY_STATUS_CHARGING)
+			full = false;
+	} else {
+		full = false;
+	}
+
+	if (full && cap < chip->full_soc && vcell_mv < chip->rechg_vcell_mv - 50) {
+		full = false;
+		dev_info(chip->dev, "full -> charging: capacity %d%%, %d mV\n", cap, vcell_mv);
+	} else if (!full && chg_full && vcell_mv >= chip->full_vcell_mv) {
+		int old_max = chip->capacity_max;
+
+		max77865_dynamic_scale(chip, raw, cap);
+		if (cap >= 100)
+			full = true;
+		if (full || chip->capacity_max != old_max)
+			dev_info(chip->dev,
+				 "end of charge at %d%% (gauge %d.%d%%, %d mV): capacity_max %d%s\n",
+				 cap, raw / 10, raw % 10, vcell_mv, chip->capacity_max,
+				 full ? ", full" : "");
+	}
+
+rearm:
+	changed = cap != chip->capacity || full != chip->full;
+	WRITE_ONCE(chip->capacity, cap);
+	WRITE_ONCE(chip->full, full);
+	if (chip->soc_ready)
+		queue_delayed_work(system_freezable_wq, &chip->soc_work, 30 * HZ);
+	mutex_unlock(&chip->soc_lock);
+
+	if (changed)
+		power_supply_changed(chip->battery);
+}
+
+static void max77865_external_power_changed(struct power_supply *psy)
+{
+	struct max17042_chip *chip = power_supply_get_drvdata(psy);
+
+	mutex_lock(&chip->soc_lock);
+	if (power_supply_am_i_supplied(psy) <= 0)
+		WRITE_ONCE(chip->full, false);
+	if (chip->soc_ready)
+		mod_delayed_work(system_freezable_wq, &chip->soc_work, 0);
+	mutex_unlock(&chip->soc_lock);
+	power_supply_changed(psy);
+}
+
+static void max77865_soc_stop(void *data)
+{
+	struct max17042_chip *chip = data;
+
+	mutex_lock(&chip->soc_lock);
+	chip->soc_ready = false;
+	mutex_unlock(&chip->soc_lock);
+	cancel_delayed_work_sync(&chip->soc_work);
+}
+
+static int max77865_soc_parse(struct max17042_chip *chip)
+{
+	struct device_node *np = chip->dev->of_node;
+	u32 max, margin, min, full_uv, full_soc, rechg_uv;
+
+	if (of_property_read_u32(np, "samsung,capacity-max", &max) ||
+	    of_property_read_u32(np, "samsung,capacity-max-margin", &margin) ||
+	    of_property_read_u32(np, "samsung,capacity-min", &min) ||
+	    of_property_read_u32(np, "samsung,full-condition-microvolt", &full_uv) ||
+	    of_property_read_u32(np, "samsung,full-condition-percent", &full_soc) ||
+	    of_property_read_u32(np, "samsung,recharge-condition-microvolt", &rechg_uv))
+		return dev_err_probe(chip->dev, -EINVAL, "capacity policy properties missing\n");
+	if (max > 1000 || full_soc > 100 || margin >= max || min >= max - margin ||
+	    full_uv > 5000000 || rechg_uv > 5000000)
+		return dev_err_probe(chip->dev, -EINVAL, "capacity policy limits out of range\n");
+
+	chip->capacity_max_cfg = max;
+	chip->capacity_margin = margin;
+	chip->capacity_min = min;
+	chip->full_soc = full_soc;
+	chip->full_vcell_mv = full_uv / 1000;
+	chip->rechg_vcell_mv = rechg_uv / 1000;
+	chip->capacity_max = chip->capacity_max_cfg;
+	chip->initial_update = true;
+	mutex_init(&chip->soc_lock);
+	INIT_DELAYED_WORK(&chip->soc_work, max77865_soc_work);
+	return 0;
+}
+
 #ifdef CONFIG_OF
 static struct max17042_platform_data *
 max17042_get_of_pdata(struct max17042_chip *chip)
@@ -1144,6 +1352,10 @@ static int max17042_probe(struct i2c_client *client, struct device *dev, int irq
 		if (!regmap_read(chip->regmap, MAX17042_CONFIG, &val))
 			dev_info(dev, "CONFIG=0x%04x TEX=%d (host temperature)\n",
 				 val, !!(val & BIT(8)));
+
+		ret = max77865_soc_parse(chip);
+		if (ret)
+			return ret;
 	}
 
 	chip->pdata = max17042_get_pdata(chip);
@@ -1183,6 +1395,7 @@ static int max17042_probe(struct i2c_client *client, struct device *dev, int irq
 	if (chip->host_temp) {
 		chip->psy_desc = *max17042_desc;
 		chip->psy_desc.name = "battery";
+		chip->psy_desc.external_power_changed = max77865_external_power_changed;
 		max17042_desc = &chip->psy_desc;
 	}
 
@@ -1192,8 +1405,19 @@ static int max17042_probe(struct i2c_client *client, struct device *dev, int irq
 		dev_err(dev, "failed: power supply register\n");
 		return PTR_ERR(chip->battery);
 	}
-	if (chip->host_temp)
+	if (chip->host_temp) {
 		dev_info(dev, "registered as battery (max77865)\n");
+
+		ret = devm_add_action_or_reset(dev, max77865_soc_stop, chip);
+		if (ret)
+			return ret;
+		mutex_lock(&chip->soc_lock);
+		chip->soc_ready = true;
+		mod_delayed_work(system_freezable_wq, &chip->soc_work, 0);
+		mutex_unlock(&chip->soc_lock);
+		/* the level must exist before anyone reads it */
+		flush_delayed_work(&chip->soc_work);
+	}
 
 	if (irq) {
 		unsigned int flags = IRQF_ONESHOT | IRQF_SHARED | IRQF_PROBE_SHARED;
@@ -1306,6 +1530,15 @@ static int max17042_resume(struct device *dev)
 		enable_irq(chip->irq);
 		/* re-program the SOC thresholds to 1% change */
 		max17042_set_soc_threshold(chip, 1);
+	}
+
+	if (chip->host_temp) {
+		/* max77865_fuelgauge_resume(): the level after a sleep is taken as read */
+		mutex_lock(&chip->soc_lock);
+		chip->initial_update = true;
+		if (chip->soc_ready)
+			mod_delayed_work(system_freezable_wq, &chip->soc_work, 0);
+		mutex_unlock(&chip->soc_lock);
 	}
 
 	return 0;
