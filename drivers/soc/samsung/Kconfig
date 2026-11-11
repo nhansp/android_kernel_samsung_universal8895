@@ -415,5 +415,6 @@ config EXYNOS8895_MM_QOS
 	  Stand-in for the Samsung pm_qos classes the transplanted
 	  Exynos8895 camera and MFC drivers vote on: INTCAM/CAM requests
 	  set the ACPM DVFS clocks of the camera core, CPU cluster
-	  min/max requests become cpufreq freq_qos requests, INT/MIF and
-	  CPU-online requests are only aggregated.
+	  min/max requests become cpufreq freq_qos requests, INT/MIF
+	  requests become floors of the bus DVFS driver, CPU-online
+	  requests are only aggregated.

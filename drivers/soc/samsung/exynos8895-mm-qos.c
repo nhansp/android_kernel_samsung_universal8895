@@ -18,8 +18,9 @@
  * - CLUSTER0/1 MIN/MAX: freq_qos requests on the cpufreq policy of cpu 0
  *   (cpus 0-3) and cpu 4 (cpus 4-7) (FDT:4484-4489 domain@0 "0-3"
  *   pm_qos-min-class 3/max 4, FDT:4513-4518 domain@1 "4-7" class 5/6);
- * - INT/MIF/CPU_ONLINE_MIN: aggregated, not applied (no L2 owner of MIF/INT,
- *   L2_power.md Q8; spec L6B 5.3, open item O-MM-MIF).
+ * - INT/MIF: one request per class to the bus DVFS driver, which owns the ACPM
+ *   MIF/INT clocks and holds the request until the class's devfreq is live;
+ * - CPU_ONLINE_MIN: aggregated, not applied.
  * Callers sleep-capable, as stock pm_qos (blocking notifiers).
  */
 
@@ -108,6 +109,17 @@ static struct mm_qos_cpu mm_qos_cpu[4] = {
 	{ MM_QOS_CL1_MAX, 1, FREQ_QOS_MAX },
 };
 
+/* the bus floor of MM_QOS_INT and MM_QOS_MIF (in that order), one persistent request each */
+struct mm_qos_bus {
+	enum exynos_bus_qos_class bus_cls;
+	struct exynos_bus_qos_request req;
+};
+
+static struct mm_qos_bus mm_qos_bus[2] = {
+	{ EXYNOS_BUS_QOS_INT },
+	{ EXYNOS_BUS_QOS_MIF },
+};
+
 static DEFINE_MUTEX(mm_qos_lock);
 #define MM_QOS_LIST(c)	[c] = LIST_HEAD_INIT(mm_qos_list[c])
 static struct list_head mm_qos_list[MM_QOS_NR] = {
@@ -175,6 +187,22 @@ static void mm_qos_apply_dvfs(enum mm_qos_class cls)
 		return;
 	}
 	d->applied_khz = khz;
+}
+
+/*
+ * The aggregate of the class goes to the bus driver as one floor; no request
+ * left is a floor of 0, the class default. The bus driver keeps the request
+ * until its devfreq exists, so a vote taken before it probed is not lost.
+ */
+static void mm_qos_apply_bus(enum mm_qos_class cls)
+{
+	struct mm_qos_bus *b = &mm_qos_bus[cls - MM_QOS_INT];
+	s32 khz = mm_qos_has_requests(cls) ? max_t(s32, mm_qos_aggregate(cls), 0) : 0;
+
+	if (!exynos_bus_qos_request_active(&b->req))
+		exynos_bus_qos_add_request(&b->req, b->bus_cls, khz);
+	else
+		exynos_bus_qos_update_request(&b->req, khz);
 }
 
 static struct mm_qos_cpu *mm_qos_cpu_of(enum mm_qos_class cls)
@@ -246,9 +274,7 @@ static void mm_qos_apply(enum mm_qos_class cls)
 		break;
 	case MM_QOS_INT:
 	case MM_QOS_MIF:
-		if (mm_qos_has_requests(cls) && mm_qos_aggregate(cls) > 0)
-			pr_info_once("mm-qos: INT/MIF vote %d kHz not applied (no L2 owner)\n",
-				     mm_qos_aggregate(cls));
+		mm_qos_apply_bus(cls);
 		break;
 	default:	/* CPU_ONLINE_MIN: aggregated only */
 		break;
@@ -464,6 +490,9 @@ static int mm_qos_show(struct seq_file *s, void *unused)
 				   mm_qos_dvfs[i - MM_QOS_INTCAM].bus ?
 				   "bus floor" : "applied",
 				   mm_qos_dvfs[i - MM_QOS_INTCAM].applied_khz);
+		else if (i == MM_QOS_INT || i == MM_QOS_MIF)
+			seq_printf(s, " bus floor %d kHz\n",
+				   mm_qos_bus[i - MM_QOS_INT].req.khz);
 		else if (mm_qos_cpu_of(i))
 			seq_printf(s, " freq_qos %s\n",
 				   freq_qos_request_active(&mm_qos_cpu_of(i)->req) ?

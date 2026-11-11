@@ -23,8 +23,8 @@ enum mm_qos_class {
 	MM_QOS_CL0_MAX,		/* PM_QOS_CLUSTER0_FREQ_MAX */
 	MM_QOS_CL1_MIN,		/* PM_QOS_CLUSTER1_FREQ_MIN: cpus 4-7 */
 	MM_QOS_CL1_MAX,		/* PM_QOS_CLUSTER1_FREQ_MAX */
-	MM_QOS_INT,		/* PM_QOS_DEVICE_THROUGHPUT: not applied */
-	MM_QOS_MIF,		/* PM_QOS_BUS_THROUGHPUT: not applied */
+	MM_QOS_INT,		/* PM_QOS_DEVICE_THROUGHPUT: bus driver INT floor */
+	MM_QOS_MIF,		/* PM_QOS_BUS_THROUGHPUT: bus driver MIF floor */
 	MM_QOS_CPU_ONLINE_MIN,	/* PM_QOS_CPU_ONLINE_MIN: not applied */
 	MM_QOS_NR
 };
