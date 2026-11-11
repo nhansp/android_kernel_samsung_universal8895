@@ -792,6 +792,26 @@ static bool exynos5_i2c_poll_irqs_timeout(struct exynos5_i2c *i2c,
 	return time_before(jiffies, time_left);
 }
 
+static void exynos5_i2c_dump_registers(struct exynos5_i2c *i2c)
+{
+	dev_err(i2c->dev,
+		"register dump: addr 0x%02x len %u ptr %u flags 0x%x state %d trans_done %d\n"
+		"CTL 0x%08x FIFO_CTL 0x%08x INT_EN 0x%08x INT_STAT 0x%08x\n"
+		"FIFO_STAT 0x%08x CONF 0x%08x AUTO_CONF 0x%08x TRANS_STAT 0x%08x\n"
+		"TIMING_HS1 0x%08x HS2 0x%08x HS3 0x%08x FS1 0x%08x FS2 0x%08x FS3 0x%08x SLA 0x%08x\n"
+		"ADDR 0x%08x\n",
+		i2c->msg->addr, i2c->msg->len, i2c->msg_ptr, i2c->msg->flags,
+		i2c->state, i2c->trans_done,
+		readl(i2c->regs + HSI2C_CTL), readl(i2c->regs + HSI2C_FIFO_CTL),
+		readl(i2c->regs + HSI2C_INT_ENABLE), readl(i2c->regs + HSI2C_INT_STATUS),
+		readl(i2c->regs + HSI2C_FIFO_STATUS), readl(i2c->regs + HSI2C_CONF),
+		readl(i2c->regs + HSI2C_AUTO_CONF), readl(i2c->regs + HSI2C_TRANS_STATUS),
+		readl(i2c->regs + HSI2C_TIMING_HS1), readl(i2c->regs + HSI2C_TIMING_HS2),
+		readl(i2c->regs + HSI2C_TIMING_HS3), readl(i2c->regs + HSI2C_TIMING_FS1),
+		readl(i2c->regs + HSI2C_TIMING_FS2), readl(i2c->regs + HSI2C_TIMING_FS3),
+		readl(i2c->regs + HSI2C_TIMING_SLA), readl(i2c->regs + HSI2C_ADDR));
+}
+
 static int exynos5_i2c_xfer_msg(struct exynos5_i2c *i2c,
 			      struct i2c_msg *msgs, int stop)
 {
@@ -826,6 +846,8 @@ static int exynos5_i2c_xfer_msg(struct exynos5_i2c *i2c,
 		ret = exynos5_i2c_wait_bus_idle(i2c);
 
 	if (ret < 0) {
+		if (ret == -ETIMEDOUT)
+			exynos5_i2c_dump_registers(i2c);
 		exynos5_i2c_reset(i2c);
 		if (ret == -ETIMEDOUT)
 			dev_warn(i2c->dev, "%s timeout\n",
