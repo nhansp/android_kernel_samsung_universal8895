@@ -921,12 +921,23 @@ static int sc_v4l2_qbuf(struct file *file, void *fh,
 	if ((buf->flags & SC_USE_SYNC_FLAG) && vq) {
 		struct vb2_buffer *vb = vb2_get_buffer(vq, buf->index);
 
-		if (vb)
+		/*
+		 * Only a dequeued buffer may take new fences: a queued or
+		 * active one still owns those of its pending job, and vb2
+		 * rejects the QBUF anyway. Stock attached them in
+		 * __fill_vb2_buffer(), reached only after vb2_core_qbuf()
+		 * checked the buffer state (Samsung's kernel,
+		 * drivers/media/v4l2-core/videobuf2-v4l2.c). Every change
+		 * into or out of DEQUEUED happens under sc->lock, which this
+		 * ioctl holds.
+		 */
+		if (vb && vb->state == VB2_BUF_STATE_DEQUEUED)
 			svb = to_vb2_sc_buffer(vb);
 	}
 	if (!svb)
-		/* No fence protocol (flag clear) or invalid buffer index:
-		 * let vb2 report the error, no fence is involved. */
+		/* No fence protocol (flag clear), invalid buffer index or
+		 * buffer not dequeued: let vb2 queue it or report the error,
+		 * no fence is involved. */
 		return v4l2_m2m_qbuf(file, ctx->m2m_ctx, buf);
 
 	in_fence = NULL;
