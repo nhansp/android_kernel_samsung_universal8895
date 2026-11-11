@@ -144,8 +144,9 @@ config TYPEC_S2MM005_OTG_VBUS
 	default n
 	help
 	  Let the port controller switch the phone's 5 V OTG boost on for a
-	  USB host session. Raises VBUS: see spec L6H 1A SAFETY row V1. Enable
-	  only with the user present. Say N.
+	  USB host session, as Samsung's kernel does. Without it a host-role
+	  attach has no VBUS and a bus-powered device stays dark. Say N if the
+	  phone must never source VBUS.
 
 config TYPEC_S2MM005_PD_SELECT
 	bool "USB-PD sink voltage selection (charging path, see L6H SAFETY)"
