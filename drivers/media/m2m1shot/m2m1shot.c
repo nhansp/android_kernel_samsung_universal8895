@@ -151,7 +151,8 @@ static int m2m1shot_buffer_get_dma_buf(struct m2m1shot_device *m21dev,
 			goto err;
 		}
 
-		plane->attachment = dma_buf_attach(plane->dmabuf, m21dev->dev);
+		plane->attachment = dma_buf_attach(plane->dmabuf,
+						   m21dev->dma_dev);
 		if (IS_ERR(plane->attachment)) {
 			dev_err(m21dev->dev,
 				"%s: Failed to attach dmabuf\n", __func__);
@@ -849,6 +850,7 @@ static const struct file_operations m2m1shot_fops = {
 };
 
 struct m2m1shot_device *m2m1shot_create_device(struct device *dev,
+					struct device *dma_dev,
 					const struct m2m1shot_devops *ops,
 					const char *suffix, int id,
 					unsigned long timeout_jiffies)
@@ -904,6 +906,7 @@ struct m2m1shot_device *m2m1shot_create_device(struct device *dev,
 	spin_lock_init(&m21dev->lock_ctx);
 
 	m21dev->dev = dev;
+	m21dev->dma_dev = dma_dev ?: dev;
 	m21dev->ops = ops;
 	m21dev->timeout_jiffies = timeout_jiffies;
 
