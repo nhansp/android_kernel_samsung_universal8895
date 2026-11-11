@@ -358,6 +358,15 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 	dp->initial_freq = kbdev->current_freq;
 	/* stock gpu_dvfs_polling_time = <30> ms (stock dtsi:799, K:platform/exynos/gpu_integration_callbacks.c:547) */
 	dp->polling_ms = 30;
+	/*
+	 * Samsung's kernel polls with a non-deferrable delayed work
+	 * (drivers/gpu/arm/b_r16p0/platform/exynos/gpu_integration_callbacks.c:566-571),
+	 * so a sample is not postponed while the CPUs idle and the GPU
+	 * renders. Its poll stops while the GPU is runtime suspended
+	 * (gpu_notifier.c:326), as devfreq's does here
+	 * (kbase_device_runtime_suspend()).
+	 */
+	dp->timer = DEVFREQ_TIMER_DELAYED;
 	dp->target = kbase_devfreq_target;
 	dp->get_dev_status = kbase_devfreq_status;
 	dp->get_cur_freq = kbase_devfreq_cur_freq;
