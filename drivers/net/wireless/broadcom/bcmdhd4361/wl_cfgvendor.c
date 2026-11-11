@@ -6549,6 +6549,20 @@ exit:
 #endif /* NDO_CONFIG_SUPPORT */
 
 /*
+ * The Android Wi-Fi HAL sends a command's attributes nested in NL80211_ATTR_VENDOR_DATA:
+ * Android's libnl nla_nest_start() sets NLA_F_NESTED (external/libnl/lib/attr.c:978), and the
+ * Broadcom HAL builds the data with it (hardware/broadcom/wlan/bcmdhd/wifi_hal/cpp_bindings.h:236-238).
+ * 6.18 rejects nested data for a VENDOR_CMD_RAW_DATA command (net/wireless/nl80211.c:17491-17496,
+ * "unexpected nested data", -EINVAL), so such a command needs a real policy. Set country, which
+ * the framework requires before a 5 GHz soft AP (SoftApManager: "Failed to set country code,
+ * required for setting up soft ap in band: 2"): one country string (wifi_hal.cpp:1114-1124,
+ * ANDR_WIFI_ATTRIBUTE_COUNTRY = 5), of up to WLC_CNTRY_BUF_SZ - 1 characters.
+ */
+static const struct nla_policy wl_cfgvendor_country_policy[ANDR_WIFI_ATTRIBUTE_COUNTRY + 1] = {
+	[ANDR_WIFI_ATTRIBUTE_COUNTRY] = { .type = NLA_NUL_STRING, .len = WLC_CNTRY_BUF_SZ - 1 },
+};
+
+/*
  * L6D 5.5.3 A24: 6.18 wiphy_register() rejects a vendor command without a policy;
  * VENDOR_CMD_RAW_DATA passes the attributes through unparsed, as 4.4 did.
  */
@@ -6749,7 +6763,8 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = ANDR_WIFI_SET_COUNTRY
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		.policy = wl_cfgvendor_country_policy,
+		.maxattr = ANDR_WIFI_ATTRIBUTE_COUNTRY,
 		.doit = wl_cfgvendor_set_country
 	},
 #ifdef LINKSTAT_SUPPORT
