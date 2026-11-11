@@ -211,7 +211,6 @@ struct s6sy761_data {
 	bool lpm;			/* in the low-power mode; written under power_lock */
 	bool irq_wake;			/* enable_irq_wake() is in effect */
 	bool home_key_down;		/* IRQ thread only */
-	bool wake_key_down;		/* IRQ thread only */
 	struct drm_panel_follower follower;
 	struct work_struct power_on_work;
 	struct mutex cmd_lock;
@@ -296,14 +295,16 @@ static void s6sy761_report_release(struct s6sy761_data *sdata,
 }
 
 /*
- * Status event SPONGE_INFO / FORCE_KEY: a press (bit 6) or release (bit 7) of the pressure home
- * key, stock sec_ts.c:1070-1118. With the screen off (low-power mode) stock treats everything
- * but a release as a press and reports KEY_HOMEPAGE (:1089-1107); Android's default key layout
- * does not wake on KEY_HOMEPAGE, so this port reports KEY_WAKEUP, which it does, and it is the
- * only way to wake a phone whose power button is broken. With the screen on stock reports the
- * Samsung-only KEY_BLACK_UI_GESTURE (:1072-1087); this port reports KEY_HOMEPAGE for the press
- * and the release. A release releases whichever key is down, as stock's does for a press that
- * started in the low-power mode and ends after the screen came on (:1074-1080).
+ * Status event SPONGE_INFO / FORCE_KEY: a press (bit 6) or release (bit 7) of the pressure
+ * home key, Samsung's sec_ts.c (drivers/input/touchscreen/sec_ts_y661), sec_ts_read_event().
+ * With the screen off (low-power mode) Samsung's driver takes everything but a release as a
+ * press and reports KEY_HOMEPAGE, as here; with the screen on it reports the Samsung-only
+ * KEY_BLACK_UI_GESTURE, which this driver replaces with KEY_HOMEPAGE. A home key press thus
+ * reads the same in every display state, AOD included, where the panel stays on and the
+ * chip out of the low-power mode. Whether the key wakes the display is the framework's
+ * choice (LineageOS: config_deviceHardwareWakeKeys). The KEY_BLACK_UI_GESTURE Samsung's driver
+ * adds to a release in the low-power mode is left out: LineageOS binds that key to the
+ * single-tap gesture.
  */
 static void s6sy661_handle_pressure(struct s6sy761_data *sdata, u8 *event)
 {
@@ -315,20 +316,8 @@ static void s6sy661_handle_pressure(struct s6sy761_data *sdata, u8 *event)
 		return;
 
 	down = lpm ? !(event[2] & S6SY661_SPONGE_RELEASED) : event[2] & S6SY661_SPONGE_TOUCHED;
-	if (down) {
-		if (lpm) {
-			sdata->wake_key_down = true;
-			input_report_key(sdata->input, KEY_WAKEUP, 1);
-		} else {
-			sdata->home_key_down = true;
-			input_report_key(sdata->input, KEY_HOMEPAGE, 1);
-		}
-	} else {
-		sdata->wake_key_down = false;
-		sdata->home_key_down = false;
-		input_report_key(sdata->input, KEY_WAKEUP, 0);
-		input_report_key(sdata->input, KEY_HOMEPAGE, 0);
-	}
+	sdata->home_key_down = down;
+	input_report_key(sdata->input, KEY_HOMEPAGE, down);
 	input_sync(sdata->input);
 }
 
@@ -339,8 +328,8 @@ static void s6sy661_handle_pressure(struct s6sy761_data *sdata, u8 *event)
  * when both are on, and reports KEY_BLACK_UI_GESTURE with the kind in sysfs scrub_pos for the
  * Samsung framework. This port takes the kind from the gesture id, so both can be on at once,
  * and reports:
- * - a double tap as KEY_WAKEUP, which Android wakes on, as for the pressure key (the
- *   LineageOS power HAL turns it on for double-tap-to-wake with aod_enable/set_aod_rect);
+ * - a double tap as KEY_WAKEUP, which Android wakes on (the LineageOS power HAL turns it
+ *   on for double-tap-to-wake with aod_enable/set_aod_rect);
  * - a single tap as KEY_BLACK_UI_GESTURE, the key the LineageOS Samsung touch HAL gives its
  *   "Single Tap" touchscreen gesture (hardware/samsung aidl/touch/TouchscreenGesture.cpp:25-26),
  *   which it turns on with singletap_enable.
@@ -761,11 +750,9 @@ static int s6sy661_enter_lpm(struct s6sy761_data *sdata)
 		input_mt_report_slot_inactive(sdata->input);
 	}
 	/* sec_ts_locked_release_all_finger() also releases KEY_HOMEPAGE, sec_ts.c:2482,2536 */
-	if (sdata->home_key_down || sdata->wake_key_down) {
+	if (sdata->home_key_down) {
 		input_report_key(sdata->input, KEY_HOMEPAGE, 0);
-		input_report_key(sdata->input, KEY_WAKEUP, 0);
 		sdata->home_key_down = false;
-		sdata->wake_key_down = false;
 	}
 	s6sy761_sync(sdata);
 
@@ -817,11 +804,9 @@ static void s6sy661_power_off(struct s6sy761_data *sdata)
 			input_mt_report_slot_inactive(sdata->input);
 		}
 		/* sec_ts_locked_release_all_finger() also releases KEY_HOMEPAGE, sec_ts.c:2482,2536 */
-		if (sdata->home_key_down || sdata->wake_key_down) {
+		if (sdata->home_key_down) {
 			input_report_key(sdata->input, KEY_HOMEPAGE, 0);
-			input_report_key(sdata->input, KEY_WAKEUP, 0);
 			sdata->home_key_down = false;
-			sdata->wake_key_down = false;
 		}
 		s6sy761_sync(sdata);
 	}
@@ -896,7 +881,7 @@ static void s6sy661_devm_power_off(void *data)
  * the DRM panel-follower API (A:drivers/gpu/drm/drm_panel.c:580-583), as i2c-hid does
  * (A:drivers/hid/i2c-hid/i2c-hid-core.c:1161-1189). With the pressure home key enabled the
  * chip is not powered down but put in stock's low-power mode (sec_ts.c:2786-2808), where it
- * reports a hard press as KEY_WAKEUP and wakes the system.
+ * reports a hard press as KEY_HOMEPAGE and wakes the system from suspend.
  */
 static void s6sy661_power_on_work(struct work_struct *work)
 {
