@@ -2292,6 +2292,16 @@ static void d8895_atomic_flush(struct exynos_drm_crtc *crtc)
 	/* decon_reg_all_win_shadow_update_req() (decon_reg.c:825-838) */
 	d_mask(ctx, D8895_SHADOW_REG_UPDATE_REQ, ~0, D8895_SHADOW_REG_UPDATE_REQ_FOR_DECON0);
 	/*
+	 * The event is armed before the trigger is unmasked. The next TE may
+	 * start the frame right away, and the falling votes below can sleep in
+	 * a bus DVFS change for longer than a frame. A frame start ahead of
+	 * the event counts its vblank without it, the frame done then masks
+	 * the one-shot trigger, and no later frame start completes the flip.
+	 */
+	spin_lock_irqsave(&ctx->vblank_lock, flags);
+	exynos_crtc_handle_event(crtc);
+	spin_unlock_irqrestore(&ctx->vblank_lock, flags);
+	/*
 	 * One-shot unless the panel is in HMD mode: the vendor then keeps the
 	 * trigger running ("video_emul", S:.../dpu/decon_core.c:2224-2228,
 	 * 2320-2323).
@@ -2303,6 +2313,8 @@ static void d8895_atomic_flush(struct exynos_drm_crtc *crtc)
 
 	/* falling votes after the hardware update (S:dpu/bts.c:292-307) */
 	d8895_bts_update(ctx, true);
+	d8895_hiber_unblock(ctx);
+	return;
 
 out_unblock:
 	d8895_hiber_unblock(ctx);
