@@ -3618,7 +3618,18 @@ __wl_cfg80211_scan(struct wiphy *wiphy, struct net_device *ndev,
 	 * scan. Hence return scan success.
 	 */
 	if (request && (scan_req_iftype(request) == NL80211_IFTYPE_AP)) {
+		struct cfg80211_scan_info info = { .aborted = false };
+
 		WL_DBG(("Scan Command on SoftAP Interface. Ignoring...\n"));
+		/*
+		 * Success means a finished scan with no results. cfg80211 recorded the
+		 * request as the wiphy's scan before calling here (net/wireless/nl80211.c:
+		 * 11149-11150) and keeps it until it is reported done: unreported, hostapd
+		 * waited for the 40 MHz neighbour scan of a 5 GHz soft AP forever, and every
+		 * later scan of the wiphy got -EBUSY. cfg80211_scan_done() only queues the
+		 * completion (net/wireless/scan.c:1184-1219), which runs after this returns.
+		 */
+		cfg80211_scan_done(request, &info);
 		return 0;
 	}
 
