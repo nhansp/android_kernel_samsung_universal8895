@@ -1094,22 +1094,28 @@ static int s3cfb_prepare(struct s3cfb *s, const struct decon_win_config_data *d,
 		}
 	}
 
-	if (!ret && fr->dsu.needupdate) {
-		WRITE_ONCE(s->dsu.mode, fr->dsu.mode);
-		WRITE_ONCE(s->dsu.top, fr->dsu.top);
-		WRITE_ONCE(s->dsu.bottom, fr->dsu.bottom);
-		WRITE_ONCE(s->dsu.left, fr->dsu.left);
-		WRITE_ONCE(s->dsu.right, fr->dsu.right);
-		if (s->info) {
-			s->info->var.xres = fr->dsu.right;
-			s->info->var.yres = fr->dsu.bottom;
-			s->info->var.xres_virtual = fr->dsu.right;
-			s->info->var.yres_virtual = fr->dsu.bottom;
-			s->info->fix.line_length = fr->dsu.right * S3CFB_BPP / 8;
-		}
-	}
-
 	return ret;
+}
+
+/*
+ * The current DSU mode changes once the frame that requested it is committed,
+ * as in Samsung's decon_update_regs() -> dpu_set_dsu_update_config()
+ * (drivers/video/fbdev/exynos/dpu/dsu_update.c).
+ */
+static void s3cfb_dsu_applied(struct s3cfb *s, const struct dsu_info *dsu)
+{
+	WRITE_ONCE(s->dsu.mode, dsu->mode);
+	WRITE_ONCE(s->dsu.top, dsu->top);
+	WRITE_ONCE(s->dsu.bottom, dsu->bottom);
+	WRITE_ONCE(s->dsu.left, dsu->left);
+	WRITE_ONCE(s->dsu.right, dsu->right);
+	if (s->info) {
+		s->info->var.xres = dsu->right;
+		s->info->var.yres = dsu->bottom;
+		s->info->var.xres_virtual = dsu->right;
+		s->info->var.yres_virtual = dsu->bottom;
+		s->info->fix.line_length = dsu->right * S3CFB_BPP / 8;
+	}
 }
 
 static void s3cfb_apply(struct kthread_work *work);
@@ -1404,6 +1410,8 @@ static void s3cfb_apply(struct kthread_work *work)
 		if (ret) {
 			pr_err_ratelimited("s3cfb: WIN_CONFIG rejected by atomic_check: %d\n", ret);
 			greatlte_l6a_s3cfb_inc(GL6A_ON, s3e);
+		} else if (fr->dsu.needupdate) {
+			s3cfb_dsu_applied(s, &fr->dsu);
 		}
 		/* false when this frame's start already signalled (s3cfb_frame_start()) */
 		step = s3cfb_release_take(s);
