@@ -155,6 +155,21 @@
 #define S6SY661_CMD_STR_LEN		256	/* SEC_CMD_STR_LEN, sec_cmd.h:37 */
 #define S6SY661_CMD_PARAM_NUM		8	/* SEC_CMD_PARAM_NUM, sec_cmd.h:39 */
 
+/*
+ * Stock tries every transfer up to SEC_TS_I2C_RETRY_CNT times, 1 ms apart (sec_ts_i2c_write(),
+ * sec_ts_i2c_read(), sec_ts.c:409-470, 484-541; sec_ts.h:482). The chip NACKs the transfer that
+ * wakes it from the low-power mode, so the transfers made with the chip in that mode, or right
+ * after switching it there, are retried as stock does.
+ */
+#define S6SY661_I2C_TRIES		3
+#define s6sy661_i2c(expr) ({						\
+	int __ret, __try = 0;						\
+									\
+	while ((__ret = (expr)) < 0 && ++__try < S6SY661_I2C_TRIES)	\
+		usleep_range(1000, 1100);				\
+	__ret;								\
+})
+
 enum s6sy761_regulators {
 	S6SY761_REGULATOR_VDD,
 	S6SY761_REGULATOR_AVDD,
@@ -228,7 +243,7 @@ static int s6sy761_read_events(struct s6sy761_data *sdata, u16 n_events)
 	};
 	int ret;
 
-	ret = i2c_transfer(sdata->client->adapter, msgs, ARRAY_SIZE(msgs));
+	ret = s6sy661_i2c(i2c_transfer(sdata->client->adapter, msgs, ARRAY_SIZE(msgs)));
 	if (ret < 0)
 		return ret;
 
@@ -442,10 +457,10 @@ static irqreturn_t s6sy761_irq_handler(int irq, void *dev)
 	if (sdata->variant->s6sy661 && READ_ONCE(sdata->lpm))
 		pm_wakeup_event(&sdata->client->dev, S6SY661_LPM_WAKE_MS);
 
-	ret = i2c_smbus_read_i2c_block_data(sdata->client,
-					    S6SY761_READ_ONE_EVENT,
-					    S6SY761_EVENT_SIZE,
-					    sdata->data);
+	ret = s6sy661_i2c(i2c_smbus_read_i2c_block_data(sdata->client,
+							S6SY761_READ_ONE_EVENT,
+							S6SY761_EVENT_SIZE,
+							sdata->data));
 	if (ret < 0) {
 		dev_err(&sdata->client->dev, "failed to read events\n");
 		return IRQ_HANDLED;
@@ -458,7 +473,7 @@ static irqreturn_t s6sy761_irq_handler(int irq, void *dev)
 	if (unlikely(n_events > S6SY761_EVENT_COUNT - 1)) {
 		/* event buffer overflow: clear event stack, stock sec_ts.c:993-1001 */
 		if (sdata->variant->s6sy661)
-			i2c_smbus_write_byte(sdata->client, S6SY761_CLEAR_EVENT_STACK);
+			s6sy661_i2c(i2c_smbus_write_byte(sdata->client, S6SY761_CLEAR_EVENT_STACK));
 		return IRQ_HANDLED;
 	}
 
@@ -578,12 +593,12 @@ static int s6sy661_sponge_write(struct s6sy761_data *sdata)
 	u8 data[3] = { 0, 0, sdata->lowpower_mode };
 	int ret;
 
-	ret = i2c_smbus_write_i2c_block_data(sdata->client, S6SY661_SPONGE_WRITE_PARAM,
-					     sizeof(data), data);
+	ret = s6sy661_i2c(i2c_smbus_write_i2c_block_data(sdata->client, S6SY661_SPONGE_WRITE_PARAM,
+							 sizeof(data), data));
 	if (ret)
 		return ret;
 
-	return i2c_smbus_write_byte(sdata->client, S6SY661_SPONGE_NOTIFY_PACKET);
+	return s6sy661_i2c(i2c_smbus_write_byte(sdata->client, S6SY661_SPONGE_NOTIFY_PACKET));
 }
 
 /*
@@ -599,12 +614,12 @@ static int s6sy661_sponge_write_rect(struct s6sy761_data *sdata)
 	for (i = 0; i < 4; i++)
 		put_unaligned_le16(sdata->aod_rect[i], &data[i * 2 + 2]);
 
-	ret = i2c_smbus_write_i2c_block_data(sdata->client, S6SY661_SPONGE_WRITE_PARAM,
-					     sizeof(data), data);
+	ret = s6sy661_i2c(i2c_smbus_write_i2c_block_data(sdata->client, S6SY661_SPONGE_WRITE_PARAM,
+							 sizeof(data), data));
 	if (ret)
 		return ret;
 
-	return i2c_smbus_write_byte(sdata->client, S6SY661_SPONGE_NOTIFY_PACKET);
+	return s6sy661_i2c(i2c_smbus_write_byte(sdata->client, S6SY661_SPONGE_NOTIFY_PACKET));
 }
 
 /*
@@ -693,11 +708,12 @@ static int s6sy661_set_power_mode(struct s6sy761_data *sdata, u8 mode)
 	int i, ret;
 
 	for (i = 0; i < S6SY661_PM_TRIES; i++) {
-		ret = i2c_smbus_write_byte_data(sdata->client, S6SY761_APPLICATION_MODE, mode);
+		ret = s6sy661_i2c(i2c_smbus_write_byte_data(sdata->client,
+							    S6SY761_APPLICATION_MODE, mode));
 		if (ret)
 			return ret;
 		msleep(S6SY661_PM_DELAY_MS);
-		ret = i2c_smbus_read_byte_data(sdata->client, S6SY761_APPLICATION_MODE);
+		ret = s6sy661_i2c(i2c_smbus_read_byte_data(sdata->client, S6SY761_APPLICATION_MODE));
 		if (ret < 0)
 			return ret;
 		if (ret == mode)
@@ -724,8 +740,8 @@ static int s6sy661_enter_lpm(struct s6sy761_data *sdata)
 	if (ret)
 		return ret;
 
-	ret = i2c_smbus_write_byte_data(client, S6SY661_WAKEUP_GESTURE_MODE,
-					(sdata->lowpower_mode & S6SY661_MODE_LOWPOWER_FLAG) >> 1);
+	ret = s6sy661_i2c(i2c_smbus_write_byte_data(client, S6SY661_WAKEUP_GESTURE_MODE,
+				(sdata->lowpower_mode & S6SY661_MODE_LOWPOWER_FLAG) >> 1));
 	if (ret)
 		return ret;
 
@@ -736,7 +752,7 @@ static int s6sy661_enter_lpm(struct s6sy761_data *sdata)
 	if (device_may_wakeup(&client->dev) && !enable_irq_wake(client->irq))
 		sdata->irq_wake = true;
 
-	ret = i2c_smbus_write_byte(client, S6SY761_CLEAR_EVENT_STACK);
+	ret = s6sy661_i2c(i2c_smbus_write_byte(client, S6SY761_CLEAR_EVENT_STACK));
 	if (ret)
 		goto err_wake;
 
