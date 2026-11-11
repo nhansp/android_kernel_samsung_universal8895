@@ -512,15 +512,21 @@ static inline void __iomem *d_dpp(struct decon8895_ctx *ctx, unsigned int ch)
 	return ctx->dpp + D8895_DPP_CH(ch);
 }
 
+/* trig_lock held */
+static void __d8895_trigger(struct decon8895_ctx *ctx, bool enable)
+{
+	d_mask(ctx, D8895_HW_SW_TRIG_CONTROL,
+	       enable ? D8895_HW_TRIG_EN : D8895_HW_TRIG_MASK_DECON,
+	       D8895_HW_TRIG_EN | D8895_HW_TRIG_MASK_DECON);
+}
+
 /* decon_reg_set_trigger(), HW trigger (S:.../dpu/decon_reg.c:1006-1024) */
 static void d8895_trigger(struct decon8895_ctx *ctx, bool enable)
 {
 	unsigned long flags;
 
 	spin_lock_irqsave(&ctx->trig_lock, flags);
-	d_mask(ctx, D8895_HW_SW_TRIG_CONTROL,
-	       enable ? D8895_HW_TRIG_EN : D8895_HW_TRIG_MASK_DECON,
-	       D8895_HW_TRIG_EN | D8895_HW_TRIG_MASK_DECON);
+	__d8895_trigger(ctx, enable);
 	spin_unlock_irqrestore(&ctx->trig_lock, flags);
 }
 
@@ -2132,9 +2138,16 @@ static void d8895_dump(struct decon8895_ctx *ctx)
 		readl(g0 + D8895_IDMA_IN_CON), readl(g0 + D8895_IDMA_IN_BASE_ADDR_Y));
 }
 
-/* decon_reg_start() (decon_reg.c:2097-2111) */
-static int d8895_start(struct decon8895_ctx *ctx)
+/*
+ * decon_reg_start() (decon_reg.c:2097-2111). @oneshot arms the one-shot
+ * state together with the unmask, under the lock the frame-done mask takes:
+ * the frame done of the previous frame either masks before the unmask or
+ * finds the new state, and the new frame cannot start before its state is
+ * armed.
+ */
+static int d8895_start(struct decon8895_ctx *ctx, bool oneshot)
 {
+	unsigned long flags;
 	u32 val;
 	int ret;
 
@@ -2152,7 +2165,11 @@ static int d8895_start(struct decon8895_ctx *ctx)
 		d8895_dump(ctx);
 		return ret;
 	}
-	d8895_trigger(ctx, true);
+	spin_lock_irqsave(&ctx->trig_lock, flags);
+	if (oneshot)
+		atomic_set(&ctx->oneshot_state, 1);
+	__d8895_trigger(ctx, true);
+	spin_unlock_irqrestore(&ctx->trig_lock, flags);
 
 	return 0;
 }
@@ -2306,10 +2323,7 @@ static void d8895_atomic_flush(struct exynos_drm_crtc *crtc)
 	 * trigger running ("video_emul", S:.../dpu/decon_core.c:2224-2228,
 	 * 2320-2323).
 	 */
-	if (!d8895_start(ctx)) {
-		if (READ_ONCE(ctx->oneshot) && !d8895_panel_hmd_on())
-			atomic_set(&ctx->oneshot_state, 1);
-	}
+	d8895_start(ctx, READ_ONCE(ctx->oneshot) && !d8895_panel_hmd_on());
 
 	/* falling votes after the hardware update (S:dpu/bts.c:292-307) */
 	d8895_bts_update(ctx, true);
@@ -2737,10 +2751,14 @@ static irqreturn_t d8895_irq(int irq, void *dev_id)
 		 * the vendor does after each update (S:.../dpu/decon_core.c:
 		 * 2316-2326); the next commit re-enables it.
 		 */
-		if (atomic_read(&ctx->oneshot_state) == 2 &&
-		    !(d_read(ctx, D8895_SHADOW_REG_UPDATE_REQ) & D8895_SHADOW_REG_UPDATE_REQ_GLOBAL) &&
-		    atomic_cmpxchg(&ctx->oneshot_state, 2, 0) == 2)
-			d8895_trigger(ctx, false);
+		if (atomic_read(&ctx->oneshot_state) == 2) {
+			spin_lock(&ctx->trig_lock);
+			if (!(d_read(ctx, D8895_SHADOW_REG_UPDATE_REQ) &
+			      D8895_SHADOW_REG_UPDATE_REQ_GLOBAL) &&
+			    atomic_cmpxchg(&ctx->oneshot_state, 2, 0) == 2)
+				__d8895_trigger(ctx, false);
+			spin_unlock(&ctx->trig_lock);
+		}
 		d8895_panel_frame_done();
 	}
 	if (pend & D8895_DPU_DQE_DIMMING_START_INT_PEND)
