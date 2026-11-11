@@ -6586,8 +6586,221 @@ static const struct nla_policy wl_cfgvendor_country_policy[ANDR_WIFI_ATTRIBUTE_C
 };
 
 /*
- * L6D 5.5.3 A24: 6.18 wiphy_register() rejects a vendor command without a policy;
- * VENDOR_CMD_RAW_DATA passes the attributes through unparsed, as 4.4 did.
+ * The policies below list the attributes each handler reads, at the width it reads them; the
+ * handlers reject any other attribute, as nl80211 now does before calling them.
+ */
+static const struct nla_policy wl_cfgvendor_rand_mac_oui_policy[] = {
+	[ANDR_WIFI_ATTRIBUTE_RANDOM_MAC_OUI] = NLA_POLICY_EXACT_LEN(DOT11_OUI_LEN),
+};
+
+#ifdef CUSTOM_FORCE_NODFS_FLAG
+static const struct nla_policy wl_cfgvendor_nodfs_policy[] = {
+	[ANDR_WIFI_ATTRIBUTE_NODFS_SET] = { .type = NLA_U32 },
+};
+#endif /* CUSTOM_FORCE_NODFS_FLAG */
+
+#if defined(GSCAN_SUPPORT) || defined(DHD_GET_VALID_CHANNELS)
+static const struct nla_policy wl_cfgvendor_channel_list_policy[] = {
+	[GSCAN_ATTRIBUTE_BAND] = { .type = NLA_U32 },
+};
+#endif /* GSCAN_SUPPORT || DHD_GET_VALID_CHANNELS */
+
+/* The HAL asks for one version by sending its attribute empty (wifi_logger.cpp GET_DRV_VER) */
+static const struct nla_policy wl_cfgvendor_dbg_version_policy[] = {
+	[DEBUG_ATTRIBUTE_GET_DRIVER] = { .type = NLA_FLAG },
+	[DEBUG_ATTRIBUTE_GET_FW] = { .type = NLA_FLAG },
+};
+
+#ifdef KEEP_ALIVE
+static const struct nla_policy wl_cfgvendor_start_mkeep_alive_policy[] = {
+	[MKEEP_ALIVE_ATTRIBUTE_ID] = { .type = NLA_U8 },
+	[MKEEP_ALIVE_ATTRIBUTE_IP_PKT] = { .type = NLA_BINARY },
+	[MKEEP_ALIVE_ATTRIBUTE_IP_PKT_LEN] = { .type = NLA_U16 },
+	[MKEEP_ALIVE_ATTRIBUTE_SRC_MAC_ADDR] = NLA_POLICY_EXACT_LEN(ETHER_ADDR_LEN),
+	[MKEEP_ALIVE_ATTRIBUTE_DST_MAC_ADDR] = NLA_POLICY_EXACT_LEN(ETHER_ADDR_LEN),
+	[MKEEP_ALIVE_ATTRIBUTE_PERIOD_MSEC] = { .type = NLA_U32 },
+	[MKEEP_ALIVE_ATTRIBUTE_ETHER_TYPE] = { .type = NLA_U16 },
+};
+
+static const struct nla_policy wl_cfgvendor_stop_mkeep_alive_policy[] = {
+	[MKEEP_ALIVE_ATTRIBUTE_ID] = { .type = NLA_U8 },
+};
+#endif /* KEEP_ALIVE */
+
+#if defined(PKT_FILTER_SUPPORT) && defined(APF)
+static const struct nla_policy wl_cfgvendor_apf_set_filter_policy[] = {
+	[APF_ATTRIBUTE_PROGRAM] = { .type = NLA_BINARY },
+	[APF_ATTRIBUTE_PROGRAM_LEN] = { .type = NLA_U32 },
+};
+#endif /* PKT_FILTER_SUPPORT && APF */
+
+#ifdef NDO_CONFIG_SUPPORT
+static const struct nla_policy wl_cfgvendor_nd_offload_policy[] = {
+	[ANDR_WIFI_ATTRIBUTE_ND_OFFLOAD_VALUE] = { .type = NLA_U8 },
+};
+#endif /* NDO_CONFIG_SUPPORT */
+
+#ifdef RSSI_MONITOR_SUPPORT
+static const struct nla_policy wl_cfgvendor_rssi_monitor_policy[] = {
+	[RSSI_MONITOR_ATTRIBUTE_MAX_RSSI] = { .type = NLA_U32 },
+	[RSSI_MONITOR_ATTRIBUTE_MIN_RSSI] = { .type = NLA_U32 },
+	[RSSI_MONITOR_ATTRIBUTE_START] = { .type = NLA_U32 },
+};
+#endif /* RSSI_MONITOR_SUPPORT */
+
+#ifdef DHDTCPACK_SUPPRESS
+static const struct nla_policy wl_cfgvendor_tcpack_sup_policy[] = {
+	[ANDR_WIFI_ATTRIBUTE_TCPACK_SUP_VALUE] = { .type = NLA_U32 },
+};
+#endif /* DHDTCPACK_SUPPRESS */
+
+#ifdef WL_NAN
+/* wl_cfgvendor_nan_parse_args() */
+static const struct nla_policy wl_cfgvendor_nan_config_policy[] = {
+	[NAN_ATTRIBUTE_2G_SUPPORT] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_5G_SUPPORT] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_CLUSTER_LOW] = { .type = NLA_U16 },
+	[NAN_ATTRIBUTE_CLUSTER_HIGH] = { .type = NLA_U16 },
+	[NAN_ATTRIBUTE_SID_BEACON] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_SUB_SID_BEACON] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_SYNC_DISC_2G_BEACON] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_SYNC_DISC_5G_BEACON] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_SDF_2G_SUPPORT] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_SDF_5G_SUPPORT] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_HOP_COUNT_LIMIT] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_RANDOM_TIME] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_MASTER_PREF] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_OUI] = { .type = NLA_U32 },
+	[NAN_ATTRIBUTE_WARMUP_TIME] = { .type = NLA_U16 },
+	[NAN_ATTRIBUTE_AMBTT] = { .type = NLA_BINARY },
+	[NAN_ATTRIBUTE_MASTER_RANK] = { .type = NLA_BINARY },
+	[NAN_ATTRIBUTE_CHANNEL] = { .type = NLA_U32 },
+	[NAN_ATTRIBUTE_24G_CHANNEL] = { .type = NLA_U32 },
+	[NAN_ATTRIBUTE_5G_CHANNEL] = { .type = NLA_U32 },
+	[NAN_ATTRIBUTE_CONF_CLUSTER_VAL] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_DWELL_TIME] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_SCAN_PERIOD] = { .type = NLA_U16 },
+	[NAN_ATTRIBUTE_DWELL_TIME_5G] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_SCAN_PERIOD_5G] = { .type = NLA_U16 },
+	[NAN_ATTRIBUTE_AVAIL_BIT_MAP] = { .type = NLA_U32 },
+	[NAN_ATTRIBUTE_ENTRY_CONTROL] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_RSSI_CLOSE] = { .type = NLA_S8 },
+	[NAN_ATTRIBUTE_RSSI_MIDDLE] = { .type = NLA_S8 },
+	[NAN_ATTRIBUTE_RSSI_PROXIMITY] = { .type = NLA_S8 },
+	[NAN_ATTRIBUTE_RSSI_CLOSE_5G] = { .type = NLA_S8 },
+	[NAN_ATTRIBUTE_RSSI_MIDDLE_5G] = { .type = NLA_S8 },
+	[NAN_ATTRIBUTE_RSSI_PROXIMITY_5G] = { .type = NLA_S8 },
+	[NAN_ATTRIBUTE_RSSI_WINDOW_SIZE] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_CIPHER_SUITE_TYPE] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_SCID_LEN] = { .type = NLA_U32 },
+	[NAN_ATTRIBUTE_SCID] = { .type = NLA_BINARY },
+	[NAN_ATTRIBUTE_2G_AWAKE_DW] = { .type = NLA_U32 },
+	[NAN_ATTRIBUTE_5G_AWAKE_DW] = { .type = NLA_U32 },
+	[NAN_ATTRIBUTE_DISC_IND_CFG] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_MAC_ADDR] = NLA_POLICY_EXACT_LEN(ETHER_ADDR_LEN),
+	[NAN_ATTRIBUTE_RANDOMIZATION_INTERVAL] = { .type = NLA_U32 },
+};
+
+/* wl_cfgvendor_nan_parse_discover_args() */
+static const struct nla_policy wl_cfgvendor_nan_discover_policy[] = {
+	[NAN_ATTRIBUTE_TRANSAC_ID] = { .type = NLA_U16 },
+	[NAN_ATTRIBUTE_PERIODIC_SCAN_INTERVAL] = { .type = NLA_BINARY },
+	[NAN_ATTRIBUTE_PUBLISH_ID] = { .type = NLA_U16 },
+	[NAN_ATTRIBUTE_MAC_ADDR] = NLA_POLICY_EXACT_LEN(ETHER_ADDR_LEN),
+	[NAN_ATTRIBUTE_SERVICE_SPECIFIC_INFO_LEN] = { .type = NLA_U16 },
+	[NAN_ATTRIBUTE_SERVICE_SPECIFIC_INFO] = { .type = NLA_BINARY },
+	[NAN_ATTRIBUTE_SUBSCRIBE_ID] = { .type = NLA_U16 },
+	[NAN_ATTRIBUTE_SUBSCRIBE_TYPE] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_PUBLISH_COUNT] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_PUBLISH_TYPE] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_PERIOD] = { .type = NLA_U16 },
+	[NAN_ATTRIBUTE_REPLIED_EVENT_FLAG] = { .type = NLA_BINARY },
+	[NAN_ATTRIBUTE_TTL] = { .type = NLA_U16 },
+	[NAN_ATTRIBUTE_SERVICE_NAME_LEN] = { .type = NLA_U16 },
+	[NAN_ATTRIBUTE_SERVICE_NAME] = { .type = NLA_BINARY },
+	[NAN_ATTRIBUTE_PEER_ID] = { .type = NLA_U32 },
+	[NAN_ATTRIBUTE_INST_ID] = { .type = NLA_U16 },
+	[NAN_ATTRIBUTE_SUBSCRIBE_COUNT] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_SSIREQUIREDFORMATCHINDICATION] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_SUBSCRIBE_MATCH] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_PUBLISH_MATCH] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_SERVICERESPONSEFILTER] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_SERVICERESPONSEINCLUDE] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_USESERVICERESPONSEFILTER] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_RX_MATCH_FILTER_LEN] = { .type = NLA_U16 },
+	[NAN_ATTRIBUTE_RX_MATCH_FILTER] = { .type = NLA_BINARY },
+	[NAN_ATTRIBUTE_TX_MATCH_FILTER_LEN] = { .type = NLA_U16 },
+	[NAN_ATTRIBUTE_TX_MATCH_FILTER] = { .type = NLA_BINARY },
+	[NAN_ATTRIBUTE_MAC_ADDR_LIST_NUM_ENTRIES] = { .type = NLA_U16 },
+	[NAN_ATTRIBUTE_MAC_ADDR_LIST] = { .type = NLA_BINARY },
+	[NAN_ATTRIBUTE_TX_TYPE] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_SDE_CONTROL_CONFIG_DP] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_SDE_CONTROL_RANGE_SUPPORT] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_SDE_CONTROL_DP_TYPE] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_SDE_CONTROL_SECURITY] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_RECV_IND_CFG] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_CIPHER_SUITE_TYPE] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_KEY_TYPE] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_KEY_LEN] = { .type = NLA_U32 },
+	[NAN_ATTRIBUTE_KEY_DATA] = { .type = NLA_BINARY },
+	[NAN_ATTRIBUTE_RSSI_THRESHOLD_FLAG] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_DISC_IND_CFG] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_SDEA_SERVICE_SPECIFIC_INFO_LEN] = { .type = NLA_U16 },
+	[NAN_ATTRIBUTE_SDEA_SERVICE_SPECIFIC_INFO] = { .type = NLA_BINARY },
+	[NAN_ATTRIBUTE_SECURITY] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_RANGING_INTERVAL] = { .type = NLA_U32 },
+	[NAN_ATTRIBUTE_RANGING_INGRESS_LIMIT] = { .type = NLA_U32 },
+	[NAN_ATTRIBUTE_RANGING_EGRESS_LIMIT] = { .type = NLA_U32 },
+	[NAN_ATTRIBUTE_RANGING_INDICATION] = { .type = NLA_U32 },
+	[NAN_ATTRIBUTE_SVC_RESPONDER_POLICY] = { .type = NLA_U8 },
+};
+
+/* wl_cfgvendor_nan_parse_datapath_args() */
+static const struct nla_policy wl_cfgvendor_nan_datapath_policy[] = {
+	[NAN_ATTRIBUTE_NDP_ID] = { .type = NLA_U32 },
+	[NAN_ATTRIBUTE_IFACE] = NLA_POLICY_MAX_LEN(IFNAMSIZ),
+	[NAN_ATTRIBUTE_SECURITY] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_QOS] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_RSP_CODE] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_INST_COUNT] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_PEER_DISC_MAC_ADDR] = NLA_POLICY_EXACT_LEN(ETHER_ADDR_LEN),
+	[NAN_ATTRIBUTE_PEER_NDI_MAC_ADDR] = NLA_POLICY_EXACT_LEN(ETHER_ADDR_LEN),
+	[NAN_ATTRIBUTE_MAC_ADDR] = NLA_POLICY_EXACT_LEN(ETHER_ADDR_LEN),
+	[NAN_ATTRIBUTE_IF_ADDR] = NLA_POLICY_EXACT_LEN(ETHER_ADDR_LEN),
+	[NAN_ATTRIBUTE_ENTRY_CONTROL] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_AVAIL_BIT_MAP] = { .type = NLA_U32 },
+	[NAN_ATTRIBUTE_CHANNEL] = { .type = NLA_U32 },
+	[NAN_ATTRIBUTE_NO_CONFIG_AVAIL] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_SERVICE_NAME_LEN] = { .type = NLA_U16 },
+	[NAN_ATTRIBUTE_SERVICE_NAME] = { .type = NLA_BINARY },
+	[NAN_ATTRIBUTE_SERVICE_SPECIFIC_INFO_LEN] = { .type = NLA_U16 },
+	[NAN_ATTRIBUTE_SERVICE_SPECIFIC_INFO] = { .type = NLA_BINARY },
+	[NAN_ATTRIBUTE_PUBLISH_ID] = { .type = NLA_U32 },
+	[NAN_ATTRIBUTE_CIPHER_SUITE_TYPE] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_KEY_TYPE] = { .type = NLA_U8 },
+	[NAN_ATTRIBUTE_KEY_LEN] = { .type = NLA_U32 },
+	[NAN_ATTRIBUTE_KEY_DATA] = { .type = NLA_BINARY },
+};
+
+#ifdef WL_NAN_DISC_CACHE
+/*
+ * wl_cfgvendor_nan_parse_dp_sec_info_args() reads these without checking their length; the
+ * HAL sends the publish ID as 32 bits (nan.cpp NAN_SUBCMD_DATA_PATH_SEC_INFO).
+ */
+static const struct nla_policy wl_cfgvendor_nan_sec_info_policy[] = {
+	[NAN_ATTRIBUTE_MAC_ADDR] = NLA_POLICY_EXACT_LEN(ETHER_ADDR_LEN),
+	[NAN_ATTRIBUTE_PUBLISH_ID] = NLA_POLICY_MIN_LEN(sizeof(uint16)),
+	[NAN_ATTRIBUTE_NDP_ID] = NLA_POLICY_MIN_LEN(sizeof(uint32)),
+};
+#endif /* WL_NAN_DISC_CACHE */
+#endif /* WL_NAN */
+
+#define WL_CFGVENDOR_POLICY(p)	.policy = (p), .maxattr = ARRAY_SIZE(p) - 1
+
+/*
+ * 6.18 refuses a vendor command without a policy. A command whose request carries no
+ * attributes, or one whose data is not a nest of attributes, takes VENDOR_CMD_RAW_DATA, which
+ * passes the data through unparsed; nl80211 refuses nested data for it.
  */
 static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 	{
@@ -6682,7 +6895,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = GSCAN_SUBCMD_GET_CHANNEL_LIST
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_channel_list_policy),
 		.doit = wl_cfgvendor_gscan_get_channel_list
 	},
 #endif /* GSCAN_SUPPORT || DHD_GET_VALID_CHANNELS */
@@ -6766,7 +6979,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = ANDR_WIFI_RANDOM_MAC_OUI
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_rand_mac_oui_policy),
 		.doit = wl_cfgvendor_set_rand_mac_oui
 	},
 #ifdef CUSTOM_FORCE_NODFS_FLAG
@@ -6776,7 +6989,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = ANDR_WIFI_NODFS_CHANNELS
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_nodfs_policy),
 		.doit = wl_cfgvendor_set_nodfs_flag
 	},
 #endif /* CUSTOM_FORCE_NODFS_FLAG */
@@ -6891,7 +7104,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = DEBUG_GET_VER
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_dbg_version_policy),
 		.doit = wl_cfgvendor_dbg_get_version
 	},
 #ifdef DEBUGABILITY
@@ -6995,7 +7208,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = WIFI_OFFLOAD_SUBCMD_START_MKEEP_ALIVE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_start_mkeep_alive_policy),
 		.doit = wl_cfgvendor_start_mkeep_alive
 	},
 	{
@@ -7004,7 +7217,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = WIFI_OFFLOAD_SUBCMD_STOP_MKEEP_ALIVE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_stop_mkeep_alive_policy),
 		.doit = wl_cfgvendor_stop_mkeep_alive
 	},
 #endif /* KEEP_ALIVE */
@@ -7015,7 +7228,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_ENABLE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_nan_config_policy),
 		.doit = wl_cfgvendor_nan_start_handler
 	},
 	{
@@ -7033,7 +7246,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_CONFIG
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_nan_config_policy),
 		.doit = wl_cfgvendor_nan_config_handler
 	},
 	{
@@ -7042,7 +7255,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_REQUEST_PUBLISH
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_nan_discover_policy),
 		.doit = wl_cfgvendor_nan_req_publish
 	},
 	{
@@ -7051,7 +7264,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_REQUEST_SUBSCRIBE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_nan_discover_policy),
 		.doit = wl_cfgvendor_nan_req_subscribe
 	},
 	{
@@ -7060,7 +7273,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_CANCEL_PUBLISH
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_nan_discover_policy),
 		.doit = wl_cfgvendor_nan_cancel_publish
 	},
 	{
@@ -7069,7 +7282,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_CANCEL_SUBSCRIBE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_nan_discover_policy),
 		.doit = wl_cfgvendor_nan_cancel_subscribe
 	},
 	{
@@ -7078,7 +7291,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_TRANSMIT
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_nan_discover_policy),
 		.doit = wl_cfgvendor_nan_transmit
 	},
 	{
@@ -7097,7 +7310,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_DATA_PATH_IFACE_CREATE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_nan_datapath_policy),
 		.doit = wl_cfgvendor_nan_data_path_iface_create
 	},
 	{
@@ -7106,7 +7319,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_DATA_PATH_IFACE_DELETE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_nan_datapath_policy),
 		.doit = wl_cfgvendor_nan_data_path_iface_delete
 	},
 	{
@@ -7115,7 +7328,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_DATA_PATH_REQUEST
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_nan_datapath_policy),
 		.doit = wl_cfgvendor_nan_data_path_request
 	},
 	{
@@ -7124,7 +7337,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_DATA_PATH_RESPONSE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_nan_datapath_policy),
 		.doit = wl_cfgvendor_nan_data_path_response
 	},
 	{
@@ -7133,7 +7346,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_DATA_PATH_END
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_nan_datapath_policy),
 		.doit = wl_cfgvendor_nan_data_path_end
 	},
 #ifdef WL_NAN_DISC_CACHE
@@ -7143,7 +7356,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = NAN_WIFI_SUBCMD_DATA_PATH_SEC_INFO
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_nan_sec_info_policy),
 		.doit = wl_cfgvendor_nan_data_path_sec_info
 	},
 #endif /* WL_NAN_DISC_CACHE */
@@ -7174,7 +7387,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = APF_SUBCMD_SET_FILTER
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_apf_set_filter_policy),
 		.doit = wl_cfgvendor_apf_set_filter
 	},
 #endif /* PKT_FILTER_SUPPORT && APF */
@@ -7185,7 +7398,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = WIFI_SUBCMD_CONFIG_ND_OFFLOAD
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_nd_offload_policy),
 		.doit = wl_cfgvendor_configure_nd_offload
 	},
 #endif /* NDO_CONFIG_SUPPORT */
@@ -7196,7 +7409,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = WIFI_SUBCMD_SET_RSSI_MONITOR
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_rssi_monitor_policy),
 		.doit = wl_cfgvendor_set_rssi_monitor
 	},
 #endif /* RSSI_MONITOR_SUPPORT */
@@ -7207,7 +7420,7 @@ static const struct wiphy_vendor_command wl_vendor_cmds [] = {
 			.subcmd = WIFI_SUBCMD_CONFIG_TCPACK_SUP
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.policy = VENDOR_CMD_RAW_DATA,
+		WL_CFGVENDOR_POLICY(wl_cfgvendor_tcpack_sup_policy),
 		.doit = wl_cfgvendor_set_tcpack_sup_mode
 	},
 #endif /* DHDTCPACK_SUPPRESS */
