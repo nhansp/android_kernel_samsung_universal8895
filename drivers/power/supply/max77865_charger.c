@@ -196,6 +196,7 @@ struct max77865_charger {
 	u32 fault;			/* 0 none, 1 charge-off fault, 2 kick stopped */
 	bool otg_on;
 	unsigned int otg_saved_mask;
+	unsigned int otg_saved_cnfg00, otg_saved_cnfg12;
 	bool wdt_kick;
 	bool usb_ntc_logged, chg_ntc_logged, no_rtc_logged;
 	bool wake_held;
@@ -1150,6 +1151,16 @@ static void max77865_otg_off(struct max77865_charger *chg)
 	regmap_write(chg->regmap, MAX77865_CHG_REG_CNFG_11, 0x00);	/* :673-675 3.485 V */
 	msleep(50);							/* :676 mdelay(50) */
 	regmap_write(chg->regmap, MAX77865_CHG_REG_INT_MASK, chg->otg_saved_mask);	/* :678-680 */
+	/*
+	 * Without charge control nothing else sets CHG and DISSKIP again: give the
+	 * session's charge-off back as found, or S-Boot's charging stays off until a reboot.
+	 */
+	if (!chg->charge_control) {
+		regmap_update_bits(chg->regmap, MAX77865_CHG_REG_CNFG_00, MAX77865_CNFG_00_CHG,
+				   chg->otg_saved_cnfg00);
+		regmap_update_bits(chg->regmap, MAX77865_CHG_REG_CNFG_12, MAX77865_CNFG_12_DISSKIP,
+				   chg->otg_saved_cnfg12);
+	}
 	chg->otg_on = false;
 }
 
@@ -1165,16 +1176,24 @@ static int max77865_otg_enable(struct regulator_dev *rdev)
 		ret = -EIO;
 		goto out;
 	}
+	/* every read before the first write: a failed read leaves CHG and DISSKIP as they were */
+	if (!chg->charge_control) {
+		ret = regmap_read(chg->regmap, MAX77865_CHG_REG_CNFG_00, &chg->otg_saved_cnfg00);
+		ret = ret ?: regmap_read(chg->regmap, MAX77865_CHG_REG_CNFG_12,
+					 &chg->otg_saved_cnfg12);
+	}
+	ret = ret ?: regmap_read(chg->regmap, MAX77865_CHG_REG_INT_MASK, &chg->otg_saved_mask);
+	if (ret)
+		goto out;
 	/*
 	 * CHG off first (stock max77865_set_charger_state(0), CHG:569-588): the pass skips
 	 * every mode write while boosting, so a CHARGING left from before would stay set.
+	 * Samsung's sec_battery charges off the same way for an OTG cable
+	 * (SEC_BAT_CHG_MODE_CHARGING_OFF in sec_bat_cable_work()).
 	 */
 	regmap_update_bits(chg->regmap, MAX77865_CHG_REG_CNFG_00, MAX77865_CNFG_00_CHG, 0);
 	regmap_update_bits(chg->regmap, MAX77865_CHG_REG_CNFG_12, MAX77865_CNFG_12_DISSKIP, 0);
 	chg->hw_mode = -1;
-	ret = regmap_read(chg->regmap, MAX77865_CHG_REG_INT_MASK, &chg->otg_saved_mask);
-	if (ret)
-		goto out;
 	/* mask CHG and CHGIN, unmask BYP (:647-654) */
 	regmap_update_bits(chg->regmap, MAX77865_CHG_REG_INT_MASK,
 			   MAX77865_CHG_CHG | MAX77865_CHG_CHGIN | MAX77865_CHG_BYP,
