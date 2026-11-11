@@ -1812,6 +1812,16 @@
 	cs-gpios = <&gpc3 1 GPIO_ACTIVE_LOW>;	/* stock controller-data cs-gpio cs-gpio = <&gpc3 0x01 0x00>; */
 	num-cs = <1>;
 	swap-mode;	/* FDT:6202; the FROM read goes out as 32-bit words (fimc_is_spi_read) */
+	/*
+	 * Stock sets 2 x spi-max-frequency on DOUT_CLKCMU_PERIC1_SPI_CAM0 and
+	 * switches the PERIC1 user mux to it when the clock is enabled; the
+	 * controller's clk_set_rate() on its PERIC1 gate here does not reach
+	 * that divider, so the source is programmed at probe.
+	 */
+	assigned-clocks = <&cmu_top CLK_DOUT_CMU_PERIC1_SPI_CAM0>,
+			  <&cmu_peric1 CLK_MOUT_PERIC1_SPI_CAM0_USER>;
+	assigned-clock-parents = <0>, <&cmu_top CLK_DOUT_CMU_PERIC1_SPI_CAM0>;
+	assigned-clock-rates = <100000000>, <0>;
 	status = "okay";
 	/* FDT:6214-6230 */
 	fimc_is_spi_0@0 {
@@ -1841,6 +1851,16 @@
 	cs-gpios = <&gpc3 5 GPIO_ACTIVE_LOW>;	/* stock controller-data cs-gpio cs-gpio = <&gpc3 0x05 0x00>; */
 	num-cs = <1>;
 	swap-mode;	/* FDT:6239; the companion read/write use 32/16-bit words */
+	/*
+	 * Stock sets 2 x spi-max-frequency on DOUT_CLKCMU_PERIC1_SPI_CAM1 and
+	 * switches the PERIC1 user mux to it when the clock is enabled; the
+	 * controller's clk_set_rate() on its PERIC1 gate here does not reach
+	 * that divider, so the source is programmed at probe.
+	 */
+	assigned-clocks = <&cmu_top CLK_DOUT_CMU_PERIC1_SPI_CAM1>,
+			  <&cmu_peric1 CLK_MOUT_PERIC1_SPI_CAM1_USER>;
+	assigned-clock-parents = <0>, <&cmu_top CLK_DOUT_CMU_PERIC1_SPI_CAM1>;
+	assigned-clock-rates = <100000000>, <0>;
 	status = "okay";
 	/* FDT:6251-6265 */
 	fimc_is_spi_1@0 {	/* stock "@1", reg = <0> */
