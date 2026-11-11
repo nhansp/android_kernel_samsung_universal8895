@@ -66,6 +66,7 @@ struct max77865_led {
 	u32 lowpower_current;
 	u32 ratio[3];
 	u32 ratio_low[3];
+	bool lowpower;			/* sec led_lowpower */
 
 	struct max77865_led_channel channels[MAX77865_LED_NUM_CHANNELS];
 };
@@ -99,129 +100,136 @@ static int max77865_led_brightness_set(struct led_classdev *cdev,
 	return ret;
 }
 
-/* S:drivers/leds/leds-max77865-rgb.c:538-545, spec L6F 5.9 */
+#define MAX77865_LED_DISABLE	0
+#define MAX77865_LED_ALWAYS_ON	1
+#define MAX77865_LED_BLINK	2
+
+/* the canned patterns of Samsung's framework, written to led_pattern */
+enum max77865_led_pattern {
+	MAX77865_PATTERN_OFF,
+	MAX77865_PATTERN_CHARGING,
+	MAX77865_PATTERN_CHARGING_ERR,
+	MAX77865_PATTERN_MISSED_NOTI,
+	MAX77865_PATTERN_LOW_BATTERY,
+	MAX77865_PATTERN_FULLY_CHARGED,
+	MAX77865_PATTERN_POWERING,
+};
+
+/* Samsung's kernel (drivers/leds/leds-max77865-rgb.c), max77865_rgb_ramp() */
+static int max77865_led_ramp(struct max77865_led *led, int ramp_up, int ramp_down)
+{
+	if (ramp_up > 800)
+		ramp_up = (ramp_up - 800) * 2 + 800;
+	if (ramp_down > 800)
+		ramp_down = (ramp_down - 800) * 2 + 800;
+
+	return regmap_write(led->regmap, MAX77865_RGBLED_REG_LEDRMP,
+			    (ramp_down / 100) | ((ramp_up / 100) << 4));
+}
+
+/* Samsung's kernel, max77865_rgb_blink() */
+static int max77865_led_blink(struct max77865_led *led, int on, int off)
+{
+	return regmap_write(led->regmap, MAX77865_RGBLED_REG_LEDBLNK,
+			    (LEDBLNK_ON(on) << 4) | LEDBLNK_OFF(off));
+}
+
+/*
+ * Samsung's kernel, max77865_rgb_set_state(): the colour's ratio of the active
+ * power mode scales the current, and a non-zero current never scales to zero.
+ * Samsung's kernel truncates a result above 0xff to the 8-bit register; it is
+ * clamped here. Caller holds the lock.
+ */
+static int max77865_led_set_state(struct max77865_led *led, unsigned int id,
+				  u32 brightness, unsigned int state)
+{
+	int ret;
+
+	if (brightness) {
+		const u32 *ratio = led->lowpower ? led->ratio_low : led->ratio;
+
+		brightness = brightness * ratio[id - MAX77865_LED_RED] / 100;
+		brightness = clamp(brightness, 1U, (u32)MAX77865_LED_MAX_BRIGHTNESS);
+		ret = regmap_write(led->regmap, MAX77865_RGBLED_REG_LED0BRT + id,
+				   brightness);
+		if (ret)
+			return ret;
+	} else {
+		state = MAX77865_LED_DISABLE;
+	}
+
+	return regmap_update_bits(led->regmap, MAX77865_RGBLED_REG_LEDEN,
+				  3 << (2 * id), state << (2 * id));
+}
+
+/* Samsung's kernel, max77865_rgb_reset(): red, green and blue off, no ramp */
 static int max77865_led_reset(struct max77865_led *led)
 {
 	int ret;
 
-	/* Reset R, G, B to off (bits 2..7 of LEDEN) and LEDRMP := 0 */
 	ret = regmap_update_bits(led->regmap, MAX77865_RGBLED_REG_LEDEN,
-				 (3 << 2) | (3 << 4) | (3 << 6), 0);
+				 (3 << (2 * MAX77865_LED_RED)) |
+				 (3 << (2 * MAX77865_LED_GREEN)) |
+				 (3 << (2 * MAX77865_LED_BLUE)), 0);
 	if (!ret)
-		ret = regmap_write(led->regmap, MAX77865_RGBLED_REG_LEDRMP, 0);
+		ret = max77865_led_ramp(led, 0, 0);
 
 	return ret;
 }
 
-/* S:drivers/leds/leds-max77865-rgb.c:648-750, spec L6F 5.9 */
+static u32 max77865_led_mode_current(struct max77865_led *led)
+{
+	return led->lowpower ? led->lowpower_current : led->normal_current;
+}
+
+/*
+ * led_blink, "0xRRGGBB on_ms off_ms" (the LineageOS Samsung lights HAL and
+ * Samsung's framework), Samsung's kernel store_max77865_rgb_blink(): each
+ * colour is scaled to the current of the power mode, then all of them together
+ * down to what the strongest colour may draw at the normal current. A black
+ * colour leaves the LED off but still sets the blink timing.
+ */
 static ssize_t led_blink_store(struct device *dev,
 			       struct device_attribute *attr,
 			       const char *buf, size_t count)
 {
 	struct max77865_led *led = dev_get_drvdata(dev);
-	int led_brightness = 0, delay_on_time = 0, delay_off_time = 0;
-	u32 led_r_brightness = 0, led_g_brightness = 0, led_b_brightness = 0;
-	u32 led_total_br = 0, led_max_br = 0;
-	u32 max_ratio;
-	int ret;
+	unsigned int rgb, total = 0, max_br, i;
+	int on = 0, off = 0;
+	u32 cur, c[3];
 
-	ret = sscanf(buf, "0x%8x %5d %5d", &led_brightness,
-		     &delay_on_time, &delay_off_time);
-	if (ret < 3)
+	if (sscanf(buf, "0x%8x %5d %5d", &rgb, &on, &off) < 1)
 		return -EINVAL;
+
+	c[0] = (rgb >> 16) & 0xff;
+	c[1] = (rgb >> 8) & 0xff;
+	c[2] = rgb & 0xff;
 
 	mutex_lock(&led->lock);
 
-	/* Reset led: R/G/B off + LEDRMP := 0 */
+	cur = max77865_led_mode_current(led);
 	max77865_led_reset(led);
 
-	led_r_brightness = (led_brightness & 0x00FF0000) >> 16;
-	led_g_brightness = (led_brightness & 0x0000FF00) >> 8;
-	led_b_brightness = led_brightness & 0x000000FF;
-
-	/* If all 0, reset already turned all off (HAL's off: "0x00000000 0 0") */
-	if (!led_r_brightness && !led_g_brightness && !led_b_brightness) {
-		mutex_unlock(&led->lock);
-		return count;
+	for (i = 0; i < 3; i++) {
+		if (c[i])
+			c[i] = max(c[i] * cur / MAX77865_LED_MAX_BRIGHTNESS, 1U);
+		total += c[i] * led->ratio[i] / 100;
 	}
 
-	/* Scale each nonzero 8-bit colour c = c * normal_current / 0xff (min 1) */
-	if (led_r_brightness) {
-		led_r_brightness = led_r_brightness * led->normal_current / 0xff;
-		if (!led_r_brightness)
-			led_r_brightness = 1;
-	}
-	if (led_g_brightness) {
-		led_g_brightness = led_g_brightness * led->normal_current / 0xff;
-		if (!led_g_brightness)
-			led_g_brightness = 1;
-	}
-	if (led_b_brightness) {
-		led_b_brightness = led_b_brightness * led->normal_current / 0xff;
-		if (!led_b_brightness)
-			led_b_brightness = 1;
+	max_br = led->normal_current *
+		 max3(led->ratio[0], led->ratio[1], led->ratio[2]) / 100;
+	if (total > max_br) {
+		for (i = 0; i < 3; i++)
+			if (c[i])
+				c[i] = max(c[i] * max_br / total, 1U);
 	}
 
-	/* total = r*ratio[0]/100 + g*ratio[1]/100 + b*ratio[2]/100 */
-	led_total_br = (led_r_brightness * led->ratio[0] +
-			led_g_brightness * led->ratio[1] +
-			led_b_brightness * led->ratio[2]) / 100;
+	for (i = 0; i < 3; i++)
+		if (c[i])
+			max77865_led_set_state(led, MAX77865_LED_RED + i, c[i],
+					       MAX77865_LED_BLINK);
 
-	/* max = normal_current * max_ratio / 100 */
-	max_ratio = max(led->ratio[0], max(led->ratio[1], led->ratio[2]));
-	led_max_br = led->normal_current * max_ratio / 100;
-
-	/* if total > max scale all by max/total (min 1) */
-	if (led_total_br > led_max_br && led_total_br > 0) {
-		if (led_r_brightness) {
-			led_r_brightness = led_r_brightness * led_max_br / led_total_br;
-			if (!led_r_brightness)
-				led_r_brightness = 1;
-		}
-		if (led_g_brightness) {
-			led_g_brightness = led_g_brightness * led_max_br / led_total_br;
-			if (!led_g_brightness)
-				led_g_brightness = 1;
-		}
-		if (led_b_brightness) {
-			led_b_brightness = led_b_brightness * led_max_br / led_total_br;
-			if (!led_b_brightness)
-				led_b_brightness = 1;
-		}
-	}
-
-	/* per colour set_state(c * ratio / 100 (min 1), BLINK=2) (S:...:218-256) */
-	if (led_r_brightness) {
-		u32 br = led_r_brightness * led->ratio[0] / 100;
-		if (!br)
-			br = 1;
-		regmap_write(led->regmap, MAX77865_RGBLED_REG_LED0BRT + MAX77865_LED_RED, br);
-		regmap_update_bits(led->regmap, MAX77865_RGBLED_REG_LEDEN,
-				   3 << (2 * MAX77865_LED_RED),
-				   2 << (2 * MAX77865_LED_RED));
-	}
-	if (led_g_brightness) {
-		u32 br = led_g_brightness * led->ratio[1] / 100;
-		if (!br)
-			br = 1;
-		regmap_write(led->regmap, MAX77865_RGBLED_REG_LED0BRT + MAX77865_LED_GREEN, br);
-		regmap_update_bits(led->regmap, MAX77865_RGBLED_REG_LEDEN,
-				   3 << (2 * MAX77865_LED_GREEN),
-				   2 << (2 * MAX77865_LED_GREEN));
-	}
-	if (led_b_brightness) {
-		u32 br = led_b_brightness * led->ratio[2] / 100;
-		if (!br)
-			br = 1;
-		regmap_write(led->regmap, MAX77865_RGBLED_REG_LED0BRT + MAX77865_LED_BLUE, br);
-		regmap_update_bits(led->regmap, MAX77865_RGBLED_REG_LEDEN,
-				   3 << (2 * MAX77865_LED_BLUE),
-				   2 << (2 * MAX77865_LED_BLUE));
-	}
-
-	/* LEDBLNK = LEDBLNK_ON(on) << 4 | LEDBLNK_OFF(off) */
-	regmap_write(led->regmap, MAX77865_RGBLED_REG_LEDBLNK,
-		     (LEDBLNK_ON(delay_on_time) << 4) | LEDBLNK_OFF(delay_off_time));
+	max77865_led_blink(led, on, off);
 
 	mutex_unlock(&led->lock);
 
@@ -229,8 +237,153 @@ static ssize_t led_blink_store(struct device *dev,
 }
 static DEVICE_ATTR(led_blink, 0660, NULL, led_blink_store);
 
+/*
+ * led_r, led_g, led_b, Samsung's kernel store_led_r() and friends: one colour
+ * always on at the given level (scaled by the ratio of the power mode), 0 off.
+ */
+static ssize_t max77865_led_color_store(struct max77865_led *led, unsigned int id,
+					const char *buf, size_t count)
+{
+	unsigned int brightness;
+	int ret;
+
+	ret = kstrtouint(buf, 0, &brightness);
+	if (ret)
+		return ret;
+
+	brightness = min_t(unsigned int, brightness, MAX77865_LED_MAX_BRIGHTNESS);
+
+	mutex_lock(&led->lock);
+	ret = max77865_led_set_state(led, id, brightness, MAX77865_LED_ALWAYS_ON);
+	mutex_unlock(&led->lock);
+
+	return ret ?: count;
+}
+
+#define MAX77865_LED_COLOR_ATTR(_name, _id)					\
+static ssize_t _name##_store(struct device *dev,				\
+			     struct device_attribute *attr,			\
+			     const char *buf, size_t count)			\
+{										\
+	return max77865_led_color_store(dev_get_drvdata(dev), _id, buf, count);\
+}										\
+static DEVICE_ATTR(_name, 0660, NULL, _name##_store)
+
+MAX77865_LED_COLOR_ATTR(led_r, MAX77865_LED_RED);
+MAX77865_LED_COLOR_ATTR(led_g, MAX77865_LED_GREEN);
+MAX77865_LED_COLOR_ATTR(led_b, MAX77865_LED_BLUE);
+
+/* led_pattern, Samsung's kernel store_max77865_rgb_pattern() */
+static ssize_t led_pattern_store(struct device *dev,
+				 struct device_attribute *attr,
+				 const char *buf, size_t count)
+{
+	struct max77865_led *led = dev_get_drvdata(dev);
+	unsigned int mode;
+	u32 cur;
+
+	if (sscanf(buf, "%1u", &mode) != 1)
+		return -EINVAL;
+
+	mutex_lock(&led->lock);
+
+	max77865_led_reset(led);
+	cur = max77865_led_mode_current(led);
+
+	switch (mode) {
+	case MAX77865_PATTERN_CHARGING:
+		max77865_led_set_state(led, MAX77865_LED_RED, cur, MAX77865_LED_ALWAYS_ON);
+		break;
+	case MAX77865_PATTERN_CHARGING_ERR:
+		max77865_led_blink(led, 500, 500);
+		max77865_led_set_state(led, MAX77865_LED_RED, cur, MAX77865_LED_BLINK);
+		break;
+	case MAX77865_PATTERN_MISSED_NOTI:
+		max77865_led_blink(led, 500, 5000);
+		max77865_led_set_state(led, MAX77865_LED_BLUE, cur, MAX77865_LED_BLINK);
+		break;
+	case MAX77865_PATTERN_LOW_BATTERY:
+		max77865_led_blink(led, 500, 5000);
+		max77865_led_set_state(led, MAX77865_LED_RED, cur, MAX77865_LED_BLINK);
+		break;
+	case MAX77865_PATTERN_FULLY_CHARGED:
+		max77865_led_set_state(led, MAX77865_LED_GREEN, cur, MAX77865_LED_ALWAYS_ON);
+		break;
+	case MAX77865_PATTERN_POWERING:
+		max77865_led_ramp(led, 800, 800);
+		max77865_led_blink(led, 200, 200);
+		max77865_led_set_state(led, MAX77865_LED_BLUE, cur, MAX77865_LED_ALWAYS_ON);
+		max77865_led_set_state(led, MAX77865_LED_GREEN, cur, MAX77865_LED_BLINK);
+		break;
+	default:
+		break;
+	}
+
+	mutex_unlock(&led->lock);
+
+	return count;
+}
+static DEVICE_ATTR(led_pattern, 0660, NULL, led_pattern_store);
+
+/*
+ * led_lowpower, Samsung's kernel store_max77865_rgb_lowpower(): 1 selects the
+ * low-power current and ratios for what is set next.
+ */
+static ssize_t led_lowpower_store(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	struct max77865_led *led = dev_get_drvdata(dev);
+	u8 lowpower;
+	int ret;
+
+	ret = kstrtou8(buf, 0, &lowpower);
+	if (ret)
+		return ret;
+
+	mutex_lock(&led->lock);
+	led->lowpower = lowpower == 1;
+	mutex_unlock(&led->lock);
+
+	return count;
+}
+static DEVICE_ATTR(led_lowpower, 0660, NULL, led_lowpower_store);
+
+/*
+ * led_brightness, Samsung's kernel store_max77865_rgb_brightness(): leaves the
+ * low-power mode. The level it also stores is read only by Samsung's per-LED
+ * "blink" attribute, which this driver does not have: led_blink and
+ * led_pattern take the current from the power mode, as in Samsung's kernel.
+ */
+static ssize_t led_brightness_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct max77865_led *led = dev_get_drvdata(dev);
+	u8 brightness;
+	int ret;
+
+	ret = kstrtou8(buf, 0, &brightness);
+	if (ret)
+		return ret;
+
+	mutex_lock(&led->lock);
+	led->lowpower = false;
+	mutex_unlock(&led->lock);
+
+	return count;
+}
+static DEVICE_ATTR(led_brightness, 0660, NULL, led_brightness_store);
+
+/* Samsung's kernel, sec_led_attributes */
 static struct attribute *max77865_led_attrs[] = {
+	&dev_attr_led_r.attr,
+	&dev_attr_led_g.attr,
+	&dev_attr_led_b.attr,
+	&dev_attr_led_pattern.attr,
 	&dev_attr_led_blink.attr,
+	&dev_attr_led_brightness.attr,
+	&dev_attr_led_lowpower.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(max77865_led);
