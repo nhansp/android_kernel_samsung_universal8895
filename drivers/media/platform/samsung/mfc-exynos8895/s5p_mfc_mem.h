@@ -33,15 +33,20 @@ struct s5p_mfc_mem_cookie {
 	struct device *dev;
 	size_t size;
 	void *vaddr;
-	dma_addr_t daddr;
+	dma_addr_t daddr;	/* the DMA API handle (freed through it) */
+	dma_addr_t fixed;	/* 0, or a second mapping at a fixed IOVA */
 };
 
 void *s5p_mfc_mem_alloc(struct device *dev, size_t size);
 void s5p_mfc_mem_free(void *cookie);
+int s5p_mfc_mem_map_fixed(void *cookie, dma_addr_t iova);
 
+/* The address the MFC uses: the fixed mapping when there is one */
 static inline dma_addr_t s5p_mfc_mem_get_daddr(void *cookie)
 {
-	return ((struct s5p_mfc_mem_cookie *)cookie)->daddr;
+	struct s5p_mfc_mem_cookie *c = cookie;
+
+	return c->fixed ? c->fixed : c->daddr;
 }
 
 static inline dma_addr_t s5p_mfc_mem_get_daddr_vb(

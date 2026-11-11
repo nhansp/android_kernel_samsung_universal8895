@@ -1876,7 +1876,27 @@
 &cmu_mfc { status = "okay"; };
 &sysmmu_mfc0 { status = "okay"; };
 &sysmmu_mfc1 { status = "okay"; };
-&mfc { status = "okay"; };
+
+/*
+ * The MFC firmware rejects buffers below its base (OPEN_INSTANCE fails with
+ * error 10). Samsung's kernel allocated MFC addresses bottom-up in
+ * [0x10000000, 0xd0000000) (drivers/iommu/exynos-iommu.c IOVA_START,
+ * IOVA_END), the firmware first; dma-iommu allocates top-down. Keep the
+ * allocator inside that window and above the firmware's 0x108000 bytes at its
+ * bottom (1 MiB code + 32 KiB device context); the driver maps the firmware at
+ * 0x10000000 itself (MFC_FW_IOVA).
+ */
+&{/reserved-memory} {
+	mfc_iova: mfc-iova-reserved {
+		iommu-addresses = <&mfc 0x0 0x10108000>,
+				  <&mfc 0xd0000000 0x30000000>;
+	};
+};
+
+&mfc {
+	memory-region = <&mfc_iova>;
+	status = "okay";
+};
 
 /* ==== l6bcam part: ISP thermal trips and the camera cooling map (REQ-2B-L6B-2) ==== */
 
