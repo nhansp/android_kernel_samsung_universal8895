@@ -54,7 +54,7 @@ static inline int exynos_tmu_isp_add_notifier(struct notifier_block *n)
 #if defined(CONFIG_SOC_EXYNOS8895)
 #include <linux/cpuidle.h>
 #include <linux/panic_notifier.h>
-/* stock <linux/soc/samsung/exynos-soc.h>, <soc/samsung/bts.h>: BTS scenarios are not ported (spec L6B 5.3) */
+#include <soc/samsung/bts.h>
 #endif
 
 #ifdef CONFIG_EXYNOS_BUSMONITOR
@@ -1229,7 +1229,8 @@ int fimc_is_resource_get(struct fimc_is_resourcemgr *resourcemgr, u32 rsc_type)
 			info("%s: call cpuidle_pause()\n", __func__);
 			cpuidle_pause();
 
-			/* stock bts_update_scen(BS_CAMERA_DEFAULT, 1): BTS not ported (spec L6B 5.3) */
+			info("%s: call bts_update_scen(1)\n", __func__);
+			bts_update_scen(BS_CAMERA_DEFAULT, 1);
 			fimc_is_hw_ischain_qe_cfg();
 #endif
 			break;
@@ -1396,7 +1397,8 @@ int fimc_is_resource_put(struct fimc_is_resourcemgr *resourcemgr, u32 rsc_type)
 			info("%s: call cpuidle_resume()\n", __func__);
 			cpuidle_resume();
 
-			/* stock bts_update_scen(BS_CAMERA_DEFAULT, 0): BTS not ported (spec L6B 5.3) */
+			info("%s: call bts_update_scen(0)\n", __func__);
+			bts_update_scen(BS_CAMERA_DEFAULT, 0);
 #endif
 			break;
 		default:
