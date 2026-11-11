@@ -806,24 +806,43 @@ static void sc_fence_work(struct work_struct *work)
 }
 
 /*
- * Stock's own REQBUFS wrapper (S:.../scaler/scaler-core.c:743-769), restored
- * because the 6.18 helper v4l2_m2m_ioctl_reqbufs() takes the context from
- * file_to_v4l2_fh(file)->m2m_ctx (A:drivers/media/v4l2-core/v4l2-mem2mem.c:
- * 1367-1373), which sc_open() never set: v4l2_m2m_get_vq() then handed
- * vb2_reqbufs() a queue derived from a NULL context
- * (A:.../v4l2-mem2mem.c:123-133) and the HWC's first REQBUFS on
+ * Stock's own REQBUFS wrapper (Samsung's kernel,
+ * drivers/media/platform/exynos/scaler/scaler-core.c), restored because the
+ * 6.18 helper v4l2_m2m_ioctl_reqbufs() takes the context from
+ * file_to_v4l2_fh(file)->m2m_ctx (drivers/media/v4l2-core/v4l2-mem2mem.c),
+ * which sc_open() never set: v4l2_m2m_get_vq() then handed vb2_reqbufs() a
+ * queue derived from a NULL context and the HWC's first REQBUFS on
  * /dev/video50 oopsed in vb2_verify_memory_type(). Every stock buffer ioctl
  * takes the context from its sc_ctx, obtained the same way as below.
- * Stock's per-buffer INIT_WORK() loop (S:.../scaler/scaler-core.c:755-767) is
- * not repeated here: the port initialises the fence work item once per buffer
- * in sc_vb2_buf_init(), which vb2 calls for the same buffers.
+ *
+ * As on stock, the fence work of every new buffer is also initialised here:
+ * sc_vb2_stop_streaming() flushes it for every buffer of the queue, and
+ * 6.18's vb2 calls buf_init() for DMABUF and USERPTR buffers only on their
+ * first QBUF. buf_init() keeps initialising it for MMAP buffers that vb2
+ * frees again within a failing REQBUFS. A successful REQBUFS always frees
+ * the previous buffers first (videobuf2-core.c, vb2_core_reqbufs()), so no
+ * work item initialised here can be pending.
  */
 static int sc_v4l2_reqbufs(struct file *file, void *fh,
 			   struct v4l2_requestbuffers *reqbufs)
 {
 	struct sc_ctx *ctx = fh_to_sc_ctx(file->private_data);
+	struct vb2_queue *vq = v4l2_m2m_get_vq(ctx->m2m_ctx, reqbufs->type);
+	unsigned int i;
+	int ret;
 
-	return v4l2_m2m_reqbufs(file, ctx->m2m_ctx, reqbufs);
+	ret = v4l2_m2m_reqbufs(file, ctx->m2m_ctx, reqbufs);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < vq->max_num_buffers; i++) {
+		struct vb2_buffer *vb = vb2_get_buffer(vq, i);
+
+		if (vb)
+			INIT_WORK(&to_vb2_sc_buffer(vb)->work, sc_fence_work);
+	}
+
+	return 0;
 }
 
 static int sc_v4l2_querybuf(struct file *file, void *fh,
