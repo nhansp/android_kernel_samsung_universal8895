@@ -523,6 +523,8 @@ static int vidioc_reqbufs(struct file *file, void *priv,
 		if (reqbufs->count == 0) {
 			mfc_debug(2, "Freeing buffers.\n");
 			ret = vb2_reqbufs(&ctx->vq_dst, reqbufs);
+			if (!ret)
+				s5p_mfc_dpb_pin_release_all(ctx);
 			s5p_mfc_release_codec_buffers(ctx);
 			ctx->capture_state = QUEUE_FREE;
 			return ret;
@@ -550,6 +552,7 @@ static int vidioc_reqbufs(struct file *file, void *priv,
 			s5p_mfc_mem_set_cacheable(alloc_ctx, false);
 			return ret;
 		}
+		s5p_mfc_dpb_pin_release_all(ctx);
 
 		if (reqbufs->count < ctx->dpb_count) {
 			mfc_err_ctx("Not enough buffers allocated.\n");

@@ -877,6 +877,15 @@ struct mfc_user_shared_handle {
 	void *vaddr;
 };
 
+/* The decoder's own mapping of the dma-bufs of one capture buffer */
+struct s5p_mfc_dpb_pin {
+	struct dma_buf *dbuf[MFC_MAX_PLANES];
+	struct dma_buf_attachment *attach[MFC_MAX_PLANES];
+	struct sg_table *sgt[MFC_MAX_PLANES];
+	dma_addr_t addr[MFC_MAX_PLANES];
+	enum dma_data_direction dir;
+};
+
 struct s5p_mfc_raw_info {
 	int num_planes;
 	int stride[3];
@@ -943,6 +952,16 @@ struct s5p_mfc_dec {
 	int assigned_fd[MFC_MAX_DPBS];
 	struct mfc_user_shared_handle sh_handle;
 	struct s5p_mfc_buf *assigned_dpb[MFC_MAX_DPBS];
+
+	/*
+	 * dpb_pin: mapping of the dma-buf queued at the index, the address the
+	 * firmware is given. dpb_pin_prev: the one it replaced, kept while the
+	 * firmware may still read it. dpb_sent: dpb_pin was given to the firmware.
+	 */
+	struct mutex dpb_mutex;
+	struct s5p_mfc_dpb_pin dpb_pin[MFC_MAX_DPBS];
+	struct s5p_mfc_dpb_pin dpb_pin_prev[MFC_MAX_DPBS];
+	unsigned long dpb_sent;
 
 	int profile;
 	int has_multiframe;
