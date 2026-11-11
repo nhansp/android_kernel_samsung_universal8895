@@ -123,7 +123,7 @@ static void s2mpb02_led_set(struct led_classdev *led_cdev,
 #endif
 }
 
-static void led_set(struct s2mpb02_led_data *led_data, int turn_way)
+static int led_set(struct s2mpb02_led_data *led_data, int turn_way)
 {
 	int ret;
 	struct s2mpb02_led *data = led_data->data;
@@ -202,12 +202,53 @@ static void led_set(struct s2mpb02_led_data *led_data, int turn_way)
 				goto error_set_bits;
 		}
 	}
-	return;
+	return 0;
 
 error_set_bits:
 	pr_err("%s: can't set led level %d\n", __func__, ret);
 
-	return;
+	return ret;
+}
+
+/*
+ * The torch LED class device: the brightness is the torch current register
+ * value, 20 mA per step (enum s2mpb02_torch_current), up to the highest step of
+ * the device tree torch_table. Samsung's kernel gave this device no control and
+ * offered only the torch_table steps, through rear_torch_flash. The torch is
+ * switched as rear_torch_flash switches it, under the same lock, and switching
+ * it off restores the current the camera fires the torch with.
+ */
+static int s2mpb02_torch_brightness_set(struct led_classdev *led_cdev,
+					enum led_brightness value)
+{
+	struct s2mpb02_led_data *led_data
+		= container_of(led_cdev, struct s2mpb02_led_data, led);
+	struct s2mpb02_led *data = led_data->data;
+	int ret;
+
+	mutex_lock(&led_data->lock);
+	data->brightness = value;
+	ret = led_set(led_data, S2MPB02_LED_TURN_WAY_GPIO);
+	if (value == LED_OFF) {
+		data->brightness = data->brightness_cam;
+		ret = s2mpb02_set_bits(led_data->i2c, S2MPB02_REG_FLED_CUR1,
+				       leds_mask[data->id],
+				       data->brightness << leds_shift[data->id]) ?: ret;
+	}
+	mutex_unlock(&led_data->lock);
+
+	return ret;
+}
+
+static int s2mpb02_torch_max_brightness(const struct s2mpb02_led *data)
+{
+	int i, top = data->brightness;
+
+	if (data->torch_table_enable)
+		for (i = 0; i < TORCH_STEP; i++)
+			top = max(top, data->torch_table[i]);
+
+	return clamp(top, 1, S2MPB02_FLASH_TORCH_CURRENT_MAX);
 }
 
 static void s2mpb02_led_work(struct work_struct *work)
@@ -659,11 +700,16 @@ static int s2mpb02_led_probe(struct platform_device *pdev)
 		led_data->i2c = s2mpb02->i2c;
 		led_data->data = data;
 		led_data->led.name = data->name;
-		led_data->led.brightness_set = s2mpb02_led_set;
 		led_data->led.brightness = LED_OFF;
 		led_data->brightness = data->brightness;
 		led_data->led.flags = 0;
-		led_data->led.max_brightness = S2MPB02_FLASH_TORCH_CURRENT_MAX;
+		if (data->id == S2MPB02_TORCH_LED_1) {
+			led_data->led.brightness_set_blocking = s2mpb02_torch_brightness_set;
+			led_data->led.max_brightness = s2mpb02_torch_max_brightness(data);
+		} else {
+			led_data->led.brightness_set = s2mpb02_led_set;
+			led_data->led.max_brightness = S2MPB02_FLASH_TORCH_CURRENT_MAX;
+		}
 
 		mutex_init(&led_data->lock);
 		spin_lock_init(&led_data->value_lock);
