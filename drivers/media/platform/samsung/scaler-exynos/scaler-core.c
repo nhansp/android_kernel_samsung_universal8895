@@ -1821,12 +1821,16 @@ void sc_buf_sync_finish(struct vb2_buffer *vb)
 	}
 }
 
+/*
+ * vb2 also calls this from inside QBUF, after sc_v4l2_qbuf() attached the
+ * USE_SYNC fences of that QBUF (see sc_vb2_buf_cleanup()), so the fences are
+ * left alone here: vb2 allocates the buffer zeroed and every path that is
+ * done with a fence clears its pointer.
+ */
 static int sc_vb2_buf_init(struct vb2_buffer *vb)
 {
 	struct vb2_sc_buffer *svb = to_vb2_sc_buffer(vb);
 
-	svb->in_fence = NULL;
-	svb->out_fence = NULL;
 	INIT_WORK(&svb->work, sc_fence_work);
 
 	return 0;
@@ -1876,16 +1880,27 @@ static void sc_vb2_buf_cleanup(struct vb2_buffer *vb)
 	unsigned long flags;
 
 	flush_work(&svb->work);
+
+	/*
+	 * 6.18's vb2 calls buf_cleanup() and buf_init() from within QBUF
+	 * whenever the dma-buf or user pointer behind a plane changed, and
+	 * calls buf_init() on the first QBUF after REQBUFS
+	 * (drivers/media/common/videobuf2/videobuf2-core.c, __prepare_dmabuf()
+	 * and __prepare_userptr()); stock's vb2 kept the fences in the vb2
+	 * buffer and its queue timeline, which neither callback touched. The
+	 * fences attached by that QBUF belong to the buffer being queued, and
+	 * sc_v4l2_qbuf() releases them itself if the QBUF fails.
+	 */
+	if (vb->state == VB2_BUF_STATE_PREPARING)
+		return;
+
 	if (svb->in_fence) {
 		dma_fence_put(svb->in_fence);
 		svb->in_fence = NULL;
 	}
-	/* Release with queued buffers but no STREAMOFF (no stop_streaming
-	 * ran): signal and drop any still-pending release fence here so its
-	 * waiter never hangs and the fence is signalled exactly once. After
-	 * stop_streaming every out_fence is already NULL, so this is a no-op
-	 * on the streaming teardown path. Serialised with the IRQ/job-finish
-	 * signal paths by sc->slock. */
+	/* Buffers freed while still queued without STREAMOFF: signal any
+	 * pending release fence so its waiter does not hang. Serialised with
+	 * the IRQ/job-finish signal paths by sc->slock. */
 	spin_lock_irqsave(&ctx->sc_dev->slock, flags);
 	sc_signal_buffer_fence(to_vb2_v4l2_buffer(vb));
 	spin_unlock_irqrestore(&ctx->sc_dev->slock, flags);
