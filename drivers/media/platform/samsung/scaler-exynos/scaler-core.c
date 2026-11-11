@@ -29,7 +29,6 @@
 #include <linux/sync_file.h>
 #include <linux/file.h>
 #include <linux/fcntl.h>
-#include <linux/fdtable.h>
 #include <linux/dma-mapping.h>
 
 #include <media/v4l2-ioctl.h>
@@ -835,18 +834,17 @@ static int sc_v4l2_querybuf(struct file *file, void *fh,
 }
 
 /*
- * Create the USE_SYNC release fence for a queued buffer, install it as the
- * buffer's out_fence and hand userspace a sync_file fd (S:.../videobuf2-v4l2.c:
- * 137-162, where stock's __set_timestamp() did this inside vb2_qbuf()). The
- * fd goes to *fd_out, or -1 when the buffer is queued without a release
- * fence (stock returned the error to userspace in that case; the HWC polls
- * the fd of a successful qbuf, so -1 keeps the contract that a qbuf with no
- * fd has no release fence to wait for).
- * The buffer must not be queued yet, and sc->slock is taken here so the
- * job-completion and teardown paths cannot miss the new fence.
+ * Create the USE_SYNC release fence of a buffer that is about to be queued,
+ * attach it as the buffer's out_fence and wrap it in a sync_file on a
+ * reserved fd. Stock did this inside vb2_qbuf() (Samsung's kernel,
+ * drivers/media/v4l2-core/videobuf2-v4l2.c, __set_timestamp()) and failed
+ * the QBUF when no fd was left; so does this. The fd is installed by the
+ * caller only once the buffer is queued.
+ * sc->slock is taken so the job-completion and teardown paths cannot miss
+ * the new fence.
  */
-static void sc_install_out_fence(struct sc_ctx *ctx, struct vb2_sc_buffer *svb,
-				 int *fd_out)
+static int sc_prepare_out_fence(struct sc_ctx *ctx, struct vb2_sc_buffer *svb,
+				struct sync_file **sync_file_out)
 {
 	struct sc_fence *sfence;
 	struct dma_fence *fence;
@@ -855,10 +853,8 @@ static void sc_install_out_fence(struct sc_ctx *ctx, struct vb2_sc_buffer *svb,
 	int fd;
 
 	sfence = kzalloc(sizeof(*sfence), GFP_KERNEL);
-	if (!sfence) {
-		*fd_out = -1;
-		return;
-	}
+	if (!sfence)
+		return -ENOMEM;
 
 	fence = &sfence->base;
 	spin_lock_init(&sfence->lock);
@@ -871,6 +867,19 @@ static void sc_install_out_fence(struct sc_ctx *ctx, struct vb2_sc_buffer *svb,
 		       ctx->fence_context, ctx->fence_seqno);
 	spin_unlock_irqrestore(&ctx->fence_lock, flags);
 
+	sync_file = sync_file_create(fence);
+	if (!sync_file) {
+		dma_fence_put(fence);
+		return -ENOMEM;
+	}
+
+	fd = get_unused_fd_flags(O_CLOEXEC);
+	if (fd < 0) {
+		fput(sync_file->file);
+		dma_fence_put(fence);
+		return fd;
+	}
+
 	spin_lock_irqsave(&ctx->sc_dev->slock, flags);
 	if (svb->out_fence) {
 		/* Never leave a waiter hanging on the replaced fence. */
@@ -880,45 +889,22 @@ static void sc_install_out_fence(struct sc_ctx *ctx, struct vb2_sc_buffer *svb,
 	svb->out_fence = fence;
 	spin_unlock_irqrestore(&ctx->sc_dev->slock, flags);
 
-	sync_file = sync_file_create(fence);
-	if (!sync_file)
-		goto no_fd;
-	fd = get_unused_fd_flags(O_CLOEXEC);
-	if (fd < 0) {
-		fput(sync_file->file);
-		goto no_fd;
-	}
-	fd_install(fd, sync_file->file);
-	*fd_out = fd;
-
-	return;
-
-no_fd:
-	/* Nobody can ever wait for this fence: signal and drop it. */
-	spin_lock_irqsave(&ctx->sc_dev->slock, flags);
-	sc_signal_buffer_fence(&svb->mb.vb);
-	spin_unlock_irqrestore(&ctx->sc_dev->slock, flags);
-	*fd_out = -1;
+	*sync_file_out = sync_file;
+	return fd;
 }
 
 /*
- * QBUF with the USE_SYNC fence protocol (spec L6B 5.9, L6A REQ-L6B-6A-1).
- * Stock ran both halves of it inside vb2_qbuf(), ahead of the buffer reaching
- * the driver: vb2_fill_reserved() imported the acquire fence from
- * buf->reserved (S:.../videobuf2-v4l2.c:352-353) and __set_timestamp()
- * created the release fence and installed its fd there
- * (S:.../videobuf2-v4l2.c:137-162), the latter from vb2_core_qbuf() at
- * S:.../videobuf2-core.c:1403, i.e. before __enqueue_in_driver() at :1414.
- * 6.18 dropped both, so the driver does it here and in the SAME ORDER: the
- * acquire fd is read and the release fence installed BEFORE
- * v4l2_m2m_qbuf(), because that call ends in v4l2_m2m_try_schedule()
- * (A:drivers/media/v4l2-core/v4l2-mem2mem.c:794) and a job that finished
- * before its release fence was attached would signal nothing, leaving the
- * HWC polling that sync_file until STREAMOFF. (6.18 vb2 does not touch
- * buf->reserved on the way out - only the flags, of which it strips the
- * 0x8000 USE_SYNC bit, A:.../videobuf2/videobuf2-v4l2.c:313,492 - so the fd
- * written here survives to the copy back to userspace.)
- * Userspace contract: SLSI:graphics/base/libscaler/libscaler-v4l2.cpp:371-372,399.
+ * QBUF with the USE_SYNC fence protocol: buf->reserved carries the acquire
+ * fence fd in and the release fence fd out (stock: Samsung's kernel,
+ * drivers/media/v4l2-core/videobuf2-v4l2.c, vb2_fill_reserved() and
+ * __set_timestamp(); userspace: libscaler-v4l2.cpp, CScalerV4L2::QBuf()).
+ * 6.18's vb2 has no fence support, so the driver handles both around
+ * v4l2_m2m_qbuf(). The release fence is attached to the buffer before that
+ * call, because it ends in v4l2_m2m_try_schedule() and a job finishing
+ * before the fence was attached would never signal it. Its fd is written
+ * to buf->reserved only after the call: vb2 fills the buffer for userspace
+ * at the end of the queueing and clears request_fd, which shares a union
+ * with reserved.
  */
 static int sc_v4l2_qbuf(struct file *file, void *fh,
 			 struct v4l2_buffer *buf)
@@ -926,6 +912,7 @@ static int sc_v4l2_qbuf(struct file *file, void *fh,
 	struct sc_ctx *ctx = fh_to_sc_ctx(file->private_data);
 	struct vb2_queue *vq = v4l2_m2m_get_vq(ctx->m2m_ctx, buf->type);
 	struct vb2_sc_buffer *svb = NULL;
+	struct sync_file *sync_file;
 	struct dma_fence *in_fence;
 	unsigned long flags;
 	int release_fd;
@@ -947,13 +934,18 @@ static int sc_v4l2_qbuf(struct file *file, void *fh,
 		in_fence = sync_file_get_fence(buf->reserved);
 		if (!in_fence)
 			return -EINVAL;
-		if (svb->in_fence)
-			dma_fence_put(svb->in_fence);
-		svb->in_fence = in_fence;
 	}
 
-	sc_install_out_fence(ctx, svb, &release_fd);
-	buf->reserved = (__u32)release_fd;
+	release_fd = sc_prepare_out_fence(ctx, svb, &sync_file);
+	if (release_fd < 0) {
+		if (in_fence)
+			dma_fence_put(in_fence);
+		return release_fd;
+	}
+
+	if (svb->in_fence)
+		dma_fence_put(svb->in_fence);
+	svb->in_fence = in_fence;
 
 	ret = v4l2_m2m_qbuf(file, ctx->m2m_ctx, buf);
 	if (ret) {
@@ -970,14 +962,15 @@ static int sc_v4l2_qbuf(struct file *file, void *fh,
 			svb->out_fence = NULL;
 		}
 		spin_unlock_irqrestore(&ctx->sc_dev->slock, flags);
-		/* A failed ioctl is not copied back to userspace
-		 * (A:drivers/media/v4l2-core/v4l2-ioctl.c:3499-3500), so the
-		 * sync_file fd installed above would leak in its process. */
-		if (release_fd >= 0)
-			close_fd(release_fd);
+		put_unused_fd(release_fd);
+		fput(sync_file->file);
+		return ret;
 	}
 
-	return ret;
+	fd_install(release_fd, sync_file->file);
+	buf->reserved = (__u32)release_fd;
+
+	return 0;
 }
 
 static int sc_v4l2_dqbuf(struct file *file, void *fh,
