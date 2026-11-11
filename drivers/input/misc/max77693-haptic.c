@@ -14,10 +14,12 @@
 #include <linux/i2c.h>
 #include <linux/regmap.h>
 #include <linux/input.h>
+#include <linux/input/max77865-haptic.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/pwm.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 #include <linux/string_choices.h>
 #include <linux/workqueue.h>
 #include <linux/regulator/consumer.h>
@@ -32,6 +34,18 @@
 #include <linux/mfd/max77865-private.h>
 
 #define MAX_MAGNITUDE_SHIFT	16
+
+/*
+ * Samsung's kernel (drivers/motor/max77865_haptic.c) ticks the motor for the
+ * pressure home key with entries 5 (press) and 6 (release) of its
+ * per-frequency duty and period tables, for 7 ms, at an intensity of
+ * -10000..10000.
+ */
+#define MAX77865_HOMEKEY_PRESS_FREQ	5
+#define MAX77865_HOMEKEY_RELEASE_FREQ	6
+#define MAX77865_HOMEKEY_DURATION_MS	7
+#define MAX77865_MAX_INTENSITY		10000
+#define MAX77865_MULTI_FREQ		7
 
 enum max77693_haptic_motor_type {
 	MAX77693_HAPTIC_ERM = 0,
@@ -74,6 +88,25 @@ struct max77693_haptic {
 	unsigned int intensity;
 	struct hrtimer timer;
 	struct device *tout_dev;
+
+	/*
+	 * The home key tick. lock covers magnitude and the tick state, which
+	 * the timers, the force-feedback callback and the sysfs nodes change.
+	 */
+	spinlock_t lock;
+	int force_touch_intensity;
+	u32 freq_duty_ns[MAX77865_MULTI_FREQ];
+	u32 freq_period_ns[MAX77865_MULTI_FREQ];
+	bool has_freq;
+	bool tick;			/* the motor plays a tick */
+	bool tick_init;			/* set the motor up before the tick */
+	bool tick_pending;		/* a tick asked for while suspended */
+	bool suspended;
+	unsigned int tick_period_ns;
+	unsigned int tick_duty_ns;
+	unsigned int tick_seq;		/* the tick asked for last */
+	unsigned int tick_timed;	/* the tick whose duration runs */
+	struct hrtimer tick_timer;
 
 	struct work_struct work;
 };
@@ -127,22 +160,42 @@ static int max77865_haptic_boost(struct max77693_haptic *haptic, bool on)
 				  MAX77865_BOOSTCONTROL2_FORCE_EN, 0x00);
 }
 
-/* S:drivers/motor/max77865_haptic.c:114-131, spec L6F 5.7 */
+/*
+ * Samsung's kernel (drivers/motor/max77865_haptic.c),
+ * max77865_haptic_set_intensity(): +-10000 drives the full duty or its mirror
+ * image, 0 the neutral half period.
+ */
+static unsigned int max77865_haptic_calc_duty(unsigned int period,
+					      unsigned int max_duty, int intensity)
+{
+	int half = period / 2;
+
+	return half + ((int)max_duty - half) * intensity / MAX77865_MAX_INTENSITY;
+}
+
 static unsigned int max77865_haptic_duty(struct max77693_haptic *haptic, int intensity)
 {
 	struct pwm_args pargs;
-	unsigned int p, d;
 
 	pwm_get_args(haptic->pwm_dev, &pargs);
-	p = pargs.period;
-	d = haptic->max_duty_ns;
 
-	if (intensity == 10000)
-		return d;
-	if (intensity == 0)
-		return p / 2;
+	return max77865_haptic_calc_duty(pargs.period, haptic->max_duty_ns, intensity);
+}
 
-	return p / 2 + (int)(d - p / 2) * intensity / 10000;
+/* the PWM period and duty: the tick's while it plays */
+static void max77865_haptic_pwm_state(struct max77693_haptic *haptic,
+				      struct pwm_state *state)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&haptic->lock, flags);
+	if (haptic->tick) {
+		state->period = haptic->tick_period_ns;
+		state->duty_cycle = haptic->tick_duty_ns;
+	} else {
+		state->duty_cycle = haptic->duty_ns;
+	}
+	spin_unlock_irqrestore(&haptic->lock, flags);
 }
 
 static int max77693_haptic_set_duty_cycle(struct max77693_haptic *haptic)
@@ -152,7 +205,7 @@ static int max77693_haptic_set_duty_cycle(struct max77693_haptic *haptic)
 
 	pwm_init_state(haptic->pwm_dev, &state);
 	if (haptic->dev_type == TYPE_MAX77865)
-		state.duty_cycle = haptic->duty_ns;
+		max77865_haptic_pwm_state(haptic, &state);
 	else
 		state.duty_cycle = (state.period + haptic->pwm_duty) / 2;
 
@@ -262,7 +315,7 @@ static void max77693_haptic_enable(struct max77693_haptic *haptic)
 
 	pwm_init_state(haptic->pwm_dev, &state);
 	if (haptic->dev_type == TYPE_MAX77865)
-		state.duty_cycle = haptic->duty_ns;
+		max77865_haptic_pwm_state(haptic, &state);
 	else
 		state.duty_cycle = (state.period + haptic->pwm_duty) / 2;
 	state.enabled = true;
@@ -282,7 +335,7 @@ static void max77693_haptic_enable(struct max77693_haptic *haptic)
 	if (error)
 		goto err_enable_config;
 
-	haptic->enabled = true;
+	WRITE_ONCE(haptic->enabled, true);
 
 	return;
 
@@ -308,7 +361,7 @@ static void max77693_haptic_disable(struct max77693_haptic *haptic)
 		goto err_disable_lowsys;
 
 	pwm_disable(haptic->pwm_dev);
-	haptic->enabled = false;
+	WRITE_ONCE(haptic->enabled, false);
 
 	return;
 
@@ -320,13 +373,48 @@ static void max77693_haptic_play_work(struct work_struct *work)
 {
 	struct max77693_haptic *haptic =
 			container_of(work, struct max77693_haptic, work);
+	unsigned long flags;
+	unsigned int magnitude, tick_seq;
+	bool tick, tick_init;
 
-	if (!haptic->magnitude)
+	spin_lock_irqsave(&haptic->lock, flags);
+	magnitude = haptic->magnitude;
+	tick = haptic->tick;
+	tick_seq = haptic->tick_seq;
+	tick_init = haptic->tick_init;
+	haptic->tick_init = false;
+	spin_unlock_irqrestore(&haptic->lock, flags);
+
+	/* Samsung's haptic_homekey_press() sets the motor up before the tick */
+	if (magnitude && tick_init && !haptic->enabled) {
+		max77865_haptic_init_reg(haptic);
+		max77865_haptic_boost(haptic, true);
+	}
+
+	if (!magnitude)
 		max77693_haptic_disable(haptic);
 	else if (haptic->enabled)
 		max77693_haptic_set_duty_cycle(haptic);
 	else
 		max77693_haptic_enable(haptic);
+
+	if (!tick)
+		return;
+
+	/*
+	 * Samsung's driver starts the tick's 7 ms once the motor runs with the
+	 * tick's period and duty. A newer tick asked for meanwhile is timed by
+	 * its own run of this work; a vibration that took over is not timed.
+	 */
+	spin_lock_irqsave(&haptic->lock, flags);
+	if (haptic->tick && haptic->tick_seq == tick_seq &&
+	    haptic->tick_timed != tick_seq) {
+		haptic->tick_timed = tick_seq;
+		hrtimer_start(&haptic->tick_timer,
+			      ms_to_ktime(MAX77865_HOMEKEY_DURATION_MS),
+			      HRTIMER_MODE_REL);
+	}
+	spin_unlock_irqrestore(&haptic->lock, flags);
 }
 
 static int max77693_haptic_play_effect(struct input_dev *dev, void *data,
@@ -335,10 +423,14 @@ static int max77693_haptic_play_effect(struct input_dev *dev, void *data,
 	struct max77693_haptic *haptic = input_get_drvdata(dev);
 	struct pwm_args pargs;
 	u64 period_mag_multi;
+	unsigned long flags;
 
+	spin_lock_irqsave(&haptic->lock, flags);
+	haptic->tick = false;
 	haptic->magnitude = effect->u.rumble.strong_magnitude;
 	if (!haptic->magnitude)
 		haptic->magnitude = effect->u.rumble.weak_magnitude;
+	spin_unlock_irqrestore(&haptic->lock, flags);
 
 	/*
 	 * The magnitude comes from force-feedback interface.
@@ -401,9 +493,33 @@ static enum hrtimer_restart max77865_tout_timer(struct hrtimer *timer)
 {
 	struct max77693_haptic *haptic =
 		container_of(timer, struct max77693_haptic, timer);
+	unsigned long flags;
 
-	haptic->magnitude = 0;
+	spin_lock_irqsave(&haptic->lock, flags);
+	if (!haptic->tick)
+		haptic->magnitude = 0;
+	spin_unlock_irqrestore(&haptic->lock, flags);
 	schedule_work(&haptic->work);
+	return HRTIMER_NORESTART;
+}
+
+/*
+ * end of the home key tick, unless a vibration took the motor over or a newer
+ * tick has not started yet
+ */
+static enum hrtimer_restart max77865_tick_timer(struct hrtimer *timer)
+{
+	struct max77693_haptic *haptic =
+		container_of(timer, struct max77693_haptic, tick_timer);
+	unsigned long flags;
+
+	spin_lock_irqsave(&haptic->lock, flags);
+	if (haptic->tick && haptic->tick_timed == haptic->tick_seq) {
+		haptic->tick = false;
+		haptic->magnitude = 0;
+		schedule_work(&haptic->work);
+	}
+	spin_unlock_irqrestore(&haptic->lock, flags);
 	return HRTIMER_NORESTART;
 }
 
@@ -413,6 +529,7 @@ static ssize_t enable_store(struct device *dev,
 			    const char *buf, size_t count)
 {
 	struct max77693_haptic *haptic = dev_get_drvdata(dev);
+	unsigned long flags;
 	int ms, error;
 
 	error = kstrtoint(buf, 0, &ms);
@@ -422,14 +539,14 @@ static ssize_t enable_store(struct device *dev,
 	hrtimer_cancel(&haptic->timer);
 	ms = min_t(int, ms, (int)haptic->max_timeout_ms);
 
-	if (ms > 0) {
-		haptic->magnitude = 1;
-		schedule_work(&haptic->work);
+	spin_lock_irqsave(&haptic->lock, flags);
+	haptic->tick = false;
+	haptic->magnitude = ms > 0;
+	spin_unlock_irqrestore(&haptic->lock, flags);
+
+	schedule_work(&haptic->work);
+	if (ms > 0)
 		hrtimer_start(&haptic->timer, ms_to_ktime(ms), HRTIMER_MODE_REL);
-	} else {
-		haptic->magnitude = 0;
-		schedule_work(&haptic->work);
-	}
 
 	return count;
 }
@@ -483,12 +600,114 @@ static ssize_t intensity_show(struct device *dev,
 }
 static DEVICE_ATTR(intensity, 0664, intensity_show, intensity_store);
 
+/*
+ * force_touch_intensity, Samsung's kernel force_touch_intensity_store(): the
+ * intensity of the home key tick, -10000..10000; 0, the default, plays none.
+ * Samsung's node also programs the PWM at once, with the motor off; here the
+ * value is only stored for the next tick.
+ */
+static ssize_t force_touch_intensity_store(struct device *dev,
+					   struct device_attribute *attr,
+					   const char *buf, size_t count)
+{
+	struct max77693_haptic *haptic = dev_get_drvdata(dev);
+	int i, error;
+
+	error = kstrtoint(buf, 0, &i);
+	if (error)
+		return -EINVAL;
+
+	if (i < -MAX77865_MAX_INTENSITY || i > MAX77865_MAX_INTENSITY)
+		return -EINVAL;
+
+	WRITE_ONCE(haptic->force_touch_intensity, i);
+
+	return count;
+}
+
+static ssize_t force_touch_intensity_show(struct device *dev,
+					  struct device_attribute *attr,
+					  char *buf)
+{
+	struct max77693_haptic *haptic = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "force touch intensity: %d\n",
+			  READ_ONCE(haptic->force_touch_intensity));
+}
+static DEVICE_ATTR(force_touch_intensity, 0660, force_touch_intensity_show,
+		   force_touch_intensity_store);
+
 static struct attribute *max77865_tout_attrs[] = {
 	&dev_attr_enable.attr,
 	&dev_attr_intensity.attr,
+	&dev_attr_force_touch_intensity.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(max77865_tout);
+
+static DEFINE_MUTEX(max77865_homekey_lock);
+static struct max77693_haptic *max77865_homekey_haptic;
+
+/*
+ * Samsung's kernel, haptic_homekey_press() and haptic_homekey_release(). A
+ * vibration in progress is left alone (Samsung's tick cut it short); while the
+ * system is suspended the tick waits for the resume of this device, which sets
+ * the motor up again.
+ */
+int max77865_haptic_homekey(bool press)
+{
+	struct max77693_haptic *haptic;
+	unsigned int idx = press ? MAX77865_HOMEKEY_PRESS_FREQ : MAX77865_HOMEKEY_RELEASE_FREQ;
+	unsigned long flags;
+	int intensity, ret = 0;
+	bool play = false;
+
+	mutex_lock(&max77865_homekey_lock);
+
+	haptic = max77865_homekey_haptic;
+	if (!haptic || !haptic->has_freq) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	intensity = READ_ONCE(haptic->force_touch_intensity);
+	if (!intensity)
+		goto out;
+
+	spin_lock_irqsave(&haptic->lock, flags);
+	if (haptic->tick || (!haptic->magnitude && !READ_ONCE(haptic->enabled))) {
+		haptic->tick_period_ns = haptic->freq_period_ns[idx];
+		haptic->tick_duty_ns = max77865_haptic_calc_duty(haptic->tick_period_ns,
+								 haptic->freq_duty_ns[idx],
+								 intensity);
+		if (haptic->suspended) {
+			haptic->tick_pending = true;
+		} else {
+			haptic->tick = true;
+			haptic->tick_seq++;
+			haptic->tick_init |= press;
+			haptic->magnitude = 1;
+			play = true;
+		}
+	}
+	spin_unlock_irqrestore(&haptic->lock, flags);
+
+	/* the work sets the motor up, starts it and then times the tick */
+	if (play)
+		schedule_work(&haptic->work);
+out:
+	mutex_unlock(&max77865_homekey_lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(max77865_haptic_homekey);
+
+static void max77865_homekey_unregister(void *data)
+{
+	mutex_lock(&max77865_homekey_lock);
+	max77865_homekey_haptic = NULL;
+	mutex_unlock(&max77865_homekey_lock);
+}
 
 static struct class timed_output_class = {
 	.name = "timed_output",
@@ -505,8 +724,15 @@ static void max77865_tout_unregister(void *data)
 static void max77865_haptic_cleanup_action(void *data)
 {
 	struct max77693_haptic *haptic = data;
+	unsigned long flags;
+
+	/* the work may not time a tick any more */
+	spin_lock_irqsave(&haptic->lock, flags);
+	haptic->tick = false;
+	spin_unlock_irqrestore(&haptic->lock, flags);
 
 	hrtimer_cancel(&haptic->timer);
+	hrtimer_cancel(&haptic->tick_timer);
 	cancel_work_sync(&haptic->work);
 	max77693_haptic_disable(haptic);
 	max77865_haptic_boost(haptic, false);
@@ -527,6 +753,7 @@ static int max77693_haptic_probe(struct platform_device *pdev)
 	haptic->type = MAX77693_HAPTIC_LRA;
 	haptic->mode = MAX77693_HAPTIC_EXTERNAL_MODE;
 	haptic->suspend_state = false;
+	spin_lock_init(&haptic->lock);
 
 	/* Variant-specific init */
 	haptic->dev_type = max77693->type;
@@ -559,6 +786,15 @@ static int max77693_haptic_probe(struct platform_device *pdev)
 		/* S:drivers/motor/max77865_haptic.c:836-837, spec L6F 5.7 */
 		haptic->intensity = 8000;
 		haptic->duty_ns = haptic->max_duty_ns;
+
+		/* without the tables there is no home key tick */
+		haptic->has_freq =
+			!device_property_read_u32_array(&pdev->dev, "maxim,multi-freq-duty-ns",
+							haptic->freq_duty_ns,
+							MAX77865_MULTI_FREQ) &&
+			!device_property_read_u32_array(&pdev->dev, "maxim,multi-freq-period-ns",
+							haptic->freq_period_ns,
+							MAX77865_MULTI_FREQ);
 	}
 
 	INIT_WORK(&haptic->work, max77693_haptic_play_work);
@@ -611,6 +847,8 @@ static int max77693_haptic_probe(struct platform_device *pdev)
 
 		hrtimer_setup(&haptic->timer, max77865_tout_timer, CLOCK_MONOTONIC,
 			      HRTIMER_MODE_REL);
+		hrtimer_setup(&haptic->tick_timer, max77865_tick_timer, CLOCK_MONOTONIC,
+			      HRTIMER_MODE_REL);
 
 		error = max77865_haptic_init_reg(haptic);
 		if (error)
@@ -650,6 +888,14 @@ static int max77693_haptic_probe(struct platform_device *pdev)
 						 haptic->tout_dev);
 		if (error)
 			return error;
+
+		mutex_lock(&max77865_homekey_lock);
+		max77865_homekey_haptic = haptic;
+		mutex_unlock(&max77865_homekey_lock);
+		error = devm_add_action_or_reset(&pdev->dev,
+						 max77865_homekey_unregister, NULL);
+		if (error)
+			return error;
 	}
 
 	return 0;
@@ -661,9 +907,18 @@ static int max77693_haptic_suspend(struct device *dev)
 	struct max77693_haptic *haptic = platform_get_drvdata(pdev);
 
 	if (haptic->dev_type == TYPE_MAX77865) {
-		hrtimer_cancel(&haptic->timer);
-		cancel_work_sync(&haptic->work);
+		unsigned long flags;
+
+		spin_lock_irqsave(&haptic->lock, flags);
+		haptic->suspended = true;
+		haptic->tick = false;
+		haptic->tick_pending = false;
 		haptic->magnitude = 0;
+		spin_unlock_irqrestore(&haptic->lock, flags);
+
+		hrtimer_cancel(&haptic->timer);
+		hrtimer_cancel(&haptic->tick_timer);
+		cancel_work_sync(&haptic->work);
 		max77693_haptic_disable(haptic);
 		max77865_haptic_boost(haptic, false);
 		return 0;
@@ -683,8 +938,26 @@ static int max77693_haptic_resume(struct device *dev)
 	struct max77693_haptic *haptic = platform_get_drvdata(pdev);
 
 	if (haptic->dev_type == TYPE_MAX77865) {
+		unsigned long flags;
+		bool tick;
+
 		max77865_haptic_init_reg(haptic);
 		max77865_haptic_boost(haptic, true);
+
+		/* a home key press woke the system: its tick plays now */
+		spin_lock_irqsave(&haptic->lock, flags);
+		haptic->suspended = false;
+		tick = haptic->tick_pending;
+		haptic->tick_pending = false;
+		if (tick) {
+			haptic->tick = true;
+			haptic->tick_seq++;
+			haptic->magnitude = 1;
+		}
+		spin_unlock_irqrestore(&haptic->lock, flags);
+
+		if (tick)
+			schedule_work(&haptic->work);
 		return 0;
 	}
 
@@ -702,7 +975,17 @@ static void max77693_haptic_shutdown(struct platform_device *pdev)
 	struct max77693_haptic *haptic = platform_get_drvdata(pdev);
 
 	if (haptic->dev_type == TYPE_MAX77865) {
+		unsigned long flags;
+
+		/* no tick from here on */
+		spin_lock_irqsave(&haptic->lock, flags);
+		haptic->suspended = true;
+		haptic->tick = false;
+		haptic->tick_pending = false;
+		spin_unlock_irqrestore(&haptic->lock, flags);
+
 		hrtimer_cancel(&haptic->timer);
+		hrtimer_cancel(&haptic->tick_timer);
 		cancel_work_sync(&haptic->work);
 		max77693_haptic_disable(haptic);
 		max77865_haptic_boost(haptic, false);
