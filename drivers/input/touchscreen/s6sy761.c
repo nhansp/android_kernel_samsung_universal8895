@@ -7,6 +7,7 @@
 #include <linux/unaligned.h>
 #include <linux/delay.h>
 #include <linux/i2c.h>
+#include <linux/input/max77865-haptic.h>
 #include <linux/input/mt.h>
 #include <linux/input/touchscreen.h>
 #include <linux/interrupt.h>
@@ -304,7 +305,8 @@ static void s6sy761_report_release(struct s6sy761_data *sdata,
  * chip out of the low-power mode. Whether the key wakes the display is the framework's
  * choice (LineageOS: config_deviceHardwareWakeKeys). The KEY_BLACK_UI_GESTURE Samsung's driver
  * adds to a release in the low-power mode is left out: LineageOS binds that key to the
- * single-tap gesture.
+ * single-tap gesture. In the low-power mode Samsung's driver also ticks the motor
+ * (haptic_homekey_press() and haptic_homekey_release()), after the key is reported.
  */
 static void s6sy661_handle_pressure(struct s6sy761_data *sdata, u8 *event)
 {
@@ -319,6 +321,9 @@ static void s6sy661_handle_pressure(struct s6sy761_data *sdata, u8 *event)
 	sdata->home_key_down = down;
 	input_report_key(sdata->input, KEY_HOMEPAGE, down);
 	input_sync(sdata->input);
+
+	if (lpm)
+		max77865_haptic_homekey(down);
 }
 
 /*
