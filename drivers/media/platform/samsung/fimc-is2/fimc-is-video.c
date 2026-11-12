@@ -30,6 +30,7 @@
 #include <linux/v4l2-mediabus.h>
 #include <linux/bug.h>
 #include <linux/syscalls.h>
+#include <linux/compat.h>
 
 #include <media/videobuf2-v4l2.h>
 #include <media/v4l2-ctrls.h>
@@ -1010,6 +1011,38 @@ p_err:
 }
 
 /*
+ * The camera HAL passes the batch size of a node in pix_mp.reserved[0] and
+ * checks it again after VIDIOC_S_FMT returns. 6.18 v4l_s_fmt() clears every
+ * byte after pix_mp.xfer_func before the driver sees the format, and the
+ * cleared copy goes back to the caller; 4.4 left pix_mp alone. Keep the
+ * caller's bytes here so fimc_is_video_set_format_mplane() can put them back.
+ * pix_mp starts after the u32 type for 32-bit callers and at
+ * offsetof(struct v4l2_format, fmt) for 64-bit ones.
+ */
+static void fimc_is_video_save_fmt_reserved(struct file *file,
+	unsigned int cmd, void __user *uarg)
+{
+	struct fimc_is_video_ctx *vctx = file->private_data;
+	size_t off;
+	u32 type;
+
+	if (_IOC_TYPE(cmd) != 'V' || _IOC_NR(cmd) != _IOC_NR(VIDIOC_S_FMT))
+		return;
+
+	vctx->fmt_reserved_valid = false;
+
+	if (get_user(type, (u32 __user *)uarg) || !V4L2_TYPE_IS_MULTIPLANAR(type))
+		return;
+
+	off = in_compat_syscall() ? sizeof(u32) : offsetof(struct v4l2_format, fmt);
+	off += offsetof(struct v4l2_pix_format_mplane, reserved);
+	if (copy_from_user(vctx->fmt_reserved, uarg + off, sizeof(vctx->fmt_reserved)))
+		return;
+
+	vctx->fmt_reserved_valid = true;
+}
+
+/*
  * The 4.4 video_ioctl2() path for the five ioctls 6.18 no longer dispatches
  * to driver ops: copy the argument in, call the stock handler under the node
  * lock, copy the argument back (all five are _IOWR or _IOW; 4.4
@@ -1038,6 +1071,7 @@ long fimc_is_video_ioctl2(struct file *file, unsigned int cmd, unsigned long arg
 	case VIDIOC_S_CROP:
 		break;
 	default:
+		fimc_is_video_save_fmt_reserved(file, cmd, uarg);
 		return video_ioctl2(file, cmd, arg);
 	}
 
@@ -1341,6 +1375,12 @@ int fimc_is_video_set_format_mplane(struct file *file,
 	device = GET_DEVICE(vctx);
 	video = GET_VIDEO(vctx);
 	queue = GET_QUEUE(vctx);
+
+	if (vctx->fmt_reserved_valid) {
+		memcpy(format->fmt.pix_mp.reserved, vctx->fmt_reserved,
+		       sizeof(vctx->fmt_reserved));
+		vctx->fmt_reserved_valid = false;
+	}
 
 	/* capture video node can skip s_input */
 	if (video->type  == FIMC_IS_VIDEO_TYPE_LEADER)

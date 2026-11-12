@@ -289,6 +289,10 @@ struct fimc_is_video_ctx {
 	const struct vb2_mem_ops	*vb2_mem_ops;
 	const struct fimc_is_vb2_buf_ops *fimc_is_vb2_buf_ops;
 	struct fimc_is_video_ops	vops;
+
+	/* caller's pix_mp.reserved[] of the S_FMT in progress */
+	u8				fmt_reserved[7];
+	bool				fmt_reserved_valid;
 };
 
 struct fimc_is_video {
