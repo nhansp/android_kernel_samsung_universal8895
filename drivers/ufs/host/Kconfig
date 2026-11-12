@@ -167,12 +167,13 @@ config SCSI_UFS_EXYNOS8895_FMP_VERIFIED
 	  blk-crypto, so that fscrypt can encrypt inline on "inlinecrypt"
 	  mounts.
 
-	  Say Y only in a kernel whose FMP key layout was measured with the
-	  known-answer test (test T-L4b-2) and whose FMP writes were read back
-	  by software fscrypt and by the stock-based kernel (test T-L4b-3b):
-	  a wrong layout writes files that no other kernel can decrypt.
+	  FMP only encrypts requests that carry a blk-crypto key, so an
+	  unencrypted filesystem is stored as before; every transfer does use
+	  the 128-byte PRDT format, as Samsung's kernel always did.
+
 	  With N the host keeps the 16-byte PRDT and DESCTYPE 0, and fscrypt
-	  uses the software fallback on "inlinecrypt" mounts.
+	  uses the software fallback on "inlinecrypt" mounts. Both store the
+	  same ciphertext, so a filesystem can move between the two.
 
 config SCSI_UFS_EXYNOS8895_FMP_KAT
 	bool "DEBUG: Exynos8895 FMP read-only known-answer test"

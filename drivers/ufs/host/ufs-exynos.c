@@ -3041,8 +3041,12 @@ static const struct exynos_ufs_drv_data exynos8895_ufs_drvs = {
 	.resume			= exynos8895_ufs_resume,
 	.fmp_init		= exynos8895_ufs_fmp_init,
 	.fmp_resume		= exynos8895_ufs_fmp_resume,
-	/* not measured yet: spec L4b D-4, set from the KAT result (T-L4b-2) */
-	.fmp_key_layout		= FMP_KEY_LAYOUT_UNVERIFIED,
+	/*
+	 * Measured on the SoC: FMP decrypts like xts(aes) only with the data
+	 * key in file_enckey, i.e. the gs101 order, not the whole-key reversal
+	 * of Samsung's fmp_ufs.c.
+	 */
+	.fmp_key_layout		= FMP_KEY_LAYOUT_HALVES,
 };
 
 static const struct of_device_id exynos_ufs_of_match[] = {
