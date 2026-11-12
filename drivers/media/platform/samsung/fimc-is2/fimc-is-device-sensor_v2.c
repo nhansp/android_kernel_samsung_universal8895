@@ -2229,7 +2229,9 @@ static int fimc_is_sensor_s_format(void *qdevice,
 	struct v4l2_subdev *subdev_module;
 	struct v4l2_subdev *subdev_csi;
 	struct v4l2_subdev *subdev_flite;
-	struct v4l2_subdev_format subdev_format;
+	struct v4l2_subdev_format subdev_format = {
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+	};
 	struct fimc_is_fmt *format;
 	u32 width;
 	u32 height;
