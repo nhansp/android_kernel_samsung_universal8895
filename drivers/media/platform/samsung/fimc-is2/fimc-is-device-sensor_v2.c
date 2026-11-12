@@ -3042,9 +3042,16 @@ static int fimc_is_sensor_back_stop(void *qdevice,
 		goto p_err;
 	}
 
+	/*
+	 * Pass "no wait" beside the call: the V4L2 core treats any non-zero
+	 * s_stream argument as a start request.
+	 */
 	if (test_bit(FIMC_IS_SENSOR_BACK_NOWAIT_STOP, &device->state)) {
+		struct fimc_is_device_flite *flite = v4l2_get_subdevdata(subdev_flite);
+
 		mwarn("fimc_is_flite_stop, no waiting...", device);
-		enable = FLITE_NOWAIT_FLAG << FLITE_NOWAIT_SHIFT;
+		if (flite)
+			set_bit(FLITE_STOP_NOWAIT, &flite->state);
 	}
 
 	ret = v4l2_subdev_call(subdev_flite, video, s_stream, enable);

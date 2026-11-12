@@ -806,7 +806,6 @@ static int flite_s_stream(struct v4l2_subdev *subdev, int enable)
 
 	BUG_ON(!subdev);
 
-	nowait = (enable & FLITE_NOWAIT_MASK) >> FLITE_NOWAIT_SHIFT;
 	enable = enable & FLITE_ENABLE_MASK;
 
 	flite = (struct fimc_is_device_flite *)v4l2_get_subdevdata(subdev);
@@ -815,6 +814,8 @@ static int flite_s_stream(struct v4l2_subdev *subdev, int enable)
 		ret = -EINVAL;
 		goto p_err;
 	}
+
+	nowait = test_and_clear_bit(FLITE_STOP_NOWAIT, &flite->state);
 
 	if (flite->instance == FLITE_ID_NOTHING) {
 		info("can't not link fimc-lite(bns)\n");
