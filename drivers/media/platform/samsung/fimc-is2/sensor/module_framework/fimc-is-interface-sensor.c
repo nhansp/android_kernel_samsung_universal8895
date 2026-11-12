@@ -17,6 +17,7 @@
 #include "fimc-is-control-sensor.h"
 #include "fimc-is-device-sensor-peri.h"
 #include "fimc-is-interface-sensor.h"
+#include "fimc-is-interface-jopp.h"
 
 static u8 rta_static_data[STATIC_DATA_SIZE];
 static u8 ddk_static_data[STATIC_DATA_SIZE];
@@ -1660,7 +1661,7 @@ p_err:
 	return 0;
 }
 
-static int request_reset_expo_gain(struct fimc_is_sensor_interface *itf,
+int request_reset_expo_gain(struct fimc_is_sensor_interface *itf,
 				u32 long_expo,
 				u32 long_tgain,
 				u32 long_again,
@@ -2922,6 +2923,99 @@ static __maybe_unused int dual_reserved_3(struct fimc_is_sensor_interface *itf)
 	return 0;
 }
 
+FIMC_IS_JOPP_ENTRY(request_reset_interface);
+FIMC_IS_JOPP_ENTRY(get_calibrated_size);
+FIMC_IS_JOPP_ENTRY(get_bayer_order);
+FIMC_IS_JOPP_ENTRY(get_min_exposure_time);
+FIMC_IS_JOPP_ENTRY(get_max_exposure_time);
+FIMC_IS_JOPP_ENTRY(get_min_analog_gain);
+FIMC_IS_JOPP_ENTRY(get_max_analog_gain);
+FIMC_IS_JOPP_ENTRY(get_min_digital_gain);
+FIMC_IS_JOPP_ENTRY(get_max_digital_gain);
+FIMC_IS_JOPP_ENTRY(get_vsync_count);
+FIMC_IS_JOPP_ENTRY(get_vblank_count);
+FIMC_IS_JOPP_ENTRY(is_vvalid_period);
+FIMC_IS_JOPP_ENTRY(request_exposure);
+FIMC_IS_JOPP_ENTRY(adjust_exposure);
+FIMC_IS_JOPP_ENTRY(get_next_frame_timing);
+FIMC_IS_JOPP_ENTRY(get_frame_timing);
+FIMC_IS_JOPP_ENTRY(request_analog_gain);
+FIMC_IS_JOPP_ENTRY(request_gain);
+FIMC_IS_JOPP_ENTRY(adjust_analog_gain);
+FIMC_IS_JOPP_ENTRY(get_next_analog_gain);
+FIMC_IS_JOPP_ENTRY(get_analog_gain);
+FIMC_IS_JOPP_ENTRY(get_next_digital_gain);
+FIMC_IS_JOPP_ENTRY(get_digital_gain);
+FIMC_IS_JOPP_ENTRY(is_actuator_available);
+FIMC_IS_JOPP_ENTRY(is_flash_available);
+FIMC_IS_JOPP_ENTRY(is_companion_available);
+FIMC_IS_JOPP_ENTRY(is_ois_available);
+FIMC_IS_JOPP_ENTRY(get_sensor_frame_timing);
+FIMC_IS_JOPP_ENTRY(get_sensor_cur_size);
+FIMC_IS_JOPP_ENTRY(get_sensor_max_fps);
+FIMC_IS_JOPP_ENTRY(get_sensor_cur_fps);
+FIMC_IS_JOPP_ENTRY(get_hdr_ratio_ctl_by_again);
+FIMC_IS_JOPP_ENTRY(get_sensor_use_dgain);
+FIMC_IS_JOPP_ENTRY(get_sensor_fnum);
+FIMC_IS_JOPP_ENTRY(set_alg_reset_flag);
+FIMC_IS_JOPP_ENTRY(get_sensor_hdr_stat);
+FIMC_IS_JOPP_ENTRY(set_3a_alg_res_to_sens);
+FIMC_IS_JOPP_ENTRY(set_initial_exposure_of_setfile);
+#ifdef USE_NEW_PER_FRAME_CONTROL
+FIMC_IS_JOPP_ENTRY(reserved0);
+FIMC_IS_JOPP_ENTRY(set_num_of_frame_per_one_3aa);
+FIMC_IS_JOPP_ENTRY(reserved1);
+#else
+FIMC_IS_JOPP_ENTRY(set_video_mode_of_setfile);
+FIMC_IS_JOPP_ENTRY(get_num_of_frame_per_one_3aa);
+FIMC_IS_JOPP_ENTRY(get_offset_from_cur_result);
+#endif
+FIMC_IS_JOPP_ENTRY(set_cur_uctl_list);
+FIMC_IS_JOPP_ENTRY(apply_sensor_setting);
+FIMC_IS_JOPP_ENTRY(request_reset_expo_gain);
+FIMC_IS_JOPP_ENTRY(set_sensor_info_mode_change);
+FIMC_IS_JOPP_ENTRY(update_sensor_dynamic_meta);
+FIMC_IS_JOPP_ENTRY(copy_sensor_ctl);
+FIMC_IS_JOPP_ENTRY(get_module_id);
+FIMC_IS_JOPP_ENTRY(get_module_position);
+FIMC_IS_JOPP_ENTRY(set_sensor_3a_mode);
+#ifdef USE_FACE_UNLOCK_AE_AWB_INIT
+FIMC_IS_JOPP_ENTRY(get_initial_exposure_gain_of_sensor);
+#endif
+FIMC_IS_JOPP_ENTRY(change_cis_mode);
+FIMC_IS_JOPP_ENTRY(start_of_frame);
+FIMC_IS_JOPP_ENTRY(end_of_frame);
+FIMC_IS_JOPP_ENTRY(apply_frame_settings);
+FIMC_IS_JOPP_ENTRY(set_actuator_position_table);
+FIMC_IS_JOPP_ENTRY(set_soft_landing_config);
+FIMC_IS_JOPP_ENTRY(set_position);
+FIMC_IS_JOPP_ENTRY(get_cur_frame_position);
+FIMC_IS_JOPP_ENTRY(get_applied_actual_position);
+FIMC_IS_JOPP_ENTRY(get_prev_frame_position);
+FIMC_IS_JOPP_ENTRY(set_af_window_position);
+FIMC_IS_JOPP_ENTRY(get_status);
+FIMC_IS_JOPP_ENTRY(request_flash);
+FIMC_IS_JOPP_ENTRY(request_flash_expo_gain);
+FIMC_IS_JOPP_ENTRY(update_flash_dynamic_meta);
+FIMC_IS_JOPP_ENTRY(get_vc_dma_buf);
+FIMC_IS_JOPP_ENTRY(put_vc_dma_buf);
+FIMC_IS_JOPP_ENTRY(get_vc_dma_buf_size);
+FIMC_IS_JOPP_ENTRY(get_vc_dma_buf_max_size);
+FIMC_IS_JOPP_ENTRY(csi_reserved_0);
+FIMC_IS_JOPP_ENTRY(csi_reserved_1);
+FIMC_IS_JOPP_ENTRY(csi_reserved_2);
+FIMC_IS_JOPP_ENTRY(csi_reserved_3);
+FIMC_IS_JOPP_ENTRY(set_long_term_expo_mode);
+FIMC_IS_JOPP_ENTRY(get_static_mem);
+FIMC_IS_JOPP_ENTRY(set_adjust_sync);
+FIMC_IS_JOPP_ENTRY(request_frame_length_line);
+FIMC_IS_JOPP_ENTRY(request_sensitivity);
+FIMC_IS_JOPP_ENTRY(get_sensor_state);
+FIMC_IS_JOPP_ENTRY(get_reuse_3a_state);
+FIMC_IS_JOPP_ENTRY(set_reuse_ae_exposure);
+FIMC_IS_JOPP_ENTRY(dual_reserved_0);
+FIMC_IS_JOPP_ENTRY(dual_reserved_1);
+
 int init_sensor_interface(struct fimc_is_sensor_interface *itf)
 {
 	int ret = 0;
@@ -2937,131 +3031,136 @@ int init_sensor_interface(struct fimc_is_sensor_interface *itf)
 	itf->diff_bet_sen_isp = itf->otf_flag_3aa ? DIFF_OTF_DELAY : DIFF_M2M_DELAY;
 
 	/* struct fimc_is_cis_interface_ops */
-	itf->cis_itf_ops.request_reset_interface = request_reset_interface;
-	itf->cis_itf_ops.get_calibrated_size = get_calibrated_size;
-	itf->cis_itf_ops.get_bayer_order = get_bayer_order;
-	itf->cis_itf_ops.get_min_exposure_time = get_min_exposure_time;
-	itf->cis_itf_ops.get_max_exposure_time = get_max_exposure_time;
-	itf->cis_itf_ops.get_min_analog_gain = get_min_analog_gain;
-	itf->cis_itf_ops.get_max_analog_gain = get_max_analog_gain;
-	itf->cis_itf_ops.get_min_digital_gain = get_min_digital_gain;
-	itf->cis_itf_ops.get_max_digital_gain = get_max_digital_gain;
+	itf->cis_itf_ops.request_reset_interface = FIMC_IS_JOPP(request_reset_interface);
+	itf->cis_itf_ops.get_calibrated_size = FIMC_IS_JOPP(get_calibrated_size);
+	itf->cis_itf_ops.get_bayer_order = FIMC_IS_JOPP(get_bayer_order);
+	itf->cis_itf_ops.get_min_exposure_time = FIMC_IS_JOPP(get_min_exposure_time);
+	itf->cis_itf_ops.get_max_exposure_time = FIMC_IS_JOPP(get_max_exposure_time);
+	itf->cis_itf_ops.get_min_analog_gain = FIMC_IS_JOPP(get_min_analog_gain);
+	itf->cis_itf_ops.get_max_analog_gain = FIMC_IS_JOPP(get_max_analog_gain);
+	itf->cis_itf_ops.get_min_digital_gain = FIMC_IS_JOPP(get_min_digital_gain);
+	itf->cis_itf_ops.get_max_digital_gain = FIMC_IS_JOPP(get_max_digital_gain);
 
-	itf->cis_itf_ops.get_vsync_count = get_vsync_count;
-	itf->cis_itf_ops.get_vblank_count = get_vblank_count;
-	itf->cis_itf_ops.is_vvalid_period = is_vvalid_period;
+	itf->cis_itf_ops.get_vsync_count = FIMC_IS_JOPP(get_vsync_count);
+	itf->cis_itf_ops.get_vblank_count = FIMC_IS_JOPP(get_vblank_count);
+	itf->cis_itf_ops.is_vvalid_period = FIMC_IS_JOPP(is_vvalid_period);
 
-	itf->cis_itf_ops.request_exposure = request_exposure;
-	itf->cis_itf_ops.adjust_exposure = adjust_exposure;
+	itf->cis_itf_ops.request_exposure = FIMC_IS_JOPP(request_exposure);
+	itf->cis_itf_ops.adjust_exposure = FIMC_IS_JOPP(adjust_exposure);
 
-	itf->cis_itf_ops.get_next_frame_timing = get_next_frame_timing;
-	itf->cis_itf_ops.get_frame_timing = get_frame_timing;
+	itf->cis_itf_ops.get_next_frame_timing = FIMC_IS_JOPP(get_next_frame_timing);
+	itf->cis_itf_ops.get_frame_timing = FIMC_IS_JOPP(get_frame_timing);
 
-	itf->cis_itf_ops.request_analog_gain = request_analog_gain;
-	itf->cis_itf_ops.request_gain = request_gain;
+	itf->cis_itf_ops.request_analog_gain = FIMC_IS_JOPP(request_analog_gain);
+	itf->cis_itf_ops.request_gain = FIMC_IS_JOPP(request_gain);
 
-	itf->cis_itf_ops.adjust_analog_gain = adjust_analog_gain;
-	itf->cis_itf_ops.get_next_analog_gain = get_next_analog_gain;
-	itf->cis_itf_ops.get_analog_gain = get_analog_gain;
+	itf->cis_itf_ops.adjust_analog_gain = FIMC_IS_JOPP(adjust_analog_gain);
+	itf->cis_itf_ops.get_next_analog_gain = FIMC_IS_JOPP(get_next_analog_gain);
+	itf->cis_itf_ops.get_analog_gain = FIMC_IS_JOPP(get_analog_gain);
 
-	itf->cis_itf_ops.get_next_digital_gain = get_next_digital_gain;
-	itf->cis_itf_ops.get_digital_gain = get_digital_gain;
+	itf->cis_itf_ops.get_next_digital_gain = FIMC_IS_JOPP(get_next_digital_gain);
+	itf->cis_itf_ops.get_digital_gain = FIMC_IS_JOPP(get_digital_gain);
 
-	itf->cis_itf_ops.is_actuator_available = is_actuator_available;
-	itf->cis_itf_ops.is_flash_available = is_flash_available;
-	itf->cis_itf_ops.is_companion_available = is_companion_available;
-	itf->cis_itf_ops.is_ois_available = is_ois_available;
+	itf->cis_itf_ops.is_actuator_available = FIMC_IS_JOPP(is_actuator_available);
+	itf->cis_itf_ops.is_flash_available = FIMC_IS_JOPP(is_flash_available);
+	itf->cis_itf_ops.is_companion_available = FIMC_IS_JOPP(is_companion_available);
+	itf->cis_itf_ops.is_ois_available = FIMC_IS_JOPP(is_ois_available);
 
-	itf->cis_itf_ops.get_sensor_frame_timing = get_sensor_frame_timing;
-	itf->cis_itf_ops.get_sensor_cur_size = get_sensor_cur_size;
-	itf->cis_itf_ops.get_sensor_max_fps = get_sensor_max_fps;
-	itf->cis_itf_ops.get_sensor_cur_fps = get_sensor_cur_fps;
-	itf->cis_itf_ops.get_hdr_ratio_ctl_by_again = get_hdr_ratio_ctl_by_again;
-	itf->cis_itf_ops.get_sensor_use_dgain = get_sensor_use_dgain;
-	itf->cis_itf_ops.get_sensor_fnum = get_sensor_fnum;
-	itf->cis_itf_ops.set_alg_reset_flag = set_alg_reset_flag;
-	itf->cis_ext_itf_ops.get_sensor_hdr_stat = get_sensor_hdr_stat;
-	itf->cis_ext_itf_ops.set_3a_alg_res_to_sens = set_3a_alg_res_to_sens;
+	itf->cis_itf_ops.get_sensor_frame_timing = FIMC_IS_JOPP(get_sensor_frame_timing);
+	itf->cis_itf_ops.get_sensor_cur_size = FIMC_IS_JOPP(get_sensor_cur_size);
+	itf->cis_itf_ops.get_sensor_max_fps = FIMC_IS_JOPP(get_sensor_max_fps);
+	itf->cis_itf_ops.get_sensor_cur_fps = FIMC_IS_JOPP(get_sensor_cur_fps);
+	itf->cis_itf_ops.get_hdr_ratio_ctl_by_again = FIMC_IS_JOPP(get_hdr_ratio_ctl_by_again);
+	itf->cis_itf_ops.get_sensor_use_dgain = FIMC_IS_JOPP(get_sensor_use_dgain);
+	itf->cis_itf_ops.get_sensor_fnum = FIMC_IS_JOPP(get_sensor_fnum);
+	itf->cis_itf_ops.set_alg_reset_flag = FIMC_IS_JOPP(set_alg_reset_flag);
+	itf->cis_ext_itf_ops.get_sensor_hdr_stat = FIMC_IS_JOPP(get_sensor_hdr_stat);
+	itf->cis_ext_itf_ops.set_3a_alg_res_to_sens = FIMC_IS_JOPP(set_3a_alg_res_to_sens);
 
-	itf->cis_itf_ops.set_initial_exposure_of_setfile = set_initial_exposure_of_setfile;
+	itf->cis_itf_ops.set_initial_exposure_of_setfile =
+		FIMC_IS_JOPP(set_initial_exposure_of_setfile);
 
 #ifdef USE_NEW_PER_FRAME_CONTROL
-	itf->cis_itf_ops.reserved0 = reserved0;
-	itf->cis_itf_ops.set_num_of_frame_per_one_3aa = set_num_of_frame_per_one_3aa;
-	itf->cis_itf_ops.reserved1 = reserved1;
+	itf->cis_itf_ops.reserved0 = FIMC_IS_JOPP(reserved0);
+	itf->cis_itf_ops.set_num_of_frame_per_one_3aa = FIMC_IS_JOPP(set_num_of_frame_per_one_3aa);
+	itf->cis_itf_ops.reserved1 = FIMC_IS_JOPP(reserved1);
 #else
-	itf->cis_itf_ops.set_video_mode_of_setfile = set_video_mode_of_setfile;
-	itf->cis_itf_ops.get_num_of_frame_per_one_3aa = get_num_of_frame_per_one_3aa;
-	itf->cis_itf_ops.get_offset_from_cur_result = get_offset_from_cur_result;
+	itf->cis_itf_ops.set_video_mode_of_setfile = FIMC_IS_JOPP(set_video_mode_of_setfile);
+	itf->cis_itf_ops.get_num_of_frame_per_one_3aa = FIMC_IS_JOPP(get_num_of_frame_per_one_3aa);
+	itf->cis_itf_ops.get_offset_from_cur_result = FIMC_IS_JOPP(get_offset_from_cur_result);
 #endif
 
-	itf->cis_itf_ops.set_cur_uctl_list = set_cur_uctl_list;
+	itf->cis_itf_ops.set_cur_uctl_list = FIMC_IS_JOPP(set_cur_uctl_list);
 
 	/* TODO: What is diff with apply_frame_settings at event_ops */
-	itf->cis_itf_ops.apply_sensor_setting = apply_sensor_setting;
+	itf->cis_itf_ops.apply_sensor_setting = FIMC_IS_JOPP(apply_sensor_setting);
 
 	/* reset exposure and gain for flash */
-	itf->cis_itf_ops.request_reset_expo_gain = request_reset_expo_gain;
+	itf->cis_itf_ops.request_reset_expo_gain = FIMC_IS_JOPP(request_reset_expo_gain);
 
-	itf->cis_itf_ops.set_sensor_info_mode_change = set_sensor_info_mode_change;
-	itf->cis_itf_ops.update_sensor_dynamic_meta = update_sensor_dynamic_meta;
-	itf->cis_itf_ops.copy_sensor_ctl = copy_sensor_ctl;
-	itf->cis_itf_ops.get_module_id = get_module_id;
-	itf->cis_itf_ops.get_module_position = get_module_position;
-	itf->cis_itf_ops.set_sensor_3a_mode = set_sensor_3a_mode;
+	itf->cis_itf_ops.set_sensor_info_mode_change = FIMC_IS_JOPP(set_sensor_info_mode_change);
+	itf->cis_itf_ops.update_sensor_dynamic_meta = FIMC_IS_JOPP(update_sensor_dynamic_meta);
+	itf->cis_itf_ops.copy_sensor_ctl = FIMC_IS_JOPP(copy_sensor_ctl);
+	itf->cis_itf_ops.get_module_id = FIMC_IS_JOPP(get_module_id);
+	itf->cis_itf_ops.get_module_position = FIMC_IS_JOPP(get_module_position);
+	itf->cis_itf_ops.set_sensor_3a_mode = FIMC_IS_JOPP(set_sensor_3a_mode);
 #ifdef USE_FACE_UNLOCK_AE_AWB_INIT
-	itf->cis_itf_ops.get_initial_exposure_gain_of_sensor = get_initial_exposure_gain_of_sensor;
+	itf->cis_itf_ops.get_initial_exposure_gain_of_sensor =
+		FIMC_IS_JOPP(get_initial_exposure_gain_of_sensor);
 #endif
-	itf->cis_ext_itf_ops.change_cis_mode = change_cis_mode;
+	itf->cis_ext_itf_ops.change_cis_mode = FIMC_IS_JOPP(change_cis_mode);
 
 	/* struct fimc_is_cis_event_ops */
-	itf->cis_evt_ops.start_of_frame = start_of_frame;
-	itf->cis_evt_ops.end_of_frame = end_of_frame;
-	itf->cis_evt_ops.apply_frame_settings = apply_frame_settings;
+	itf->cis_evt_ops.start_of_frame = FIMC_IS_JOPP(start_of_frame);
+	itf->cis_evt_ops.end_of_frame = FIMC_IS_JOPP(end_of_frame);
+	itf->cis_evt_ops.apply_frame_settings = FIMC_IS_JOPP(apply_frame_settings);
 
 	/* Actuator interface */
 	itf->actuator_itf.soft_landing_table.enable = false;
 	itf->actuator_itf.position_table.enable = false;
 	itf->actuator_itf.initialized = false;
 
-	itf->actuator_itf_ops.set_actuator_position_table = set_actuator_position_table;
-	itf->actuator_itf_ops.set_soft_landing_config = set_soft_landing_config;
-	itf->actuator_itf_ops.set_position = set_position;
-	itf->actuator_itf_ops.get_cur_frame_position = get_cur_frame_position;
-	itf->actuator_itf_ops.get_applied_actual_position = get_applied_actual_position;
-	itf->actuator_itf_ops.get_prev_frame_position = get_prev_frame_position;
-	itf->actuator_itf_ops.set_af_window_position = set_af_window_position; /* AF window value for M2M AF */
-	itf->actuator_itf_ops.get_status = get_status;
+	itf->actuator_itf_ops.set_actuator_position_table =
+		FIMC_IS_JOPP(set_actuator_position_table);
+	itf->actuator_itf_ops.set_soft_landing_config = FIMC_IS_JOPP(set_soft_landing_config);
+	itf->actuator_itf_ops.set_position = FIMC_IS_JOPP(set_position);
+	itf->actuator_itf_ops.get_cur_frame_position = FIMC_IS_JOPP(get_cur_frame_position);
+	itf->actuator_itf_ops.get_applied_actual_position =
+		FIMC_IS_JOPP(get_applied_actual_position);
+	itf->actuator_itf_ops.get_prev_frame_position = FIMC_IS_JOPP(get_prev_frame_position);
+	itf->actuator_itf_ops.set_af_window_position =
+		FIMC_IS_JOPP(set_af_window_position); /* AF window value for M2M AF */
+	itf->actuator_itf_ops.get_status = FIMC_IS_JOPP(get_status);
 
 	/* Flash interface */
-	itf->flash_itf_ops.request_flash = request_flash;
-	itf->flash_itf_ops.request_flash_expo_gain = request_flash_expo_gain;
-	itf->flash_itf_ops.update_flash_dynamic_meta = update_flash_dynamic_meta;
+	itf->flash_itf_ops.request_flash = FIMC_IS_JOPP(request_flash);
+	itf->flash_itf_ops.request_flash_expo_gain = FIMC_IS_JOPP(request_flash_expo_gain);
+	itf->flash_itf_ops.update_flash_dynamic_meta = FIMC_IS_JOPP(update_flash_dynamic_meta);
 
 	/* MIPI-CSI interface */
-	itf->csi_itf_ops.get_vc_dma_buf = get_vc_dma_buf;
-	itf->csi_itf_ops.put_vc_dma_buf = put_vc_dma_buf;
-	itf->csi_itf_ops.get_vc_dma_buf_size = get_vc_dma_buf_size;
-	itf->csi_itf_ops.get_vc_dma_buf_max_size = get_vc_dma_buf_max_size;
-	itf->csi_itf_ops.reserved[0] = csi_reserved_0;
-	itf->csi_itf_ops.reserved[1] = csi_reserved_1;
-	itf->csi_itf_ops.reserved[2] = csi_reserved_2;
-	itf->csi_itf_ops.reserved[3] = csi_reserved_3;
+	itf->csi_itf_ops.get_vc_dma_buf = FIMC_IS_JOPP(get_vc_dma_buf);
+	itf->csi_itf_ops.put_vc_dma_buf = FIMC_IS_JOPP(put_vc_dma_buf);
+	itf->csi_itf_ops.get_vc_dma_buf_size = FIMC_IS_JOPP(get_vc_dma_buf_size);
+	itf->csi_itf_ops.get_vc_dma_buf_max_size = FIMC_IS_JOPP(get_vc_dma_buf_max_size);
+	itf->csi_itf_ops.reserved[0] = FIMC_IS_JOPP(csi_reserved_0);
+	itf->csi_itf_ops.reserved[1] = FIMC_IS_JOPP(csi_reserved_1);
+	itf->csi_itf_ops.reserved[2] = FIMC_IS_JOPP(csi_reserved_2);
+	itf->csi_itf_ops.reserved[3] = FIMC_IS_JOPP(csi_reserved_3);
 
 	/* CIS ext2 interface */
 	/* Long Term Exposure mode(LTE mode) interface */
-	itf->cis_ext2_itf_ops.set_long_term_expo_mode = set_long_term_expo_mode;
-	itf->cis_ext2_itf_ops.get_static_mem = get_static_mem;
-	itf->cis_ext_itf_ops.set_adjust_sync = set_adjust_sync;
-	itf->cis_ext_itf_ops.request_frame_length_line = request_frame_length_line;
-	itf->cis_ext_itf_ops.request_sensitivity = request_sensitivity;
+	itf->cis_ext2_itf_ops.set_long_term_expo_mode = FIMC_IS_JOPP(set_long_term_expo_mode);
+	itf->cis_ext2_itf_ops.get_static_mem = FIMC_IS_JOPP(get_static_mem);
+	itf->cis_ext_itf_ops.set_adjust_sync = FIMC_IS_JOPP(set_adjust_sync);
+	itf->cis_ext_itf_ops.request_frame_length_line = FIMC_IS_JOPP(request_frame_length_line);
+	itf->cis_ext_itf_ops.request_sensitivity = FIMC_IS_JOPP(request_sensitivity);
 
 	/* Sensor dual sceanrio interface */
-	itf->dual_itf_ops.get_sensor_state = get_sensor_state;
-	itf->dual_itf_ops.get_reuse_3a_state = get_reuse_3a_state;
-	itf->dual_itf_ops.set_reuse_ae_exposure = set_reuse_ae_exposure;
-	itf->dual_itf_ops.reserved[0] = dual_reserved_0;
-	itf->dual_itf_ops.reserved[1] = dual_reserved_1;
+	itf->dual_itf_ops.get_sensor_state = FIMC_IS_JOPP(get_sensor_state);
+	itf->dual_itf_ops.get_reuse_3a_state = FIMC_IS_JOPP(get_reuse_3a_state);
+	itf->dual_itf_ops.set_reuse_ae_exposure = FIMC_IS_JOPP(set_reuse_ae_exposure);
+	itf->dual_itf_ops.reserved[0] = FIMC_IS_JOPP(dual_reserved_0);
+	itf->dual_itf_ops.reserved[1] = FIMC_IS_JOPP(dual_reserved_1);
 
 	return ret;
 }

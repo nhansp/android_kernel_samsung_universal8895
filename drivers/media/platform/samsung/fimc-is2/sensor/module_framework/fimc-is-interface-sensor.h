@@ -988,6 +988,9 @@ struct fimc_is_sensor_interface {
 };
 
 int init_sensor_interface(struct fimc_is_sensor_interface *itf);
+int request_reset_expo_gain(struct fimc_is_sensor_interface *itf,
+			    u32 long_expo, u32 long_tgain, u32 long_again, u32 long_dgain,
+			    u32 short_expo, u32 short_tgain, u32 short_again, u32 short_dgain);
 
 /* Sensor interface helper function */
 struct fimc_is_module_enum *get_subdev_module_enum(struct fimc_is_sensor_interface *itf);

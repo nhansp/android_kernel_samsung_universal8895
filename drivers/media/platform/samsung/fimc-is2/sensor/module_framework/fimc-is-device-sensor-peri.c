@@ -479,7 +479,7 @@ static __maybe_unused int fimc_is_sensor_initial_setting_low_exposure(struct fim
 #endif
 
 #if !defined(DISABLE_LIB)
-	sensor_peri->sensor_interface.cis_itf_ops.request_reset_expo_gain(&sensor_peri->sensor_interface,
+	request_reset_expo_gain(&sensor_peri->sensor_interface,
 			sensor_peri->cis.cis_data->low_expo_start,
 			1000,
 			1000,
@@ -605,7 +605,7 @@ static void fimc_is_sensor_setting_mode_change(struct fimc_is_device_sensor_peri
 	memcpy(&cis_data->preproc_auto_exposure[NEXT_FRAME],&cis_data->preproc_auto_exposure[CURRENT_FRAME],sizeof(preprocessor_ae_setting));
 #endif
 
-	sensor_peri->sensor_interface.cis_itf_ops.request_reset_expo_gain(&sensor_peri->sensor_interface,
+	request_reset_expo_gain(&sensor_peri->sensor_interface,
 			long_expo,
 			long_tgain,
 			long_again,
@@ -705,7 +705,7 @@ void fimc_is_sensor_flash_fire_work(struct work_struct *data)
 		memcpy(&cis_data->preproc_auto_exposure[NEXT_FRAME],&cis_data->preproc_auto_exposure[CURRENT_FRAME],sizeof(preprocessor_ae_setting));
 #endif
 
-		sensor_peri->sensor_interface.cis_itf_ops.request_reset_expo_gain(&sensor_peri->sensor_interface,
+		request_reset_expo_gain(&sensor_peri->sensor_interface,
 			flash->flash_ae.expo[step],
 			flash->flash_ae.tgain[step],
 			flash->flash_ae.again[step],
@@ -740,7 +740,7 @@ void fimc_is_sensor_flash_fire_work(struct work_struct *data)
 		memcpy(&cis_data->preproc_auto_exposure[NEXT_FRAME],&cis_data->preproc_auto_exposure[CURRENT_FRAME],sizeof(preprocessor_ae_setting));
 #endif
 
-		sensor_peri->sensor_interface.cis_itf_ops.request_reset_expo_gain(&sensor_peri->sensor_interface,
+		request_reset_expo_gain(&sensor_peri->sensor_interface,
 			flash->flash_ae.long_expo[step],
 			flash->flash_ae.long_tgain[step],
 			flash->flash_ae.long_again[step],
@@ -1442,7 +1442,7 @@ void fimc_is_sensor_long_term_mode_set_work(struct work_struct *data)
 	fimc_is_sensor_peri_s_digital_gain(device, cis->long_term_mode.dgain[step], cis->long_term_mode.dgain[step]);
 	fimc_is_sensor_peri_s_exposure_time(device, cis->long_term_mode.expo[step], cis->long_term_mode.expo[step]);
 
-	sensor_peri->sensor_interface.cis_itf_ops.request_reset_expo_gain(&sensor_peri->sensor_interface,
+	request_reset_expo_gain(&sensor_peri->sensor_interface,
 			cis->long_term_mode.expo[step],
 			cis->long_term_mode.tgain[step],
 			cis->long_term_mode.again[step],
