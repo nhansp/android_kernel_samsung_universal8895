@@ -142,6 +142,18 @@ static void m2m1shot2_put_userptr(struct device *dev,
 	if (!plane->userptr.addr)
 		return;
 
+	if (plane->userptr.attachment) {
+		struct dma_buf *dmabuf = plane->userptr.attachment->dmabuf;
+
+		dma_buf_unmap_attachment_unlocked(plane->userptr.attachment,
+						  plane->sgt, dir);
+		dma_buf_detach(dmabuf, plane->userptr.attachment);
+		dma_buf_put(dmabuf);
+		plane->userptr.attachment = NULL;
+		plane->sgt = NULL;
+		goto out;
+	}
+
 	npages = (PAGE_ALIGN(plane->userptr.addr + plane->userptr.length) -
 		  (plane->userptr.addr & PAGE_MASK)) >> PAGE_SHIFT;
 	pages = (struct page **)plane->userptr.vma;
@@ -158,11 +170,96 @@ static void m2m1shot2_put_userptr(struct device *dev,
 		kvfree(pages);
 		plane->userptr.vma = NULL;
 	}
-
+out:
 	plane->userptr.addr = 0;
 	plane->userptr.length = 0;
 	plane->dma_addr = 0;
 	plane->priv = NULL;
+}
+
+/*
+ * pin_user_pages() cannot take a PFN mapping such as the mmap of a dma-buf whose
+ * exporter maps its pages with remap_pfn_range(). Return the dma-buf behind
+ * such a mapping, with a reference held, if it covers [addr, addr + length)
+ * with the access the device needs.
+ */
+static struct dma_buf *m2m1shot2_userptr_to_dmabuf(unsigned long addr,
+						   u32 length, bool write,
+						   unsigned long *offset)
+{
+	vm_flags_t need = VM_SHARED | VM_READ | (write ? VM_WRITE : 0);
+	struct mm_struct *mm = current->mm;
+	struct vm_area_struct *vma;
+	struct dma_buf *dmabuf = NULL;
+
+	mmap_read_lock(mm);
+	vma = vma_lookup(mm, addr);
+	if (!vma || !(vma->vm_flags & (VM_IO | VM_PFNMAP)) ||
+	    (vma->vm_flags & need) != need ||
+	    !vma->vm_file || !is_dma_buf_file(vma->vm_file) ||
+	    length > vma->vm_end - addr)
+		goto out;
+
+	dmabuf = vma->vm_file->private_data;
+	*offset = (vma->vm_pgoff << PAGE_SHIFT) + (addr - vma->vm_start);
+	if (*offset >= dmabuf->size || length > dmabuf->size - *offset) {
+		dmabuf = NULL;
+		goto out;
+	}
+	get_dma_buf(dmabuf);
+out:
+	mmap_read_unlock(mm);
+	return dmabuf;
+}
+
+static int m2m1shot2_get_userptr_dmabuf(struct m2m1shot2_device *m21dev,
+					struct m2m1shot2_dma_buffer *plane,
+					struct dma_buf *dmabuf,
+					unsigned long offset,
+					unsigned long addr, u32 length,
+					enum dma_data_direction dir)
+{
+	struct dma_buf_attachment *attachment;
+	struct sg_table *sgt;
+	int ret;
+
+	attachment = dma_buf_attach(dmabuf, m21dev->dev);
+	if (IS_ERR(attachment)) {
+		ret = PTR_ERR(attachment);
+		goto err_put;
+	}
+
+	sgt = dma_buf_map_attachment_unlocked(attachment, dir);
+	if (IS_ERR(sgt)) {
+		ret = PTR_ERR(sgt);
+		goto err_detach;
+	}
+
+	if (sgt->nents != 1 || sg_dma_len(sgt->sgl) < offset + length) {
+		dev_err(m21dev->dev,
+			"m2m1shot2: dma-buf behind userptr maps to %u segments\n",
+			sgt->nents);
+		ret = -EINVAL;
+		goto err_unmap;
+	}
+
+	plane->sgt = sgt;
+	plane->dma_addr = sg_dma_address(sgt->sgl) + offset;
+	plane->userptr.attachment = attachment;
+	plane->userptr.vma = NULL;
+	plane->userptr.addr = addr;
+	plane->userptr.length = length;
+	plane->priv = (void *)(unsigned long)dir;
+
+	return 0;
+
+err_unmap:
+	dma_buf_unmap_attachment_unlocked(attachment, sgt, dir);
+err_detach:
+	dma_buf_detach(dmabuf, attachment);
+err_put:
+	dma_buf_put(dmabuf);
+	return ret;
 }
 
 static int m2m1shot2_get_userptr(struct m2m1shot2_device *m21dev,
@@ -173,10 +270,20 @@ static int m2m1shot2_get_userptr(struct m2m1shot2_device *m21dev,
 	unsigned int offset, npages;
 	struct page **pages;
 	struct sg_table *sgt;
+	struct dma_buf *dmabuf;
+	unsigned long dmabuf_offset;
 	int pinned, ret;
 
 	if (plane->userptr.addr != 0)
 		m2m1shot2_put_userptr(m21dev->dev, plane);
+
+	dmabuf = m2m1shot2_userptr_to_dmabuf(addr, length,
+					     dir != DMA_TO_DEVICE,
+					     &dmabuf_offset);
+	if (dmabuf)
+		return m2m1shot2_get_userptr_dmabuf(m21dev, plane, dmabuf,
+						    dmabuf_offset, addr,
+						    length, dir);
 
 	offset = addr & ~PAGE_MASK;
 	npages = (PAGE_ALIGN(addr + length) - (addr & PAGE_MASK)) >> PAGE_SHIFT;
@@ -234,6 +341,7 @@ static int m2m1shot2_get_userptr(struct m2m1shot2_device *m21dev,
 
 	plane->sgt = sgt;
 	plane->dma_addr = sg_dma_address(sgt->sgl);
+	plane->userptr.attachment = NULL;
 	plane->userptr.vma = (struct vm_area_struct *)pages;
 	plane->userptr.addr = addr;
 	plane->userptr.length = length;

@@ -47,6 +47,8 @@ struct m2m1shot2_context;
  * @addr	: userptr address if the memory type is userptr
  * @vma		: copy of the head vma of the list of vm_area_struct that
  *		   describes the user area [@addr, @addr + @length)
+ * @attachment	: attachment to the dma-buf whose mmap covers the user area
+ *		  if that mapping cannot be pinned
  * @sgt		: scatterlist table if the buffer type is dmabuf
  * @dma_addr	: DMA address for the client device
  * @priv	: for the private use of the client device driver
@@ -63,6 +65,7 @@ struct m2m1shot2_dma_buffer {
 			u32				length;
 			unsigned long			addr;
 			struct vm_area_struct		*vma;
+			struct dma_buf_attachment	*attachment;
 		} userptr;
 	};
 	struct sg_table			*sgt;
