@@ -22,6 +22,7 @@
 #include <linux/seq_file.h>
 
 #include <dt-bindings/clock/samsung,exynos8895-acpm.h>
+#include <soc/samsung/bts.h>
 #include <soc/samsung/exynos8895-mm-qos.h>
 
 #include <mali_kbase.h>
@@ -121,6 +122,15 @@ static void exynos8895_gpu_qos_apply(struct exynos8895_gpu *gpu, unsigned long r
 	mm_qos_update_request(&gpu->cl1_max_req, q ? q->cl1_max_khz : INT_MAX);
 }
 
+/*
+ * Stock gpu_mo_min_clock = <455000> and gpu_bts_support = <1> (S:arch/arm64/boot/dts/
+ * exynos/exynos8895.dtsi:806,811): from this clock up the G3D ports get the
+ * BS_G3D_PEFORMANCE outstanding-request limits (0x10 instead of the default 0x4)
+ * (K:platform/exynos/gpu_dvfs_api.c:154-159). A no-op until the BTS registers
+ * are programmed.
+ */
+#define EXYNOS8895_G3D_MO_MIN_HZ	455000000UL
+
 /* Every member NULL: the core tests each one (L6A 5.1.2) */
 static struct kbase_vendor_callbacks exynos8895_vendor_cb;
 
@@ -154,6 +164,7 @@ int exynos8895_gpu_set_rate(struct kbase_device *kbdev, unsigned long rate)
 		mutex_unlock(&gpu->lock);
 		if (!is_up)
 			exynos8895_gpu_qos_apply(gpu, rate);
+		bts_update_scen(BS_G3D_PEFORMANCE, rate >= EXYNOS8895_G3D_MO_MIN_HZ);
 		pm_runtime_put_autosuspend(kbdev->dev);
 	}
 
@@ -323,6 +334,8 @@ static int exynos8895_pm_runtime_on(struct kbase_device *kbdev)
 	    !clk_set_rate(gpu->clk, gpu->want_rate))
 		gpu->cur_rate = gpu->want_rate;
 	mutex_unlock(&gpu->lock);
+
+	bts_update_scen(BS_G3D_PEFORMANCE, gpu->want_rate >= EXYNOS8895_G3D_MO_MIN_HZ);
 
 	return 0;
 }
