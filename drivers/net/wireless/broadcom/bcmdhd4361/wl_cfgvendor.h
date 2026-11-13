@@ -485,6 +485,12 @@ enum andr_wifi_attr {
 	ANDR_WIFI_ATTRIBUTE_ND_OFFLOAD_VALUE,
 	ANDR_WIFI_ATTRIBUTE_TCPACK_SUP_VALUE
 };
+/* hardware/broadcom/wlan/bcmdhd/wifi_hal/link_layer_stats.cpp LINK_STAT_ATTRIBUTE */
+enum andr_lstat_attributes {
+	ANDR_LSTAT_ATTRIBUTE_INVALID,
+	ANDR_LSTAT_ATTRIBUTE_NUM_RADIO,
+	ANDR_LSTAT_ATTRIBUTE_STATS_INFO
+};
 /* hardware/broadcom/wlan/bcmdhd/wifi_hal/wifi_hal.cpp wifi_usable_channel_attributes */
 enum usable_channel_attributes {
 	USABLECHAN_ATTRIBUTE_INVALID,
