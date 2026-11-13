@@ -2226,8 +2226,19 @@ static int device_prepare(struct device *dev, pm_message_t state)
 	dev->power.wakeup_path = false;
 	dev->power.out_band_wakeup = false;
 
-	if (dev->power.no_pm_callbacks)
+	if (dev->power.no_pm_callbacks) {
+		/*
+		 * Nothing powers such a device up during system resume, so the
+		 * "smart suspend" status update to "active" must not happen if
+		 * its PM-runtime callbacks have powered it down, unless the
+		 * driver asks for it.
+		 */
+		if (pm_runtime_has_callbacks(dev) &&
+		    !dev_pm_test_driver_flags(dev, DPM_FLAG_SMART_SUSPEND))
+			smart_suspend = false;
+
 		goto unlock;
+	}
 
 	if (dev->pm_domain)
 		callback = dev->pm_domain->ops.prepare;
