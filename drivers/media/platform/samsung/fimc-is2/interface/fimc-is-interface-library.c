@@ -1752,9 +1752,11 @@ int fimc_is_init_ddk_thread(void)
 							&lib->task_taaisp[i].worker,
 							name);
 		if (IS_ERR(lib->task_taaisp[i].task)) {
-			err_lib("failed to create library task_handler(%d), err(%ld)",
-				i, PTR_ERR(lib->task_taaisp[i].task));
-			return PTR_ERR(lib->task_taaisp[i].task);
+			ret = PTR_ERR(lib->task_taaisp[i].task);
+			err_lib("failed to create library task_handler(%d), err(%d)", i, ret);
+			lib->task_taaisp[i].task = NULL;
+			fimc_is_flush_ddk_thread();
+			return ret;
 		}
 #ifdef ENABLE_FPSIMD_FOR_USER
 		/* stock fpsimd_set_task_using(): the task runs fimc_is_neon_kthread_fn (spec L6B 5.4) */
