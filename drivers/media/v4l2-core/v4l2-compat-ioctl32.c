@@ -1126,6 +1126,14 @@ int v4l2_compat_put_array_args(struct file *file, void __user *user_ptr,
 			if (num_planes == 0)
 				return 0;
 
+			/*
+			 * @mbuf holds the planes copied in before the ioctl. The
+			 * driver may have changed the length since; never read
+			 * past the array because of it.
+			 */
+			if (WARN_ON_ONCE(num_planes > array_size / sizeof(*p64)))
+				num_planes = array_size / sizeof(*p64);
+
 			while (num_planes--) {
 				err = put_v4l2_plane32(p64, p32, b64->memory);
 				if (err)
