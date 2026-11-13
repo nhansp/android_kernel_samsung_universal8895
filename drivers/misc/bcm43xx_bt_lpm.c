@@ -27,9 +27,13 @@
 #define BT_BTWAKE_RELAX_MS	500		/* wake_lock_timeout(HZ/2), S:drivers/bluetooth/bcm43xx.c:162 */
 #define BT_HOSTWAKE_RELAX_MS	1000		/* wake_lock_timeout(HZ), S:drivers/bluetooth/bcm43xx.c:197 */
 
-/* (run 6) the parameter keeps its user-visible name "lpm" but not the C identifier, which clashed with the instance pointer */
-static int bt_lpm_mode;				/* 0: BT_WAKE held high while powered (first pass, T-G1); 1: stock LPM (T-G2) */
-module_param_named(lpm, bt_lpm_mode, int, 0644);	/* /sys/module/bcm43xx_bt_lpm/parameters/lpm */
+/*
+ * 1: low power mode as stock, BT_WAKE follows UART transmit and drops 1 s after the last byte.
+ * 0: BT_WAKE stays high while powered, so the controller never sleeps and its UART keeps
+ * waking the SoC out of system sleep.
+ */
+static int bt_lpm_mode = 1;
+module_param_named(lpm, bt_lpm_mode, int, 0644);
 
 struct bt_lpm {
 	struct device *dev;
