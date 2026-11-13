@@ -20,6 +20,7 @@
 #define CONFIG_MFC_USE_BUS_DEVFREQ
 
 #ifdef CONFIG_MFC_USE_BUS_DEVFREQ
+#include <soc/samsung/bts.h>
 #include <soc/samsung/exynos8895-mm-qos.h>
 #endif
 #include <linux/dma-buf.h>
@@ -360,13 +361,6 @@ struct s5p_mfc_special_buf {
 };
 
 #ifdef CONFIG_MFC_USE_BUS_DEVFREQ
-/* S:include/soc/samsung/bts.h:92-96; the BTS calls themselves are not ported (spec L6B 5.3) */
-struct bts_bw {
-	unsigned int peak;
-	unsigned int read;
-	unsigned int write;
-};
-
 struct mfc_qos_bw_data {
 	unsigned long	peak;
 	unsigned long	read;

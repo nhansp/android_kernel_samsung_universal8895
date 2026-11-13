@@ -13,6 +13,8 @@
 #include <linux/err.h>
 #include <linux/math64.h>
 
+#include <soc/samsung/bts.h>
+
 #include "s5p_mfc_qos.h"
 
 #ifdef CONFIG_MFC_USE_BUS_DEVFREQ
@@ -51,6 +53,10 @@ static void mfc_qos_operate(struct s5p_mfc_ctx *ctx, int opr_type, int idx)
 #endif
 
 
+		if (ctx->type == MFCINST_DECODER)
+			bts_update_scen(BS_MFC_UHD_10BIT, qos_table[idx].mo_10bit_value);
+		bts_update_scen(BS_MFC_UHD, qos_table[idx].mo_value);
+
 		atomic_set(&dev->qos_req_cur, idx + 1);
 		MFC_TRACE_CTX("-- QOS add[%d] (int:%d, mif:%d, mo:%d, mo_10bit:%d)\n",
 				idx, qos_table[idx].freq_int, qos_table[idx].freq_mif,
@@ -75,6 +81,10 @@ static void mfc_qos_operate(struct s5p_mfc_ctx *ctx, int opr_type, int idx)
 				qos_table[idx].freq_kfc);
 #endif
 
+		if (ctx->type == MFCINST_DECODER)
+			bts_update_scen(BS_MFC_UHD_10BIT, qos_table[idx].mo_10bit_value);
+		bts_update_scen(BS_MFC_UHD, qos_table[idx].mo_value);
+
 		atomic_set(&dev->qos_req_cur, idx + 1);
 		MFC_TRACE_CTX("-- QOS update[%d] (int:%d, mif:%d, mo:%d, mo_10bit:%d)\n",
 				idx, qos_table[idx].freq_int, qos_table[idx].freq_mif,
@@ -93,6 +103,10 @@ static void mfc_qos_operate(struct s5p_mfc_ctx *ctx, int opr_type, int idx)
 		mm_qos_remove_request(&dev->qos_req_cluster1);
 		mm_qos_remove_request(&dev->qos_req_cluster0);
 #endif
+
+		if (ctx->type == MFCINST_DECODER)
+			bts_update_scen(BS_MFC_UHD_10BIT, 0);
+		bts_update_scen(BS_MFC_UHD, 0);
 
 		dev->mfc_bw.peak = 0;
 		dev->mfc_bw.read = 0;
