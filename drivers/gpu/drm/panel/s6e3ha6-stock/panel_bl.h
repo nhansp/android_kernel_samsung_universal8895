@@ -128,4 +128,5 @@ int get_subdev_actual_brightness_interpolation(struct panel_bl_device *, int, in
 int panel_bl_get_acl_pwrsave(struct panel_bl_device *);
 int panel_bl_get_acl_opr(struct panel_bl_device *);
 bool is_hbm_brightness(struct panel_bl_device *panel_bl, int brightness);
+int panel_bl_get_lpm_mode(struct panel_device *panel);
 #endif /* __PANEL_BL_H__ */

@@ -485,12 +485,46 @@ static int panel_get_brightness(struct backlight_device *bd)
 	return get_actual_brightness(panel_bl, bd->props.brightness);
 }
 
+/*
+ * The always-on display has two luminances on this panel, 2 and 60 nits in ALPM or HLPM
+ * (lpm_nit_table). Stock's framework chose one through the alpm node: its AOD service asked for
+ * HLPM 60 nits above 2 lux and HLPM 2 nits otherwise, with the platform levels of framework-res
+ * config_aodBrightnessValues = {1, 97}. Android sets the doze luminance as the backlight level
+ * instead, so unless userspace has set an alpm mode, a level from stock's lit one (97) up takes
+ * HLPM 60 nits and a lower level HLPM 2 nits.
+ */
+#define LPM_HIGH_BR_LEVEL	(97)
+
+int panel_bl_get_lpm_mode(struct panel_device *panel)
+{
+	u32 mode = panel->panel_data.props.alpm_mode;
+	int brightness = panel->panel_bl.subdev[PANEL_BL_SUBDEV_TYPE_DISP].brightness;
+
+	if (mode >= ALPM_LOW_BR && mode <= HLPM_HIGH_BR)
+		return mode;
+
+	return BRT_TBL_INDEX(brightness) >= LPM_HIGH_BR_LEVEL ? HLPM_HIGH_BR : HLPM_LOW_BR;
+}
+
+static bool panel_bl_link_on(struct panel_device *panel)
+{
+	bool on;
+
+	mutex_lock(&panel->op_lock);
+	on = panel->link_on;
+	mutex_unlock(&panel->op_lock);
+
+	return on;
+}
+
 static int panel_set_brightness(struct backlight_device *bd)
 {
 	int ret = 0;
 	int brightness = bd->props.brightness;
 	struct panel_bl_device *panel_bl = bl_get_data(bd);
 	struct panel_device *panel = to_panel_device(panel_bl);
+	struct panel_properties *props = &panel->panel_data.props;
+	int lpm_mode;
 
 	mutex_lock(&panel_bl->lock);
 	if (brightness < UI_MIN_BRIGHTNESS || brightness > EXTEND_BRIGHTNESS) {
@@ -509,8 +543,18 @@ static int panel_set_brightness(struct backlight_device *bd)
 	}
 
 	if (panel->state.cur_state == PANEL_STATE_ALPM) {
-		pr_info("%s bl-%d plat_br:%d - store in LPM MODE\n",
-				__func__, PANEL_BL_SUBDEV_TYPE_DISP, brightness);
+		lpm_mode = panel_bl_get_lpm_mode(panel);
+		pr_info("%s bl-%d plat_br:%d - store in LPM MODE (lpm %u -> %d)\n",
+				__func__, PANEL_BL_SUBDEV_TYPE_DISP, brightness,
+				props->cur_alpm_mode, lpm_mode);
+		/* with the DSIM off, the next PANEL_IOC_DOZE sends it (panel_update_alpm()) */
+		if (lpm_mode != props->cur_alpm_mode && panel_bl_link_on(panel)) {
+			ret = panel_do_seqtbl_by_index(panel, PANEL_ALPM_ENTER_SEQ);
+			if (ret) {
+				pr_err("%s : fail to set lpm brightness\n", __func__);
+				props->cur_alpm_mode = ALPM_OFF;
+			}
+		}
 		goto exit_set;
 	}
 

@@ -552,7 +552,9 @@ int getidx_lpm_table(struct maptbl *tbl)
 	int row = 0;
 	struct panel_device *panel = (struct panel_device *)tbl->pdata;
 	struct panel_properties *props = &panel->panel_data.props;
-		switch (props->alpm_mode) {
+	int mode = panel_bl_get_lpm_mode(panel);
+
+		switch (mode) {
 			case ALPM_LOW_BR:
 				row = 0;
 				break;
@@ -567,11 +569,11 @@ int getidx_lpm_table(struct maptbl *tbl)
 				break;
 			default :
 				panel_err("PANEL:ERR:%s:Invalid alpm mode : %d\n",
-				__func__, props->alpm_mode);
+				__func__, mode);
 				row = 0;
 				break;
 	}
-	props->cur_alpm_mode = props->alpm_mode;
+	props->cur_alpm_mode = mode;
 	return tbl->ncol * row;
 }
 
