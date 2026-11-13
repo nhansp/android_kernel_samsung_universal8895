@@ -761,9 +761,7 @@ static int smfc_v4l2_prepare_s_fmt(struct smfc_ctx *ctx,
 	}
 
 	/* reset the buf type of vq with the given buf type */
-	thisvq->type = type;
-
-	return 0;
+	return vb2_queue_change_type(thisvq, type);
 }
 
 static __u32 v4l2_to_multiplane_type(__u32 type)
@@ -823,7 +821,13 @@ static int smfc_v4l2_s_fmt_mplane(struct file *filp, void *fh,
 		 * type change of the current queue is completed in
 		 * smfc_v4l2_prepare_s_fmt()
 		 */
-		othervq->type = v4l2_to_multiplane_type(othervq->type);
+		ret = vb2_queue_change_type(othervq,
+				v4l2_to_multiplane_type(othervq->type));
+		if (ret) {
+			dev_err(ctx->smfc->dev,
+				"Back-to-back mode needs REQBUFS(0) on the other queue\n");
+			return ret;
+		}
 	}
 
 	return 0;
