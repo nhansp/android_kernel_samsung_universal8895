@@ -5,9 +5,9 @@
  * - CONFIG_EXYNOS8895_BTS_BW: the bandwidth arithmetic, bts_calc_bw() and
  *   bts_update_bw() -> MIF/INT floors through the bus class API;
  * - CONFIG_EXYNOS8895_BTS: the register programming (QoS tables, scenarios,
- *   qmax/tq, PM re-init, read-only debugfs). Stated addition: it also needs
- *   the boot parameter bts_exynos8895.program=1 (default off), so one image
- *   can run with and without it.
+ *   qmax/tq, PM re-init, read-only debugfs). Stated addition: the boot
+ *   parameter bts_exynos8895.program=0 switches the programming off, so one
+ *   image can run with and without it (stock always programs).
  *
  * Copyright (c) 2015 Samsung Electronics Co., Ltd.
  *		http://www.samsung.com
@@ -46,9 +46,9 @@ static struct exynos_bus_qos_request exynos_int_bts_qos;
 static DEFINE_MUTEX(media_mutex);
 
 #if IS_ENABLED(CONFIG_EXYNOS8895_BTS)
-static bool program;
+static bool program = true;
 module_param(program, bool, 0444);
-MODULE_PARM_DESC(program, "program the BTS registers at boot and after resume");
+MODULE_PARM_DESC(program, "program the BTS registers at boot and after resume (default 1, as stock)");
 static bool bts_programmed;	/* set once the registers were initialised */
 
 #define INITIAL_MIF_FREQ	2093000
