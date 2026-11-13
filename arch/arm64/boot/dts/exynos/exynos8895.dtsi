@@ -2456,7 +2456,9 @@
 		 * exynos8895-greatlte-l6m.dtsi. */
 		smfc: jpeg@13b00000 {
 			compatible = "samsung,exynos8895-jpeg";		/* NEW; stock "samsung,exynos8890-jpeg" (FDT:7603) */
-			dma-coherent;					/* FDT:7604 */
+			/* DEVIATION: stock dma-coherent (FDT:7604) relied on its SysMMU driver
+			 * setting the shareable PTE bit for IOMMU_CACHE mappings; this one
+			 * never sets it (drivers/iommu/exynos-iommu.c SYSMMU_SUPPORTED_PROT_BITS) */
 			reg = <0x13b00000 0x1000>;			/* FDT:7605 */
 			interrupts = <GIC_SPI 225 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:7606 <0x00 0xe1 0x00> */
 			clocks = <&cmu_g2d CLK_GOUT_G2D_JPEG_I_SMFC_CLK>;	/* id 20; stock "gate" GATE_JPEG 0x259 (FDT:7607-7608) */
@@ -2468,7 +2470,7 @@
 
 		scaler: scaler@13b10000 {
 			compatible = "samsung,exynos8895-scaler";	/* NEW; stock "samsung,exynos5-scaler" (FDT:7628) */
-			dma-coherent;					/* FDT:7629 */
+			/* DEVIATION: no dma-coherent (stock FDT:7629), as for smfc above */
 			reg = <0x13b10000 0x1300>;			/* FDT:7630 */
 			interrupts = <GIC_SPI 226 IRQ_TYPE_LEVEL_HIGH>;	/* FDT:7631 <0x00 0xe2 0x00> */
 			clocks = <&cmu_g2d CLK_GOUT_G2D_M2MSCALER_ACLK>;	/* id 25; stock "gate" GATE_M2MSCALER 0x25a (FDT:7632-7633) */
