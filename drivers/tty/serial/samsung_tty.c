@@ -508,8 +508,12 @@ static void s3c24xx_serial_start_tx(struct uart_port *port)
 	struct tty_port *tport = &port->state->port;
 	void (*wp)(struct uart_port *) = READ_ONCE(ourport->wake_peer);
 
-	/* L6D 5.6: wake peer before TX (stock __uart_start -> wake_peer) */
-	if (wp)
+	/*
+	 * Wake the peer only when there is something to send, as stock did from the tty write
+	 * path. uart_resume_port() also calls start_tx() after every system resume, with nothing
+	 * queued.
+	 */
+	if (wp && (port->x_char || !kfifo_is_empty(&tport->xmit_fifo)))
 		wp(port);
 
 	if (!ourport->tx_enabled) {
