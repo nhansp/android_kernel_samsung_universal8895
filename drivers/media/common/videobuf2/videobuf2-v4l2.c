@@ -966,6 +966,8 @@ int vb2_queue_change_type(struct vb2_queue *q, unsigned int type)
 		return -EBUSY;
 
 	q->type = type;
+	q->is_multiplanar = V4L2_TYPE_IS_MULTIPLANAR(type);
+	q->is_output = V4L2_TYPE_IS_OUTPUT(type);
 
 	return 0;
 }
