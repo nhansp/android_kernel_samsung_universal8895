@@ -1462,6 +1462,10 @@ int fimc_is_video_qbuf(struct fimc_is_video_ctx *vctx,
 		goto p_err;
 	}
 
+	/* vb2 clears the cache hints of DMABUF queues */
+	vb_to_fimc_is_vb2_buf(to_vb2_v4l2_buffer(vb))->cache_hints = buf->flags &
+		(V4L2_BUF_FLAG_NO_CACHE_INVALIDATE | V4L2_BUF_FLAG_NO_CACHE_CLEAN);
+
 	queue->buf_req++;
 
 	ret = vb2_qbuf(queue->vbq, NULL, buf);

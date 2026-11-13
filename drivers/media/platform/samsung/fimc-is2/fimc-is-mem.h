@@ -35,6 +35,8 @@ struct fimc_is_vb2_buf {
 	struct vb2_v4l2_buffer		vb;
 	ulong				kva[VIDEO_MAX_PLANES];
 	dma_addr_t			dva[VIDEO_MAX_PLANES];
+	/* V4L2_BUF_FLAG_NO_CACHE_* of the last QBUF (vb2 drops them for DMABUF) */
+	u32				cache_hints;
 
 	const struct fimc_is_vb2_buf_ops *ops;
 };
