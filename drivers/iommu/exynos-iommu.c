@@ -22,6 +22,8 @@
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
 
+#include <dt-bindings/iommu/exynos-sysmmu.h>
+
 #include "dma-iommu.h"
 #include "iommu-pages.h"
 
@@ -143,6 +145,26 @@ static u32 lv2ent_offset(sysmmu_iova_t iova)
 #define CTRL_VM_FAULT_MODE_STALL	BIT(3)
 #define CAPA0_CAPA1_EXIST		BIT(11)
 #define CAPA1_VCR_ENABLED		BIT(14)
+#define CAPA0_NUM_TLB_WAY(reg)		((reg) & 0xff)
+
+/* System MMU v7: the CFG_QOS value replaces the QoS of the master's requests */
+#define CFG_QOS_OVRRIDE			BIT(11)
+
+/* System MMU v7 TLB way configuration */
+#define REG_V7_PUBLIC_WAY_CFG		0x120
+#define REG_V7_PRIVATE_WAY_CFG(n)	(0x200 + (n) * 0x10)
+#define REG_V7_PRIVATE_ID(n)		(0x20c + (n) * 0x10)
+
+#define WAY_CFG_PRIVATE_ENABLE		BIT(0)
+#define WAY_CFG_PREFETCH		BIT(1)
+#define WAY_CFG_PREFETCH_DIR		GENMASK(3, 2)
+#define WAY_CFG_ID_MATCHING		BIT(4)
+#define WAY_CFG_FETCH_SIZE		GENMASK(7, 5)
+#define WAY_CFG_TARGET_CH		GENMASK(9, 8)
+#define WAY_CFG_PUBLIC_MASK		(WAY_CFG_PREFETCH | WAY_CFG_PREFETCH_DIR | \
+					 WAY_CFG_FETCH_SIZE)
+#define WAY_CFG_PRIVATE_MASK		(WAY_CFG_PUBLIC_MASK | WAY_CFG_ID_MATCHING | \
+					 WAY_CFG_TARGET_CH)
 
 /* common registers */
 #define REG_MMU_CTRL		0x000
@@ -278,6 +300,11 @@ struct sysmmu_variant {
 			      struct sysmmu_fault *fault);
 };
 
+struct sysmmu_tlb_way {
+	u32 cfg;			/* WAY_CFG_PRIVATE_MASK bits */
+	u32 id;				/* AXI ID mask << 16 | AXI ID */
+};
+
 /*
  * This structure hold all data of a single SYSMMU controller, this includes
  * hw resources like registers and clocks, pointers and list nodes to connect
@@ -306,6 +333,14 @@ struct sysmmu_drvdata {
 
 	/* v7 fields */
 	bool has_vcr;			/* virtual machine control register */
+	int qos;			/* QoS override, -1 for the master's own */
+	unsigned int num_tlb_ways;	/* TLB ways of this instance */
+	bool tlb_has_public;		/* tlb_public_cfg is set */
+	u32 tlb_public_cfg;		/* public way configuration */
+	struct sysmmu_tlb_way *tlb_id_ways;	/* private ID-matching ways */
+	unsigned int num_tlb_id_ways;
+	u32 *tlb_addr_ways;		/* private address-matching ways */
+	unsigned int num_tlb_addr_ways;
 };
 
 #define SYSMMU_REG(data, reg) ((data)->sfrbase + (data)->variant->reg)
@@ -538,6 +573,7 @@ static void __sysmmu_get_version(struct sysmmu_drvdata *data)
 		u32 capa0 = readl(data->sfrbase + REG_V7_CAPA0);
 		u32 capa1 = 0;
 
+		data->num_tlb_ways = CAPA0_NUM_TLB_WAY(capa0);
 		if (__sysmmu_has_capa1(data)) {
 			capa1 = readl(data->sfrbase + REG_V7_CAPA1);
 			__sysmmu_get_vcr(data);
@@ -624,6 +660,39 @@ static void __sysmmu_disable(struct sysmmu_drvdata *data)
 	__sysmmu_disable_clocks(data);
 }
 
+/*
+ * As Samsung's __sysmmu_init_config(): private ways from index 0, ID-matching
+ * ones first, ways beyond the hardware's count skipped.
+ */
+static void __sysmmu_init_tlb_ways(struct sysmmu_drvdata *data)
+{
+	unsigned int i, way = 0;
+	u32 cfg;
+
+	if (data->tlb_has_public) {
+		cfg = readl(data->sfrbase + REG_V7_PUBLIC_WAY_CFG);
+		cfg &= ~WAY_CFG_PUBLIC_MASK;
+		cfg |= data->tlb_public_cfg;
+		writel(cfg, data->sfrbase + REG_V7_PUBLIC_WAY_CFG);
+	}
+
+	for (i = 0; i < data->num_tlb_id_ways && way < data->num_tlb_ways; i++, way++) {
+		cfg = readl(data->sfrbase + REG_V7_PRIVATE_WAY_CFG(way));
+		cfg &= ~WAY_CFG_PRIVATE_MASK;
+		cfg |= WAY_CFG_ID_MATCHING | WAY_CFG_PRIVATE_ENABLE |
+		       data->tlb_id_ways[i].cfg;
+		writel(cfg, data->sfrbase + REG_V7_PRIVATE_WAY_CFG(way));
+		writel(data->tlb_id_ways[i].id, data->sfrbase + REG_V7_PRIVATE_ID(way));
+	}
+
+	for (i = 0; i < data->num_tlb_addr_ways && way < data->num_tlb_ways; i++, way++) {
+		cfg = readl(data->sfrbase + REG_V7_PRIVATE_WAY_CFG(way));
+		cfg &= ~WAY_CFG_PRIVATE_MASK;
+		cfg |= WAY_CFG_PRIVATE_ENABLE | data->tlb_addr_ways[i];
+		writel(cfg, data->sfrbase + REG_V7_PRIVATE_WAY_CFG(way));
+	}
+}
+
 static void __sysmmu_init_config(struct sysmmu_drvdata *data)
 {
 	unsigned int cfg;
@@ -636,6 +705,14 @@ static void __sysmmu_init_config(struct sysmmu_drvdata *data)
 		cfg = CFG_QOS(15) | CFG_FLPDCACHE | CFG_ACGEN;
 
 	cfg |= CFG_EAP; /* enable access protection bits check */
+
+	if (MMU_MAJ_VER(data->version) >= 7) {
+		if (data->qos >= 0) {
+			cfg &= ~CFG_QOS(0xf);
+			cfg |= CFG_QOS_OVRRIDE | CFG_QOS(data->qos);
+		}
+		__sysmmu_init_tlb_ways(data);
+	}
 
 	writel(cfg, data->sfrbase + REG_MMU_CFG);
 }
@@ -731,6 +808,110 @@ static void sysmmu_tlb_invalidate_entry(struct sysmmu_drvdata *data,
 
 static const struct iommu_ops exynos_iommu_ops;
 
+/*
+ * Samsung's driver reads the same from "qos" and "sysmmu,tlb_property"
+ * (drivers/iommu/exynos-iommu.c, sysmmu_parse_dt()).
+ */
+static int sysmmu_parse_v7_props(struct device *dev, struct sysmmu_drvdata *data)
+{
+	const char *name = "samsung,tlb-property";
+	struct device_node *np = dev->of_node;
+	unsigned int i, n_id = 0, n_addr = 0;
+	u32 qos, *cells;
+	int cnt, ret;
+
+	data->qos = -1;
+	cnt = of_property_count_u32_elems(np, name);
+	if (!of_property_present(np, "samsung,qos") && cnt == -EINVAL)
+		return 0;
+
+	/* the way registers below are those of the non-VM v7 layout */
+	if (MMU_MAJ_VER(data->version) < 7 || data->has_vcr) {
+		dev_warn(dev, "samsung,qos/%s need a non-VM System MMU v7, ignored\n",
+			 name);
+		return 0;
+	}
+
+	if (!of_property_read_u32(np, "samsung,qos", &qos)) {
+		if (qos > 15) {
+			dev_err(dev, "invalid samsung,qos %u\n", qos);
+			return -EINVAL;
+		}
+		data->qos = qos;
+	}
+
+	if (cnt == -EINVAL) {
+		dev_info(dev, "QoS override %d\n", data->qos);
+		return 0;
+	}
+	if (cnt <= 0 || cnt % 2) {
+		dev_err(dev, "invalid %s (%d cells)\n", name, cnt);
+		return -EINVAL;
+	}
+
+	cells = kcalloc(cnt, sizeof(*cells), GFP_KERNEL);
+	if (!cells)
+		return -ENOMEM;
+
+	ret = of_property_read_u32_array(np, name, cells, cnt);
+	if (ret)
+		goto out;
+
+	for (i = 0; i < cnt; i += 2) {
+		switch (cells[i] & SYSMMU_WAY_TYPE_MASK) {
+		case SYSMMU_WAY_PRIVATE_ID:
+			n_id++;
+			break;
+		case SYSMMU_WAY_PRIVATE_ADDR:
+			n_addr++;
+			break;
+		case SYSMMU_WAY_PUBLIC:
+			break;
+		default:
+			dev_err(dev, "invalid %s entry %#x\n", name, cells[i]);
+			ret = -EINVAL;
+			goto out;
+		}
+	}
+
+	data->tlb_id_ways = devm_kcalloc(dev, n_id, sizeof(*data->tlb_id_ways),
+					 GFP_KERNEL);
+	data->tlb_addr_ways = devm_kcalloc(dev, n_addr, sizeof(*data->tlb_addr_ways),
+					   GFP_KERNEL);
+	if ((n_id && !data->tlb_id_ways) || (n_addr && !data->tlb_addr_ways)) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	for (i = 0; i < cnt; i += 2) {
+		switch (cells[i] & SYSMMU_WAY_TYPE_MASK) {
+		case SYSMMU_WAY_PRIVATE_ID:
+			data->tlb_id_ways[data->num_tlb_id_ways].cfg =
+				cells[i] & WAY_CFG_PRIVATE_MASK;
+			data->tlb_id_ways[data->num_tlb_id_ways].id = cells[i + 1];
+			data->num_tlb_id_ways++;
+			break;
+		case SYSMMU_WAY_PRIVATE_ADDR:
+			data->tlb_addr_ways[data->num_tlb_addr_ways++] =
+				cells[i] & WAY_CFG_PRIVATE_MASK;
+			break;
+		case SYSMMU_WAY_PUBLIC:
+			data->tlb_has_public = true;
+			data->tlb_public_cfg = cells[i] & WAY_CFG_PUBLIC_MASK;
+			break;
+		}
+	}
+
+	if (n_id + n_addr > data->num_tlb_ways)
+		dev_warn(dev, "%u private ways for %u TLB ways, the rest is ignored\n",
+			 n_id + n_addr, data->num_tlb_ways);
+	dev_info(dev, "QoS override %d, TLB ways: %u ID, %u address, public %s\n",
+		 data->qos, n_id, n_addr, data->tlb_has_public ? "set" : "default");
+out:
+	kfree(cells);
+	return ret;
+}
+
 static int exynos_sysmmu_probe(struct platform_device *pdev)
 {
 	int irq, ret;
@@ -807,6 +988,10 @@ static int exynos_sysmmu_probe(struct platform_device *pdev)
 		data->has_vcr = false;
 		data->variant = &sysmmu_v7_variant;
 	}
+
+	ret = sysmmu_parse_v7_props(dev, data);
+	if (ret)
+		return ret;
 
 	ret = iommu_device_sysfs_add(&data->iommu, &pdev->dev, NULL,
 				     dev_name(data->sysmmu));
