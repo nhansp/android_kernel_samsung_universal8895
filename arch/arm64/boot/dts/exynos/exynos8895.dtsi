@@ -507,6 +507,15 @@
 			samsung,hotplug-cpus = <&cpu4>, <&cpu5>, <&cpu6>, <&cpu7>;
 			samsung,hotplug-out-temp = <96000>;
 			samsung,hotplug-in-temp = <91000>;
+			/*
+			 * Stock CPU boot QoS, 40 s (S:drivers/cpufreq/exynos-acme.c:957-998).
+			 * ECT GEN DTM_BOOT_MAX_FREQ, sboot.bin SB:0x4b3f0, rows of
+			 * C / big kHz / little kHz: 83 0 0, 75 0 0, 50 1066000 1690000
+			 * (S:drivers/soc/samsung/exynos-earlytmu.c:55-89)
+			 */
+			samsung,boot-qos-cpus = <&cpu4>, <&cpu0>;
+			samsung,boot-qos-ms = <40000>;
+			samsung,boot-max-freq = <83000 0 0>, <75000 0 0>, <50000 1066000 1690000>;
 			#thermal-sensor-cells = <0>;
 			status = "disabled";
 		};

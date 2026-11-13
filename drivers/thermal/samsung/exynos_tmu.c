@@ -14,6 +14,7 @@
 #include <linux/cleanup.h>
 #include <linux/clk.h>
 #include <linux/cpu.h>
+#include <linux/cpufreq.h>
 #include <linux/cpumask.h>
 #include <linux/io.h>
 #include <linux/interrupt.h>
@@ -24,6 +25,7 @@
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
+#include <linux/pm_qos.h>
 #include <linux/regulator/consumer.h>
 #include <linux/thermal.h>
 #include <linux/workqueue.h>
@@ -912,6 +914,23 @@ static void exynos8895_tmu_control(struct platform_device *pdev, bool on)
 	writel(data->avg_con, data->base + EXYNOS8895_TMU_REG_AVG_CON);
 }
 
+static int exynos8895_sensor_temp(struct exynos_tmu_data *data, unsigned int n)
+{
+	u32 reg, shift, code;
+
+	if (n < 2) {
+		reg = 0;
+		shift = EXYNOS8895_TMU_TEMP_SHIFT * n;
+	} else {
+		reg = ((n - 2) / 3 + 1) * 4;
+		shift = EXYNOS8895_TMU_TEMP_SHIFT * ((n - 2) % 3);
+	}
+	code = (readl(data->base + EXYNOS8895_TMU_REG_CURRENT_TEMP1_0 + reg) >>
+		shift) & EXYNOS8895_TMU_TEMP_MASK;
+
+	return exynos8895_code_to_temp(data, n, code);
+}
+
 /*
  * Stock exynos8895_tmu_read() (:936-991): per used sensor n its 9-bit code
  * (sensors 0-1 in CURRENT_TEMP1_0, then three per word), converted with its
@@ -921,22 +940,13 @@ static void exynos8895_tmu_control(struct platform_device *pdev, bool on)
 static int exynos8895_tmu_read(struct exynos_tmu_data *data)
 {
 	int result = 0, temp;
-	u32 reg, shift, code, n;
+	u32 n;
 
 	for (n = 0; n < EXYNOS8895_TMU_NUM_SENSORS; n++) {
 		if (!(data->sensors & BIT(n)))
 			continue;
 
-		if (n < 2) {
-			reg = 0;
-			shift = EXYNOS8895_TMU_TEMP_SHIFT * n;
-		} else {
-			reg = ((n - 2) / 3 + 1) * 4;
-			shift = EXYNOS8895_TMU_TEMP_SHIFT * ((n - 2) % 3);
-		}
-		code = (readl(data->base + EXYNOS8895_TMU_REG_CURRENT_TEMP1_0 + reg) >>
-			shift) & EXYNOS8895_TMU_TEMP_MASK;
-		temp = exynos8895_code_to_temp(data, n, code);
+		temp = exynos8895_sensor_temp(data, n);
 
 		if (data->balance && n)
 			temp = temp >= EXYNOS8895_TMU_BALANCE_OFFSET ?
@@ -1114,6 +1124,227 @@ static int exynos8895_hotplug_parse(struct platform_device *pdev,
 			return -EINVAL;
 		}
 		cpumask_set_cpu(cpu, &data->hp_cpus);
+	}
+
+	return 0;
+}
+
+/*
+ * Exynos8895 CPU boot QoS. Stock holds the minimum and the maximum frequency
+ * of each CPU cluster at a boot level for 40 s from cpufreq init
+ * (S:drivers/cpufreq/exynos-acme.c:957-998). The boot level is the cluster
+ * maximum, lowered by one reading of sensor 0 of the 0x10080000 block: the
+ * first row of the ECT table DTM_BOOT_MAX_FREQ whose temperature the reading
+ * exceeds gives the level, 0 meaning the cluster minimum
+ * (S:drivers/soc/samsung/exynos-earlytmu.c:61-147, exynos-acme.c:982-993).
+ * The thermal zones register before cpufreq here, so their cooling devices
+ * still cap the policy maximum, and with it the boot minimum.
+ */
+#define EXYNOS8895_BOOT_QOS_MAX_CL	2
+
+struct exynos8895_boot_qos;
+
+struct exynos8895_boot_qos_cl {
+	struct exynos8895_boot_qos *bq;
+	int cpu;
+	bool used;
+	bool active;
+	struct freq_qos_request min_req;
+	struct freq_qos_request max_req;
+	struct delayed_work work;
+};
+
+struct exynos8895_boot_qos {
+	struct exynos_tmu_data *data;
+	struct notifier_block nb;
+	struct mutex lock;
+	unsigned long delay;
+	unsigned int nr_cl;
+	unsigned int nr_rows;
+	const u32 *rows;	/* nr_rows x (1 + nr_cl): millicelsius, kHz per cluster */
+	struct exynos8895_boot_qos_cl cl[EXYNOS8895_BOOT_QOS_MAX_CL];
+};
+
+static void exynos8895_boot_qos_drop(struct exynos8895_boot_qos_cl *cl)
+{
+	lockdep_assert_held(&cl->bq->lock);
+
+	if (!cl->active)
+		return;
+	freq_qos_remove_request(&cl->max_req);
+	freq_qos_remove_request(&cl->min_req);
+	cl->active = false;
+}
+
+static void exynos8895_boot_qos_expire(struct work_struct *work)
+{
+	struct exynos8895_boot_qos_cl *cl =
+		container_of(to_delayed_work(work), struct exynos8895_boot_qos_cl, work);
+
+	guard(mutex)(&cl->bq->lock);
+	if (cl->active)
+		dev_info(cl->bq->data->dev, "cpu%d boot QoS released\n", cl->cpu);
+	exynos8895_boot_qos_drop(cl);
+}
+
+/* the boot level of cluster @i in kHz, 0 for the cluster minimum, -1 for no limit */
+static long exynos8895_boot_qos_limit(struct exynos8895_boot_qos *bq,
+				      unsigned int i, int *temp)
+{
+	struct exynos_tmu_data *data = bq->data;
+	unsigned int row, cols = 1 + bq->nr_cl;
+
+	mutex_lock(&data->lock);
+	clk_enable(data->clk);
+	*temp = exynos8895_sensor_temp(data, 0) * MCELSIUS;
+	clk_disable(data->clk);
+	mutex_unlock(&data->lock);
+
+	for (row = 0; row < bq->nr_rows; row++)
+		if (*temp > (int)bq->rows[row * cols])
+			return bq->rows[row * cols + 1 + i];
+
+	return -1;
+}
+
+static void exynos8895_boot_qos_apply(struct exynos8895_boot_qos *bq,
+				      struct cpufreq_policy *policy)
+{
+	unsigned int i, khz;
+	long limit;
+	int temp, ret;
+
+	guard(mutex)(&bq->lock);
+	for (i = 0; i < bq->nr_cl; i++) {
+		struct exynos8895_boot_qos_cl *cl = &bq->cl[i];
+
+		if (cl->used || !cpumask_test_cpu(cl->cpu, policy->related_cpus))
+			continue;
+		cl->used = true;
+
+		khz = policy->cpuinfo.max_freq;
+		limit = exynos8895_boot_qos_limit(bq, i, &temp);
+		if (limit >= 0)
+			khz = min_t(unsigned int, khz,
+				    max_t(unsigned int, limit, policy->cpuinfo.min_freq));
+
+		ret = freq_qos_add_request(&policy->constraints, &cl->min_req,
+					   FREQ_QOS_MIN, khz);
+		if (ret < 0)
+			goto fail;
+		ret = freq_qos_add_request(&policy->constraints, &cl->max_req,
+					   FREQ_QOS_MAX, khz);
+		if (ret < 0) {
+			freq_qos_remove_request(&cl->min_req);
+			goto fail;
+		}
+		cl->active = true;
+		schedule_delayed_work(&cl->work, bq->delay);
+		dev_info(bq->data->dev, "cpu%d boot QoS %u kHz for %u ms (sensor 0 at %d mC)\n",
+			 cl->cpu, khz, jiffies_to_msecs(bq->delay), temp);
+		continue;
+fail:
+		dev_err(bq->data->dev, "cpu%d boot QoS not applied: %d\n", cl->cpu, ret);
+	}
+}
+
+static void exynos8895_boot_qos_remove(struct exynos8895_boot_qos *bq,
+				       struct cpufreq_policy *policy)
+{
+	unsigned int i;
+
+	guard(mutex)(&bq->lock);
+	for (i = 0; i < bq->nr_cl; i++)
+		if (cpumask_test_cpu(bq->cl[i].cpu, policy->related_cpus))
+			exynos8895_boot_qos_drop(&bq->cl[i]);
+}
+
+static int exynos8895_boot_qos_notify(struct notifier_block *nb,
+				      unsigned long event, void *ptr)
+{
+	struct exynos8895_boot_qos *bq = container_of(nb, struct exynos8895_boot_qos, nb);
+
+	if (event == CPUFREQ_CREATE_POLICY)
+		exynos8895_boot_qos_apply(bq, ptr);
+	else if (event == CPUFREQ_REMOVE_POLICY)
+		exynos8895_boot_qos_remove(bq, ptr);
+
+	return NOTIFY_OK;
+}
+
+static void exynos8895_boot_qos_stop(void *arg)
+{
+	struct exynos8895_boot_qos *bq = arg;
+	unsigned int i;
+
+	cpufreq_unregister_notifier(&bq->nb, CPUFREQ_POLICY_NOTIFIER);
+	for (i = 0; i < bq->nr_cl; i++) {
+		cancel_delayed_work_sync(&bq->cl[i].work);
+		scoped_guard(mutex, &bq->lock)
+			exynos8895_boot_qos_drop(&bq->cl[i]);
+	}
+}
+
+static int exynos8895_boot_qos_init(struct platform_device *pdev,
+				    struct exynos_tmu_data *data)
+{
+	struct device_node *np = pdev->dev.of_node;
+	struct exynos8895_boot_qos *bq;
+	struct cpufreq_policy *policy;
+	struct device_node *cpu_np;
+	u32 ms, *rows;
+	int i, n, len, ret;
+
+	n = of_count_phandle_with_args(np, "samsung,boot-qos-cpus", NULL);
+	len = of_property_count_u32_elems(np, "samsung,boot-max-freq");
+	if (n <= 0 || n > EXYNOS8895_BOOT_QOS_MAX_CL || len <= 0 || len % (1 + n) ||
+	    of_property_read_u32(np, "samsung,boot-qos-ms", &ms) ||
+	    !(data->sensors & BIT(0))) {
+		dev_err(&pdev->dev, "invalid samsung,boot-* properties\n");
+		return -EINVAL;
+	}
+
+	bq = devm_kzalloc(&pdev->dev, sizeof(*bq), GFP_KERNEL);
+	rows = devm_kcalloc(&pdev->dev, len, sizeof(*rows), GFP_KERNEL);
+	if (!bq || !rows)
+		return -ENOMEM;
+	ret = of_property_read_u32_array(np, "samsung,boot-max-freq", rows, len);
+	if (ret)
+		return ret;
+
+	bq->data = data;
+	bq->rows = rows;
+	bq->nr_rows = len / (1 + n);
+	bq->nr_cl = n;
+	bq->delay = msecs_to_jiffies(ms);
+	mutex_init(&bq->lock);
+	for (i = 0; i < n; i++) {
+		cpu_np = of_parse_phandle(np, "samsung,boot-qos-cpus", i);
+		bq->cl[i].cpu = of_cpu_node_to_id(cpu_np);
+		of_node_put(cpu_np);
+		if (bq->cl[i].cpu < 0) {
+			dev_err(&pdev->dev, "samsung,boot-qos-cpus[%d] is not a CPU\n", i);
+			return -EINVAL;
+		}
+		bq->cl[i].bq = bq;
+		INIT_DELAYED_WORK(&bq->cl[i].work, exynos8895_boot_qos_expire);
+	}
+
+	bq->nb.notifier_call = exynos8895_boot_qos_notify;
+	ret = cpufreq_register_notifier(&bq->nb, CPUFREQ_POLICY_NOTIFIER);
+	if (ret)
+		return ret;
+	ret = devm_add_action_or_reset(&pdev->dev, exynos8895_boot_qos_stop, bq);
+	if (ret)
+		return ret;
+
+	/* a policy created before the notifier */
+	for (i = 0; i < n; i++) {
+		policy = cpufreq_cpu_get(bq->cl[i].cpu);
+		if (policy) {
+			exynos8895_boot_qos_apply(bq, policy);
+			cpufreq_cpu_put(policy);
+		}
 	}
 
 	return 0;
@@ -1803,6 +2034,12 @@ static int exynos_tmu_probe(struct platform_device *pdev)
 	}
 
 	exynos_tmu_control(pdev, true);
+
+	/* the zone keeps its trips without the boot QoS */
+	if (data->soc == SOC_ARCH_EXYNOS8895 &&
+	    of_property_present(dev->of_node, "samsung,boot-qos-cpus") &&
+	    exynos8895_boot_qos_init(pdev, data))
+		dev_err(dev, "boot QoS not armed\n");
 
 	/* a zone without power_allocator still has its trips: keep it */
 	if (data->soc == SOC_ARCH_EXYNOS8895 && exynos8895_ipa_add(data))
