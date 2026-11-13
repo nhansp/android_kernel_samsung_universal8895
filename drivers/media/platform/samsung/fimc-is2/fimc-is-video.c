@@ -23,7 +23,9 @@
 #include <asm/cacheflush.h>
 #include <asm/pgtable.h>
 #include <linux/firmware.h>
+#include <linux/dma-buf.h>
 #include <linux/dma-mapping.h>
+#include <linux/ion_legacy.h>
 #include <linux/scatterlist.h>
 #include <linux/videodev2.h>
 #include <linux/videodev2_exynos_camera.h>
@@ -842,6 +844,32 @@ int fimc_is_buffer_init(struct vb2_buffer *vb)
 	return 0;
 }
 
+/*
+ * Stock mapped DMABUF planes at every QBUF, and ION synced its auto-sync
+ * buffers (never synced by user space) at each map. vb2 now keeps the
+ * planes mapped, so sync those buffers at QBUF and DQBUF instead.
+ */
+static void fimc_is_queue_autosync(struct vb2_buffer *vb, bool for_device)
+{
+	struct vb2_queue *q = vb->vb2_queue;
+	unsigned int i;
+
+	if (q->memory != VB2_MEMORY_DMABUF)
+		return;
+
+	for (i = 0; i < vb->num_planes; i++) {
+		struct dma_buf *dbuf = vb->planes[i].dbuf;
+
+		if (!dbuf || !ionl_dmabuf_is_autosync(dbuf))
+			continue;
+
+		if (for_device)
+			dma_buf_end_cpu_access(dbuf, q->dma_dir);
+		else if (q->dma_dir != DMA_TO_DEVICE)
+			dma_buf_begin_cpu_access(dbuf, q->dma_dir);
+	}
+}
+
 int fimc_is_queue_prepare(struct vb2_buffer *vb)
 {
 	struct fimc_is_video_ctx *vctx;
@@ -856,6 +884,8 @@ int fimc_is_queue_prepare(struct vb2_buffer *vb)
 	}
 
 	vctx->queue.buf_pre++;
+
+	fimc_is_queue_autosync(vb, true);
 
 	return 0;
 }
@@ -1485,6 +1515,7 @@ int fimc_is_video_dqbuf(struct fimc_is_video_ctx *vctx,
 	int ret = 0;
 	struct fimc_is_video *video;
 	struct fimc_is_queue *queue;
+	struct vb2_buffer *vb;
 
 	BUG_ON(!vctx);
 	BUG_ON(!GET_VIDEO(vctx));
@@ -1523,6 +1554,10 @@ int fimc_is_video_dqbuf(struct fimc_is_video_ctx *vctx,
 		}
 		goto p_err;
 	}
+
+	vb = vb2_get_buffer(queue->vbq, buf->index);
+	if (vb)
+		fimc_is_queue_autosync(vb, false);
 
 #ifdef DBG_IMAGE_DUMP
 	fimc_is_debug_dma_dump(queue, buf->index, video->id, DBG_DMA_DUMP_IMAGE);
