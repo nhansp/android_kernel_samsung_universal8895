@@ -333,6 +333,14 @@ static ssize_t s2mpb02_store(struct device *dev,
 		return -1;
 	}
 
+	/*
+	 * The LED core applies torch-sec1 brightness writes from its workqueue.
+	 * Let a pending one land first, so that this write (the camera HAL
+	 * switching the torch off before it opens the camera, for one) is the
+	 * last word on the torch GPIO and current.
+	 */
+	flush_work(&global_led_datas[S2MPB02_TORCH_LED_1]->led.set_brightness_work);
+
 	pr_info("[LED]%s , value:%d\n", __func__, value);
 	mutex_lock(&global_led_datas[S2MPB02_TORCH_LED_1]->lock);
 
