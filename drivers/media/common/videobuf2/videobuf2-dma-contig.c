@@ -39,8 +39,9 @@ struct vb2_dc_buf {
 	refcount_t			refcount;
 	struct sg_table			*sgt_base;
 
-	/* DMABUF related */
+	/* DMABUF related, also USERPTR imported from a dma-buf mapping */
 	struct dma_buf_attachment	*db_attach;
+	unsigned long			db_offset;
 
 	struct vb2_buffer		*vb;
 	bool				non_coherent_mem;
@@ -102,7 +103,7 @@ static void *vb2_dc_vaddr(struct vb2_buffer *vb, void *buf_priv)
 		struct iosys_map map;
 
 		if (!dma_buf_vmap_unlocked(buf->db_attach->dmabuf, &map))
-			buf->vaddr = map.vaddr;
+			buf->vaddr = map.vaddr + buf->db_offset;
 
 		return buf->vaddr;
 	}
@@ -529,12 +530,34 @@ static struct dma_buf *vb2_dc_get_dmabuf(struct vb2_buffer *vb,
 /*       callbacks for USERPTR buffers       */
 /*********************************************/
 
+static void vb2_dc_put_userptr_dmabuf(struct vb2_dc_buf *buf)
+{
+	struct dma_buf *dbuf = buf->db_attach->dmabuf;
+
+	if (buf->vaddr) {
+		struct iosys_map map =
+			IOSYS_MAP_INIT_VADDR(buf->vaddr - buf->db_offset);
+
+		dma_buf_vunmap_unlocked(dbuf, &map);
+	}
+	dma_buf_unmap_attachment_unlocked(buf->db_attach, buf->dma_sgt,
+					  buf->dma_dir);
+	dma_buf_detach(dbuf, buf->db_attach);
+	dma_buf_put(dbuf);
+	kfree(buf);
+}
+
 static void vb2_dc_put_userptr(void *buf_priv)
 {
 	struct vb2_dc_buf *buf = buf_priv;
 	struct sg_table *sgt = buf->dma_sgt;
 	int i;
 	struct page **pages;
+
+	if (buf->db_attach) {
+		vb2_dc_put_userptr_dmabuf(buf);
+		return;
+	}
 
 	if (sgt) {
 		/*
@@ -561,23 +584,113 @@ static void vb2_dc_put_userptr(void *buf_priv)
 	kfree(buf);
 }
 
+/*
+ * pin_user_pages() cannot take a PFN mapping such as the mmap of a dma-buf whose
+ * exporter maps its pages with remap_pfn_range(). Return the dma-buf behind
+ * such a mapping, with a reference held, if it covers [vaddr, vaddr + size)
+ * with the access the device needs.
+ */
+static struct dma_buf *vb2_dc_userptr_to_dmabuf(unsigned long vaddr,
+						unsigned long size,
+						bool write,
+						unsigned long *offset)
+{
+	vm_flags_t need = VM_SHARED | VM_READ | (write ? VM_WRITE : 0);
+	struct mm_struct *mm = current->mm;
+	struct vm_area_struct *vma;
+	struct dma_buf *dbuf = NULL;
+
+	mmap_read_lock(mm);
+	vma = vma_lookup(mm, vaddr);
+	if (!vma || !(vma->vm_flags & (VM_IO | VM_PFNMAP)) ||
+	    (vma->vm_flags & need) != need ||
+	    !vma->vm_file || !is_dma_buf_file(vma->vm_file) ||
+	    size > vma->vm_end - vaddr)
+		goto out;
+
+	dbuf = vma->vm_file->private_data;
+	*offset = (vma->vm_pgoff << PAGE_SHIFT) + (vaddr - vma->vm_start);
+	if (*offset >= dbuf->size || size > dbuf->size - *offset) {
+		dbuf = NULL;
+		goto out;
+	}
+	get_dma_buf(dbuf);
+out:
+	mmap_read_unlock(mm);
+	return dbuf;
+}
+
+static void *vb2_dc_get_userptr_dmabuf(struct vb2_buffer *vb,
+				       struct device *dev,
+				       struct dma_buf *dbuf,
+				       unsigned long offset,
+				       unsigned long size)
+{
+	struct vb2_dc_buf *buf;
+	struct sg_table *sgt;
+	int ret;
+
+	buf = kzalloc(sizeof(*buf), GFP_KERNEL);
+	if (!buf) {
+		ret = -ENOMEM;
+		goto fail_put;
+	}
+
+	buf->dev = dev;
+	buf->dma_dir = vb->vb2_queue->dma_dir;
+	buf->vb = vb;
+	buf->size = size;
+	buf->db_offset = offset;
+
+	buf->db_attach = dma_buf_attach(dbuf, dev);
+	if (IS_ERR(buf->db_attach)) {
+		ret = PTR_ERR(buf->db_attach);
+		goto fail_buf;
+	}
+
+	sgt = dma_buf_map_attachment_unlocked(buf->db_attach, buf->dma_dir);
+	if (IS_ERR(sgt)) {
+		ret = PTR_ERR(sgt);
+		goto fail_detach;
+	}
+
+	if (vb2_dc_get_contiguous_size(sgt) < offset + size) {
+		pr_err("dma-buf behind the user pointer is not contiguous\n");
+		ret = -EFAULT;
+		goto fail_unmap;
+	}
+
+	buf->dma_sgt = sgt;
+	buf->dma_addr = sg_dma_address(sgt->sgl) + offset;
+	/* prepare() and finish() sync the whole dma-buf through this table */
+	buf->non_coherent_mem = 1;
+
+	return buf;
+
+fail_unmap:
+	dma_buf_unmap_attachment_unlocked(buf->db_attach, sgt, buf->dma_dir);
+fail_detach:
+	dma_buf_detach(dbuf, buf->db_attach);
+fail_buf:
+	kfree(buf);
+fail_put:
+	dma_buf_put(dbuf);
+	return ERR_PTR(ret);
+}
+
 static void *vb2_dc_get_userptr(struct vb2_buffer *vb, struct device *dev,
 				unsigned long vaddr, unsigned long size)
 {
 	struct vb2_dc_buf *buf;
 	struct frame_vector *vec;
+	struct dma_buf *dbuf;
+	unsigned long db_offset;
 	unsigned int offset;
 	int n_pages, i;
 	int ret = 0;
 	struct sg_table *sgt;
 	unsigned long contig_size;
 	unsigned long dma_align = dma_get_cache_alignment();
-
-	/* Only cache aligned DMA transfers are reliable */
-	if (!IS_ALIGNED(vaddr | size, dma_align)) {
-		pr_debug("user data must be aligned to %lu bytes\n", dma_align);
-		return ERR_PTR(-EINVAL);
-	}
 
 	if (!size) {
 		pr_debug("size is zero\n");
@@ -586,6 +699,18 @@ static void *vb2_dc_get_userptr(struct vb2_buffer *vb, struct device *dev,
 
 	if (WARN_ON(!dev))
 		return ERR_PTR(-EINVAL);
+
+	dbuf = vb2_dc_userptr_to_dmabuf(vaddr, size,
+					vb->vb2_queue->dma_dir != DMA_TO_DEVICE,
+					&db_offset);
+	if (dbuf)
+		return vb2_dc_get_userptr_dmabuf(vb, dev, dbuf, db_offset, size);
+
+	/* Only cache aligned DMA transfers are reliable */
+	if (!IS_ALIGNED(vaddr | size, dma_align)) {
+		pr_debug("user data must be aligned to %lu bytes\n", dma_align);
+		return ERR_PTR(-EINVAL);
+	}
 
 	buf = kzalloc(sizeof *buf, GFP_KERNEL);
 	if (!buf)
