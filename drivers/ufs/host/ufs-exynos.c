@@ -2845,6 +2845,13 @@ static int exynos_ufs_probe(struct platform_device *pdev)
 	err = ufshcd_pltfrm_init(pdev, vops);
 	if (err)
 		dev_err(dev, "ufshcd_pltfrm_init() failed %d\n", err);
+	/*
+	 * Stock never voted on CPU latency, only on the INT bus throughput
+	 * (S:drivers/scsi/ufs/ufs-exynos.c:2310). Without clock gating or
+	 * scaling the core's vote stays at 0 us from the first resume on.
+	 */
+	else if (drv_data && (drv_data->opts & EXYNOS_UFS_OPT_NO_CPU_LATENCY_QOS))
+		ufshcd_pm_qos_exit(platform_get_drvdata(pdev));
 	greatlte_l4_ufs_probe_done(dev, err);	/* DEBUG: L4 heartbeat ufs= */
 
 	return err;
@@ -3028,7 +3035,8 @@ static const struct exynos_ufs_drv_data exynos8895_ufs_drvs = {
 				  EXYNOS_UFS_OPT_UNIPRO_PCLK |
 				  EXYNOS_UFS_OPT_SKIP_SYNC_PATTERN_MASK |
 				  EXYNOS_UFS_OPT_UPMCRS_IN_UNIPRO |
-				  EXYNOS_UFS_OPT_CLKSTOP_8895,
+				  EXYNOS_UFS_OPT_CLKSTOP_8895 |
+				  EXYNOS_UFS_OPT_NO_CPU_LATENCY_QOS,
 	.iocc_mask		= BIT(9) | BIT(8),	/* dtsi:1082-1086 */
 	.drv_init		= exynos8895_ufs_drv_init,
 	.pre_hce_enable		= exynos8895_ufs_pre_hce_enable,

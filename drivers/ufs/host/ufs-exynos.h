@@ -276,6 +276,7 @@ struct exynos_ufs {
 #define EXYNOS_UFS_OPT_UPMCRS_IN_UNIPRO		BIT(10)	/* PMC/hibern8 result in UniPro, not HCS */
 #define EXYNOS_UFS_OPT_CLKSTOP_8895		BIT(11)	/* stock rev-4 clock stop: no MPHY_APBCLK_STOP,
 							 * HCI_MISC stop enables kept, HWACG toggled */
+#define EXYNOS_UFS_OPT_NO_CPU_LATENCY_QOS	BIT(12)	/* no CPU latency vote while the clocks run */
 };
 
 #define for_each_ufs_rx_lane(ufs, i) \

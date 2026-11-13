@@ -1057,6 +1057,7 @@ void ufshcd_pm_qos_exit(struct ufs_hba *hba)
 	cpu_latency_qos_remove_request(&hba->pm_qos_req);
 	hba->pm_qos_enabled = false;
 }
+EXPORT_SYMBOL_GPL(ufshcd_pm_qos_exit);
 
 /**
  * ufshcd_pm_qos_update - update PM QoS request
