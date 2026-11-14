@@ -332,6 +332,14 @@ config GREATLTE_HB_L4B
 	  (secure TRNG sessions and the last SMC result), and, with
 	  SCSI_UFS_EXYNOS8895_FMP_KAT, the debugfs file greatlte-l4b/fmp_kat.
 	  Never enable in a release build.
+config EXYNOS8895_SECMEM
+	bool "Exynos8895 s5p-smem node for the iris trustlet"
+	depends on ION_LEGACY_EXYNOS
+	help
+	  /dev/s5p-smem with the one secmem ioctl the iris trustlet client
+	  uses, SECMEM_IOC_GET_FD_PHYS_ADDR: the physical address of a
+	  secure camera ION buffer.
+
 # L6K DRAM temperature trip (WP l6ki, spec L6K 5.2)
 config EXYNOS8895_MCINFO
 	bool "Exynos8895 DRAM MR4 temperature trip"
