@@ -448,6 +448,35 @@ bool ionl_dmabuf_is_autosync(struct dma_buf *dmabuf)
 EXPORT_SYMBOL_GPL(ionl_dmabuf_is_autosync);
 
 /*
+ * Stock ion_phys() (S:drivers/staging/android/ion/ion.c:962-985): the start and
+ * size of a physically contiguous buffer.  The secure carveout and CMA heaps have
+ * a phys op (ion_carveout_heap.c:87-96, ion_cma_heap.c:145-159); the system heap
+ * has none, -ENODEV.
+ */
+int ionl_dmabuf_phys(struct dma_buf *dmabuf, phys_addr_t *addr, size_t *len)
+{
+	struct ionl_buffer *buf;
+
+	if (dmabuf->ops != &ionl_dma_buf_ops)
+		return -EINVAL;
+	buf = dmabuf->priv;
+
+	switch (buf->heap->type) {
+	case IONL_HEAP_SECURE:
+		*addr = buf->prot->bus_address;
+		break;
+	case IONL_HEAP_CMA:
+		*addr = page_to_phys(buf->cma_page);
+		break;
+	default:
+		return -ENODEV;
+	}
+	*len = buf->size;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(ionl_dmabuf_phys);
+
+/*
  * The fd's ION buffer if it needs a user-requested sync, else NULL with *ret set:
  * foreign exporter -> -EINVAL, not CACHED or auto-sync -> 0
  * (S:drivers/staging/android/ion/ion.c:1793-1810, :1842-1859).
