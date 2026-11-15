@@ -400,8 +400,12 @@ struct devfreq_table_interactive_level {
  *		is above both @highspeed_load and the level's max_load, 0 = off
  * @highspeed_load: load (percent) above which the jump is made
  * @highspeed_delay: polls the jump condition must hold before it is made
+ * @capacity_headroom_khz: extra clock asked for by the power HAL's ADPF GPU
+ *		boost, added to the level the table picks (Pixel capacity_headroom)
  * @down_requirement: governor private: polls left below min_load
  * @delay_count: governor private: polls the jump condition has held
+ * @base_level: governor private: the table's level while the headroom raised
+ *		the clock above it, -1 otherwise
  */
 struct devfreq_table_interactive_data {
 	const struct devfreq_table_interactive_level *levels;
@@ -409,9 +413,11 @@ struct devfreq_table_interactive_data {
 	unsigned long highspeed_hz;
 	unsigned int highspeed_load;
 	unsigned int highspeed_delay;
+	unsigned int capacity_headroom_khz;
 	/* private */
 	unsigned int down_requirement;
 	unsigned int delay_count;
+	int base_level;
 };
 #endif
 
