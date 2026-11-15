@@ -696,13 +696,55 @@ int fimc_is_queue_setup(struct fimc_is_queue *queue,
 	return ret;
 }
 
+/*
+ * Points the frame at the buffer queued at this index: its planes' addresses and the
+ * kernel mapping of its last plane (the shot metadata, or the stream info for frame sync).
+ * With HAL3 the same index comes back with a different dma-buf, and vb2 drops the previous
+ * buffer's kernel mapping when it releases that dma-buf (vb2_dc_unmap_dmabuf), so none of
+ * this can be kept from the first time the index was queued.
+ */
+static int fimc_is_queue_map_frame(struct fimc_is_queue *queue, struct fimc_is_frame *frame,
+	struct fimc_is_vb2_buf *vbuf, u32 index)
+{
+	u32 i, ext_size;
+	u32 spare = frame->planes - 1;
+
+	for (i = 0; i < frame->planes; i++) {
+		frame->dvaddr_buffer[i] = (u32)queue->buf_dva[index][i];
+		if (vbuf->kva[i] != 0)
+			frame->kvaddr_buffer[i] = vbuf->ops->plane_kvaddr(vbuf, i);
+	}
+
+	queue->buf_kva[index][spare] = vbuf->ops->plane_kvaddr(vbuf, spare);
+	if (!queue->buf_kva[index][spare])
+		return -EINVAL;
+
+	if (queue->framemgr.id & FRAMEMGR_ID_SHOT) {
+		ext_size = sizeof(struct camera2_shot_ext) - sizeof(struct camera2_shot);
+
+		frame->dvaddr_shot = (u32)queue->buf_dva[index][spare] + ext_size;
+		frame->kvaddr_shot = queue->buf_kva[index][spare] + ext_size;
+		frame->cookie_shot = queue->buf_box[index][spare];
+		frame->shot = (struct camera2_shot *)frame->kvaddr_shot;
+		frame->shot_ext = (struct camera2_shot_ext *)queue->buf_kva[index][spare];
+		frame->shot_size = queue->framecfg.size[spare] - ext_size;
+#ifdef MEASURE_TIME
+		frame->tzone = (struct timeval *)frame->shot_ext->timeZone;
+#endif
+	} else {
+		frame->stream = (struct camera2_stream *)queue->buf_kva[index][spare];
+		/* TODO : Someday need to change the variable type of struct to ulong */
+		frame->stream->address = (u32)queue->buf_kva[index][spare];
+	}
+
+	return 0;
+}
+
 int fimc_is_queue_buffer_queue(struct fimc_is_queue *queue,
 	struct vb2_buffer *vb)
 {
 	u32 ret = 0, i;
 	u32 index;
-	u32 ext_size;
-	u32 spare;
 	struct fimc_is_video *video;
 	struct fimc_is_video_ctx *vctx;
 	struct fimc_is_framemgr *framemgr;
@@ -742,17 +784,19 @@ int fimc_is_queue_buffer_queue(struct fimc_is_queue *queue,
 
 	/* plane address check */
 	for (i = 0; i < frame->planes; i++) {
-		if (frame->dvaddr_buffer[i] != queue->buf_dva[index][i]) {
-			if (video->resourcemgr->hal_version == IS_HAL_VER_3_2 ||
-				queue->framecfg.num_buffers > 1) {
-				frame->dvaddr_buffer[i] = (u32)queue->buf_dva[index][i];
-			} else {
-				mverr("buffer[%d][%d] is changed(%08X != %08lX)", vctx, video, index, i,
-					frame->dvaddr_buffer[i], queue->buf_dva[index][i]);
-				ret = -EINVAL;
-				goto exit;
-			}
+		if (frame->dvaddr_buffer[i] != queue->buf_dva[index][i] &&
+		    video->resourcemgr->hal_version != IS_HAL_VER_3_2 &&
+		    queue->framecfg.num_buffers <= 1) {
+			mverr("buffer[%d][%d] is changed(%08X != %08lX)", vctx, video, index, i,
+				frame->dvaddr_buffer[i], queue->buf_dva[index][i]);
+			ret = -EINVAL;
+			goto exit;
 		}
+	}
+
+	if (fimc_is_queue_map_frame(queue, frame, vbuf, index)) {
+		mverr("plane_kvaddr is fail(%08X)", vctx, video, framemgr->id);
+		ret = -EINVAL;
 	}
 
 	goto exit;
@@ -766,50 +810,16 @@ set_info:
 
 	frame->num_buffers = queue->framecfg.num_buffers;
 	frame->planes = vb->num_planes;
-	spare = frame->planes - 1;
 
-	for (i = 0; i < frame->planes; i++) {
-		frame->dvaddr_buffer[i] = (u32)queue->buf_dva[index][i];
-		if(vbuf->kva[i] != 0)
-			frame->kvaddr_buffer[i] = vbuf->ops->plane_kvaddr(vbuf, i);
 #ifdef PRINT_BUFADDR
-		mvinfo("%04X %d.%d %08X\n", vctx, video, framemgr->id, index, i, frame->dvaddr_buffer[i]);
+	for (i = 0; i < frame->planes; i++)
+		mvinfo("%04X %d.%d %08lX\n", vctx, video, framemgr->id, index, i, queue->buf_dva[index][i]);
 #endif
-	}
 
-	if (framemgr->id & FRAMEMGR_ID_SHOT) {
-		ext_size = sizeof(struct camera2_shot_ext) - sizeof(struct camera2_shot);
-
-		/* Create Kvaddr for Metadata */
-		queue->buf_kva[index][spare] = vbuf->ops->plane_kvaddr(vbuf, spare);
-		if (!queue->buf_kva[index][spare]) {
-			mverr("plane_kvaddr is fail(%08X)", vctx, video, framemgr->id);
-			ret = -EINVAL;
-			goto exit;
-		}
-
-		frame->dvaddr_shot = (u32)queue->buf_dva[index][spare] + ext_size;
-		frame->kvaddr_shot = queue->buf_kva[index][spare] + ext_size;
-		frame->cookie_shot = queue->buf_box[index][spare];
-		frame->shot = (struct camera2_shot *)frame->kvaddr_shot;
-		frame->shot_ext = (struct camera2_shot_ext *)queue->buf_kva[index][spare];
-		frame->shot_size = queue->framecfg.size[spare] - ext_size;
-#ifdef MEASURE_TIME
-		frame->tzone = (struct timeval *)frame->shot_ext->timeZone;
-#endif
-	} else {
-		/* Create Kvaddr for frame sync */
-		queue->buf_kva[index][spare] = vbuf->ops->plane_kvaddr(vbuf, spare);
-		if (!queue->buf_kva[index][spare]) {
-			mverr("plane_kvaddr is fail(%08X)", vctx, video, framemgr->id);
-			ret = -EINVAL;
-			goto exit;
-		}
-
-		frame->stream = (struct camera2_stream *)queue->buf_kva[index][spare];
-
-		/* TODO : Someday need to change the variable type of struct to ulong */
-		frame->stream->address = (u32)queue->buf_kva[index][spare];
+	if (fimc_is_queue_map_frame(queue, frame, vbuf, index)) {
+		mverr("plane_kvaddr is fail(%08X)", vctx, video, framemgr->id);
+		ret = -EINVAL;
+		goto exit;
 	}
 
 	set_bit(FRAME_MEM_INIT, &frame->mem_state);
