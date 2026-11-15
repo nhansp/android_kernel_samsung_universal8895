@@ -93,6 +93,7 @@ struct devfreq_table_interactive_data exynos8895_gpu_dvfs_data = {
 	.highspeed_hz = 455000000UL,
 	.highspeed_load = 95,
 	.highspeed_delay = 0,
+	.base_level = -1,
 };
 
 /* the row of the highest table clock not above @gpu_rate_hz, NULL below the table */
@@ -116,10 +117,20 @@ static const struct exynos8895_gpu_qos *exynos8895_gpu_qos_of(unsigned long gpu_
 static void exynos8895_gpu_qos_apply(struct exynos8895_gpu *gpu, unsigned long rate)
 {
 	const struct exynos8895_gpu_qos *q = exynos8895_gpu_qos_of(rate);
+	const struct exynos8895_gpu_qos *c = q;
+	int base = READ_ONCE(exynos8895_gpu_dvfs_data.base_level);
+
+	/*
+	 * The MIF vote follows the clock the GPU runs at. The CPU votes follow the
+	 * level the stock table chose: the ADPF headroom raises the GPU for a late
+	 * frame and must not cap the big cluster for it.
+	 */
+	if (rate && base >= 0)
+		c = exynos8895_gpu_qos_of(exynos8895_gpu_levels[base].freq_hz);
 
 	exynos_bus_qos_update_request(&gpu->mif_req, q ? q->mif_khz : 0);
-	mm_qos_update_request(&gpu->cl0_min_req, q ? q->cl0_min_khz : 0);
-	mm_qos_update_request(&gpu->cl1_max_req, q ? q->cl1_max_khz : INT_MAX);
+	mm_qos_update_request(&gpu->cl0_min_req, c ? c->cl0_min_khz : 0);
+	mm_qos_update_request(&gpu->cl1_max_req, c ? c->cl1_max_khz : INT_MAX);
 }
 
 /*
