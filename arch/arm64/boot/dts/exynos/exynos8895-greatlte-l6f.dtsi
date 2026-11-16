@@ -277,10 +277,7 @@
 		maxim,pmic = <&pmic_max77865>;		/* core regmap for MAINCTRL1 (L6F 5.3.2 step 12) */
 		jig-gpios = <&gpi1 4 GPIO_ACTIVE_LOW>;	/* FDT:12332-12333 fuelgauge,jig_gpio = <&gpi1 4 0> + jig_low_active
 						   (0x8a = gpi1, FDT:705-711); requested GPIOD_ASIS (V4-16) */
-		/*
-		 * samsung,charge-control; (L6F 4.3, 5.3.2) is left out for now: monitor-only until
-		 * the readings are checked on the phone and the charge-control path is reviewed.
-		 */
+		samsung,charge-control;			/* L6F 4.3, 5.3.2 */
 
 		otg_vbus: usb-otg-vbus {		/* stock "otg" supply as a regulator (L6F 5.3.8) */
 			regulator-name = "usb_otg_vbus";

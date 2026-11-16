@@ -73,7 +73,7 @@
 
 		samsung,rpp-cover = /bits/ 8 <0x44>;	/* battery,wc_cover_rpp (no LED cover input: unused) */
 		samsung,rpp-hv = /bits/ 8 <0x40>;	/* absent in stock's DT: the stock driver default */
-		status = "disabled";
+		status = "okay";
 	};
 };
 
