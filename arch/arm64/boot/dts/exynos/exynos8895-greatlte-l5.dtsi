@@ -62,16 +62,18 @@
 /*
  * S-Boot's "lcd_buffer" (spec/L5_display.md 4.1): it keeps 0xcc000000-0xcd400000
  * out of its DRAM test and scans its logo out of it; the framebuffer address it
- * passes on the command line is the same constant. no-map, and identity-mapped
+ * passes on the command line is the same constant. Only the visible 1440x2960
+ * XRGB8888 picture at its start is reserved here; the rest of S-Boot's window
+ * holds nothing the kernel reads. no-map, and identity-mapped
  * for the DECON's IOMMU domain before translation is ever enabled
  * (A:drivers/iommu/of_iommu.c:206-270: IOMMU_RESV_DIRECT when iova == phys and
  * the length equals the region). soc@0 has one address and one size cell.
  */
 &{/reserved-memory} {
 	splash_mem: framebuffer@cc000000 {
-		reg = <0x0 0xcc000000 0x1400000>;	/* SB:0xc9017a04 mov x1,#0xcc000000; SB:0xc9017a08 mov x2,#0xcd400000 */
+		reg = <0x0 0xcc000000 (1440 * 2960 * 4)>;	/* SB:0xc9017a04 mov x1,#0xcc000000 */
 		no-map;
-		iommu-addresses = <&decon 0xcc000000 0x1400000>;
+		iommu-addresses = <&decon 0xcc000000 (1440 * 2960 * 4)>;
 	};
 };
 
