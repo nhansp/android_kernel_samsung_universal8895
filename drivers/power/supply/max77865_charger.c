@@ -1494,6 +1494,13 @@ static void max77865_apply(struct max77865_charger *chg, const struct max77865_s
 #endif
 	if (eff == MODE_CHARGING && (chg->fault || !chg->ntc_seen || !s->ntc_valid))
 		eff = MODE_CHARGING_OFF;
+	/* a limit that did not reach the charger keeps it off until a later pass writes it */
+	if (eff == MODE_CHARGING && s->input != INPUT_NONE &&
+	    ((s->input == INPUT_WIRED && chg->in_w != in) || chg->chg_w != cc ||
+	     chg->topoff_w != topoff || chg->cv_w != cv)) {
+		dev_warn_ratelimited(chg->dev, "charge limits not written, charging off\n");
+		eff = MODE_CHARGING_OFF;
+	}
 	if (eff != chg->hw_mode)
 		max77865_write_mode(chg, eff);
 }
