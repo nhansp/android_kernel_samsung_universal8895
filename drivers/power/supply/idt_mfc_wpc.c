@@ -368,6 +368,13 @@ static void idt_det_work(struct work_struct *work)
 		w->vout = IDT_MFC_VOUT_5V;
 		w->fod = false;
 		regmap_read(w->regmap, IDT_CHIP_ID_L, &id);
+		/* the VOUT, FOD and RPP codes below are IDT's; probe refuses LSI only on a pad */
+		if (id == IDT_CHIP_LSI) {
+			dev_err_once(w->dev, "chip id 0x40 (LSI) not supported, pad ignored\n");
+			w->online = false;
+			w->pad = IDT_MFC_PAD_NONE;
+			goto out;
+		}
 		/* mode change interrupt enable */
 		regmap_update_bits(w->regmap, IDT_INT_A_ENABLE_L, IDT_STAT_L_OP_MODE,
 				   IDT_STAT_L_OP_MODE);
@@ -438,6 +445,7 @@ static void idt_det_work(struct work_struct *work)
 		}
 #endif
 	}
+out:
 	if (det >= 0)
 		w->wc_w_state = det;
 	mutex_unlock(&w->lock);
