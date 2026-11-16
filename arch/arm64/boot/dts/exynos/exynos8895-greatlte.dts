@@ -110,34 +110,19 @@
 			reg = <0x0 0x80002000 0x2000>;
 		};
 
-		/*
-		 * Console/panic log readable by the TWRP 3.7.1_12 FBE recovery
-		 * kernel. That kernel builds ramoops from exynos-snapshot item
-		 * "log_pstore" (S:drivers/trace/exynos-ss.c:570, SZ_32K) at
-		 * ess_setup (S-Boot passes 0x91200000: SB+0x7be94 "mov w2, #-0x6ee00000") plus
-		 * 2M+2M+2M (MINIMIZED_MODE=y in its IKCONFIG), i.e. 0x91800000,
-		 * with record = pmsg = mem/2 (S:drivers/trace/exynos-ss.c:3925-3926).
-		 * With the 6.18 zone order (A:fs/pstore/ram.c:787-800) our console
-		 * zone lands on its pmsg zone and our dmesg zone on its dump zone.
-		 */
-		ramoops@91800000 {
-			compatible = "ramoops";		/* A:fs/pstore/ram.c:897 */
-			reg = <0x0 0x91800000 0x8000>;	/* 0x91200000 + 0x600000; size SZ_32K (S:drivers/trace/exynos-ss.c:570) */
-			record-size = <0x4000>;		/* = mem_size/2 (S:drivers/trace/exynos-ss.c:3926); becomes TWRP's dump zone */
-			console-size = <0x4000>;	/* = TWRP pmsg_size mem_size/2 (S:drivers/trace/exynos-ss.c:3925) */
-			pmsg-size = <0x0>;		/* explicit; A:fs/pstore/ram.c:693 default 0 */
-			ftrace-size = <0x0>;		/* explicit; A:fs/pstore/ram.c:692 default 0 */
-			ecc-size = <0x0>;		/* explicit; TWRP 4.4 zone reads without ECC */
-			mem-type = <0x0>;		/* write-combine, A:fs/pstore/ram_core.c:410,434-435; 1 = noncached also works, 2 (cached) must never be used: dirty lines are lost on reset */
+		ramoops@92000000 {
+			compatible = "ramoops";
+			reg = <0x0 0x92000000 0x8000>;
+			record-size = <0x4000>;
+			console-size = <0x4000>;
 		};
 
 		/*
 		 * DEBUG (L7 deep suspend): EL3 monitor debug page + lockup buffer
 		 * (drivers/soc/samsung/exynos8895-el3mon.c; stock uses two kmalloc() pages,
-		 * S:drivers/soc/samsung/exynos-el3_mon.c:88,118). Right after the ramoops zone:
-		 * the exynos-snapshot MINIMIZED layout of the 4.4 kernels that can boot in
-		 * between (TWRP, LOS) ends there (log_pstore 32K at 0x91800000,
-		 * S:drivers/trace/exynos-ss.c:562-571), so a forced reset keeps the page.
+		 * S:drivers/soc/samsung/exynos-el3_mon.c:88,118). Inside the area S-Boot hands
+		 * to exynos-snapshot (ess_setup=0x91200000, S:drivers/trace/exynos-ss.c:549-575),
+		 * which a warm reset does not clear, so a forced reset keeps the page.
 		 */
 		el3-debug@91808000 {
 			compatible = "samsung,exynos8895-el3-debug";
