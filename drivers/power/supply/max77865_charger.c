@@ -336,6 +336,7 @@ struct max77865_charger {
 	int hw_mode, in_w, chg_w, topoff_w, cv_w, cv_want;
 	bool chginsel_pending;
 	int in_ma, chg_ma;		/* this pass's policy currents */
+	bool wpc_otg, wpc_wired;	/* the receiver's RX stays off while set */
 
 	/* reported values (change detection) */
 	int rep_online, rep_status, rep_health, rep_ac, rep_usb, rep_ac_ma, rep_usb_ma;
@@ -501,10 +502,26 @@ bool max77865_charger_wpc_allowed(void)
 {
 	struct max77865_charger *chg = READ_ONCE(g_max77865_charger);
 
-	return chg && chg->charge_control && !READ_ONCE(chg->fault);
+	return chg && chg->charge_control && !READ_ONCE(chg->fault) &&
+	       !READ_ONCE(chg->wpc_otg) && !READ_ONCE(chg->wpc_wired);
 }
 EXPORT_SYMBOL_GPL(max77865_charger_wpc_allowed);
 #endif
+
+/*
+ * stock sec_bat_cable_work() and mfc_set_wpc_en(): the RX is off while OTG boosts and while a
+ * wired source of 4 W or more is attached (WPC_EN_CHARGING, WPC_EN_CCIC); under lock
+ */
+static void max77865_wpc_gate(struct max77865_charger *chg, bool otg, bool wired)
+{
+#if IS_ENABLED(CONFIG_WIRELESS_CHARGER_IDT_MFC_NV)
+	if (otg == chg->wpc_otg && wired == chg->wpc_wired)
+		return;
+	WRITE_ONCE(chg->wpc_otg, otg);
+	WRITE_ONCE(chg->wpc_wired, wired);
+	idt_mfc_wpc_rx_update();
+#endif
+}
 
 /* ---- register decoders (read only) ---- */
 
@@ -1429,6 +1446,7 @@ static void max77865_apply(struct max77865_charger *chg, const struct max77865_s
 		chg->in_ma = s->input == INPUT_WIRED ? in : 0;
 		chg->chg_ma = cc;
 	}
+	max77865_wpc_gate(chg, chg->otg_on, s->input == INPUT_WIRED && in * 5 >= 4000);
 
 	if (!chg->fault) {
 		if (chg->chginsel_pending && !chg->otg_on &&	/* CHG:448-463 */
@@ -2385,6 +2403,7 @@ static void max77865_otg_off(struct max77865_charger *chg)
 				   chg->otg_saved_cnfg12);
 	}
 	chg->otg_on = false;
+	max77865_wpc_gate(chg, false, chg->wpc_wired);
 }
 
 static int max77865_otg_enable(struct regulator_dev *rdev)
@@ -2417,6 +2436,7 @@ static int max77865_otg_enable(struct regulator_dev *rdev)
 	regmap_update_bits(chg->regmap, MAX77865_CHG_REG_CNFG_00, MAX77865_CNFG_00_CHG, 0);
 	regmap_update_bits(chg->regmap, MAX77865_CHG_REG_CNFG_12, MAX77865_CNFG_12_DISSKIP, 0);
 	chg->hw_mode = -1;
+	max77865_wpc_gate(chg, true, chg->wpc_wired);
 	/* mask CHG and CHGIN, unmask BYP (:647-654) */
 	regmap_update_bits(chg->regmap, MAX77865_CHG_REG_INT_MASK,
 			   MAX77865_CHG_CHG | MAX77865_CHG_CHGIN | MAX77865_CHG_BYP,
