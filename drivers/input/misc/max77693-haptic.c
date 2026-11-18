@@ -47,6 +47,27 @@
 #define MAX77865_MAX_INTENSITY		10000
 #define MAX77865_MULTI_FREQ		7
 
+/*
+ * multi_freq in 0.1 Hz: the PWM runs at 128 times the drive frequency
+ * (DIVIDER_128), period 78125000 / f ns, duty 79 % without overdrive
+ * (S:drivers/motor/max77865_haptic.c:96-103)
+ */
+#define MAX77865_FREQ_MIN_DHZ		1200
+#define MAX77865_FREQ_MAX_DHZ		3500
+#define MAX77865_FREQ_PERIOD_NUM	78125000U
+#define MAX77865_FREQ_DUTY_PCT		79
+#define MAX77865_FREQ_OD_DUTY_PCT	95
+
+/* haptic_engine packets (S:drivers/motor/max77865_haptic.c:35,56-61) */
+#define MAX77865_PACKET_MAX		1000
+
+struct max77865_packet {
+	int time_ms;
+	int intensity;
+	int freq;
+	int overdrive;
+};
+
 enum max77693_haptic_motor_type {
 	MAX77693_HAPTIC_ERM = 0,
 	MAX77693_HAPTIC_LRA,
@@ -82,7 +103,9 @@ struct max77693_haptic {
 	enum max77693_haptic_pulse_mode mode;
 
 	/* MAX77865 fields (spec L6F 5.7) */
+	u32 period_ns;
 	u32 max_duty_ns;
+	int freq_num;
 	u32 max_timeout_ms;
 	unsigned int duty_ns;
 	unsigned int intensity;
@@ -107,6 +130,20 @@ struct max77693_haptic {
 	unsigned int tick_seq;		/* the tick asked for last */
 	unsigned int tick_timed;	/* the tick whose duration runs */
 	struct hrtimer tick_timer;
+
+	/*
+	 * haptic_engine: pkt_lock covers the packet array; lock covers the
+	 * run state, which the timer advances.
+	 */
+	struct mutex pkt_lock;
+	struct max77865_packet *pkt;
+	unsigned int pkt_count;
+	unsigned int pkt_idx;
+	bool pkt_loaded;
+	bool pkt_running;
+	bool pkt_step;
+	bool pkt_applied;
+	bool overdrive;
 
 	struct work_struct work;
 };
@@ -175,11 +212,25 @@ static unsigned int max77865_haptic_calc_duty(unsigned int period,
 
 static unsigned int max77865_haptic_duty(struct max77693_haptic *haptic, int intensity)
 {
-	struct pwm_args pargs;
+	return max77865_haptic_calc_duty(haptic->period_ns, haptic->max_duty_ns, intensity);
+}
 
-	pwm_get_args(haptic->pwm_dev, &pargs);
+/* S:drivers/motor/max77865_haptic.c:87-111: a table index or 0.1 Hz */
+static int max77865_haptic_freq(struct max77693_haptic *haptic, int num, bool overdrive,
+				u32 *period, u32 *max_duty)
+{
+	if (haptic->has_freq && num >= 0 && num < MAX77865_MULTI_FREQ) {
+		*period = haptic->freq_period_ns[num];
+		*max_duty = haptic->freq_duty_ns[num];
+	} else if (num >= MAX77865_FREQ_MIN_DHZ && num <= MAX77865_FREQ_MAX_DHZ) {
+		*period = MAX77865_FREQ_PERIOD_NUM / num;
+		*max_duty = *period * (overdrive ? MAX77865_FREQ_OD_DUTY_PCT :
+						   MAX77865_FREQ_DUTY_PCT) / 100;
+	} else {
+		return -EINVAL;
+	}
 
-	return max77865_haptic_calc_duty(pargs.period, haptic->max_duty_ns, intensity);
+	return 0;
 }
 
 /* the PWM period and duty: the tick's while it plays */
@@ -193,6 +244,7 @@ static void max77865_haptic_pwm_state(struct max77693_haptic *haptic,
 		state->period = haptic->tick_period_ns;
 		state->duty_cycle = haptic->tick_duty_ns;
 	} else {
+		state->period = haptic->period_ns;
 		state->duty_cycle = haptic->duty_ns;
 	}
 	spin_unlock_irqrestore(&haptic->lock, flags);
@@ -369,13 +421,76 @@ err_disable_lowsys:
 	max77693_haptic_configure(haptic, true);
 }
 
+/*
+ * One haptic_engine step (S:drivers/motor/max77865_haptic.c:229-260,599-640):
+ * the next packet's frequency, overdrive and intensity, held for its time.
+ * An intensity of 0 stops the motor while the packets run on; a frequency
+ * out of range keeps the previous one. Returns false when no packet runs.
+ */
+static bool max77865_engine_step(struct max77693_haptic *haptic, int *time_ms)
+{
+	struct max77865_packet p;
+	unsigned long flags;
+	u32 period, max_duty;
+	bool run, freq_ok;
+
+	mutex_lock(&haptic->pkt_lock);
+	spin_lock_irqsave(&haptic->lock, flags);
+	run = haptic->pkt_running;
+	if (run && haptic->pkt_step) {
+		haptic->pkt_step = false;
+		haptic->pkt_idx++;
+	} else if (run && haptic->pkt_applied) {
+		/* woken for something else: the current packet keeps its time */
+		spin_unlock_irqrestore(&haptic->lock, flags);
+		mutex_unlock(&haptic->pkt_lock);
+		return false;
+	}
+	haptic->pkt_applied = run;
+	if (run && haptic->pkt_idx >= haptic->pkt_count) {
+		haptic->pkt_running = false;
+		haptic->pkt_loaded = false;
+		haptic->pkt_count = 0;
+		haptic->magnitude = 0;
+		run = false;
+	}
+	if (run)
+		p = haptic->pkt[haptic->pkt_idx];
+	spin_unlock_irqrestore(&haptic->lock, flags);
+	mutex_unlock(&haptic->pkt_lock);
+
+	if (!run)
+		return false;
+
+	freq_ok = !max77865_haptic_freq(haptic, p.freq, p.overdrive, &period, &max_duty);
+
+	spin_lock_irqsave(&haptic->lock, flags);
+	haptic->overdrive = p.overdrive;
+	if (freq_ok) {
+		haptic->period_ns = period;
+		haptic->max_duty_ns = max_duty;
+		haptic->freq_num = p.freq;
+	}
+	haptic->duty_ns = max77865_haptic_calc_duty(haptic->period_ns, haptic->max_duty_ns,
+						    p.intensity);
+	haptic->magnitude = p.intensity != 0;
+	spin_unlock_irqrestore(&haptic->lock, flags);
+
+	*time_ms = p.time_ms;
+	return true;
+}
+
 static void max77693_haptic_play_work(struct work_struct *work)
 {
 	struct max77693_haptic *haptic =
 			container_of(work, struct max77693_haptic, work);
 	unsigned long flags;
 	unsigned int magnitude, tick_seq;
-	bool tick, tick_init;
+	bool tick, tick_init, engine = false;
+	int time_ms = 0;
+
+	if (haptic->dev_type == TYPE_MAX77865)
+		engine = max77865_engine_step(haptic, &time_ms);
 
 	spin_lock_irqsave(&haptic->lock, flags);
 	magnitude = haptic->magnitude;
@@ -397,6 +512,15 @@ static void max77693_haptic_play_work(struct work_struct *work)
 		max77693_haptic_set_duty_cycle(haptic);
 	else
 		max77693_haptic_enable(haptic);
+
+	if (engine) {
+		/* an enable or a new packet list may have stopped the run meanwhile */
+		spin_lock_irqsave(&haptic->lock, flags);
+		if (haptic->pkt_running)
+			hrtimer_start(&haptic->timer, ms_to_ktime(time_ms), HRTIMER_MODE_REL);
+		spin_unlock_irqrestore(&haptic->lock, flags);
+		return;
+	}
 
 	if (!tick)
 		return;
@@ -427,6 +551,7 @@ static int max77693_haptic_play_effect(struct input_dev *dev, void *data,
 
 	spin_lock_irqsave(&haptic->lock, flags);
 	haptic->tick = false;
+	haptic->pkt_running = false;
 	haptic->magnitude = effect->u.rumble.strong_magnitude;
 	if (!haptic->magnitude)
 		haptic->magnitude = effect->u.rumble.weak_magnitude;
@@ -496,7 +621,9 @@ static enum hrtimer_restart max77865_tout_timer(struct hrtimer *timer)
 	unsigned long flags;
 
 	spin_lock_irqsave(&haptic->lock, flags);
-	if (!haptic->tick)
+	if (haptic->pkt_running)
+		haptic->pkt_step = true;
+	else if (!haptic->tick)
 		haptic->magnitude = 0;
 	spin_unlock_irqrestore(&haptic->lock, flags);
 	schedule_work(&haptic->work);
@@ -531,21 +658,38 @@ static ssize_t enable_store(struct device *dev,
 	struct max77693_haptic *haptic = dev_get_drvdata(dev);
 	unsigned long flags;
 	int ms, error;
+	bool engine;
 
 	error = kstrtoint(buf, 0, &ms);
 	if (error)
 		return -EINVAL;
 
+	spin_lock_irqsave(&haptic->lock, flags);
+	haptic->pkt_running = false;
+	haptic->pkt_step = false;
+	spin_unlock_irqrestore(&haptic->lock, flags);
 	hrtimer_cancel(&haptic->timer);
 	ms = min_t(int, ms, (int)haptic->max_timeout_ms);
 
+	/* stock: loaded packets play on any time > 0; 0 drops them */
 	spin_lock_irqsave(&haptic->lock, flags);
 	haptic->tick = false;
-	haptic->magnitude = ms > 0;
+	engine = ms > 0 && haptic->pkt_loaded;
+	if (engine) {
+		haptic->pkt_running = true;
+		haptic->pkt_idx = 0;
+		haptic->pkt_applied = false;
+	} else {
+		haptic->magnitude = ms > 0;
+		if (ms <= 0) {
+			haptic->pkt_loaded = false;
+			haptic->pkt_count = 0;
+		}
+	}
 	spin_unlock_irqrestore(&haptic->lock, flags);
 
 	schedule_work(&haptic->work);
-	if (ms > 0)
+	if (ms > 0 && !engine)
 		hrtimer_start(&haptic->timer, ms_to_ktime(ms), HRTIMER_MODE_REL);
 
 	return count;
@@ -601,6 +745,143 @@ static ssize_t intensity_show(struct device *dev,
 static DEVICE_ATTR(intensity, 0664, intensity_show, intensity_store);
 
 /*
+ * S:drivers/motor/max77865_haptic.c:87-111,400-430: a table index, or a
+ * frequency in 0.1 Hz that also sets the intensity to full
+ */
+static ssize_t multi_freq_store(struct device *dev, struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct max77693_haptic *haptic = dev_get_drvdata(dev);
+	u32 period, max_duty;
+	unsigned long flags;
+	int num, error;
+
+	error = kstrtoint(buf, 0, &num);
+	if (error)
+		return -EINVAL;
+
+	error = max77865_haptic_freq(haptic, num, READ_ONCE(haptic->overdrive), &period,
+				     &max_duty);
+	if (error)
+		return error;
+
+	spin_lock_irqsave(&haptic->lock, flags);
+	haptic->period_ns = period;
+	haptic->max_duty_ns = max_duty;
+	haptic->freq_num = num;
+	if (num >= MAX77865_FREQ_MIN_DHZ)
+		haptic->intensity = MAX77865_MAX_INTENSITY;
+	haptic->duty_ns = max77865_haptic_duty(haptic, haptic->intensity);
+	spin_unlock_irqrestore(&haptic->lock, flags);
+
+	if (READ_ONCE(haptic->enabled))
+		schedule_work(&haptic->work);
+
+	return count;
+}
+
+static ssize_t multi_freq_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct max77693_haptic *haptic = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "frequency: %d\n", READ_ONCE(haptic->freq_num));
+}
+static DEVICE_ATTR(multi_freq, 0660, multi_freq_show, multi_freq_store);
+
+/*
+ * S:drivers/motor/max77865_haptic.c:432-509: "<4n> t i f o ..." loads n
+ * packets of time (ms), intensity (-10000..10000), frequency (multi_freq)
+ * and overdrive; the next enable > 0 plays them, enable 0 drops them.
+ */
+static ssize_t haptic_engine_store(struct device *dev, struct device_attribute *attr,
+				   const char *buf, size_t count)
+{
+	struct max77693_haptic *haptic = dev_get_drvdata(dev);
+	struct max77865_packet *p;
+	char *str, *cur, *tok;
+	unsigned long flags;
+	int v[4], words, n, i, j, ret = 0;
+
+	str = kstrndup(buf, count, GFP_KERNEL);
+	if (!str)
+		return -ENOMEM;
+	cur = strim(str);
+
+	tok = strsep(&cur, " \t\n");
+	if (!tok || kstrtoint(tok, 0, &words) || words <= 0 || words % 4 ||
+	    words > MAX77865_PACKET_MAX * 4) {
+		ret = -EINVAL;
+		goto out;
+	}
+	n = words / 4;
+
+	spin_lock_irqsave(&haptic->lock, flags);
+	haptic->pkt_running = false;
+	haptic->pkt_step = false;
+	haptic->pkt_loaded = false;
+	haptic->magnitude = 0;
+	spin_unlock_irqrestore(&haptic->lock, flags);
+	hrtimer_cancel(&haptic->timer);
+
+	mutex_lock(&haptic->pkt_lock);
+	for (i = 0; i < n && !ret; i++) {
+		for (j = 0; j < 4; j++) {
+			do {
+				tok = strsep(&cur, " \t\n");
+			} while (tok && !*tok);
+			if (!tok || kstrtoint(tok, 0, &v[j])) {
+				ret = -EINVAL;
+				break;
+			}
+		}
+		if (ret)
+			break;
+		if (v[0] < 0 || v[1] < -MAX77865_MAX_INTENSITY || v[1] > MAX77865_MAX_INTENSITY) {
+			ret = -EINVAL;
+			break;
+		}
+		p = &haptic->pkt[i];
+		p->time_ms = v[0];
+		p->intensity = v[1];
+		p->freq = v[2];
+		p->overdrive = !!v[3];
+	}
+	if (!ret) {
+		spin_lock_irqsave(&haptic->lock, flags);
+		haptic->pkt_count = n;
+		haptic->pkt_loaded = true;
+		spin_unlock_irqrestore(&haptic->lock, flags);
+	}
+	mutex_unlock(&haptic->pkt_lock);
+
+	schedule_work(&haptic->work);
+out:
+	kfree(str);
+	return ret ? ret : count;
+}
+
+static ssize_t haptic_engine_show(struct device *dev, struct device_attribute *attr,
+				  char *buf)
+{
+	struct max77693_haptic *haptic = dev_get_drvdata(dev);
+	const struct max77865_packet *p;
+	unsigned int i;
+	int len = 0;
+
+	mutex_lock(&haptic->pkt_lock);
+	for (i = 0; i < READ_ONCE(haptic->pkt_count) && READ_ONCE(haptic->pkt_loaded); i++) {
+		p = &haptic->pkt[i];
+		len += sysfs_emit_at(buf, len, "%d,%d,%d,%d,", p->time_ms, p->intensity,
+				     p->freq, p->overdrive);
+	}
+	mutex_unlock(&haptic->pkt_lock);
+	len += sysfs_emit_at(buf, len, "\n");
+
+	return len;
+}
+static DEVICE_ATTR(haptic_engine, 0660, haptic_engine_show, haptic_engine_store);
+
+/*
  * force_touch_intensity, Samsung's kernel force_touch_intensity_store(): the
  * intensity of the home key tick, -10000..10000; 0, the default, plays none.
  * Samsung's node also programs the PWM at once, with the motor off; here the
@@ -641,6 +922,8 @@ static struct attribute *max77865_tout_attrs[] = {
 	&dev_attr_enable.attr,
 	&dev_attr_intensity.attr,
 	&dev_attr_force_touch_intensity.attr,
+	&dev_attr_multi_freq.attr,
+	&dev_attr_haptic_engine.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(max77865_tout);
@@ -804,6 +1087,21 @@ static int max77693_haptic_probe(struct platform_device *pdev)
 	if (IS_ERR(haptic->pwm_dev)) {
 		dev_err(&pdev->dev, "failed to get pwm device\n");
 		return PTR_ERR(haptic->pwm_dev);
+	}
+
+	if (haptic->dev_type == TYPE_MAX77865) {
+		struct pwm_args pargs;
+
+		pwm_get_args(haptic->pwm_dev, &pargs);
+		haptic->period_ns = pargs.period;
+
+		haptic->pkt = devm_kcalloc(&pdev->dev, MAX77865_PACKET_MAX,
+					   sizeof(*haptic->pkt), GFP_KERNEL);
+		if (!haptic->pkt)
+			return -ENOMEM;
+		error = devm_mutex_init(&pdev->dev, &haptic->pkt_lock);
+		if (error)
+			return error;
 	}
 
 	haptic->motor_reg = devm_regulator_get(&pdev->dev, "haptic");
