@@ -176,7 +176,6 @@ struct s2mm005 {
 	struct s2mm005_pd_status pd;
 	bool pd_attached;
 	bool pd_raw_logged;
-	struct blocking_notifier_head pd_nh;
 
 	struct fwnode_handle *connector;
 	struct typec_capability cap;
@@ -1513,12 +1512,20 @@ static void s2mm005_pass(struct s2mm005 *s, struct s2mm005_pd_note *note)
 	s2mm005_cc_rid(s);				/* :618 */
 }
 
-static void s2mm005_post(struct s2mm005 *s, struct s2mm005_pd_note *note)
+/*
+ * Static like stock pdic_notifier (S:drivers/battery_v2/battery_notifier.c:17): the
+ * charger registers before this device binds, which waits on the charger's OTG
+ * regulator for vbus-supply.
+ */
+static BLOCKING_NOTIFIER_HEAD(s2mm005_pd_nh);
+
+static void s2mm005_post(struct s2mm005_pd_note *note)
 {
 	unsigned int i;
 
 	for (i = 0; i < note->n; i++)
-		blocking_notifier_call_chain(&s->pd_nh, note->ev[i].event, &note->ev[i].status);
+		blocking_notifier_call_chain(&s2mm005_pd_nh, note->ev[i].event,
+					     &note->ev[i].status);
 }
 
 static irqreturn_t s2mm005_irq_thread(int irq, void *data)
@@ -1535,7 +1542,7 @@ static irqreturn_t s2mm005_irq_thread(int irq, void *data)
 	s2mm005_pass(s, &note);
 	mutex_unlock(&s->lock);
 
-	s2mm005_post(s, &note);
+	s2mm005_post(&note);
 	return IRQ_HANDLED;
 }
 
@@ -1553,7 +1560,7 @@ static void s2mm005_boot_check(struct work_struct *work)
 	}
 	mutex_unlock(&s->lock);
 
-	s2mm005_post(s, &note);
+	s2mm005_post(&note);
 }
 
 /* stock typec_role_swap_check() (S:drivers/ccic/s2mm005_cc.c:412-431) */
@@ -1691,38 +1698,15 @@ ATTRIBUTE_GROUPS(s2mm005_ccic);
 
 /* ---- exported interface (spec L6G 5.1.10, L6H REQ-L6G-3) ---- */
 
-struct s2mm005 *s2mm005_get(struct device_node *np)
+int s2mm005_register_notifier(struct notifier_block *nb)
 {
-	struct i2c_client *client = of_find_i2c_device_by_node(np);
-	struct s2mm005 *s;
-
-	if (!client)
-		return ERR_PTR(-EPROBE_DEFER);
-
-	s = client->dev.driver == &s2mm005_driver.driver ? i2c_get_clientdata(client) : NULL;
-	if (!s) {
-		put_device(&client->dev);
-		return ERR_PTR(-EPROBE_DEFER);
-	}
-	return s;
-}
-EXPORT_SYMBOL_GPL(s2mm005_get);
-
-void s2mm005_put(struct s2mm005 *s)
-{
-	put_device(s->dev);
-}
-EXPORT_SYMBOL_GPL(s2mm005_put);
-
-int s2mm005_register_notifier(struct s2mm005 *s, struct notifier_block *nb)
-{
-	return blocking_notifier_chain_register(&s->pd_nh, nb);
+	return blocking_notifier_chain_register(&s2mm005_pd_nh, nb);
 }
 EXPORT_SYMBOL_GPL(s2mm005_register_notifier);
 
-int s2mm005_unregister_notifier(struct s2mm005 *s, struct notifier_block *nb)
+int s2mm005_unregister_notifier(struct notifier_block *nb)
 {
-	return blocking_notifier_chain_unregister(&s->pd_nh, nb);
+	return blocking_notifier_chain_unregister(&s2mm005_pd_nh, nb);
 }
 EXPORT_SYMBOL_GPL(s2mm005_unregister_notifier);
 
@@ -2024,7 +2008,6 @@ static int s2mm005_probe(struct i2c_client *client)
 	init_completion(&s->role_done);
 	INIT_DELAYED_WORK(&s->swap_check, s2mm005_swap_check);
 	INIT_DELAYED_WORK(&s->boot_check, s2mm005_boot_check);
-	BLOCKING_INIT_NOTIFIER_HEAD(&s->pd_nh);
 
 	ret = s2mm005_get_resources(s);
 	if (ret)

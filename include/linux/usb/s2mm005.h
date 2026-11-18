@@ -8,9 +8,7 @@
 
 #include <linux/types.h>
 
-struct device_node;
 struct notifier_block;
-struct s2mm005;
 
 /* S:include/linux/battery/battery_notifier.h:26 */
 #define S2MM005_MAX_PDO_NUM	7
@@ -44,11 +42,9 @@ struct s2mm005_pd_status {
 	unsigned int rp_currentlvl;
 };
 
-/* a reference on the port controller's I2C client; released with s2mm005_put() */
-struct s2mm005 *s2mm005_get(struct device_node *np);
-void s2mm005_put(struct s2mm005 *s);
-int s2mm005_register_notifier(struct s2mm005 *s, struct notifier_block *nb);
-int s2mm005_unregister_notifier(struct s2mm005 *s, struct notifier_block *nb);
+/* one port; registration works before the port controller binds */
+int s2mm005_register_notifier(struct notifier_block *nb);
+int s2mm005_unregister_notifier(struct notifier_block *nb);
 
 /*
  * Request source PDO @num (1-based). Writes the chip only with

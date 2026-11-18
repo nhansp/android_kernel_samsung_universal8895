@@ -404,7 +404,6 @@ struct max77865_charger {
 
 #if MAX77865_CCIC
 	/* the CCIC's last PD sink status, under lock */
-	struct s2mm005 *ccic;
 	struct notifier_block ccic_nb;
 	struct s2mm005_pd_status pd;
 	unsigned long pd_event;		/* enum s2mm005_pd_event of the last notification */
@@ -3084,35 +3083,11 @@ static int max77865_ccic_notify(struct notifier_block *nb, unsigned long action,
 	return NOTIFY_OK;
 }
 
-static void max77865_ccic_put(void *data)
-{
-	s2mm005_put(data);
-}
-
 static void max77865_ccic_unregister(void *data)
 {
 	struct max77865_charger *chg = data;
 
-	s2mm005_unregister_notifier(chg->ccic, &chg->ccic_nb);
-}
-
-/* before any charger write: a deferral here has no side effects */
-static int max77865_ccic_get(struct max77865_charger *chg)
-{
-	struct device_node *np = of_find_compatible_node(NULL, NULL, "samsung,s2mm005");
-	struct s2mm005 *ccic;
-
-	if (!np || !of_device_is_available(np)) {
-		of_node_put(np);
-		dev_info(chg->dev, "no S2MM005, no PD sink status\n");
-		return 0;
-	}
-	ccic = s2mm005_get(np);
-	of_node_put(np);
-	if (IS_ERR(ccic))
-		return dev_err_probe(chg->dev, PTR_ERR(ccic), "S2MM005\n");
-	chg->ccic = ccic;
-	return devm_add_action_or_reset(chg->dev, max77865_ccic_put, ccic);
+	s2mm005_unregister_notifier(&chg->ccic_nb);
 }
 #endif
 
@@ -3181,12 +3156,6 @@ static int max77865_charger_probe(struct i2c_client *client)
 	chg->jig = devm_gpiod_get_optional(dev, "jig", GPIOD_ASIS);
 	if (IS_ERR(chg->jig))
 		return dev_err_probe(dev, PTR_ERR(chg->jig), "jig gpio\n");
-
-#if MAX77865_CCIC
-	ret = max77865_ccic_get(chg);
-	if (ret)
-		return ret;
-#endif
 
 	/* PMIC core regmap for MAINCTRL1 (L6F 5.3.2 step 12) */
 	if (chg->charge_control) {
@@ -3263,16 +3232,18 @@ static int max77865_charger_probe(struct i2c_client *client)
 	if (ret)
 		return ret;
 #if MAX77865_CCIC
-	/* after the pass work exists; unregistered before it is cancelled */
-	if (chg->ccic) {
-		chg->ccic_nb.notifier_call = max77865_ccic_notify;
-		ret = s2mm005_register_notifier(chg->ccic, &chg->ccic_nb);
-		if (ret)
-			return dev_err_probe(dev, ret, "S2MM005 notifier\n");
-		ret = devm_add_action_or_reset(dev, max77865_ccic_unregister, chg);
-		if (ret)
-			return ret;
-	}
+	/*
+	 * After the pass work exists; unregistered before it is cancelled. The
+	 * S2MM005 binds only after the OTG regulator below (its vbus-supply), so
+	 * no event is missed.
+	 */
+	chg->ccic_nb.notifier_call = max77865_ccic_notify;
+	ret = s2mm005_register_notifier(&chg->ccic_nb);
+	if (ret)
+		return dev_err_probe(dev, ret, "S2MM005 notifier\n");
+	ret = devm_add_action_or_reset(dev, max77865_ccic_unregister, chg);
+	if (ret)
+		return ret;
 #endif
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_AFC)
 	/* after the pass work exists; the callback only stores and re-queues.
