@@ -100,9 +100,6 @@ struct max17042_chip {
 };
 
 #if IS_ENABLED(CONFIG_CHARGER_MAX77865_TTF)
-/* fuelgauge,ttf_capacity 0xce4 = 3300 mAh */
-#define MAX77865_TTF_CAPACITY	3300
-
 /*
  * max17042_battery_props below plus TIME_TO_FULL_NOW, kept in front of the two current
  * properties so that dropping the last two (no current sense) works as for the list below
@@ -333,8 +330,10 @@ health_error:
 static int max17042_calc_ttf(struct max17042_chip *chip, int charge_current)
 {
 	int i, cc_time = 0, cv_time = 0;
-	int soc, design_cap;
+	int soc, design_cap, ret;
 	struct cv_slope *cv_data = chip->cv_data;
+	unsigned int full_cap;
+	u64 data64;
 
 	if (!cv_data || chip->cv_data_length <= 0 || charge_current <= 0)
 		return -ENODATA;
@@ -342,7 +341,18 @@ static int max17042_calc_ttf(struct max17042_chip *chip, int charge_current)
 	/* the scaled SOC in 0.1 %, as stock's raw_capacity */
 	soc = READ_ONCE(chip->soc_permille);
 
-	design_cap = MAX77865_TTF_CAPACITY;
+	/*
+	 * Stock uses its fixed fuelgauge,ttf_capacity (0xce4 = 3300 mAh); the
+	 * learned FullCAP keeps the CC time right for an aged cell.
+	 */
+	ret = regmap_read(chip->regmap, MAX17042_FullCAP, &full_cap);
+	if (ret < 0)
+		return ret;
+	data64 = full_cap * 5000ull;
+	do_div(data64, chip->pdata->r_sns);
+	design_cap = data64;
+	if (!design_cap)
+		return -ENODATA;
 
 	for (i = 0; i < chip->cv_data_length; i++) {
 		if (charge_current >= cv_data[i].fg_current)
@@ -603,7 +613,7 @@ static int max17042_get_property(struct power_supply *psy,
 		union power_supply_propval val_supplier;
 
 		if (!chip->host_temp)
-			return -EINVAL;
+			return -ENODATA;
 		ret = power_supply_get_property_from_supplier(chip->battery,
 				POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX,
 				&val_supplier);
