@@ -15,15 +15,47 @@ description: |+
 
 allOf:
   - $ref: power-domain.yaml#
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: samsung,exynos8895-pd
+    then:
+      properties:
+        reg:
+          minItems: 1
+          items:
+            - description: CONFIGURATION, STATUS and OPTION registers of the
+                domain in the PMU
+            - description: register window of the block whose registers the
+                domain's power sequence writes (the CMU_G3D PLL and mux words
+                for the G3D domain)
+        clocks:
+          description:
+            Bus clock of the block, kept running while the domain's power
+            sequence accesses the block's registers.
+        clock-names:
+          const: bus
+    else:
+      properties:
+        reg:
+          maxItems: 1
+        samsung,pmu-syscon: false
+        samsung,sysreg: false
 
 properties:
   compatible:
-    enum:
-      - samsung,exynos4210-pd
-      - samsung,exynos5433-pd
+    oneOf:
+      - enum:
+          - samsung,exynos4210-pd
+          - samsung,exynos5433-pd
+      - items:
+          - const: samsung,exynos8895-pd
+          - const: samsung,exynos5433-pd
 
   reg:
-    maxItems: 1
+    minItems: 1
+    maxItems: 2
 
   clocks:
     deprecated: true
@@ -43,6 +75,19 @@ properties:
 
   power-domains:
     maxItems: 1
+
+  samsung,pmu-syscon:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      PMU system controller, for the PMU bits the domain's power-off sequence
+      sets before the domain is switched off (Exynos8895 ABOX domain).
+
+  samsung,sysreg:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      System register block of the domain. Its words that the domain loses
+      when it is switched off are saved before power-off and restored after
+      power-on.
 
 required:
   - compatible
@@ -65,4 +110,12 @@ examples:
         reg = <0x10044060 0x20>;
         #power-domain-cells = <0>;
         label = "MFC";
+    };
+
+  - |
+    pd_g3d: power-domain@164840e0 {
+        compatible = "samsung,exynos8895-pd", "samsung,exynos5433-pd";
+        reg = <0x164840e0 0x20>, <0x13800000 0x1000>;
+        #power-domain-cells = <0>;
+        label = "g3d";
     };
