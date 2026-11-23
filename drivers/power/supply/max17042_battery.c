@@ -53,6 +53,15 @@
 
 #define MAX17042_VMAX_TOLERANCE		50 /* 50 mV */
 
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_TTF)
+/* one row of maxim,ttf-cv-data */
+struct max77865_cv_slope {
+	u32 fg_current;
+	u32 soc;
+	u32 time;
+};
+#endif
+
 struct max17042_chip {
 	struct device *dev;
 	struct regmap *regmap;
@@ -84,7 +93,48 @@ struct max17042_chip {
 	int    soc_permille;
 	bool   initial_update;
 	bool   full;
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_TTF)
+	struct max77865_cv_slope *cv_data;
+	int    cv_data_length;
+#endif
 };
+
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_TTF)
+/*
+ * max17042_battery_props below plus TIME_TO_FULL_NOW, kept in front of the two current
+ * properties so that dropping the last two (no current sense) works as for the list below
+ */
+static enum power_supply_property max77865_battery_props[] = {
+	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_PRESENT,
+	POWER_SUPPLY_PROP_TECHNOLOGY,
+	POWER_SUPPLY_PROP_CYCLE_COUNT,
+	POWER_SUPPLY_PROP_VOLTAGE_MAX,
+	POWER_SUPPLY_PROP_VOLTAGE_MIN,
+	POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN,
+	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+	POWER_SUPPLY_PROP_VOLTAGE_AVG,
+	POWER_SUPPLY_PROP_VOLTAGE_OCV,
+	POWER_SUPPLY_PROP_CAPACITY,
+	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
+	POWER_SUPPLY_PROP_CHARGE_FULL,
+	POWER_SUPPLY_PROP_CHARGE_NOW,
+	POWER_SUPPLY_PROP_CHARGE_COUNTER,
+	POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT,
+	POWER_SUPPLY_PROP_TEMP,
+	POWER_SUPPLY_PROP_TEMP_ALERT_MIN,
+	POWER_SUPPLY_PROP_TEMP_ALERT_MAX,
+	POWER_SUPPLY_PROP_TEMP_MIN,
+	POWER_SUPPLY_PROP_TEMP_MAX,
+	POWER_SUPPLY_PROP_HEALTH,
+	POWER_SUPPLY_PROP_SCOPE,
+	POWER_SUPPLY_PROP_TIME_TO_EMPTY_NOW,
+	POWER_SUPPLY_PROP_TIME_TO_FULL_NOW,
+	// these two have to be at the end on the list
+	POWER_SUPPLY_PROP_CURRENT_NOW,
+	POWER_SUPPLY_PROP_CURRENT_AVG,
+};
+#endif
 
 static enum power_supply_property max17042_battery_props[] = {
 	POWER_SUPPLY_PROP_STATUS,
@@ -272,6 +322,67 @@ out:
 health_error:
 	return ret;
 }
+
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_TTF)
+/* the vendor driver's time-to-full estimate, in seconds */
+static int max17042_calc_ttf(struct max17042_chip *chip, int charge_current)
+{
+	int i, cc_time = 0, cv_time = 0;
+	int soc, design_cap, ret;
+	struct max77865_cv_slope *cv_data = chip->cv_data;
+	unsigned int full_cap;
+	u64 data64;
+
+	if (!cv_data || chip->cv_data_length <= 0 || charge_current <= 0)
+		return -ENODATA;
+
+	soc = READ_ONCE(chip->soc_permille);
+
+	/*
+	 * The vendor driver uses a fixed 3300 mAh; the learned FullCAP keeps the
+	 * constant-current time right for an aged cell.
+	 */
+	ret = regmap_read(chip->regmap, MAX17042_FullCAP, &full_cap);
+	if (ret < 0)
+		return ret;
+	data64 = full_cap * 5000ull;
+	do_div(data64, chip->pdata->r_sns);
+	design_cap = data64;
+	if (!design_cap)
+		return -ENODATA;
+
+	for (i = 0; i < chip->cv_data_length; i++) {
+		if (charge_current >= cv_data[i].fg_current)
+			break;
+	}
+	i = (i >= chip->cv_data_length) ? chip->cv_data_length - 1 : i;
+
+	if (cv_data[i].soc < soc) {
+		for (i = 0; i < chip->cv_data_length; i++) {
+			if (soc <= cv_data[i].soc)
+				break;
+		}
+		if (i > 0 && i < chip->cv_data_length &&
+		    cv_data[i].soc != cv_data[i - 1].soc) {
+			cv_time = ((cv_data[i - 1].time - cv_data[i].time) *
+				   (cv_data[i].soc - soc) /
+				   (cv_data[i].soc - cv_data[i - 1].soc)) + cv_data[i].time;
+		} else {
+			cv_time = (i < chip->cv_data_length) ? cv_data[i].time : 0;
+		}
+	} else {
+		cv_time = cv_data[i].time;
+		cc_time = (design_cap * (cv_data[i].soc - soc) / charge_current) * 3600 / 1000;
+		if (cc_time < 0)
+			cc_time = 0;
+	}
+
+	if (cv_time + cc_time >= 0)
+		return cv_time + cc_time + 60;
+	else
+		return 60;
+}
+#endif
 
 static int max17042_get_property(struct power_supply *psy,
 			    enum power_supply_property psp,
@@ -494,6 +605,26 @@ static int max17042_get_property(struct power_supply *psy,
 
 		val->intval = data * 5625 / 1000;
 		break;
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_TTF)
+	case POWER_SUPPLY_PROP_TIME_TO_FULL_NOW: {
+		union power_supply_propval val_supplier;
+
+		if (!chip->host_temp)
+			return -ENODATA;
+		ret = power_supply_get_property_from_supplier(chip->battery,
+				POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX,
+				&val_supplier);
+		if (ret == 0 && val_supplier.intval > 0) {
+			int ttf = max17042_calc_ttf(chip, val_supplier.intval / 1000);
+
+			if (ttf < 0)
+				return ttf;
+			val->intval = ttf;
+			return 0;
+		}
+		return -ENODATA;
+	}
+#endif
 	default:
 		return -EINVAL;
 	}
@@ -1329,6 +1460,21 @@ static int max17042_probe(struct i2c_client *client, struct device *dev, int irq
 		ret = max77865_soc_parse(chip);
 		if (ret)
 			return ret;
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_TTF)
+		{
+			int count = of_property_count_u32_elems(dev->of_node, "maxim,ttf-cv-data");
+
+			if (count > 0 && count % 3 == 0) {
+				chip->cv_data = devm_kcalloc(dev, count / 3,
+							     sizeof(struct max77865_cv_slope),
+							     GFP_KERNEL);
+				if (chip->cv_data &&
+				    !of_property_read_u32_array(dev->of_node, "maxim,ttf-cv-data",
+								(u32 *)chip->cv_data, count))
+					chip->cv_data_length = count / 3;
+			}
+		}
+#endif
 	}
 
 	chip->pdata = max17042_get_pdata(chip);
@@ -1366,6 +1512,10 @@ static int max17042_probe(struct i2c_client *client, struct device *dev, int irq
 		chip->psy_desc = *max17042_desc;
 		chip->psy_desc.name = "battery";
 		chip->psy_desc.external_power_changed = max77865_external_power_changed;
+#if IS_ENABLED(CONFIG_CHARGER_MAX77865_TTF)
+		chip->psy_desc.properties = max77865_battery_props;
+		chip->psy_desc.num_properties = max17042_desc->num_properties + 1;
+#endif
 		max17042_desc = &chip->psy_desc;
 	}
 
