@@ -777,6 +777,19 @@ static int exynos_sysmmu_probe(struct platform_device *pdev)
 
 	__sysmmu_get_version(data);
 
+	/*
+	 * The VM registers start at REG_V7_CTRL_VM. If the node does not map
+	 * them, use the non-VM layout rather than access outside the mapping.
+	 */
+	if (data->has_vcr && resource_size(res) <= REG_V7_CTRL_VM) {
+		resource_size_t sz = resource_size(res);
+
+		dev_err(dev, "VCR reported but only %pa bytes mapped, keeping the non-VM layout\n",
+			&sz);
+		data->has_vcr = false;
+		data->variant = &sysmmu_v7_variant;
+	}
+
 	ret = iommu_device_sysfs_add(&data->iommu, &pdev->dev, NULL,
 				     dev_name(data->sysmmu));
 	if (ret)
