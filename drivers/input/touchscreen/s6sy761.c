@@ -113,16 +113,27 @@
 #define S6SY661_TT_PALM			5
 #define S6SY661_TT_WET			6
 
-/* the "sponge" firmware library: pressure home key */
+/* the "sponge" firmware library: pressure home key and wake gestures */
 #define S6SY661_SPONGE_GET_INFO		0x90
 #define S6SY661_SPONGE_WRITE_PARAM	0x91
 #define S6SY661_SPONGE_NOTIFY_PACKET	0x93
 #define S6SY661_SPONGE_INFO_SIZE	10
 #define S6SY661_SPONGE_MODEL_LEN	4
+#define S6SY661_SPONGE_OFFSET_AOD_RECT	0x02
 
 /* sponge mode byte */
+#define S6SY661_MODE_AOD		BIT(2)
+#define S6SY661_MODE_SINGLE_TAP		BIT(3)
 #define S6SY661_MODE_FORCE_KEY		BIT(6)
-#define S6SY661_MODE_LOWPOWER_FLAG	S6SY661_MODE_FORCE_KEY
+#define S6SY661_MODE_LOWPOWER_FLAG	(S6SY661_MODE_AOD | S6SY661_MODE_SINGLE_TAP | \
+					 S6SY661_MODE_FORCE_KEY)
+
+#define S6SY661_EVENT_ID_GESTURE	0x02
+#define S6SY661_GESTURE_DOUBLE_TAP	0x01
+#define S6SY661_GESTURE_SINGLE_TAP	0x02
+
+/* Samsung's KEY_BLACK_UI_GESTURE, not an upstream key code */
+#define S6SY661_KEY_BLACK_UI_GESTURE	0x1c7
 
 #define S6SY661_WAKEUP_GESTURE_MODE	0x39
 #define S6SY661_PM_DELAY_MS		50
@@ -186,6 +197,7 @@ struct s6sy761_data {
 	u16 touch_functions;
 	bool pressure_key;
 	u8 lowpower_mode;
+	u16 aod_rect[4];
 	bool lpm;
 	bool irq_wake;
 	bool home_key_down;
@@ -285,6 +297,39 @@ static void s6sy661_handle_pressure(struct s6sy761_data *sdata, u8 *event)
 	input_sync(sdata->input);
 }
 
+/*
+ * The vendor driver tells the two gestures apart by the sponge mode, so only
+ * one works at a time; the gesture id is used here instead.
+ */
+static void s6sy661_handle_gesture(struct s6sy761_data *sdata, u8 *event)
+{
+	u8 mode = READ_ONCE(sdata->lowpower_mode);
+	unsigned int key;
+
+	if ((event[0] & S6SY661_MASK_STYPE) >> 2)
+		return;
+
+	switch (event[1]) {
+	case S6SY661_GESTURE_DOUBLE_TAP:
+		if (!(mode & S6SY661_MODE_AOD))
+			return;
+		key = KEY_WAKEUP;
+		break;
+	case S6SY661_GESTURE_SINGLE_TAP:
+		if (!(mode & S6SY661_MODE_SINGLE_TAP))
+			return;
+		key = S6SY661_KEY_BLACK_UI_GESTURE;
+		break;
+	default:
+		return;
+	}
+
+	input_report_key(sdata->input, key, 1);
+	input_sync(sdata->input);
+	input_report_key(sdata->input, key, 0);
+	input_sync(sdata->input);
+}
+
 static void s6sy761_handle_coordinates(struct s6sy761_data *sdata, u8 *event)
 {
 	u8 tid;
@@ -342,6 +387,11 @@ static void s6sy761_handle_events(struct s6sy761_data *sdata, u8 n_events)
 		case S6SY761_EVENT_ID_STATUS:
 			if (sdata->pressure_key)
 				s6sy661_handle_pressure(sdata, event);
+			break;
+
+		case S6SY661_EVENT_ID_GESTURE:
+			if (sdata->pressure_key)
+				s6sy661_handle_gesture(sdata, event);
 			break;
 
 		default:
@@ -500,6 +550,25 @@ static int s6sy661_sponge_write(struct s6sy761_data *sdata)
 						      S6SY661_SPONGE_NOTIFY_PACKET));
 }
 
+/* Caller holds power_lock, the chip is powered. */
+static int s6sy661_sponge_write_rect(struct s6sy761_data *sdata)
+{
+	u8 data[10] = { S6SY661_SPONGE_OFFSET_AOD_RECT, 0 };
+	int i, ret;
+
+	for (i = 0; i < 4; i++)
+		put_unaligned_le16(sdata->aod_rect[i], &data[i * 2 + 2]);
+
+	ret = s6sy761_i2c_retry(i2c_smbus_write_i2c_block_data(sdata->client,
+							       S6SY661_SPONGE_WRITE_PARAM,
+							       sizeof(data), data));
+	if (ret)
+		return ret;
+
+	return s6sy761_i2c_retry(i2c_smbus_write_byte(sdata->client,
+						      S6SY661_SPONGE_NOTIFY_PACKET));
+}
+
 /*
  * The vendor sequence. Only probe skips the 70 ms, when both rails were already
  * on. A ready wait that times out is not fatal: BOOT_STATUS decides.
@@ -553,6 +622,11 @@ static int s6sy661_power_on(struct s6sy761_data *sdata, bool probe)
 
 	if (sdata->pressure_key && s6sy661_sponge_write(sdata))
 		dev_warn(&sdata->client->dev, "failed to configure the pressure key\n");
+
+	/* a power cycle loses the AOD rectangle */
+	if (sdata->pressure_key && (sdata->lowpower_mode & S6SY661_MODE_AOD) &&
+	    s6sy661_sponge_write_rect(sdata))
+		dev_warn(&sdata->client->dev, "failed to set the AOD rectangle\n");
 
 	sdata->powered = true;
 	return 0;
@@ -871,6 +945,42 @@ static void s6sy761_power_off(void *data)
 						sdata->regulators);
 }
 
+/* Without the sponge library the vendor aod_enable succeeds, singletap_enable fails. */
+static int s6sy661_cmd_sponge_mode(struct s6sy761_data *sdata, u8 bit, int on)
+{
+	int ret = 0;
+
+	if (on != 0 && on != 1)
+		return -EINVAL;
+	if (!sdata->pressure_key)
+		return bit == S6SY661_MODE_SINGLE_TAP ? -ENODEV : 0;
+
+	mutex_lock(&sdata->power_lock);
+	if (on)
+		sdata->lowpower_mode |= bit;
+	else
+		sdata->lowpower_mode &= ~bit;
+	if (sdata->powered)
+		ret = s6sy661_sponge_write(sdata);
+	mutex_unlock(&sdata->power_lock);
+
+	return ret;
+}
+
+static int s6sy661_cmd_aod_rect(struct s6sy761_data *sdata, const int *param)
+{
+	int i, ret = 0;
+
+	mutex_lock(&sdata->power_lock);
+	for (i = 0; i < 4; i++)
+		sdata->aod_rect[i] = param[i];
+	if (sdata->pressure_key && sdata->powered)
+		ret = s6sy661_sponge_write_rect(sdata);
+	mutex_unlock(&sdata->power_lock);
+
+	return ret;
+}
+
 static int s6sy661_cmd_glove_mode(struct s6sy761_data *sdata, int mode)
 {
 	int ret = 0;
@@ -939,6 +1049,12 @@ static ssize_t cmd_store(struct device *dev, struct device_attribute *attr,
 
 	if (!strcmp(name, "glove_mode")) {
 		ret = s6sy661_cmd_glove_mode(sdata, param[0]);
+	} else if (!strcmp(name, "aod_enable")) {
+		ret = s6sy661_cmd_sponge_mode(sdata, S6SY661_MODE_AOD, param[0]);
+	} else if (!strcmp(name, "singletap_enable")) {
+		ret = s6sy661_cmd_sponge_mode(sdata, S6SY661_MODE_SINGLE_TAP, param[0]);
+	} else if (!strcmp(name, "set_aod_rect")) {
+		ret = s6sy661_cmd_aod_rect(sdata, param);
 	} else {
 		result = "NA";
 		state = "NOT_APPLICABLE";
@@ -985,9 +1101,14 @@ static ssize_t cmd_result_show(struct device *dev, struct device_attribute *attr
 }
 static DEVICE_ATTR_RO(cmd_result);
 
+/* userspace offers a feature for each listed command: list only working ones */
 static ssize_t cmd_list_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	return sysfs_emit(buf, "++factory command list++\nglove_mode\n\n");
+	struct s6sy761_data *sdata = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "++factory command list++\nglove_mode\n%s\n",
+			  sdata->pressure_key ?
+			  "set_aod_rect\naod_enable\nsingletap_enable\n" : "");
 }
 static DEVICE_ATTR_RO(cmd_list);
 
@@ -1162,8 +1283,11 @@ static int s6sy761_probe(struct i2c_client *client)
 	input_set_abs_params(sdata->input, ABS_MT_TOUCH_MINOR, 0, 255, 0, 0);
 	input_set_abs_params(sdata->input, ABS_MT_PRESSURE, 0, 255, 0, 0);
 
-	if (sdata->pressure_key)
+	if (sdata->pressure_key) {
 		input_set_capability(sdata->input, EV_KEY, KEY_HOMEPAGE);
+		input_set_capability(sdata->input, EV_KEY, KEY_WAKEUP);
+		input_set_capability(sdata->input, EV_KEY, S6SY661_KEY_BLACK_UI_GESTURE);
+	}
 
 	touchscreen_parse_properties(sdata->input, true, &sdata->prop);
 
