@@ -96,6 +96,7 @@ struct s3c24xx_serial_drv_data {
 	const struct s3c24xx_uart_info	info;
 	const struct s3c2410_uartcfg	def_cfg;
 	const unsigned int		fifosize[UART_NR];
+	bool				suspend_mode_off;	/* UCON Rx/Tx mode off in suspend */
 };
 
 struct s3c24xx_uart_dma {
@@ -2085,9 +2086,35 @@ static void s3c24xx_serial_remove(struct platform_device *dev)
 static int s3c24xx_serial_suspend(struct device *dev)
 {
 	struct uart_port *port = s3c24xx_dev_to_port(dev);
+	struct s3c24xx_uart_port *ourport;
+	u32 ucon;
 
-	if (port)
-		uart_suspend_port(&s3c24xx_uart_drv, port);
+	if (!port)
+		return 0;
+
+	ourport = to_ourport(port);
+
+	uart_suspend_port(&s3c24xx_uart_drv, port);
+
+	/*
+	 * Under hardware auto clock gating a port with its Rx or Tx mode set
+	 * keeps its clock requested, open or not. Resume restores UCON.
+	 */
+	if (!ourport->drv_data->suspend_mode_off)
+		return 0;
+
+	clk_prepare_enable(ourport->clk);
+	if (!IS_ERR(ourport->baudclk))
+		clk_prepare_enable(ourport->baudclk);
+	ucon = rd_regl(port, S3C2410_UCON);
+	ucon &= ~(S3C2410_UCON_RXIRQMODE | S3C2410_UCON_TXIRQMODE);
+	wr_regl(port, S3C2410_UCON, ucon);
+	if (!IS_ERR(ourport->baudclk))
+		clk_disable_unprepare(ourport->baudclk);
+	clk_disable_unprepare(ourport->clk);
+
+	ourport->rx_enabled = 0;
+	ourport->tx_enabled = 0;
 
 	return 0;
 }
@@ -2512,6 +2539,7 @@ static const struct s3c24xx_serial_drv_data exynos8895_serial_drv_data = {
 	EXYNOS_COMMON_SERIAL_DRV_DATA,
 	/* samsung,uart-fifosize must be specified in the device tree. */
 	.fifosize = { 0 },
+	.suspend_mode_off = true,
 };
 
 static const struct s3c24xx_serial_drv_data gs101_serial_drv_data = {
