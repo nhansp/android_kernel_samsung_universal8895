@@ -32,6 +32,7 @@
 #include <drm/drm_panel.h>
 #include <drm/drm_print.h>
 #include <drm/exynos8895_hiber.h>
+#include <drm/exynos8895_panel.h>
 
 /* returns true iff both arguments logically differs */
 #define NEQV(a, b) (!(a) ^ !(b))
@@ -2124,6 +2125,7 @@ stable:
 static int dsim8895_set_config(struct samsung_dsim *dsi)
 {
 	const struct samsung_dsim_fixed_link *l = dsi->driver_data->fixed_link;
+	const struct dsu_info_dt *dt = exynos8895_panel_get_dsu_dt();
 	const struct drm_display_mode *m = &dsi->mode;
 	unsigned int xres = m->hdisplay, yres = m->vdisplay;
 	unsigned int hs = dsim8895_hs_mhz(l);
@@ -2134,6 +2136,14 @@ static int dsim8895_set_config(struct samsung_dsim *dsi)
 	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO) {
 		dev_err(dsi->dev, "video mode is not supported on this DSIM variant\n");
 		return -EINVAL;
+	}
+	if (dt && dt->dsu_en && dsi->dsu_mode >= DSU_MODE_1 &&
+	    dsi->dsu_mode - DSU_MODE_1 < dt->dsu_number) {
+		const struct dsu_res_info *res = &dt->res_info[dsi->dsu_mode - DSU_MODE_1];
+
+		xres = res->width;
+		yres = res->height;
+		dsc = res->dsc_en != 0;
 	}
 	if (dsc) {
 		slices = dsi->dsc ? dsi->dsc->slice_count : 2;
@@ -2539,13 +2549,73 @@ static int samsung_dsim_ulps_exit_cb(void *data)
 	return samsung_dsim_exit_ulps(data);
 }
 
+/* switch the link to the resolution of a DSU mode */
+static int dsim8895_set_dsu_update(struct samsung_dsim *dsi,
+				   const struct dsu_info *dsu)
+{
+	const struct dsu_info_dt *dt = exynos8895_panel_get_dsu_dt();
+	const struct dsu_res_info *res;
+	unsigned int xres, yres, threshold, num_of_transfer, slices, slice_w;
+	bool dsc;
+	u32 val;
+
+	if (!dsi->driver_data->has_8895_link)
+		return -ENODEV;
+	if (!dsu || !dt || !dt->dsu_en)
+		return -EINVAL;
+	if (dsu->mode < DSU_MODE_1 || dsu->mode >= DSU_MODE_MAX)
+		return -EINVAL;
+	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO)
+		return 0;
+
+	res = &dt->res_info[dsu->mode - DSU_MODE_1];
+	dsi->dsu_mode = dsu->mode;
+	xres = res->width;
+	yres = res->height;
+	dsc = res->dsc_en != 0;
+
+	dsim8895_mask(dsi, DSIM8895_UNDERRUN_CTRL, dsi->cmd_underrun_lp_ref, 0xffff);
+
+	threshold = dsc ? xres / 3 : xres;
+	num_of_transfer = dsc ? xres * yres / threshold / 3 : xres * yres / threshold;
+	dsim8895_mask(dsi, DSIM8895_THRESHOLD, threshold, 0xffff);
+
+	dsim8895_mask(dsi, 0x3c, (yres & 0x1fff) << 16, 0x1fff << 16);
+	dsim8895_mask(dsi, 0x3c, (dsc ? xres / 3 : xres) & 0x1fff, 0x1fff);
+
+	dsim8895_mask(dsi, DSIM8895_NUM_OF_TRANSFER, num_of_transfer, 0xfffff);
+
+	dsim8895_mask(dsi, 0x4c, dsc ? DSIM8895_CPRS_EN : 0, DSIM8895_CPRS_EN);
+	if (dsc) {
+		slices = dsi->dsc ? dsi->dsc->slice_count : 2;
+		slice_w = xres / slices;
+		dsim8895_mask(dsi, DSIM8895_CPRS_CTRL, slices, 0x7);
+		dsim8895_mask(dsi, DSIM8895_CPRS_CTRL, DSIM8895_MULTI_SLICE_PACKET,
+			      DSIM8895_MULTI_SLICE_PACKET);
+		val = ((slice_w & 0x1fff) << 16) | (slice_w & 0x1fff);
+		dsim8895_write(dsi, DSIM8895_SLICE01, val);
+		dsim8895_write(dsi, DSIM8895_SLICE23, val);
+	}
+
+	dev_dbg(dsi->dev, "DSU mode %d, %d:%d-%d:%d\n", dsu->mode,
+		dsu->left, dsu->top, dsu->right, dsu->bottom);
+	return 0;
+}
+
+static int samsung_dsim_set_dsu_cb(void *data, const struct dsu_info *dsu)
+{
+	return dsim8895_set_dsu_update(data, dsu);
+}
+
 /* one DSIM0 on this SoC, registered once at probe */
 static struct exynos8895_dsim_hooks dsim8895_hiber_hooks;
 
 static void samsung_dsim_register_hiber_hooks(struct samsung_dsim *dsi)
 {
+	dsi->dsu_mode = DSU_MODE_1;
 	dsim8895_hiber_hooks.enter_ulps = samsung_dsim_ulps_enter_cb;
 	dsim8895_hiber_hooks.exit_ulps = samsung_dsim_ulps_exit_cb;
+	dsim8895_hiber_hooks.set_dsu = samsung_dsim_set_dsu_cb;
 	dsim8895_hiber_hooks.data = dsi;
 	exynos8895_decon_set_dsim_hooks(&dsim8895_hiber_hooks);
 }

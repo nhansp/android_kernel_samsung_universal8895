@@ -142,6 +142,7 @@ struct samsung_dsim {
 	const struct drm_dsc_config *dsc;
 	u32 cmd_underrun_lp_ref;
 	u32 ddi_type;			/* panel DDI, for the ULPS handshake */
+	u32 dsu_mode;			/* DSU mode the link is set up for */
 	bool handover;
 	struct mutex cmd_lock;		/* one packet in flight */
 	struct completion ph_empty;	/* INTSRC SFR_PH_FIFO_EMPTY */
