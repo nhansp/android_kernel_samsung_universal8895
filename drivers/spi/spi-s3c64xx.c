@@ -155,6 +155,8 @@ struct s3c64xx_spi_dma_data {
  * @clk_ioclk: True if clock is present on this device
  * @has_loopback: True if loopback mode can be supported
  * @use_32bit_io: True if the SoC allows only 32-bit register accesses.
+ * @cs_inact_suspend: True if suspend must leave the chip select in manual mode,
+ *	inactive.
  *
  * The Samsung s3c64xx SPI controller are used on various Samsung SoC's but
  * differ in some aspects such as the size of the fifo and spi bus clock
@@ -175,6 +177,7 @@ struct s3c64xx_spi_port_config {
 	bool	clk_ioclk;
 	bool	has_loopback;
 	bool	use_32bit_io;
+	bool	cs_inact_suspend;
 };
 
 /**
@@ -1420,6 +1423,16 @@ static int s3c64xx_spi_suspend(struct device *dev)
 	if (ret)
 		return ret;
 
+	/*
+	 * An auto-mode chip select keeps the clock requested under hardware
+	 * auto clock gating. Park it in manual mode, inactive.
+	 */
+	if (sdd->port_conf->cs_inact_suspend && !sdd->cntrlr_info->no_cs &&
+	    !pm_runtime_resume_and_get(dev)) {
+		writel(S3C64XX_SPI_CS_SIG_INACT, sdd->regs + S3C64XX_SPI_CS_REG);
+		pm_runtime_put_noidle(dev);
+	}
+
 	ret = pm_runtime_force_suspend(dev);
 	if (ret < 0)
 		return ret;
@@ -1581,6 +1594,7 @@ static const struct s3c64xx_spi_port_config exynos8895_spi_port_config = {
 	.clk_from_cmu	= true,
 	.has_loopback	= true,
 	.quirks		= S3C64XX_SPI_QUIRK_CS_AUTO,
+	.cs_inact_suspend = true,
 };
 
 static const struct s3c64xx_spi_port_config exynosautov9_spi_port_config = {
