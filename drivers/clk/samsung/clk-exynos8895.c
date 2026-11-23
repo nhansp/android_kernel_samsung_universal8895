@@ -522,7 +522,7 @@ PNAME(mout_pll_shared1_p)		= { "oscclk", "fout_shared1_pll" };
 PNAME(mout_pll_shared2_p)		= { "oscclk", "fout_shared2_pll" };
 PNAME(mout_pll_shared3_p)		= { "oscclk", "fout_shared3_pll" };
 PNAME(mout_pll_shared4_p)		= { "oscclk", "fout_shared4_pll" };
-PNAME(mout_cp2ap_mif_clk_user_p)	= { "oscclk" };
+PNAME(mout_cp2ap_mif_clk_user_p)	= { "oscclk", "cp2ap_mif_clk" };
 PNAME(mout_cmu_abox_cpuabox_p)		= { "dout_cmu_shared0_div2",
 					    "dout_cmu_shared1_div2",
 					    "fout_shared2_pll",
@@ -947,7 +947,7 @@ static const struct samsung_div_clock top_div_clks[] __initconst = {
 	DIV(CLK_DOUT_CMU_BUS1_BUS, "dout_cmu_bus1_bus", "gout_cmu_bus1_bus",
 	    CLK_CON_DIV_CLKCMU_BUS1_BUS, 0, 4),
 	DIV(CLK_DOUT_CMU_BUSC_BUS, "dout_cmu_busc_bus",
-	    "gout_cmu_clkcmu_busc_bus", CLK_CON_DIV_CLKCMU_BUSC_BUS, 0, 4),
+	    "gout_cmu_busc_bus", CLK_CON_DIV_CLKCMU_BUSC_BUS, 0, 4),
 	DIV(CLK_DOUT_CMU_BUSC_BUSPHSI2C, "dout_cmu_busc_busphsi2c",
 	    "gout_cmu_busc_busphsi2c", CLK_CON_DIV_CLKCMU_BUSC_BUSPHSI2C,
 	    0, 4),
@@ -1081,6 +1081,11 @@ static const struct samsung_div_clock top_div_clks[] __initconst = {
 	    CLK_CON_DIV_CLKCMU_SRDZ_IMGD, 0, 4),
 	DIV(CLK_DOUT_CMU_VPU_BUS, "dout_cmu_vpu_bus", "gout_cmu_vpu_bus",
 	    CLK_CON_DIV_CLKCMU_VPU_BUS, 0, 4),
+};
+
+/* MIF clock from the modem: nominal rate, the modem sets the real one */
+static const struct samsung_fixed_rate_clock top_fixed_clks[] __initconst = {
+	FRATE(0, "cp2ap_mif_clk", NULL, 0, 1066000000),
 };
 
 static const struct samsung_fixed_factor_clock top_fixed_factor_clks[] __initconst = {
@@ -1292,6 +1297,8 @@ static const struct samsung_cmu_info top_cmu_info __initconst = {
 	.nr_mux_clks		= ARRAY_SIZE(top_mux_clks),
 	.div_clks		= top_div_clks,
 	.nr_div_clks		= ARRAY_SIZE(top_div_clks),
+	.fixed_clks		= top_fixed_clks,
+	.nr_fixed_clks		= ARRAY_SIZE(top_fixed_clks),
 	.fixed_factor_clks	= top_fixed_factor_clks,
 	.nr_fixed_factor_clks	= ARRAY_SIZE(top_fixed_factor_clks),
 	.gate_clks		= top_gate_clks,
@@ -1393,7 +1400,7 @@ static const unsigned long peris_clk_regs[] __initconst = {
 
 /* List of parent clocks for Muxes in CMU_PERIS */
 PNAME(mout_peris_bus_user_p)	= { "oscclk", "dout_cmu_peris_bus" };
-PNAME(mout_peris_gic_p)		= { "oscclk", "mout_peris_bus_user" };
+PNAME(mout_peris_gic_p)		= { "mout_peris_bus_user", "oscclk" };
 
 static const struct samsung_mux_clock peris_mux_clks[] __initconst = {
 	MUX(CLK_MOUT_PERIS_BUS_USER, "mout_peris_bus_user",
