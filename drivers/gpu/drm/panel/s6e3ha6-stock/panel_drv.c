@@ -52,6 +52,8 @@ static int __set_panel_power(struct panel_device *panel, int power)
 			if (ret) {
 				panel_err("PANEL:%s:faield to enable regulator : %d :%d\n",
 					__func__, i, ret);
+				while (--i >= 0)
+					regulator_disable(pad->regulator[i]);
 				goto set_err;
 			}
 		}
