@@ -1292,6 +1292,11 @@ static void exynos_ufs_fmp_init(struct ufs_hba *hba, struct exynos_ufs *ufs)
 	struct arm_smccc_res res;
 	int err;
 
+	if (ufs->drv_data->fmp_init) {
+		ufs->drv_data->fmp_init(hba, ufs);
+		return;
+	}
+
 	/*
 	 * Check for the standard crypto support bit, since it's available even
 	 * though the rest of the interface to FMP is nonstandard.
@@ -1369,7 +1374,13 @@ static void exynos_ufs_fmp_init(struct ufs_hba *hba, struct exynos_ufs *ufs)
 
 static void exynos_ufs_fmp_resume(struct ufs_hba *hba)
 {
+	struct exynos_ufs *ufs = ufshcd_get_variant(hba);
 	struct arm_smccc_res res;
+
+	if (ufs->drv_data->fmp_resume) {
+		ufs->drv_data->fmp_resume(ufs);
+		return;
+	}
 
 	if (!(hba->caps & UFSHCD_CAP_CRYPTO))
 		return;

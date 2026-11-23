@@ -198,6 +198,9 @@ struct exynos_ufs_drv_data {
 	int (*post_hce_enable)(struct exynos_ufs *ufs);
 	int (*suspend)(struct exynos_ufs *ufs);
 	int (*resume)(struct exynos_ufs *ufs);
+	/* replace the generic FMP setup, for SoCs with other secure monitor calls */
+	void (*fmp_init)(struct ufs_hba *hba, struct exynos_ufs *ufs);
+	void (*fmp_resume)(struct exynos_ufs *ufs);
 };
 
 struct ufs_phy_time_cfg {
