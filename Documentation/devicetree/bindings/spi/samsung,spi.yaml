@@ -64,6 +64,12 @@ properties:
     maximum: 4
     default: 1
 
+  swap-mode:
+    description:
+      Swap the byte (and, for 32-bit words, the half-word) order of the FIFO
+      words so that a little-endian buffer is transferred in memory order.
+    type: boolean
+
   samsung,spi-src-clk:
     description:
       If the spi controller includes a internal clock mux to select the clock
