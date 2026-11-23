@@ -10,6 +10,7 @@
 #include <linux/clk.h>
 #include <linux/mmc/host.h>
 #include <linux/mmc/mmc.h>
+#include <linux/mmc/slot-gpio.h>
 #include <linux/of.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
@@ -49,6 +50,7 @@ struct dw_mci_exynos_priv_data {
 
 #define DW_MCI_EXYNOS_HWACG_OFF		BIT(0)
 #define DW_MCI_EXYNOS_FIFO_32BIT	BIT(1)
+#define DW_MCI_EXYNOS_CD_WAKE		BIT(2)
 
 static struct dw_mci_exynos_compatible {
 	char				*compatible;
@@ -90,7 +92,8 @@ static struct dw_mci_exynos_compatible {
 		.compatible	= "samsung,exynos8895-dw-mshc",
 		.ctrl_type	= DW_MCI_TYPE_EXYNOS7,
 		.flags		= DW_MCI_EXYNOS_HWACG_OFF |
-				  DW_MCI_EXYNOS_FIFO_32BIT,
+				  DW_MCI_EXYNOS_FIFO_32BIT |
+				  DW_MCI_EXYNOS_CD_WAKE,
 	},
 };
 
@@ -704,6 +707,8 @@ static int dw_mci_exynos_probe(struct platform_device *pdev)
 {
 	const struct dw_mci_drv_data *drv_data;
 	const struct of_device_id *match;
+	struct dw_mci_exynos_priv_data *priv;
+	struct dw_mci *host;
 	int ret;
 
 	match = of_match_node(dw_mci_exynos_match, pdev->dev.of_node);
@@ -720,6 +725,17 @@ static int dw_mci_exynos_probe(struct platform_device *pdev)
 		pm_runtime_put_noidle(&pdev->dev);
 
 		return ret;
+	}
+
+	host = platform_get_drvdata(pdev);
+	priv = host->priv;
+	if (priv->flags & DW_MCI_EXYNOS_CD_WAKE) {
+		struct mmc_host *mmc = host->slot->mmc;
+
+		mmc->caps |= MMC_CAP_CD_WAKE;
+		ret = mmc_gpio_set_cd_wake(mmc, true);
+		if (ret)
+			dev_warn(&pdev->dev, "card-detect wake not armed: %d\n", ret);
 	}
 
 	return 0;
