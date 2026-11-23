@@ -7,6 +7,7 @@ obj-$(CONFIG_DEVFREQ_GOV_POWERSAVE)	+= governor_powersave.o
 obj-$(CONFIG_DEVFREQ_GOV_USERSPACE)	+= governor_userspace.o
 obj-$(CONFIG_DEVFREQ_GOV_PASSIVE)	+= governor_passive.o
 obj-$(CONFIG_DEVFREQ_GOV_SIMPLE_INTERACTIVE)	+= governor_simpleinteractive.o
+obj-$(CONFIG_DEVFREQ_GOV_TABLE_INTERACTIVE)	+= governor_tableinteractive.o
 
 # DEVFREQ Drivers
 obj-$(CONFIG_ARM_EXYNOS_BUS_DEVFREQ)	+= exynos-bus.o

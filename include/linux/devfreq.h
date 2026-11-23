@@ -22,6 +22,7 @@
 #define DEVFREQ_GOV_USERSPACE		"userspace"
 #define DEVFREQ_GOV_PASSIVE		"passive"
 #define DEVFREQ_GOV_SIMPLE_INTERACTIVE	"interactive"
+#define DEVFREQ_GOV_TABLE_INTERACTIVE	"tbl_interactive"
 
 /* DEVFREQ notifier interface */
 #define DEVFREQ_TRANSITION_NOTIFIER	(0)
@@ -366,6 +367,47 @@ struct devfreq_simple_interactive_data {
 	unsigned long expires;
 	struct delayed_work hold_work;
 	struct devfreq *df;
+};
+
+/**
+ * struct devfreq_table_interactive_level - one row of the load table
+ * @freq_hz:	frequency of the level
+ * @min_load:	step down when the load (percent) is below this
+ * @max_load:	step up when the load (percent) is above this
+ * @down_staycount: polls below @min_load before stepping down, counted from
+ *		the arrival at the level
+ */
+struct devfreq_table_interactive_level {
+	unsigned long freq_hz;
+	unsigned int min_load;
+	unsigned int max_load;
+	unsigned int down_staycount;
+};
+
+/**
+ * struct devfreq_table_interactive_data - ``void *data`` fed to struct
+ *	devfreq and devfreq_add_device for the table-interactive governor
+ * @levels:	the load table, in ascending frequency
+ * @nlevels:	number of rows in @levels
+ * @highspeed_hz: level to jump to from a lower one when the load is above
+ *		both @highspeed_load and the level's max_load, 0 for none
+ * @highspeed_load: load (percent) above which the jump is made
+ * @highspeed_delay: polls the jump condition must hold before the jump
+ * @down_requirement: for the governor's internal use: polls left below
+ *		min_load
+ * @delay_count: for the governor's internal use: polls the jump condition
+ *		has held
+ */
+struct devfreq_table_interactive_data {
+	const struct devfreq_table_interactive_level *levels;
+	unsigned int nlevels;
+	unsigned long highspeed_hz;
+	unsigned int highspeed_load;
+	unsigned int highspeed_delay;
+
+	/* For the governor's internal use. Don't need to set them */
+	unsigned int down_requirement;
+	unsigned int delay_count;
 };
 
 #if !defined(CONFIG_PM_DEVFREQ)

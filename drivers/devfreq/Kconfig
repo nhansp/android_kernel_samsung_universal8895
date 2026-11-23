@@ -81,6 +81,15 @@ config DEVFREQ_GOV_SIMPLE_INTERACTIVE
 	  device. The driver may ask for a hold time: a decrease is then
 	  deferred until the frequency has been stable that long.
 
+config DEVFREQ_GOV_TABLE_INTERACTIVE
+	bool "Table Interactive"
+	help
+	  Steps the frequency one level of a load table per poll, with
+	  per-level load thresholds, a number of polls to stay before a
+	  decrease and a jump to a high-speed level, as the Exynos Mali DVFS
+	  "interactive" governor does. The device driver provides the table
+	  as governor data.
+
 comment "DEVFREQ Drivers"
 
 config ARM_EXYNOS_BUS_DEVFREQ
