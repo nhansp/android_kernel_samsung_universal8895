@@ -15,3 +15,4 @@ obj-$(CONFIG_EXYNOS_REGULATOR_COUPLER) += exynos-regulator-coupler.o
 obj-$(CONFIG_SAMSUNG_PM_CHECK)	+= s3c-pm-check.o
 
 obj-$(CONFIG_EXYNOS8895_SMC)	+= exynos8895-smc.o
+obj-$(CONFIG_EXYNOS8895_PM)	+= exynos8895-pm.o
