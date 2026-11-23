@@ -86,6 +86,7 @@ static int cpufreq_init(struct cpufreq_policy *policy)
 	struct device *cpu_dev;
 	struct clk *cpu_clk;
 	unsigned int transition_latency;
+	u32 transition_delay_us;
 	int ret;
 
 	priv = cpufreq_dt_find_data(policy->cpu);
@@ -113,6 +114,10 @@ static int cpufreq_init(struct cpufreq_policy *policy)
 	policy->suspend_freq = dev_pm_opp_get_suspend_opp_freq(cpu_dev) / 1000;
 	policy->cpuinfo.transition_latency = transition_latency;
 	policy->dvfs_possible_from_any_cpu = true;
+
+	if (!of_property_read_u32(cpu_dev->of_node, "samsung,transition-delay-us",
+				  &transition_delay_us))
+		policy->transition_delay_us = transition_delay_us;
 
 	return 0;
 }
