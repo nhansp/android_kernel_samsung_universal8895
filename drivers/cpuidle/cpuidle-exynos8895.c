@@ -33,6 +33,9 @@ static bool cpd_enabled = true;
 static bool sicd_enabled = true;
 module_param(cpd_enabled, bool, 0644);
 module_param(sicd_enabled, bool, 0644);
+/* SICD from s2idle; the vendor kernel had no s2idle, so it is opt-in */
+static bool sicd_s2idle;
+module_param(sicd_s2idle, bool, 0644);
 
 static DEFINE_RAW_SPINLOCK(c2_lock);
 static struct cpumask c2_mask;		/* CPUs inside C2 */
@@ -78,6 +81,24 @@ static void e8895_cluster_cpus(unsigned int cpu, struct cpumask *m)
 			cpumask_set_cpu(c, m);
 }
 
+/*
+ * s2idle: every other online CPU is inside the state, so this is the last
+ * CPU to enter. No residency test: the tick is frozen and next_hrtimer
+ * carries no wake time here.
+ */
+static bool e8895_s2idle_last(unsigned int cpu)
+{
+	unsigned int c;
+
+	for_each_online_cpu(c) {
+		if (c == cpu)
+			continue;
+		if (!cpumask_test_cpu(c, &c2_mask))
+			return false;
+	}
+	return true;
+}
+
 static u32 e8895_c2_prepare(unsigned int cpu, bool s2idle)
 {
 	struct cpuidle_device *self = per_cpu(cpuidle_devices, cpu);
@@ -90,8 +111,18 @@ static u32 e8895_c2_prepare(unsigned int cpu, bool s2idle)
 	raw_spin_lock(&c2_lock);
 	cpumask_set_cpu(cpu, &c2_mask);
 
-	/* s2idle: plain C2 without a clock read, timekeeping may be suspended */
-	if (s2idle || !self)
+	if (s2idle) {
+		/* no clock read: timekeeping may already be suspended */
+		if (READ_ONCE(sicd_enabled) && READ_ONCE(sicd_s2idle) &&
+		    e8895_s2idle_last(cpu) && e8895_boot_cluster(cpu) &&
+		    !e8895_sicd_prepare()) {
+			sicd_entered = true;
+			state = E8895_PSCI_SICD;
+		}
+		goto out;
+	}
+
+	if (!self)
 		goto out;
 	now = ktime_get();
 	if (ktime_to_ns(ktime_sub(READ_ONCE(self->next_hrtimer), now)) <
@@ -169,6 +200,11 @@ static __cpuidle int e8895_enter_c2(struct cpuidle_device *dev,
 	return __e8895_enter_c2(dev, idx, false);
 }
 
+/*
+ * SICD is armed only when every CPU is inside the state with IRQs masked,
+ * and the first CPU out runs the exit before IRQs come back, so no code runs
+ * while the SICD clock gates are set.
+ */
 static __cpuidle int e8895_enter_c2_s2idle(struct cpuidle_device *dev,
 					   struct cpuidle_driver *drv, int idx)
 {
