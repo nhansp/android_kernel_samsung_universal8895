@@ -26,12 +26,16 @@
 #include <linux/pm_opp.h>
 #include <linux/pm_qos.h>
 #include <linux/reboot.h>
+#include <linux/suspend.h>
 #include <linux/unaligned.h>
 #include <linux/units.h>
 #include <linux/workqueue.h>
 
 #include <soc/samsung/bts.h>
 #include <soc/samsung/exynos8895-bus-qos.h>
+#if IS_ENABLED(CONFIG_SND_SOC_SAMSUNG_ABOX)
+#include <sound/samsung/abox.h>
+#endif
 
 /* the ECT the tables of this driver were taken from: "PARA", version "003j" */
 #define E8895_ECT_TOTAL		0xaf68
@@ -214,6 +218,8 @@ struct e8895_bus {
 	struct dev_pm_qos_request boot_req;
 	struct dev_pm_qos_request susp_min_req;
 	struct dev_pm_qos_request susp_max_req;
+	u32 suspend_khz;
+	struct notifier_block pm_nb;
 	struct delayed_work boot_work;
 	struct notifier_block reboot_nb;
 
@@ -772,16 +778,54 @@ static void e8895_bus_release(struct e8895_bus *priv, bool running)
 		dev_err(priv->dev, "RELEASE running=%d failed: %d\n", running, ret);
 }
 
+#if IS_ENABLED(CONFIG_SND_SOC_SAMSUNG_ABOX)
+/* INT: while A-Box runs, it may need more than the suspend level of INT */
+static int e8895_bus_int_pm_notifier(struct notifier_block *nb,
+				     unsigned long action, void *data)
+{
+	struct e8895_bus *priv = container_of(nb, struct e8895_bus, pm_nb);
+
+	switch (action) {
+	case PM_SUSPEND_PREPARE:
+		if (abox_is_on()) {
+			unsigned int freq = abox_get_requiring_int_freq_in_khz();
+
+			if (freq)
+				priv->suspend_khz = freq;
+			else
+				priv->suspend_khz = priv->desc->suspend_khz;
+		} else {
+			priv->suspend_khz = priv->desc->suspend_khz;
+		}
+		break;
+	case PM_POST_SUSPEND:
+		priv->suspend_khz = priv->desc->suspend_khz;
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+
+static void e8895_bus_unregister_pm(void *data)
+{
+	struct e8895_bus *priv = data;
+
+	unregister_pm_notifier(&priv->pm_nb);
+}
+#endif
+
 static int e8895_bus_suspend_late(struct device *dev)
 {
 	struct e8895_bus *priv = dev_get_drvdata(dev);
+	s32 khz;
 
 	if (!e8895_bus_has_protocol(priv))
 		return 0;
 
 	e8895_bus_release(priv, false);
-	dev_pm_qos_update_request(&priv->susp_max_req, priv->desc->suspend_khz);
-	dev_pm_qos_update_request(&priv->susp_min_req, priv->desc->suspend_khz);
+	khz = priv->suspend_khz ? priv->suspend_khz : priv->desc->suspend_khz;
+	dev_pm_qos_update_request(&priv->susp_max_req, khz);
+	dev_pm_qos_update_request(&priv->susp_min_req, khz);
 
 	return 0;
 }
@@ -924,6 +968,7 @@ static int e8895_bus_probe(struct platform_device *pdev)
 	}
 	priv->dev = dev;
 	priv->desc = desc;
+	priv->suspend_khz = desc->suspend_khz;
 	platform_set_drvdata(pdev, priv);
 
 	/* the tables below are only valid for this ECT: without it, leave the bus alone */
@@ -1023,6 +1068,17 @@ static int e8895_bus_probe(struct platform_device *pdev)
 		ret = devm_add_action_or_reset(dev, e8895_bus_unregister_reboot, priv);
 	if (ret)
 		goto err;
+
+#if IS_ENABLED(CONFIG_SND_SOC_SAMSUNG_ABOX)
+	if (desc->cls == EXYNOS_BUS_QOS_INT) {
+		priv->pm_nb.notifier_call = e8895_bus_int_pm_notifier;
+		ret = register_pm_notifier(&priv->pm_nb);
+		if (!ret)
+			ret = devm_add_action_or_reset(dev, e8895_bus_unregister_pm, priv);
+		if (ret)
+			goto err;
+	}
+#endif
 
 	return 0;
 
