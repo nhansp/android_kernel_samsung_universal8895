@@ -772,6 +772,9 @@ static int exynos_sysmmu_probe(struct platform_device *pdev)
 	if (IS_ERR(data->clk_master))
 		return PTR_ERR(data->clk_master);
 
+	if (of_property_read_bool(dev->of_node, "samsung,no-suspend"))
+		dev_pm_syscore_device(dev, true);
+
 	data->sysmmu = dev;
 	spin_lock_init(&data->lock);
 
