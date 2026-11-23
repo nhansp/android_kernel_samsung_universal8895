@@ -43,6 +43,7 @@
 #define CLKS_NR_BUSC	(CLK_GOUT_BUSC_TREX_P_BUSC_PCLK_BUSC + 1)
 #define CLKS_NR_G3D	(CLK_GOUT_G3D_XIU_P_G3D_ACLK + 1)
 #define CLKS_NR_ABOX	(CLK_GOUT_ABOX_CODEC_MCLK + 1)
+#define CLKS_NR_VTS	(CLK_GOUT_VTS_DMIC + 1)
 
 /*
  * The gates of the always-on CMUs stay under hardware auto-gating, as the
@@ -6665,6 +6666,193 @@ static const struct samsung_cmu_info abox_cmu_info __initconst = {
 	.clk_name		= "cpuabox",
 };
 
+/* ---- CMU_VTS ------------------------------------------------------------- */
+
+/* Register Offset definitions for CMU_VTS (0x14000000) */
+#define OSC_LOCKTIME_OSC_VTS							0x0000
+#define OSC_CON0_OSC_VTS							0x0100
+#define OSC_CON1_OSC_VTS							0x0104
+#define OSC_CON2_OSC_VTS							0x0108
+#define OSC_CON4_OSC_VTS							0x0110
+#define VTS_CMU_CONTROLLER_OPTION						0x0800
+#define CLK_CON_MUX_MUX_CLK_VTS_CMUREF						0x1000
+#define CLK_CON_DIV_DIV_CLK_VTS_BUS						0x1800
+#define CLK_CON_DIV_DIV_CLK_VTS_CMUREF						0x1804
+#define CLK_CON_DIV_DIV_CLK_VTS_DMIC						0x1808
+#define CLK_CON_DIV_DIV_CLK_VTS_DMICIF						0x180c
+#define CLK_CON_DIV_DIV_CLK_VTS_DMIC_DIV2					0x1810
+#define CLK_CON_GAT_CLK_BLK_VTS_UID_DMIC_IF_IPCLKPORT_DMIC_CLK			0x2000
+#define CLK_CON_GAT_CLK_BLK_VTS_UID_VTS_CMU_VTS_IPCLKPORT_PCLK			0x200c
+#define CLK_CON_GAT_GOUT_BLK_VTS_UID_DMIC_AHB_IPCLKPORT_HCLK			0x2014
+#define CLK_CON_GAT_GOUT_BLK_VTS_UID_DMIC_AHB_IPCLKPORT_PCLK			0x2018
+#define CLK_CON_GAT_GOUT_BLK_VTS_UID_DMIC_IF_IPCLKPORT_DMICIF_CLK		0x201c
+#define CLK_CON_GAT_GOUT_BLK_VTS_UID_DMIC_IF_IPCLKPORT_DMIC_DIV2_CLK		0x2020
+#define CLK_CON_GAT_GOUT_BLK_VTS_UID_DMIC_IF_IPCLKPORT_PCLK			0x2024
+#define CLK_CON_GAT_GOUT_BLK_VTS_UID_GPIO_VTS_IPCLKPORT_PCLK			0x2028
+#define CLK_CON_GAT_GOUT_BLK_VTS_UID_LHM_AXI_P_VTS_IPCLKPORT_I_CLK		0x202c
+#define CLK_CON_GAT_GOUT_BLK_VTS_UID_LHS_AXI_D_VTS_IPCLKPORT_I_CLK		0x2030
+#define CLK_CON_GAT_GOUT_BLK_VTS_UID_MAILBOX_VTS2AP_IPCLKPORT_PCLK		0x2034
+#define CLK_CON_GAT_GOUT_BLK_VTS_UID_RSTNSYNC_CLK_VTS_BUS_IPCLKPORT_CLK		0x2038
+#define CLK_CON_GAT_GOUT_BLK_VTS_UID_RSTNSYNC_CLK_VTS_DMICIF_IPCLKPORT_CLK	0x203c
+#define CLK_CON_GAT_GOUT_BLK_VTS_UID_SYSREG_VTS_IPCLKPORT_PCLK			0x2040
+#define CLK_CON_GAT_GOUT_BLK_VTS_UID_VTS_IPCLKPORT_ACLK_CPU			0x2044
+#define CLK_CON_GAT_GOUT_BLK_VTS_UID_VTS_IPCLKPORT_ACLK_SYS			0x2048
+#define CLK_CON_GAT_GOUT_BLK_VTS_UID_WDT_VTS_IPCLKPORT_PCLK			0x204c
+#define DMYQCH_CON_CMU_VTS_CMUREF_QCH						0x3000
+#define DMYQCH_CON_DMIC_AHB_QCH_HCLK						0x3004
+#define DMYQCH_CON_DMIC_IF_QCH_DMIC_CLK						0x3008
+#define QCH_CON_DMIC_AHB_QCH_PCLK						0x300c
+#define QCH_CON_DMIC_IF_QCH_PCLK						0x3010
+#define QCH_CON_GPIO_VTS_QCH							0x3014
+#define QCH_CON_LHM_AXI_P_VTS_QCH						0x3018
+#define QCH_CON_LHS_AXI_D_VTS_QCH						0x301c
+#define QCH_CON_MAILBOX_VTS2AP_QCH						0x3020
+#define QCH_CON_SYSREG_VTS_QCH							0x3024
+#define QCH_CON_VTS_CMU_VTS_QCH							0x3028
+#define QCH_CON_VTS_QCH_CPU							0x302c
+#define QCH_CON_VTS_QCH_SYS							0x3030
+#define QCH_CON_VTS_QCH_SYS_DMIC						0x3034
+#define QCH_CON_WDT_VTS_QCH							0x3038
+
+/* Saved and restored across pd_vts power cycles, in the vendor order */
+static const unsigned long vts_clk_regs[] __initconst = {
+	OSC_LOCKTIME_OSC_VTS,
+	OSC_CON1_OSC_VTS,
+	OSC_CON2_OSC_VTS,
+	OSC_CON4_OSC_VTS,
+	CLK_CON_DIV_DIV_CLK_VTS_DMIC_DIV2,
+	CLK_CON_DIV_DIV_CLK_VTS_DMICIF,
+	CLK_CON_DIV_DIV_CLK_VTS_DMIC,
+	CLK_CON_DIV_DIV_CLK_VTS_CMUREF,
+	CLK_CON_DIV_DIV_CLK_VTS_BUS,
+	CLK_CON_MUX_MUX_CLK_VTS_CMUREF,
+	OSC_CON0_OSC_VTS,
+	QCH_CON_WDT_VTS_QCH,
+	QCH_CON_VTS_QCH_SYS_DMIC,
+	QCH_CON_VTS_QCH_SYS,
+	QCH_CON_VTS_QCH_CPU,
+	QCH_CON_VTS_CMU_VTS_QCH,
+	QCH_CON_SYSREG_VTS_QCH,
+	QCH_CON_MAILBOX_VTS2AP_QCH,
+	QCH_CON_LHS_AXI_D_VTS_QCH,
+	QCH_CON_LHM_AXI_P_VTS_QCH,
+	QCH_CON_GPIO_VTS_QCH,
+	QCH_CON_DMIC_IF_QCH_PCLK,
+	QCH_CON_DMIC_AHB_QCH_PCLK,
+	DMYQCH_CON_DMIC_IF_QCH_DMIC_CLK,
+	DMYQCH_CON_DMIC_AHB_QCH_HCLK,
+	DMYQCH_CON_CMU_VTS_CMUREF_QCH,
+	VTS_CMU_CONTROLLER_OPTION,
+};
+
+/* List of parent clocks for Muxes in CMU_VTS */
+PNAME(mout_vts_cmuref_p)		= { "oscclk", "vts_cmuref" };
+
+static const struct samsung_fixed_rate_clock vts_fixed_clks[] __initconst = {
+	FRATE(CLK_VTS_OSC, "vts_osc", NULL, 0, 49152000),
+};
+
+static const struct samsung_fixed_factor_clock vts_fixed_factor_clks[] __initconst = {
+	FFACTOR(0, "vts_cmuref", "vts_osc", 1, 2, 0),
+};
+
+static const struct samsung_mux_clock vts_mux_clks[] __initconst = {
+	MUX(CLK_MOUT_VTS_CMUREF, "mout_vts_cmuref", mout_vts_cmuref_p,
+	    CLK_CON_MUX_MUX_CLK_VTS_CMUREF, 0, 1),
+};
+
+static const struct samsung_div_clock vts_div_clks[] __initconst = {
+	DIV_F(CLK_DOUT_VTS_BUS, "dout_vts_bus", "vts_osc",
+	      CLK_CON_DIV_DIV_CLK_VTS_BUS, 0, 6, 0, CLK_DIVIDER_ROUND_CLOSEST),
+	DIV_F(CLK_DOUT_VTS_DMICIF, "dout_vts_dmicif", "vts_osc",
+	      CLK_CON_DIV_DIV_CLK_VTS_DMICIF, 0, 6, 0,
+	      CLK_DIVIDER_ROUND_CLOSEST),
+	DIV_F(CLK_DOUT_VTS_DMIC, "dout_vts_dmic", "dout_vts_dmicif",
+	      CLK_CON_DIV_DIV_CLK_VTS_DMIC, 0, 1, 0, CLK_DIVIDER_ROUND_CLOSEST),
+	DIV_F(CLK_DOUT_VTS_DMIC_DIV2, "dout_vts_dmic_div2", "dout_vts_dmicif",
+	      CLK_CON_DIV_DIV_CLK_VTS_DMIC_DIV2, 0, 1, 0,
+	      CLK_DIVIDER_ROUND_CLOSEST),
+};
+
+static const struct samsung_gate_clock vts_gate_clks[] __initconst = {
+	GATE(CLK_GOUT_VTS_DMICIF, "gout_vts_dmic_if_dmicif_clk",
+	     "dout_vts_dmicif",
+	     CLK_CON_GAT_GOUT_BLK_VTS_UID_DMIC_IF_IPCLKPORT_DMICIF_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_VTS_DMIC_DIV2, "gout_vts_dmic_if_dmic_div2_clk",
+	     "dout_vts_dmic_div2",
+	     CLK_CON_GAT_GOUT_BLK_VTS_UID_DMIC_IF_IPCLKPORT_DMIC_DIV2_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_VTS_DMIC, "gout_vts_dmic_if_dmic_clk", "dout_vts_dmic",
+	     CLK_CON_GAT_CLK_BLK_VTS_UID_DMIC_IF_IPCLKPORT_DMIC_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_vts_cmu_vts_pclk", "dout_vts_bus",
+	     CLK_CON_GAT_CLK_BLK_VTS_UID_VTS_CMU_VTS_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_vts_dmic_ahb_hclk", "dout_vts_bus",
+	     CLK_CON_GAT_GOUT_BLK_VTS_UID_DMIC_AHB_IPCLKPORT_HCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_vts_dmic_ahb_pclk", "dout_vts_bus",
+	     CLK_CON_GAT_GOUT_BLK_VTS_UID_DMIC_AHB_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_vts_dmic_if_pclk", "dout_vts_bus",
+	     CLK_CON_GAT_GOUT_BLK_VTS_UID_DMIC_IF_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_vts_gpio_vts_pclk", "dout_vts_bus",
+	     CLK_CON_GAT_GOUT_BLK_VTS_UID_GPIO_VTS_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_vts_lhm_axi_p_vts_i_clk", "dout_vts_bus",
+	     CLK_CON_GAT_GOUT_BLK_VTS_UID_LHM_AXI_P_VTS_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_vts_lhs_axi_d_vts_i_clk", "dout_vts_bus",
+	     CLK_CON_GAT_GOUT_BLK_VTS_UID_LHS_AXI_D_VTS_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_vts_mailbox_vts2ap_pclk", "dout_vts_bus",
+	     CLK_CON_GAT_GOUT_BLK_VTS_UID_MAILBOX_VTS2AP_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_vts_rstnsync_clk_vts_bus_clk", "dout_vts_bus",
+	     CLK_CON_GAT_GOUT_BLK_VTS_UID_RSTNSYNC_CLK_VTS_BUS_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_vts_rstnsync_clk_vts_dmicif_clk", "dout_vts_dmicif",
+	     CLK_CON_GAT_GOUT_BLK_VTS_UID_RSTNSYNC_CLK_VTS_DMICIF_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_vts_sysreg_vts_pclk", "dout_vts_bus",
+	     CLK_CON_GAT_GOUT_BLK_VTS_UID_SYSREG_VTS_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_vts_aclk_cpu", "dout_vts_bus",
+	     CLK_CON_GAT_GOUT_BLK_VTS_UID_VTS_IPCLKPORT_ACLK_CPU, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_vts_aclk_sys", "dout_vts_bus",
+	     CLK_CON_GAT_GOUT_BLK_VTS_UID_VTS_IPCLKPORT_ACLK_SYS, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_vts_wdt_vts_pclk", "dout_vts_bus",
+	     CLK_CON_GAT_GOUT_BLK_VTS_UID_WDT_VTS_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+};
+
+/* The vendor powers pd_vts off with MUX_CLK_VTS_CMUREF on its first input */
+static const struct samsung_clk_reg_dump vts_suspend_regs[] = {
+	{ CLK_CON_MUX_MUX_CLK_VTS_CMUREF, 0x0 },
+};
+
+static const struct samsung_cmu_info vts_cmu_info __initconst = {
+	.mux_clks		= vts_mux_clks,
+	.nr_mux_clks		= ARRAY_SIZE(vts_mux_clks),
+	.div_clks		= vts_div_clks,
+	.nr_div_clks		= ARRAY_SIZE(vts_div_clks),
+	.gate_clks		= vts_gate_clks,
+	.nr_gate_clks		= ARRAY_SIZE(vts_gate_clks),
+	.fixed_clks		= vts_fixed_clks,
+	.nr_fixed_clks		= ARRAY_SIZE(vts_fixed_clks),
+	.fixed_factor_clks	= vts_fixed_factor_clks,
+	.nr_fixed_factor_clks	= ARRAY_SIZE(vts_fixed_factor_clks),
+	.nr_clk_ids		= CLKS_NR_VTS,
+	.clk_regs		= vts_clk_regs,
+	.nr_clk_regs		= ARRAY_SIZE(vts_clk_regs),
+	.suspend_regs		= vts_suspend_regs,
+	.nr_suspend_regs	= ARRAY_SIZE(vts_suspend_regs),
+};
+
 /* ---- CMU probe glue ------------------------------------------------------ */
 
 #define CMU_QCH_ENABLE			BIT(0)
@@ -6814,7 +7002,7 @@ static void __init exynos8895_cmu_set_busp(struct platform_device *pdev)
 
 /*
  * The vendor kernel programs the audio blocks once at boot, outside its clock
- * framework; pd_abox only restores what was written since.
+ * framework; pd_abox and pd_vts only restore what was written since.
  */
 #define CMU_PLL_ENABLE			BIT(31)
 #define CMU_PLL_STABLE			BIT(29)
@@ -6826,7 +7014,7 @@ static void __init exynos8895_cmu_set_busp(struct platform_device *pdev)
 #define CMU_GATE_CG_VAL			BIT(21)
 #define CMU_GATE_MANUAL			BIT(20)
 
-static void __iomem *cmu_abox_base;
+static void __iomem *cmu_abox_base, *cmu_vts_base;
 
 static int exynos8895_cmu_wait_bit(void __iomem *reg, u32 bit, bool set, int us)
 {
@@ -6878,6 +7066,24 @@ static void __init exynos8895_cmu_abox_boot_init(void __iomem *b)
 				   CMU_GATE_MANUAL);
 }
 
+/*
+ * Vendor boot setup of BLK_VTS: the BUS and DMICIF dividers, the CMUREF mux,
+ * and the OSC_VTS oscillator, which the VTS driver enables once for good.
+ */
+static void __init exynos8895_cmu_vts_boot_init(void __iomem *b)
+{
+	exynos8895_cmu_rmw(b + CLK_CON_DIV_DIV_CLK_VTS_BUS, 0x3f, 0);
+	exynos8895_cmu_wait_bit(b + CLK_CON_DIV_DIV_CLK_VTS_BUS, CMU_BUSY, false, 100);
+	exynos8895_cmu_rmw(b + CLK_CON_MUX_MUX_CLK_VTS_CMUREF, BIT(0), 0);
+	exynos8895_cmu_wait_bit(b + CLK_CON_MUX_MUX_CLK_VTS_CMUREF, CMU_BUSY, false, 100);
+	exynos8895_cmu_rmw(b + CLK_CON_DIV_DIV_CLK_VTS_DMICIF, 0x3f, 11);
+	exynos8895_cmu_wait_bit(b + CLK_CON_DIV_DIV_CLK_VTS_DMICIF, CMU_BUSY, false, 100);
+	exynos8895_cmu_rmw(b + OSC_CON0_OSC_VTS, CMU_PLL_ENABLE | CMU_PLL_MUX_SEL,
+			   CMU_PLL_ENABLE | CMU_PLL_MUX_SEL);
+	if (exynos8895_cmu_wait_bit(b + OSC_CON0_OSC_VTS, CMU_PLL_STABLE, true, 400))
+		pr_err("cmu_vts: OSC_VTS stable timeout\n");
+}
+
 /* CMUs in power domains keep their gates in the mode the boot loader left */
 static int __init exynos8895_cmu_pd_probe(struct platform_device *pdev)
 {
@@ -6893,6 +7099,14 @@ static int __init exynos8895_cmu_pd_probe(struct platform_device *pdev)
 		if (!cmu_abox_base)
 			return -ENOMEM;
 		exynos8895_cmu_abox_boot_init(cmu_abox_base);
+	} else if (of_device_is_compatible(np, "samsung,exynos8895-cmu-vts")) {
+		res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+		if (!res)
+			return -EINVAL;
+		cmu_vts_base = ioremap(res->start, resource_size(res));
+		if (!cmu_vts_base)
+			return -ENOMEM;
+		exynos8895_cmu_vts_boot_init(cmu_vts_base);
 	}
 
 	ret = exynos_arm64_register_cmu_pm(pdev, false);
@@ -6906,10 +7120,11 @@ static int __init exynos8895_cmu_pd_probe(struct platform_device *pdev)
 
 static bool exynos8895_cmu_pd_is_audio(struct device *dev)
 {
-	return of_device_is_compatible(dev->of_node, "samsung,exynos8895-cmu-abox");
+	return of_device_is_compatible(dev->of_node, "samsung,exynos8895-cmu-abox") ||
+	       of_device_is_compatible(dev->of_node, "samsung,exynos8895-cmu-vts");
 }
 
-/* After a restore, wait for an enabled PLL_AUD to lock again */
+/* After a restore, wait for an enabled PLL_AUD or OSC_VTS to lock again */
 static int exynos8895_cmu_pd_runtime_resume(struct device *dev)
 {
 	int ret = exynos_arm64_cmu_resume(dev);
@@ -6918,9 +7133,25 @@ static int exynos8895_cmu_pd_runtime_resume(struct device *dev)
 	if (cmu_abox_base &&
 	    of_device_is_compatible(dev->of_node, "samsung,exynos8895-cmu-abox"))
 		r = cmu_abox_base + PLL_CON0_PLL_AUD;
+	else if (cmu_vts_base &&
+		 of_device_is_compatible(dev->of_node, "samsung,exynos8895-cmu-vts"))
+		r = cmu_vts_base + OSC_CON0_OSC_VTS;
 	if (r && (readl(r) & CMU_PLL_ENABLE) &&
 	    exynos8895_cmu_wait_bit(r, CMU_PLL_STABLE, true, 1000))
 		dev_err(dev, "PLL/OSC relock timeout\n");
+
+	return ret;
+}
+
+/* vts_suspend_regs switch MUX_CLK_VTS_CMUREF: wait for the mux to settle */
+static int exynos8895_cmu_pd_runtime_suspend(struct device *dev)
+{
+	int ret = exynos_arm64_cmu_suspend(dev);
+
+	if (cmu_vts_base &&
+	    of_device_is_compatible(dev->of_node, "samsung,exynos8895-cmu-vts"))
+		exynos8895_cmu_wait_bit(cmu_vts_base + CLK_CON_MUX_MUX_CLK_VTS_CMUREF,
+					CMU_BUSY, false, 1000);
 
 	return ret;
 }
@@ -6976,12 +7207,15 @@ static const struct of_device_id exynos8895_cmu_pd_of_match[] = {
 	}, {
 		.compatible = "samsung,exynos8895-cmu-abox",
 		.data = &abox_cmu_info,
+	}, {
+		.compatible = "samsung,exynos8895-cmu-vts",
+		.data = &vts_cmu_info,
 	},
 	{ }
 };
 
 static const struct dev_pm_ops exynos8895_cmu_pd_pm_ops = {
-	SET_RUNTIME_PM_OPS(exynos_arm64_cmu_suspend,
+	SET_RUNTIME_PM_OPS(exynos8895_cmu_pd_runtime_suspend,
 			   exynos8895_cmu_pd_runtime_resume, NULL)
 	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(exynos8895_cmu_pd_suspend_noirq,
 				      exynos8895_cmu_pd_resume_noirq)
