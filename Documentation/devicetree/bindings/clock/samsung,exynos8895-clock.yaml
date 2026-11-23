@@ -30,6 +30,7 @@ description: |
 properties:
   compatible:
     enum:
+      - samsung,exynos8895-cmu-apm
       - samsung,exynos8895-cmu-fsys0
       - samsung,exynos8895-cmu-fsys1
       - samsung,exynos8895-cmu-peric0
@@ -59,6 +60,24 @@ required:
   - "#clock-cells"
 
 allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: samsung,exynos8895-cmu-apm
+
+    then:
+      properties:
+        clocks:
+          items:
+            - description: External reference clock (26 MHz)
+            - description: CMU_APM BUS clock (from CMU_TOP)
+
+        clock-names:
+          items:
+            - const: oscclk
+            - const: bus
+
   - if:
       properties:
         compatible:
