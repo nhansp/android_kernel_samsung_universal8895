@@ -12,6 +12,7 @@
  */
 
 #include <linux/debugfs.h>
+#include <linux/export.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
@@ -822,6 +823,7 @@ void bts_update_scen(enum bts_scen_type scen, unsigned int val)
 		break;
 	}
 }
+EXPORT_SYMBOL_GPL(bts_update_scen);
 
 static void scen_chaining(enum bts_scen_type scen)
 {
