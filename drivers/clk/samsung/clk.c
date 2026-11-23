@@ -249,6 +249,42 @@ void __init samsung_clk_register_gate(struct samsung_clk_provider *ctx,
 	}
 }
 
+/* CLK_CON_GAT_* range of an ARM64 Exynos CMU, as GATE_OFF_* in clk-exynos-arm64.c */
+#define SAMSUNG_HWACG_GATE_OFF_START	0x2000
+#define SAMSUNG_HWACG_GATE_OFF_END	0x2fff
+
+/*
+ * Register the CLK_CON_GAT_* gates of a CMU left under hardware auto clock
+ * gating as 1:1 fixed factor clocks with the gate's name, parent and flags.
+ */
+static void __init
+samsung_clk_register_hwacg_gate(struct samsung_clk_provider *ctx,
+				const struct samsung_gate_clock *list,
+				unsigned int nr_clk)
+{
+	struct clk_hw *clk_hw;
+	unsigned int idx;
+
+	for (idx = 0; idx < nr_clk; idx++, list++) {
+		if (list->offset < SAMSUNG_HWACG_GATE_OFF_START ||
+		    list->offset > SAMSUNG_HWACG_GATE_OFF_END) {
+			samsung_clk_register_gate(ctx, list, 1);
+			continue;
+		}
+
+		clk_hw = clk_hw_register_fixed_factor(ctx->dev, list->name,
+						      list->parent_name,
+						      list->flags, 1, 1);
+		if (IS_ERR(clk_hw)) {
+			pr_err("%s: failed to register clock %s\n", __func__,
+			       list->name);
+			continue;
+		}
+
+		samsung_clk_add_lookup(ctx, clk_hw, list->id);
+	}
+}
+
 /*
  * obtain the clock speed of all external fixed clock sources from device
  * tree and register it
@@ -340,7 +376,10 @@ void __init samsung_cmu_register_clocks(struct samsung_clk_provider *ctx,
 		samsung_clk_register_mux(ctx, cmu->mux_clks, cmu->nr_mux_clks);
 	if (cmu->div_clks)
 		samsung_clk_register_div(ctx, cmu->div_clks, cmu->nr_div_clks);
-	if (cmu->gate_clks)
+	if (cmu->gate_clks && cmu->hwacg_gates)
+		samsung_clk_register_hwacg_gate(ctx, cmu->gate_clks,
+						cmu->nr_gate_clks);
+	else if (cmu->gate_clks)
 		samsung_clk_register_gate(ctx, cmu->gate_clks,
 					  cmu->nr_gate_clks);
 	if (cmu->fixed_clks)
