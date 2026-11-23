@@ -997,6 +997,19 @@ config MFD_MAX77705
 	  additional drivers must be enabled in order to use the functionality
 	  of the device.
 
+config MFD_MAX77865
+	bool "Maxim Semiconductor MAX77865 PMIC Support"
+	depends on I2C && OF
+	select MFD_CORE
+	select REGMAP_I2C
+	select REGMAP_IRQ
+	help
+	  Say yes here to add support for the Maxim MAX77865 companion PMIC
+	  of the Samsung Galaxy Note 8 (charger, fuel gauge, haptic, RGB LED,
+	  MUIC). This driver provides the top-level register map and the
+	  interrupt source demultiplexer; the charger and the fuel gauge are
+	  separate drivers.
+
 config MFD_MAX77714
 	tristate "Maxim Semiconductor MAX77714 PMIC Support"
 	depends on I2C

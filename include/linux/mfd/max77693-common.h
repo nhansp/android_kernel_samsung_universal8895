@@ -13,6 +13,7 @@ enum max77693_types {
 	TYPE_MAX77693,
 	TYPE_MAX77705,
 	TYPE_MAX77843,
+	TYPE_MAX77865,
 
 	TYPE_MAX77693_NUM,
 };
@@ -39,6 +40,7 @@ struct max77693_dev {
 	struct regmap_irq_chip_data *irq_data_topsys;
 	struct regmap_irq_chip_data *irq_data_chg; /* Only MAX77693 */
 	struct regmap_irq_chip_data *irq_data_muic;
+	struct regmap_irq_chip_data *sys_irq_data; /* MAX77865 SYSTEM_INT */
 
 	int irq;
 };

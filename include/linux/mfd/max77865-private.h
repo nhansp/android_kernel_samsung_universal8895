@@ -1,0 +1,202 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
+/*
+ * Maxim MAX77865 companion PMIC: registers shared by the MFD core, its cells,
+ * the charger, the AFC/QC detection and the fuel gauge temperature feed.
+ * Register names follow the vendor kernel.
+ */
+
+#ifndef __LINUX_MFD_MAX77865_PRIVATE_H
+#define __LINUX_MFD_MAX77865_PRIVATE_H
+
+#include <linux/bits.h>
+#include <linux/limits.h>
+#include <linux/thermal.h>
+
+/* PMIC page, I2C address 0x66 */
+#define MAX77865_PMIC_REG_PMICID1		0x00
+#define MAX77865_PMIC_REG_PMICREV		0x01
+#define MAX77865_PMIC_REG_MAINCTRL1		0x02
+#define MAX77865_PMIC_REG_MCONFIG		0x10
+#define MAX77865_PMIC_REG_INTSRC		0x22
+#define MAX77865_PMIC_REG_INTSRC_MASK		0x23
+#define MAX77865_PMIC_REG_SYSTEM_INT		0x24
+#define MAX77865_PMIC_REG_SYSTEM_INT_MASK	0x26
+#define MAX77865_SYSTEM_INT_SYSOVLO		BIT(5)
+#define MAX77865_PMIC_REG_BOOSTCONTROL1		0x4C
+#define MAX77865_BOOSTCONTROL1_BSTOUT		0x03
+#define MAX77865_PMIC_REG_BOOSTCONTROL2		0x4F
+#define MAX77865_BOOSTCONTROL2_FORCE_EN		0x08
+#define MAX77865_PMIC_REG_SW_RESET		0x50
+#define MAX77865_PMIC_REG_USBC_RESET		0x51
+#define MAX77865_MAINCTRL1_BIASEN		BIT(7)
+#define MAX77865_MAINCTRL1_ADEN			BIT(0)	/* active discharge */
+
+/* INTSRC bits */
+#define MAX77865_IRQSRC_CHG			BIT(0)
+#define MAX77865_IRQSRC_TOP			BIT(1)
+#define MAX77865_IRQSRC_FG			BIT(2)
+
+/* RGB LED, PMIC page */
+#define MAX77865_RGBLED_REG_LEDEN		0x30
+#define MAX77865_RGBLED_REG_LED0BRT		0x31	/* LEDnBRT = 0x31 + n */
+#define MAX77865_RGBLED_REG_LEDRMP		0x36
+#define MAX77865_RGBLED_REG_LEDBLNK		0x38
+
+/* charger page, I2C address 0x69 */
+#define MAX77865_CHG_REG_INT			0xB0
+#define MAX77865_CHG_REG_INT_MASK		0xB1
+#define MAX77865_CHG_REG_INT_OK			0xB2
+#define MAX77865_CHG_REG_DETAILS_00		0xB3
+#define MAX77865_CHG_REG_DETAILS_01		0xB4
+#define MAX77865_CHG_REG_DETAILS_02		0xB5
+#define MAX77865_CHG_REG_CNFG_00		0xB7	/* CNFG_nn = 0xB7 + nn up to CNFG_14 0xC5 */
+#define MAX77865_CHG_REG_CNFG_01		0xB8
+#define MAX77865_CHG_REG_CNFG_02		0xB9
+#define MAX77865_CHG_REG_CNFG_03		0xBA
+#define MAX77865_CHG_REG_CNFG_04		0xBB
+#define MAX77865_CHG_REG_CNFG_05		0xBC
+#define MAX77865_CHG_REG_CNFG_06		0xBD
+#define MAX77865_CHG_REG_CNFG_07		0xBE
+#define MAX77865_CHG_REG_CNFG_09		0xC0
+#define MAX77865_CHG_REG_CNFG_10		0xC1
+#define MAX77865_CHG_REG_CNFG_11		0xC2
+#define MAX77865_CHG_REG_CNFG_12		0xC3
+#define MAX77865_CHG_REG_CNFG_14		0xC5
+#define MAX77865_CHG_REG_SAFEOUT_CTRL		0xC6
+
+/* MUIC, I2C address 0x25 */
+#define MAX77865_MUIC_I2C_ADDR			0x25
+#define MAX77865_MUIC_REG_DEVICEID		0x00
+#define MAX77865_MUIC_REG_INT_MAIN		0x01
+#define MAX77865_MUIC_REG_INT_BC		0x02
+#define MAX77865_MUIC_REG_INT_FC		0x03
+#define MAX77865_MUIC_REG_INT_GP		0x04
+#define MAX77865_MUIC_REG_INTMASK_MAIN		0x07
+#define MAX77865_MUIC_REG_INTMASK_BC		0x08
+#define MAX77865_MUIC_REG_INTMASK_FC		0x09
+#define MAX77865_MUIC_REG_INTMASK_GP		0x0A
+#define MAX77865_MUIC_REG_STATUS1_BC		0x0D
+#define MAX77865_MUIC_REG_STATUS2_BC		0x0E
+#define MAX77865_MUIC_REG_STATUS_GP		0x0F
+#define MAX77865_MUIC_REG_CONTROL1_BC		0x13
+#define MAX77865_MUIC_REG_CONTROL2_BC		0x14
+#define MAX77865_MUIC_REG_CCDET			0x15
+#define MAX77865_MUIC_REG_CONTROL1		0x19
+#define MAX77865_MUIC_REG_CONTROL2		0x1A
+#define MAX77865_MUIC_REG_CONTROL3		0x1B
+#define MAX77865_MUIC_REG_CONTROL4		0x1C
+#define MAX77865_MUIC_REG_HVCONTROL1		0x1D
+#define MAX77865_MUIC_REG_HVCONTROL2		0x1E
+#define MAX77865_MUIC_REG_HVTXBYTE		0x21
+#define MAX77865_MUIC_REG_HVRXBYTE1		0x22
+#define MAX77865_BC_STATUS1_CHGTYP		GENMASK(1, 0)
+#define MAX77865_BC_STATUS1_CHGDETRUN		BIT(6)
+/* ChgTyp values */
+#define MAX77865_CHGTYP_NO_VOLTAGE		0x00
+#define MAX77865_CHGTYP_USB			0x01
+#define MAX77865_CHGTYP_CDP			0x02
+#define MAX77865_CHGTYP_DEDICATED_CHARGER	0x03
+
+/*
+ * MUIC HV bits as the vendor AFC driver uses them; the vendor's other, unused
+ * HV header disagrees on some of them (VBUSADCEN is bit 5 there).
+ */
+#define MAX77865_HV_INT_BC_VDNMON		BIT(5)
+#define MAX77865_HV_INT_FC_MRXRDY		BIT(7)
+#define MAX77865_HV_INT_FC_MPNACK		BIT(3)
+#define MAX77865_HV_INT_GP_VBADC		BIT(2)
+#define MAX77865_BC_STATUS1_VBVOLT		BIT(7)
+#define MAX77865_BC_STATUS2_DNVDATREF		BIT(0)
+#define MAX77865_GP_STATUS_UID			GENMASK(7, 6)
+#define MAX77865_GP_STATUS_VBADC		GENMASK(3, 0)
+#define MAX77865_BC_CONTROL2_DPDNMAN		BIT(4)
+#define MAX77865_HVCONTROL1_VBUSADCEN		BIT(0)
+#define MAX77865_HVCONTROL2_HVDIGEN		BIT(0)
+#define MAX77865_HVCONTROL2_DP06EN		BIT(1)
+#define MAX77865_HVCONTROL2_MPING		BIT(3)
+#define MAX77865_HVCONTROL2_MTXEN		BIT(4)
+#define MAX77865_HVCONTROL2_MTXBUSRES		BIT(5)
+#define MAX77865_HVCONTROL2_MPINGEN		BIT(6)
+#define MAX77865_HVCONTROL2_FCRXEN		BIT(7)
+
+/* CHG_INT, CHG_INT_MASK */
+#define MAX77865_CHG_BYP			BIT(0)
+#define MAX77865_CHG_BATP			BIT(2)
+#define MAX77865_CHG_CHG			BIT(4)
+#define MAX77865_CHG_WCIN			BIT(5)
+#define MAX77865_CHG_CHGIN			BIT(6)
+#define MAX77865_CHG_AICL			BIT(7)
+/* CHG_INT_OK */
+#define MAX77865_BATP_OK			BIT(2)
+#define MAX77865_WCIN_OK			BIT(5)
+#define MAX77865_CHGIN_OK			BIT(6)
+#define MAX77865_AICL_OK			BIT(7)
+/* DETAILS_00, DETAILS_01, DETAILS_02 */
+#define MAX77865_BATP_DTLS			BIT(0)
+#define MAX77865_WCIN_DTLS			GENMASK(4, 3)
+#define MAX77865_CHGIN_DTLS			GENMASK(6, 5)
+#define MAX77865_CHG_DTLS			GENMASK(3, 0)
+#define MAX77865_BAT_DTLS			GENMASK(6, 4)
+#define MAX77865_BYP_DTLS			GENMASK(2, 0)
+/* CNFG_00 */
+#define MAX77865_CNFG_00_CHG			BIT(0)
+#define MAX77865_CNFG_00_OTG			BIT(1)
+#define MAX77865_CNFG_00_BUCK			BIT(2)
+#define MAX77865_CNFG_00_BOOST			BIT(3)
+#define MAX77865_CNFG_00_WDTEN			BIT(4)
+#define MAX77865_CNFG_00_OTG_CTRL		(MAX77865_CNFG_00_OTG | MAX77865_CNFG_00_BOOST)
+/* CNFG_02 CHG_CC, CNFG_03 TO_ITH, CNFG_04 CHG_CV_PRM */
+#define MAX77865_CNFG_02_CHG_CC			GENMASK(5, 0)
+#define MAX77865_CNFG_03_TO_ITH			GENMASK(2, 0)
+#define MAX77865_CNFG_04_CHG_CV_PRM		GENMASK(5, 0)
+/* CNFG_06 */
+#define MAX77865_CNFG_06_WDTCLR			BIT(0)
+#define MAX77865_CNFG_06_CHGPROT		GENMASK(3, 2)
+/* CNFG_07 */
+#define MAX77865_CNFG_07_FGSRC			BIT(1)
+#define MAX77865_CNFG_07_FMBST			BIT(2)
+/* CNFG_09 */
+#define MAX77865_CNFG_09_CHGIN_LIM		GENMASK(6, 0)
+/* CNFG_10 */
+#define MAX77865_CNFG_10_WCIN_LIM		GENMASK(5, 0)
+/* CNFG_12 */
+#define MAX77865_CNFG_12_DISSKIP		BIT(0)
+#define MAX77865_CNFG_12_WCIN_REG		GENMASK(2, 1)
+#define MAX77865_CNFG_12_VCHGIN_REG		GENMASK(4, 3)
+#define MAX77865_CNFG_12_CHGINSEL		BIT(5)
+#define MAX77865_CNFG_12_WCINSEL		BIT(6)
+
+/**
+ * max77865_ntc_avg() - battery temperature as the vendor charger samples it
+ * @tz: thermal zone of the battery NTC
+ * @avg: result in milli-degC
+ *
+ * Five samples without the highest and the lowest. As in the vendor code, a
+ * sample only replaces the minimum when it did not replace the maximum.
+ *
+ * Return: 0, or the first failed sample's -errno (then @avg is untouched).
+ */
+static inline int max77865_ntc_avg(struct thermal_zone_device *tz, int *avg)
+{
+	int i, ret, t, max = 0, min = 0, sum = 0;
+
+	for (i = 0; i < 5; i++) {
+		ret = thermal_zone_get_temp(tz, &t);
+		if (ret)
+			return ret;
+		if (i == 0) {
+			max = t;
+			min = t;
+		} else if (t > max) {
+			max = t;
+		} else if (t < min) {
+			min = t;
+		}
+		sum += t;
+	}
+
+	*avg = (sum - max - min) / 3;
+	return 0;
+}
+
+#endif /* __LINUX_MFD_MAX77865_PRIVATE_H */
