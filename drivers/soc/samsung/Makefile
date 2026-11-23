@@ -23,3 +23,4 @@ obj-$(CONFIG_EXYNOS_SECURE_LOG)		+= exynos-seclog.o
 obj-$(CONFIG_EXYNOS8895_BTS_BW)		+= bts/
 obj-$(CONFIG_EXYNOS8895_SECMEM)		+= exynos8895-secmem.o
 obj-$(CONFIG_EXYNOS8895_MM_QOS)		+= exynos8895-mm-qos.o
+obj-$(CONFIG_SEC_SIPC_MODEM_IF)	+= exynos8895-pmu-cp.o

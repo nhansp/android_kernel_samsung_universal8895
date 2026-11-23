@@ -134,11 +134,14 @@ enum cp_control {
 
 extern int exynos_cp_reset(void);
 extern int exynos_cp_release(void);
-extern int exynos_cp_init(void);
 extern int exynos_cp_active_clear(void);
 extern int exynos_clear_cp_reset(void);
 extern int exynos_get_cp_power_status(void);
 extern int exynos_set_cp_power_onoff(enum cp_mode mode);
 extern void exynos_sys_powerdown_conf_cp(void);
-extern int exynos_pmu_cp_init(void);
+void exynos_print_cp_status(void);
+
+struct regmap;
+/* Must be called before any other function declared here. */
+void exynos_pmu_cp_set_regmap(struct regmap *map);
 #endif /* __EXYNOS_PMU_CP_H */
