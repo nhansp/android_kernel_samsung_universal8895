@@ -41,6 +41,7 @@ properties:
       - samsung,exynos8895-cmu-fsys0
       - samsung,exynos8895-cmu-fsys1
       - samsung,exynos8895-cmu-g2d
+      - samsung,exynos8895-cmu-g3d
       - samsung,exynos8895-cmu-isphq
       - samsung,exynos8895-cmu-isplp
       - samsung,exynos8895-cmu-mfc
@@ -306,6 +307,26 @@ allOf:
             - const: oscclk
             - const: g2d
             - const: jpeg
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: samsung,exynos8895-cmu-g3d
+
+    then:
+      properties:
+        clocks:
+          items:
+            - description: External reference clock (26 MHz)
+            - description: CMU_G3D SWITCH clock (from CMU_TOP)
+            - description: CMU_G3D HPM clock (from CMU_TOP)
+
+        clock-names:
+          items:
+            - const: oscclk
+            - const: switch
+            - const: hpm
 
   - if:
       properties:
