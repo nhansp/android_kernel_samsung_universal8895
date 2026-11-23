@@ -261,6 +261,7 @@ struct exynos_ufs {
 #define EXYNOS_UFS_OPT_UNIPRO_PCLK		BIT(8)
 #define EXYNOS_UFS_OPT_SKIP_SYNC_PATTERN_MASK	BIT(9)
 #define EXYNOS_UFS_OPT_UPMCRS_IN_UNIPRO		BIT(10)
+#define EXYNOS_UFS_OPT_CLKSTOP_HWACG		BIT(11)
 };
 
 #define for_each_ufs_rx_lane(ufs, i) \

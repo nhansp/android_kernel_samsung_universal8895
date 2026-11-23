@@ -454,6 +454,23 @@ static void exynos_ufs_ctrl_clkstop(struct exynos_ufs *ufs, bool en)
 	u32 ctrl = hci_readl(ufs, HCI_CLKSTOP_CTRL);
 	u32 misc = hci_readl(ufs, HCI_MISC);
 
+	/*
+	 * The M-PHY APB clock keeps running and the HCI_MISC stop enables stay
+	 * set; the hardware auto clock gating is only enabled while stopped.
+	 */
+	if (ufs->opts & EXYNOS_UFS_OPT_CLKSTOP_HWACG) {
+		u32 acg = hci_readl(ufs, HCI_UFS_ACG_DISABLE);
+
+		if (en) {
+			hci_writel(ufs, ctrl | EXYNOS8895_CLK_STOP_MASK, HCI_CLKSTOP_CTRL);
+			hci_writel(ufs, acg & ~HCI_UFS_ACG_DISABLE_EN, HCI_UFS_ACG_DISABLE);
+		} else {
+			hci_writel(ufs, ctrl & ~EXYNOS8895_CLK_STOP_MASK, HCI_CLKSTOP_CTRL);
+			hci_writel(ufs, acg | HCI_UFS_ACG_DISABLE_EN, HCI_UFS_ACG_DISABLE);
+		}
+		return;
+	}
+
 	if (en) {
 		hci_writel(ufs, misc | CLK_CTRL_EN_MASK, HCI_MISC);
 		hci_writel(ufs, ctrl | CLK_STOP_MASK, HCI_CLKSTOP_CTRL);
@@ -2130,6 +2147,11 @@ static struct ufs_hba_variant_ops ufs_hba_exynosauto_vh_ops = {
 #define EXYNOS8895_CLK_CTRL_EN_MASK	(REFCLKOUT_CTRL_EN | MPHY_APBCLK_CTRL_EN | \
 					 UFSP_DRCG_EN | CLK_CTRL_EN_MASK)
 
+/* Off by default until the clock gating has been stress tested */
+static bool exynos8895_clkgate;
+module_param_named(clkgate8895, exynos8895_clkgate, bool, 0444);
+MODULE_PARM_DESC(clkgate8895, "Exynos8895: UFS clock gating with hibern8");
+
 #define EXYNOS8895_PA_DBG_OV_TM		0x200
 #define EXYNOS8895_OV_TM_ON		0x40
 #define EXYNOS8895_RX_MIN_ACTV_TIME_CAP	3
@@ -2263,6 +2285,10 @@ static int exynos8895_ufs_drv_init(struct exynos_ufs *ufs)
 	hba->spm_lvl = UFS_PM_LVL_5;
 	hba->rpm_lvl = UFS_PM_LVL_0;
 	pm_runtime_forbid(hba->dev);
+
+	if (exynos8895_clkgate)
+		hba->caps |= UFSHCD_CAP_CLK_GATING |
+			     UFSHCD_CAP_HIBERN8_WITH_CLK_GATING;
 
 	/* The hibern8 timings come from the capability exchange in post_link */
 	attr->pa_granularity = 0;
@@ -2730,7 +2756,8 @@ static const struct exynos_ufs_drv_data exynos8895_ufs_drvs = {
 				  EXYNOS_UFS_OPT_TIMER_TICK_SELECT |
 				  EXYNOS_UFS_OPT_UNIPRO_PCLK |
 				  EXYNOS_UFS_OPT_SKIP_SYNC_PATTERN_MASK |
-				  EXYNOS_UFS_OPT_UPMCRS_IN_UNIPRO,
+				  EXYNOS_UFS_OPT_UPMCRS_IN_UNIPRO |
+				  EXYNOS_UFS_OPT_CLKSTOP_HWACG,
 	.iocc_mask		= UFS_EXYNOS8895_SHARABLE,
 	.drv_init		= exynos8895_ufs_drv_init,
 	.pre_hce_enable		= exynos8895_ufs_pre_hce_enable,
