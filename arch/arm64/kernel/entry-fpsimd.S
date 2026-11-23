@@ -6,6 +6,7 @@
  * Author: Catalin Marinas <catalin.marinas@arm.com>
  */
 
+#include <linux/export.h>
 #include <linux/linkage.h>
 
 #include <asm/assembler.h>
@@ -20,6 +21,7 @@ SYM_FUNC_START(fpsimd_save_state)
 	fpsimd_save x0, 8
 	ret
 SYM_FUNC_END(fpsimd_save_state)
+EXPORT_SYMBOL_GPL(fpsimd_save_state)
 
 /*
  * Load the FP registers.
@@ -30,6 +32,7 @@ SYM_FUNC_START(fpsimd_load_state)
 	fpsimd_restore x0, 8
 	ret
 SYM_FUNC_END(fpsimd_load_state)
+EXPORT_SYMBOL_GPL(fpsimd_load_state)
 
 #ifdef CONFIG_ARM64_SVE
 

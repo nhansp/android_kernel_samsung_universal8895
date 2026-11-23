@@ -7,6 +7,7 @@
  */
 
 #include <linux/errno.h>
+#include <linux/export.h>
 #include <linux/linkage.h>
 #include <linux/init.h>
 #include <asm/assembler.h>
@@ -113,6 +114,7 @@ SYM_FUNC_START(__pi_dcache_clean_inval_poc)
 	ret
 SYM_FUNC_END(__pi_dcache_clean_inval_poc)
 SYM_FUNC_ALIAS(dcache_clean_inval_poc, __pi_dcache_clean_inval_poc)
+EXPORT_SYMBOL_GPL(dcache_clean_inval_poc)
 
 /*
  *	dcache_clean_pou(start, end)

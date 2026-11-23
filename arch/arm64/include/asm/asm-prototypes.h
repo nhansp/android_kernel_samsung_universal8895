@@ -12,6 +12,8 @@
  */
 #include <linux/arm-smccc.h>
 
+#include <asm/cacheflush.h>
+#include <asm/fpsimd.h>
 #include <asm/ftrace.h>
 #include <asm/page.h>
 #include <asm/string.h>
