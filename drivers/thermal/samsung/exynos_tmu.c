@@ -11,10 +11,13 @@
  *  Amit Daniel Kachhap <amit.kachhap@linaro.org>
  */
 
+#include <linux/cleanup.h>
 #include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/interrupt.h>
+#include <linux/list.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
@@ -23,6 +26,11 @@
 #include <linux/thermal.h>
 
 #include <dt-bindings/thermal/thermal_exynos.h>
+
+#if IS_BUILTIN(CONFIG_EXYNOS_THERMAL)
+/* thermal_zone_device_set_policy() and struct thermal_instance are core-internal */
+#include "../thermal_core.h"
+#endif
 
 /* Exynos generic registers */
 #define EXYNOS_TMU_REG_TRIMINFO		0x0
@@ -215,6 +223,16 @@ enum soc_type {
  * @s_err1: Exynos8895: first-point trim per used sensor.
  * @s_err2: Exynos8895: second-point trim per used sensor.
  * @avg_con: Exynos8895: AVG_CON value written with CONTROL.
+ * @dev: the TMU device.
+ * @ipa: Exynos8895: the zone runs on power_allocator once its cooling
+ *	devices are power actors (samsung,ipa-* properties).
+ * @ipa_k_po: Exynos8895: samsung,ipa-k-po, mW per degree Celsius.
+ * @ipa_k_pu: Exynos8895: samsung,ipa-k-pu, mW per degree Celsius.
+ * @ipa_k_i: Exynos8895: samsung,ipa-k-i, mW per degree Celsius.
+ * @ipa_integral_max: Exynos8895: samsung,ipa-integral-max, mW.
+ * @ipa_integral_cutoff: Exynos8895: samsung,ipa-integral-cutoff, degrees.
+ * @ipa_node: Exynos8895: entry in the list of zones waiting for the
+ *	power_allocator selection.
  */
 struct exynos_tmu_data {
 	void __iomem *base;
@@ -252,6 +270,14 @@ struct exynos_tmu_data {
 	u16 s_err1[EXYNOS8895_TMU_NUM_SENSORS];
 	u16 s_err2[EXYNOS8895_TMU_NUM_SENSORS];
 	u32 avg_con;
+	struct device *dev;
+	bool ipa;
+	u32 ipa_k_po;
+	u32 ipa_k_pu;
+	u32 ipa_k_i;
+	u32 ipa_integral_max;
+	u32 ipa_integral_cutoff;
+	struct list_head ipa_node;
 };
 
 /*
@@ -1306,6 +1332,22 @@ static int exynos_map_dt_data(struct platform_device *pdev)
 			return -EINVAL;
 		}
 		data->balance = !strcmp(mode, "balance");
+
+		if (of_property_present(pdev->dev.of_node, "samsung,ipa-k-po")) {
+			struct device_node *np = pdev->dev.of_node;
+
+			if (of_property_read_u32(np, "samsung,ipa-k-po", &data->ipa_k_po) ||
+			    of_property_read_u32(np, "samsung,ipa-k-pu", &data->ipa_k_pu) ||
+			    of_property_read_u32(np, "samsung,ipa-k-i", &data->ipa_k_i) ||
+			    of_property_read_u32(np, "samsung,ipa-integral-max",
+						 &data->ipa_integral_max) ||
+			    of_property_read_u32(np, "samsung,ipa-integral-cutoff",
+						 &data->ipa_integral_cutoff)) {
+				dev_err(&pdev->dev, "incomplete samsung,ipa-* properties\n");
+				return -EINVAL;
+			}
+			data->ipa = true;
+		}
 		break;
 	}
 	default:
@@ -1365,6 +1407,114 @@ static const struct thermal_zone_device_ops exynos_sensor_ops = {
 	.set_trips = exynos_set_trips,
 };
 
+#if IS_BUILTIN(CONFIG_EXYNOS_THERMAL)
+/*
+ * The cooling devices register long after the TMU and power_allocator ignores
+ * those that are not power actors, so a zone switches only at late init and
+ * only when all of its cooling devices are power actors.
+ */
+static LIST_HEAD(exynos8895_ipa_list);
+static DEFINE_MUTEX(exynos8895_ipa_lock);	/* the list and the flag */
+static bool exynos8895_ipa_late;		/* the late selection has run */
+
+/* FRAC_BITS of gov_power_allocator.c */
+#define EXYNOS8895_IPA_FRAC_BITS	10
+
+/* DT gains are mW per degree Celsius, the governor's Q10 mW per millidegree */
+static s32 exynos8895_ipa_k(u32 k)
+{
+	return DIV_ROUND_CLOSEST(k << EXYNOS8895_IPA_FRAC_BITS, MCELSIUS);
+}
+
+static void exynos8895_ipa_select(struct exynos_tmu_data *data)
+{
+	struct thermal_zone_device *tz = data->tzd;
+	const char *type = thermal_zone_device_type(tz);
+	char policy[] = "power_allocator";	/* strim()ed by the core */
+	char bad[THERMAL_NAME_LENGTH] = "";
+	const struct thermal_trip_desc *td;
+	struct thermal_instance *instance;
+	int n = 0, ret;
+
+	scoped_guard(thermal_zone, tz) {
+		for_each_trip_desc(tz, td) {
+			list_for_each_entry(instance, &td->thermal_instances, trip_node) {
+				n++;
+				if (!bad[0] && !cdev_is_power_actor(instance->cdev))
+					strscpy(bad, instance->cdev->type);
+			}
+		}
+	}
+
+	if (!n) {
+		dev_warn(data->dev, "%s: no cooling device, keeping the default governor\n",
+			 type);
+		return;
+	}
+	if (bad[0]) {
+		dev_warn(data->dev, "%s: %s is not a power actor, keeping the default governor\n",
+			 type, bad);
+		return;
+	}
+
+	ret = thermal_zone_device_set_policy(tz, policy);
+	if (ret) {
+		dev_err(data->dev, "%s: power_allocator not selected: %d\n", type, ret);
+		return;
+	}
+
+	/* replace the gains the governor estimated at bind */
+	scoped_guard(thermal_zone, tz) {
+		tz->tzp->k_po = exynos8895_ipa_k(data->ipa_k_po);
+		tz->tzp->k_pu = exynos8895_ipa_k(data->ipa_k_pu);
+		tz->tzp->k_i = exynos8895_ipa_k(data->ipa_k_i);
+		tz->tzp->integral_cutoff = data->ipa_integral_cutoff * MCELSIUS;
+		tz->tzp->integral_max = data->ipa_integral_max;
+	}
+
+	dev_dbg(data->dev,
+		"%s: power_allocator k_po=%u k_pu=%u k_i=%u (mW/C) integral_max=%u mW integral_cutoff=%u C\n",
+		type, data->ipa_k_po, data->ipa_k_pu, data->ipa_k_i,
+		data->ipa_integral_max, data->ipa_integral_cutoff);
+}
+
+static void exynos8895_ipa_del(void *arg)
+{
+	struct exynos_tmu_data *data = arg;
+
+	guard(mutex)(&exynos8895_ipa_lock);
+	list_del(&data->ipa_node);
+}
+
+static int exynos8895_ipa_add(struct exynos_tmu_data *data)
+{
+	int ret;
+
+	if (!data->ipa)
+		return 0;
+
+	/* list_del() of a self-linked node is harmless if the add fails */
+	INIT_LIST_HEAD(&data->ipa_node);
+	ret = devm_add_action_or_reset(data->dev, exynos8895_ipa_del, data);
+	if (ret)
+		return ret;
+
+	guard(mutex)(&exynos8895_ipa_lock);
+	list_add_tail(&data->ipa_node, &exynos8895_ipa_list);
+	if (exynos8895_ipa_late)
+		exynos8895_ipa_select(data);
+
+	return 0;
+}
+#else
+static int exynos8895_ipa_add(struct exynos_tmu_data *data)
+{
+	if (data->ipa)
+		dev_warn(data->dev, "power_allocator selection needs a built-in driver\n");
+	return 0;
+}
+#endif
+
 static int exynos_tmu_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -1377,6 +1527,7 @@ static int exynos_tmu_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, data);
 	mutex_init(&data->lock);
+	data->dev = dev;
 
 	/*
 	 * Try enabling the regulator if found
@@ -1473,6 +1624,11 @@ static int exynos_tmu_probe(struct platform_device *pdev)
 	}
 
 	exynos_tmu_control(pdev, true);
+
+	/* not fatal: the zone stays on its default governor */
+	if (data->soc == SOC_ARCH_EXYNOS8895 && exynos8895_ipa_add(data))
+		dev_err(dev, "power_allocator selection not armed\n");
+
 	return 0;
 
 err_sclk:
@@ -1533,6 +1689,22 @@ static struct platform_driver exynos_tmu_driver = {
 };
 
 module_platform_driver(exynos_tmu_driver);
+
+#if IS_BUILTIN(CONFIG_EXYNOS_THERMAL)
+/* After late_initcall's deferred-probe flush: the cooling devices exist. */
+static int __init exynos8895_ipa_late_init(void)
+{
+	struct exynos_tmu_data *data;
+
+	guard(mutex)(&exynos8895_ipa_lock);
+	exynos8895_ipa_late = true;
+	list_for_each_entry(data, &exynos8895_ipa_list, ipa_node)
+		exynos8895_ipa_select(data);
+
+	return 0;
+}
+late_initcall_sync(exynos8895_ipa_late_init);
+#endif
 
 MODULE_DESCRIPTION("Exynos TMU Driver");
 MODULE_AUTHOR("Donggeun Kim <dg77.kim@samsung.com>");
