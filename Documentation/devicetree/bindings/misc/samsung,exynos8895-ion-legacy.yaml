@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/misc/samsung,exynos8895-ion-legacy.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos 8895 legacy ION allocator
+
+maintainers:
+  - nhansp <nhan.094.vn@gmail.com>
+
+description: |
+  The /dev/ion allocator of the Samsung Exynos 4.4 kernels, kept for
+  prebuilt userspace. Heap 0, the page allocator, is implicit. Every
+  memory-region entry adds one heap: a reusable shared-dma-pool (CMA)
+  region, or a reserved region marked "ion,secure" whose buffers are
+  protected by the secure world. The node has no iommus and is not
+  dma-coherent: the driver does CPU cache maintenance through it.
+
+properties:
+  compatible:
+    const: samsung,exynos8895-ion-legacy
+
+  memory-region:
+    minItems: 1
+    maxItems: 15
+    description: one region per heap
+
+  memory-region-names:
+    minItems: 1
+    maxItems: 15
+    description: heap names; the driver appends "_heap"
+
+  samsung,ion-heap-ids:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    minItems: 1
+    maxItems: 15
+    items:
+      minimum: 1
+      maximum: 15
+    description: legacy ION heap id of each memory-region entry (bit in heap_id_mask)
+
+  samsung,ion-compat-ids:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    minItems: 1
+    maxItems: 15
+    description:
+      per memory-region entry, the bit mask of Exynos contig ids (18..31) that
+      select this heap through heap_id_mask 0x10; 0 for none
+
+required:
+  - compatible
+
+dependencies:
+  memory-region: [ memory-region-names, samsung,ion-heap-ids, samsung,ion-compat-ids ]
+
+additionalProperties: false
+
+examples:
+  - |
+    ion {
+        compatible = "samsung,exynos8895-ion-legacy";
+        memory-region = <&camera_mem>, <&crypto_rmem>, <&vstream_rmem>;
+        memory-region-names = "camera", "crypto", "vstream";
+        samsung,ion-heap-ids = <10 1 3>;
+        samsung,ion-compat-ids = <0 0 0x82000000>;
+    };
