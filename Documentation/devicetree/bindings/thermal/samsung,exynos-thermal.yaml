@@ -135,6 +135,29 @@ properties:
     $ref: /schemas/types.yaml#/definitions/uint32
     description: Temperature in millicelsius below which samsung,hotplug-cpus come back.
 
+  samsung,boot-qos-cpus:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    minItems: 1
+    maxItems: 2
+    items:
+      maxItems: 1
+    description:
+      One CPU of each cluster whose cpufreq policy is held at its boot level,
+      as both minimum and maximum, for samsung,boot-qos-ms after the policy
+      is created. The boot level is the highest frequency of the policy
+      unless samsung,boot-max-freq lowers it.
+
+  samsung,boot-qos-ms:
+    description: How long the boot level is held, in milliseconds.
+
+  samsung,boot-max-freq:
+    $ref: /schemas/types.yaml#/definitions/uint32-matrix
+    description:
+      Rows of a temperature in millicelsius followed by one frequency in kHz
+      per samsung,boot-qos-cpus entry. The first row whose temperature the
+      instance's sensor 0 exceeds, read when the policy is created, caps the
+      boot level; 0 stands for the lowest frequency of the policy.
+
 dependencies:
   samsung,ipa-k-po: [ samsung,ipa-k-pu, samsung,ipa-k-i, samsung,ipa-integral-max, samsung,ipa-integral-cutoff ]
   samsung,ipa-k-pu: [ samsung,ipa-k-po ]
@@ -144,6 +167,9 @@ dependencies:
   samsung,hotplug-cpus: [ samsung,hotplug-out-temp, samsung,hotplug-in-temp ]
   samsung,hotplug-out-temp: [ samsung,hotplug-cpus ]
   samsung,hotplug-in-temp: [ samsung,hotplug-cpus ]
+  samsung,boot-qos-cpus: [ samsung,boot-qos-ms, samsung,boot-max-freq ]
+  samsung,boot-qos-ms: [ samsung,boot-qos-cpus ]
+  samsung,boot-max-freq: [ samsung,boot-qos-cpus ]
 
 required:
   - compatible
@@ -227,6 +253,9 @@ allOf:
         samsung,hotplug-cpus: false
         samsung,hotplug-out-temp: false
         samsung,hotplug-in-temp: false
+        samsung,boot-qos-cpus: false
+        samsung,boot-qos-ms: false
+        samsung,boot-max-freq: false
 
   - if:
       properties:
