@@ -30,6 +30,7 @@
 #define CLKS_NR_CPUCL0	(CLK_GOUT_CPUCL0_SYSREG_CPUCL0_PCLK + 1)
 #define CLKS_NR_CPUCL1	(CLK_GOUT_CPUCL1_SYSREG_CPUCL1_PCLK + 1)
 #define CLKS_NR_DPU0	(CLK_GOUT_DPU0_XIU_P0_DPU_ACLK + 1)
+#define CLKS_NR_DPU1	(CLK_GOUT_DPU1_SYSREG_DPU1_PCLK + 1)
 
 /*
  * The gates of the always-on CMUs stay under hardware auto-gating, as the
@@ -3414,6 +3415,175 @@ static const struct samsung_cmu_info dpu0_cmu_info __initconst = {
 	.clk_name		= "bus",
 };
 
+/* ---- CMU_DPU1 ------------------------------------------------------------ */
+
+/* Register Offset definitions for CMU_DPU1 (0x12a00000) */
+#define PLL_LOCKTIME_PLL_DPU							0x0000
+#define PLL_CON0_MUX_CLKCMU_DPU1_BUSD_USER					0x0100
+#define PLL_CON0_MUX_CLKCMU_DPU1_BUSP_USER					0x0120
+#define PLL_CON0_PLL_DPU							0x0140
+#define DPU1_CMU_CONTROLLER_OPTION						0x0800
+#define CLK_CON_DIV_DIV_CLKCMU_DPU1_DECON2					0x1800
+#define CLK_CON_GAT_CLK_BLK_DPU1_UID_DPU1_CMU_DPU1_IPCLKPORT_PCLK		0x2000
+#define CLK_CON_GAT_GOUT_BLK_DPU1_UID_AD_APB_DECON1_IPCLKPORT_PCLKM		0x2008
+#define CLK_CON_GAT_GOUT_BLK_DPU1_UID_AD_APB_DECON1_IPCLKPORT_PCLKS		0x200c
+#define CLK_CON_GAT_GOUT_BLK_DPU1_UID_AD_APB_DECON2_IPCLKPORT_PCLKM		0x2010
+#define CLK_CON_GAT_GOUT_BLK_DPU1_UID_AD_APB_DECON2_IPCLKPORT_PCLKS		0x2014
+#define CLK_CON_GAT_GOUT_BLK_DPU1_UID_AXI2APB_DPU1P0_IPCLKPORT_ACLK		0x2018
+#define CLK_CON_GAT_GOUT_BLK_DPU1_UID_DECON1_IPCLKPORT_ACLK			0x201c
+#define CLK_CON_GAT_GOUT_BLK_DPU1_UID_DECON2_IPCLKPORT_ACLK			0x2020
+#define CLK_CON_GAT_GOUT_BLK_DPU1_UID_DECON2_IPCLKPORT_VCLK			0x2024
+#define CLK_CON_GAT_GOUT_BLK_DPU1_UID_LHM_AXI_P_DPU1_IPCLKPORT_I_CLK		0x202c
+#define CLK_CON_GAT_GOUT_BLK_DPU1_UID_PMU_DPU1_IPCLKPORT_PCLK			0x2034
+#define CLK_CON_GAT_GOUT_BLK_DPU1_UID_RSTNSYNC_CLK_DPU1_BUSD_IPCLKPORT_CLK	0x2038
+#define CLK_CON_GAT_GOUT_BLK_DPU1_UID_RSTNSYNC_CLK_DPU1_BUSP_IPCLKPORT_CLK	0x203c
+#define CLK_CON_GAT_GOUT_BLK_DPU1_UID_RSTNSYNC_CLK_DPU1_DECON2_IPCLKPORT_CLK	0x2040
+#define CLK_CON_GAT_GOUT_BLK_DPU1_UID_SYSREG_DPU1_IPCLKPORT_PCLK		0x2048
+#define QCH_CON_DECON1_QCH							0x3004
+#define QCH_CON_DECON2_QCH_ACLK							0x3008
+#define QCH_CON_DECON2_QCH_VCLK							0x300c
+#define QCH_CON_DPU1_CMU_DPU1_QCH						0x3010
+#define QCH_CON_LHM_AXI_P_DPU1_QCH						0x3014
+#define QCH_CON_LHS_ATB_DPTX_QCH						0x3018
+#define QCH_CON_PMU_DPU1_QCH							0x301c
+#define QCH_CON_SYSREG_DPU1_QCH							0x3020
+
+static const unsigned long dpu1_clk_regs[] __initconst = {
+	PLL_LOCKTIME_PLL_DPU,
+	PLL_CON0_MUX_CLKCMU_DPU1_BUSD_USER,
+	PLL_CON0_MUX_CLKCMU_DPU1_BUSP_USER,
+	PLL_CON0_PLL_DPU,
+	CLK_CON_DIV_DIV_CLKCMU_DPU1_DECON2,
+	CLK_CON_GAT_CLK_BLK_DPU1_UID_DPU1_CMU_DPU1_IPCLKPORT_PCLK,
+	CLK_CON_GAT_GOUT_BLK_DPU1_UID_AD_APB_DECON1_IPCLKPORT_PCLKM,
+	CLK_CON_GAT_GOUT_BLK_DPU1_UID_AD_APB_DECON1_IPCLKPORT_PCLKS,
+	CLK_CON_GAT_GOUT_BLK_DPU1_UID_AD_APB_DECON2_IPCLKPORT_PCLKM,
+	CLK_CON_GAT_GOUT_BLK_DPU1_UID_AD_APB_DECON2_IPCLKPORT_PCLKS,
+	CLK_CON_GAT_GOUT_BLK_DPU1_UID_AXI2APB_DPU1P0_IPCLKPORT_ACLK,
+	CLK_CON_GAT_GOUT_BLK_DPU1_UID_DECON1_IPCLKPORT_ACLK,
+	CLK_CON_GAT_GOUT_BLK_DPU1_UID_DECON2_IPCLKPORT_ACLK,
+	CLK_CON_GAT_GOUT_BLK_DPU1_UID_DECON2_IPCLKPORT_VCLK,
+	CLK_CON_GAT_GOUT_BLK_DPU1_UID_LHM_AXI_P_DPU1_IPCLKPORT_I_CLK,
+	CLK_CON_GAT_GOUT_BLK_DPU1_UID_PMU_DPU1_IPCLKPORT_PCLK,
+	CLK_CON_GAT_GOUT_BLK_DPU1_UID_RSTNSYNC_CLK_DPU1_BUSD_IPCLKPORT_CLK,
+	CLK_CON_GAT_GOUT_BLK_DPU1_UID_RSTNSYNC_CLK_DPU1_BUSP_IPCLKPORT_CLK,
+	CLK_CON_GAT_GOUT_BLK_DPU1_UID_RSTNSYNC_CLK_DPU1_DECON2_IPCLKPORT_CLK,
+	CLK_CON_GAT_GOUT_BLK_DPU1_UID_SYSREG_DPU1_IPCLKPORT_PCLK,
+	QCH_CON_SYSREG_DPU1_QCH,
+	QCH_CON_PMU_DPU1_QCH,
+	QCH_CON_LHS_ATB_DPTX_QCH,
+	QCH_CON_LHM_AXI_P_DPU1_QCH,
+	QCH_CON_DPU1_CMU_DPU1_QCH,
+	QCH_CON_DECON2_QCH_VCLK,
+	QCH_CON_DECON2_QCH_ACLK,
+	QCH_CON_DECON1_QCH,
+	DPU1_CMU_CONTROLLER_OPTION,
+};
+
+/* List of parent clocks for Muxes in CMU_DPU1 */
+/* PLL_CON0 bit 4 selects between OSCCLK and the PLL output */
+PNAME(mout_pll_dpu_p)			= { "oscclk", "fout_dpu_pll" };
+PNAME(mout_dpu1_busd_user_p)		= { "oscclk", "gout_dpu0_clkcmu_dpu1_busd" };
+PNAME(mout_dpu1_busp_user_p)		= { "oscclk", "gout_dpu0_clkcmu_dpu1_busp" };
+
+static const struct samsung_pll_clock dpu1_pll_clks[] __initconst = {
+	PLL(pll_1052x, CLK_FOUT_DPU_PLL, "fout_dpu_pll", "oscclk",
+	    PLL_LOCKTIME_PLL_DPU, PLL_CON0_PLL_DPU, NULL),
+};
+
+static const struct samsung_mux_clock dpu1_mux_clks[] __initconst = {
+	MUX(CLK_MOUT_PLL_DPU, "mout_pll_dpu", mout_pll_dpu_p, PLL_CON0_PLL_DPU,
+	    4, 1),
+	MUX(CLK_MOUT_DPU1_BUSD_USER, "mout_dpu1_busd_user",
+	    mout_dpu1_busd_user_p, PLL_CON0_MUX_CLKCMU_DPU1_BUSD_USER, 4, 1),
+	MUX(CLK_MOUT_DPU1_BUSP_USER, "mout_dpu1_busp_user",
+	    mout_dpu1_busp_user_p, PLL_CON0_MUX_CLKCMU_DPU1_BUSP_USER, 4, 1),
+};
+
+static const struct samsung_div_clock dpu1_div_clks[] __initconst = {
+	DIV(CLK_DOUT_DPU1_CLKCMU_DPU1_DECON2, "dout_dpu1_clkcmu_dpu1_decon2",
+	    "mout_pll_dpu", CLK_CON_DIV_DIV_CLKCMU_DPU1_DECON2, 0, 3),
+};
+
+static const struct samsung_gate_clock dpu1_gate_clks[] __initconst = {
+	GATE(CLK_GOUT_DPU1_CMU_DPU1_PCLK, "gout_dpu1_cmu_dpu1_pclk",
+	     "mout_dpu1_busp_user",
+	     CLK_CON_GAT_CLK_BLK_DPU1_UID_DPU1_CMU_DPU1_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DPU1_AD_APB_DECON1_PCLKM, "gout_dpu1_ad_apb_decon1_pclkm",
+	     "mout_dpu1_busd_user",
+	     CLK_CON_GAT_GOUT_BLK_DPU1_UID_AD_APB_DECON1_IPCLKPORT_PCLKM, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DPU1_AD_APB_DECON1_PCLKS, "gout_dpu1_ad_apb_decon1_pclks",
+	     "mout_dpu1_busp_user",
+	     CLK_CON_GAT_GOUT_BLK_DPU1_UID_AD_APB_DECON1_IPCLKPORT_PCLKS, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DPU1_AD_APB_DECON2_PCLKM, "gout_dpu1_ad_apb_decon2_pclkm",
+	     "mout_dpu1_busd_user",
+	     CLK_CON_GAT_GOUT_BLK_DPU1_UID_AD_APB_DECON2_IPCLKPORT_PCLKM, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DPU1_AD_APB_DECON2_PCLKS, "gout_dpu1_ad_apb_decon2_pclks",
+	     "mout_dpu1_busp_user",
+	     CLK_CON_GAT_GOUT_BLK_DPU1_UID_AD_APB_DECON2_IPCLKPORT_PCLKS, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DPU1_AXI2APB_DPU1P0_ACLK, "gout_dpu1_axi2apb_dpu1p0_aclk",
+	     "mout_dpu1_busp_user",
+	     CLK_CON_GAT_GOUT_BLK_DPU1_UID_AXI2APB_DPU1P0_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DPU1_DECON1_ACLK, "gout_dpu1_decon1_aclk",
+	     "mout_dpu1_busd_user",
+	     CLK_CON_GAT_GOUT_BLK_DPU1_UID_DECON1_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DPU1_DECON2_ACLK, "gout_dpu1_decon2_aclk",
+	     "mout_dpu1_busd_user",
+	     CLK_CON_GAT_GOUT_BLK_DPU1_UID_DECON2_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DPU1_DECON2_VCLK, "gout_dpu1_decon2_vclk",
+	     "dout_dpu1_clkcmu_dpu1_decon2",
+	     CLK_CON_GAT_GOUT_BLK_DPU1_UID_DECON2_IPCLKPORT_VCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DPU1_LHM_AXI_P_DPU1_I_CLK,
+	     "gout_dpu1_lhm_axi_p_dpu1_i_clk", "mout_dpu1_busp_user",
+	     CLK_CON_GAT_GOUT_BLK_DPU1_UID_LHM_AXI_P_DPU1_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DPU1_PMU_DPU1_PCLK, "gout_dpu1_pmu_dpu1_pclk",
+	     "mout_dpu1_busp_user",
+	     CLK_CON_GAT_GOUT_BLK_DPU1_UID_PMU_DPU1_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DPU1_RSTNSYNC_CLK_DPU1_BUSD_CLK,
+	     "gout_dpu1_rstnsync_clk_dpu1_busd_clk", "mout_dpu1_busd_user",
+	     CLK_CON_GAT_GOUT_BLK_DPU1_UID_RSTNSYNC_CLK_DPU1_BUSD_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DPU1_RSTNSYNC_CLK_DPU1_BUSP_CLK,
+	     "gout_dpu1_rstnsync_clk_dpu1_busp_clk", "mout_dpu1_busp_user",
+	     CLK_CON_GAT_GOUT_BLK_DPU1_UID_RSTNSYNC_CLK_DPU1_BUSP_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DPU1_RSTNSYNC_CLK_DPU1_DECON2_CLK,
+	     "gout_dpu1_rstnsync_clk_dpu1_decon2_clk",
+	     "dout_dpu1_clkcmu_dpu1_decon2",
+	     CLK_CON_GAT_GOUT_BLK_DPU1_UID_RSTNSYNC_CLK_DPU1_DECON2_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DPU1_SYSREG_DPU1_PCLK, "gout_dpu1_sysreg_dpu1_pclk",
+	     "mout_dpu1_busp_user",
+	     CLK_CON_GAT_GOUT_BLK_DPU1_UID_SYSREG_DPU1_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+};
+
+static const struct samsung_cmu_info dpu1_cmu_info __initconst = {
+	.pll_clks		= dpu1_pll_clks,
+	.nr_pll_clks		= ARRAY_SIZE(dpu1_pll_clks),
+	.mux_clks		= dpu1_mux_clks,
+	.nr_mux_clks		= ARRAY_SIZE(dpu1_mux_clks),
+	.div_clks		= dpu1_div_clks,
+	.nr_div_clks		= ARRAY_SIZE(dpu1_div_clks),
+	.gate_clks		= dpu1_gate_clks,
+	.nr_gate_clks		= ARRAY_SIZE(dpu1_gate_clks),
+	.nr_clk_ids		= CLKS_NR_DPU1,
+	.clk_regs		= dpu1_clk_regs,
+	.nr_clk_regs		= ARRAY_SIZE(dpu1_clk_regs),
+	.clk_name		= "busp",
+};
+
 /* ---- CMU probe glue ------------------------------------------------------ */
 
 #define CMU_QCH_ENABLE			BIT(0)
@@ -3533,6 +3703,9 @@ static const struct of_device_id exynos8895_cmu_pd_of_match[] = {
 	{
 		.compatible = "samsung,exynos8895-cmu-dpu0",
 		.data = &dpu0_cmu_info,
+	}, {
+		.compatible = "samsung,exynos8895-cmu-dpu1",
+		.data = &dpu1_cmu_info,
 	},
 	{ }
 };
