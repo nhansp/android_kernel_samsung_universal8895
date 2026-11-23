@@ -296,74 +296,15 @@ static void mcu_ipc_clear_all_interrupt(enum mcu_ipc_region id)
 	mcu_ipc_writel(id, 0xFFFF, EXYNOS_MCU_IPC_INTCR1);
 }
 
-#ifdef CONFIG_ARGOS
-static int mcu_ipc_set_affinity(enum mcu_ipc_region id, struct device *dev, int irq)
-{
-	struct device_node *np = dev->of_node;
-	u32 irq_affinity_mask = 0;
-
-	if (!np)	{
-		dev_err(dev, "non-DT project, can't set irq affinity\n");
-		return -ENODEV;
-	}
-
-	if (of_property_read_u32(np, "mcu,irq_affinity_mask",
-			&irq_affinity_mask))	{
-		dev_err(dev, "Failed to get affinity mask\n");
-		return -ENODEV;
-	}
-
-	dev_info(dev, "irq_affinity_mask = 0x%x\n", irq_affinity_mask);
-
-	if (!zalloc_cpumask_var(&mcu_dat[id].dmask, GFP_KERNEL))
-		return -ENOMEM;
-	if (!zalloc_cpumask_var(&mcu_dat[id].imask, GFP_KERNEL))
-		return -ENOMEM;
-
-	cpumask_or(mcu_dat[id].imask, mcu_dat[id].imask, cpumask_of(irq_affinity_mask));
-	cpumask_copy(mcu_dat[id].dmask, get_default_cpu_mask());
-
-	return argos_irq_affinity_setup_label(irq, "IPC", mcu_dat[id].imask,
-			mcu_dat[id].dmask);
-}
-#else
+/* No ARGOS: the mailbox interrupt keeps the default affinity. */
 static int mcu_ipc_set_affinity(enum mcu_ipc_region id, struct device *dev, int irq)
 {
 	return 0;
 }
-#endif
-
-#ifdef CONFIG_MCU_IPC_TEST
-static void test_without_dev(enum mcu_ipc_region id)
-{
-	int i;
-	char *region;
-
-	switch(id) {
-	case MCU_CP:
-		region = "CP";
-		break;
-	case MCU_GNSS:
-		region = "GNSS";
-		break;
-	default:
-		region = NULL;
-	}
-
-	for (i = 0; i < 64; i++) {
-		mbox_set_value(id, i, 64 - i);
-		mdelay(50);
-		dev_err(mcu_dat[id].mcu_ipc_dev,
-				"Test without %s(%d): Read mbox value[%d]: %d\n",
-				region, id, i, mbox_get_value(i));
-	}
-}
-#endif
 
 static int mcu_ipc_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct resource *res = NULL;
 	int mcu_ipc_irq;
 	int err = 0;
 	u32 id = 0;
@@ -384,10 +325,9 @@ static int mcu_ipc_probe(struct platform_device *pdev)
 	mcu_dat[id].id = id;
 	mcu_dat[id].mcu_ipc_dev = &pdev->dev;
 
-	if (!pdev->dev.dma_mask)
-		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
-	if (!pdev->dev.coherent_dma_mask)
-		pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
+	err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
+	if (err)
+		return err;
 
 	if (dev->of_node) {
 		mcu_dt_read_string(dev->of_node, "mcu,name", mcu_dat[id].name);
@@ -398,8 +338,7 @@ static int mcu_ipc_probe(struct platform_device *pdev)
 	}
 
 	/* resource for mcu_ipc SFR region */
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	mcu_dat[id].ioaddr = devm_ioremap_resource(&pdev->dev, res);
+	mcu_dat[id].ioaddr = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(mcu_dat[id].ioaddr)) {
 		dev_err(&pdev->dev, "failded to request memory resource\n");
 		return PTR_ERR(mcu_dat[id].ioaddr);
@@ -407,8 +346,10 @@ static int mcu_ipc_probe(struct platform_device *pdev)
 
 	/* Request IRQ */
 	mcu_ipc_irq = platform_get_irq(pdev, 0);
+	if (mcu_ipc_irq < 0)
+		return mcu_ipc_irq;
 	err = devm_request_irq(&pdev->dev, mcu_ipc_irq, mcu_ipc_handler, 0,
-			pdev->name, &mcu_dat[id]);
+			"mcu_ipc_cp", &mcu_dat[id]);
 	if (err) {
 		dev_err(&pdev->dev, "Can't request MCU_IPC IRQ\n");
 		return err;
@@ -421,52 +362,24 @@ static int mcu_ipc_probe(struct platform_device *pdev)
 	if (err)
 		dev_err(dev, "Can't set IRQ affinity with(%d)\n", err);
 
-#ifdef CONFIG_MCU_IPC_TEST
-	test_without_dev(id);
-#endif
-
 	spin_lock_init(&mcu_dat[id].lock);
 	spin_lock_init(&mcu_dat[id].reg_lock);
+
+	/* The modem driver defers its probe until this is set. */
+	platform_set_drvdata(pdev, &mcu_dat[id]);
 
 	dev_err(&pdev->dev, "%s: mcu_ipc probe done.\n", __func__);
 
 	return 0;
 }
 
-static int __exit mcu_ipc_remove(struct platform_device *pdev)
+static void mcu_ipc_remove(struct platform_device *pdev)
 {
 	/* TODO */
-	return 0;
 }
-
-#ifdef CONFIG_PM
-static int mcu_ipc_suspend(struct device *dev)
-{
-	/* TODO */
-	return 0;
-}
-
-static int mcu_ipc_resume(struct device *dev)
-{
-	/* TODO */
-	return 0;
-}
-#else
-#define mcu_ipc_suspend NULL
-#define mcu_ipc_resume NULL
-#endif
-
-static const struct dev_pm_ops mcu_ipc_pm_ops = {
-	.suspend = mcu_ipc_suspend,
-	.resume = mcu_ipc_resume,
-};
 
 static const struct of_device_id exynos_mcu_ipc_dt_match[] = {
-		{ .compatible = "samsung,exynos7580-mailbox", },
-		{ .compatible = "samsung,exynos7890-mailbox", },
-		{ .compatible = "samsung,exynos8890-mailbox", },
-		{ .compatible = "samsung,exynos7870-mailbox", },
-		{ .compatible = "samsung,exynos-shd-ipc-mailbox", },
+		{ .compatible = "samsung,exynos8895-mcu-ipc", },
 		{},
 };
 MODULE_DEVICE_TABLE(of, exynos_mcu_ipc_dt_match);
@@ -476,9 +389,7 @@ static struct platform_driver mcu_ipc_driver = {
 	.remove		= mcu_ipc_remove,
 	.driver		= {
 		.name = "mcu_ipc",
-		.owner = THIS_MODULE,
-		.of_match_table = of_match_ptr(exynos_mcu_ipc_dt_match),
-		.pm = &mcu_ipc_pm_ops,
+		.of_match_table = exynos_mcu_ipc_dt_match,
 		.suppress_bind_attrs = true,
 	},
 };
