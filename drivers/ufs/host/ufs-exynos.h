@@ -132,6 +132,10 @@ struct exynos_ufs;
 #define PCLK_AVAIL_MIN	70000000
 #define PCLK_AVAIL_MAX	267000000
 
+/* Sanity bounds of the UniPro clock when it is also the PCLK */
+#define UNIPRO_PCLK_MIN	100000000
+#define UNIPRO_PCLK_MAX	200000000
+
 struct exynos_ufs_uic_attr {
 	/* TX Attributes */
 	unsigned int tx_trailingclks;
@@ -245,6 +249,7 @@ struct exynos_ufs {
 #define EXYNOS_UFS_OPT_SKIP_CONFIG_PHY_ATTR	BIT(5)
 #define EXYNOS_UFS_OPT_UFSPR_SECURE		BIT(6)
 #define EXYNOS_UFS_OPT_TIMER_TICK_SELECT	BIT(7)
+#define EXYNOS_UFS_OPT_UNIPRO_PCLK		BIT(8)
 };
 
 #define for_each_ufs_rx_lane(ufs, i) \
