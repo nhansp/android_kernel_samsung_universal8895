@@ -53,6 +53,12 @@
 
 #define ACPM_GS101_INITDATA_BASE	0xa000
 
+#define ACPM_EXYNOS8895_INITDATA_BASE	0x2850
+/* The vendor driver waits up to six 150 ms windows for a response. */
+#define ACPM_EXYNOS8895_POLL_TIMEOUT_US	(6 * 150 * USEC_PER_MSEC)
+/* CORTEX_APM_CONFIGURATION, offset in the PMU */
+#define EXYNOS8895_PMU_APM_CONFIGURATION	0x8100
+
 /* Built in, keep the "acpm." parameter prefix instead of "acpm_protocol.". */
 #ifndef MODULE
 #undef MODULE_PARAM_PREFIX
@@ -1823,10 +1829,38 @@ static const struct acpm_match_data acpm_gs101 = {
 	.plugin_chan = -1,
 };
 
+static const char * const exynos8895_fvmap_names[] = {
+	[2] = "cpucl0",
+	[3] = "cpucl1",
+	[9] = NULL,
+};
+
+static const struct acpm_match_data acpm_exynos8895 = {
+	.initdata_base = ACPM_EXYNOS8895_INITDATA_BASE,
+	.acpm_clk_dev_name = "exynos8895-acpm-clk",
+	.rx_front_check = false,
+	.cmd_timestamp = false,
+	.poll_timeout_us = ACPM_EXYNOS8895_POLL_TIMEOUT_US,
+	.irq_rx = true,
+	.notify_chan = 5,
+	.plugin_chan = 4,
+	.fvmap_names = exynos8895_fvmap_names,
+	.fvmap_domains = 10,
+	.fwlog_period_ms = 500,
+	.fwlog_first_ms = 10000,
+	.num_timestamps = 32,
+	.pmu_compatible = "samsung,exynos8895-pmu",
+	.pmu_apm_cfg = EXYNOS8895_PMU_APM_CONFIGURATION,
+};
+
 static const struct of_device_id acpm_match[] = {
 	{
 		.compatible = "google,gs101-acpm-ipc",
 		.data = &acpm_gs101,
+	},
+	{
+		.compatible = "samsung,exynos8895-acpm-ipc",
+		.data = &acpm_exynos8895,
 	},
 	{},
 };
