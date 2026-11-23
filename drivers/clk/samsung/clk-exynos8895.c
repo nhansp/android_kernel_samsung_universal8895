@@ -37,6 +37,7 @@
 #define CLKS_NR_G2D	(CLK_GOUT_G2D_XIU_P_G2D_ACLK + 1)
 #define CLKS_NR_ISPHQ	(CLK_GOUT_ISPHQ_SYSREG_ISPHQ_PCLK + 1)
 #define CLKS_NR_ISPLP	(CLK_GOUT_ISPLP_SYSREG_ISPLP_PCLK + 1)
+#define CLKS_NR_DCAM	(CLK_GOUT_DCAM_XIU_P_DCAM_ACLK + 1)
 
 /*
  * The gates of the always-on CMUs stay under hardware auto-gating, as the
@@ -5295,6 +5296,196 @@ static const struct samsung_cmu_info isplp_cmu_info __initconst = {
 	.clk_name		= "bus",
 };
 
+/* ---- CMU_DCAM ------------------------------------------------------------ */
+
+/* Register Offset definitions for CMU_DCAM (0x12e00000) */
+#define PLL_CON0_MUX_CLKCMU_DCAM_BUS_USER					0x0100
+#define PLL_CON0_MUX_CLKCMU_DCAM_IMGD_USER					0x0120
+#define DCAM_CMU_CONTROLLER_OPTION						0x0800
+#define CLK_CON_DIV_DIV_CLK_DCAM_BUSP						0x1800
+#define CLK_CON_GAT_CLK_BLK_DCAM_UID_DCAM_CMU_DCAM_IPCLKPORT_PCLK		0x2000
+#define CLK_CON_GAT_GOUT_BLK_DCAM_UID_AD_APB_DCAM_IPCLKPORT_PCLKM		0x2010
+#define CLK_CON_GAT_GOUT_BLK_DCAM_UID_AD_APB_DCAM_IPCLKPORT_PCLKS		0x2014
+#define CLK_CON_GAT_GOUT_BLK_DCAM_UID_AXI2APB_DCAM_IPCLKPORT_ACLK		0x2018
+#define CLK_CON_GAT_GOUT_BLK_DCAM_UID_AXI2APB_DCAM_SYS_IPCLKPORT_ACLK		0x201c
+#define CLK_CON_GAT_GOUT_BLK_DCAM_UID_BTM_DCAM_IPCLKPORT_I_ACLK			0x2020
+#define CLK_CON_GAT_GOUT_BLK_DCAM_UID_BTM_DCAM_IPCLKPORT_I_PCLK			0x2024
+#define CLK_CON_GAT_GOUT_BLK_DCAM_UID_DCP_IPCLKPORT_CLK				0x2028
+#define CLK_CON_GAT_GOUT_BLK_DCAM_UID_LHM_AXI_P_SRDZDCAM_IPCLKPORT_I_CLK	0x202c
+#define CLK_CON_GAT_GOUT_BLK_DCAM_UID_LHS_ATB_DCAMSRDZ_IPCLKPORT_I_CLK		0x2030
+#define CLK_CON_GAT_GOUT_BLK_DCAM_UID_LHS_AXI_D_DCAMSRDZ_IPCLKPORT_I_CLK	0x2034
+#define CLK_CON_GAT_GOUT_BLK_DCAM_UID_PMU_DCAM_IPCLKPORT_PCLK			0x2038
+#define CLK_CON_GAT_GOUT_BLK_DCAM_UID_BCM_DCAM_IPCLKPORT_ACLK			0x203c
+#define CLK_CON_GAT_GOUT_BLK_DCAM_UID_BCM_DCAM_IPCLKPORT_PCLK			0x2040
+#define CLK_CON_GAT_GOUT_BLK_DCAM_UID_PXL_ASBM_DCAM_IPCLKPORT_CLK		0x2044
+#define CLK_CON_GAT_GOUT_BLK_DCAM_UID_PXL_ASBS_DCAM_IPCLKPORT_CLK		0x2048
+#define CLK_CON_GAT_GOUT_BLK_DCAM_UID_RSTNSYNC_CLK_DCAM_BUSD_IPCLKPORT_CLK	0x204c
+#define CLK_CON_GAT_GOUT_BLK_DCAM_UID_RSTNSYNC_CLK_DCAM_BUSP_IPCLKPORT_CLK	0x2050
+#define CLK_CON_GAT_GOUT_BLK_DCAM_UID_RSTNSYNC_CLK_DCAM_IMGD_IPCLKPORT_CLK	0x2054
+#define CLK_CON_GAT_GOUT_BLK_DCAM_UID_SYSREG_DCAM_IPCLKPORT_PCLK		0x2058
+#define CLK_CON_GAT_GOUT_BLK_DCAM_UID_XIU_P_DCAM_IPCLKPORT_ACLK			0x205c
+#define QCH_CON_BTM_DCAM_QCH							0x3004
+#define QCH_CON_DCAM_CMU_DCAM_QCH						0x3008
+#define QCH_CON_DCP_QCH								0x300c
+#define QCH_CON_LHM_AXI_P_SRDZDCAM_QCH						0x3010
+#define QCH_CON_LHS_ATB_DCAMSRDZ_QCH						0x3014
+#define QCH_CON_LHS_AXI_D_DCAMSRDZ_QCH						0x3018
+#define QCH_CON_PMU_DCAM_QCH							0x301c
+#define QCH_CON_BCM_DCAM_QCH							0x3020
+#define QCH_CON_SYSREG_DCAM_QCH							0x3024
+
+static const unsigned long dcam_clk_regs[] __initconst = {
+	PLL_CON0_MUX_CLKCMU_DCAM_BUS_USER,
+	PLL_CON0_MUX_CLKCMU_DCAM_IMGD_USER,
+	CLK_CON_DIV_DIV_CLK_DCAM_BUSP,
+	CLK_CON_GAT_CLK_BLK_DCAM_UID_DCAM_CMU_DCAM_IPCLKPORT_PCLK,
+	CLK_CON_GAT_GOUT_BLK_DCAM_UID_AD_APB_DCAM_IPCLKPORT_PCLKM,
+	CLK_CON_GAT_GOUT_BLK_DCAM_UID_AD_APB_DCAM_IPCLKPORT_PCLKS,
+	CLK_CON_GAT_GOUT_BLK_DCAM_UID_AXI2APB_DCAM_IPCLKPORT_ACLK,
+	CLK_CON_GAT_GOUT_BLK_DCAM_UID_AXI2APB_DCAM_SYS_IPCLKPORT_ACLK,
+	CLK_CON_GAT_GOUT_BLK_DCAM_UID_BTM_DCAM_IPCLKPORT_I_ACLK,
+	CLK_CON_GAT_GOUT_BLK_DCAM_UID_BTM_DCAM_IPCLKPORT_I_PCLK,
+	CLK_CON_GAT_GOUT_BLK_DCAM_UID_DCP_IPCLKPORT_CLK,
+	CLK_CON_GAT_GOUT_BLK_DCAM_UID_LHM_AXI_P_SRDZDCAM_IPCLKPORT_I_CLK,
+	CLK_CON_GAT_GOUT_BLK_DCAM_UID_LHS_ATB_DCAMSRDZ_IPCLKPORT_I_CLK,
+	CLK_CON_GAT_GOUT_BLK_DCAM_UID_LHS_AXI_D_DCAMSRDZ_IPCLKPORT_I_CLK,
+	CLK_CON_GAT_GOUT_BLK_DCAM_UID_PMU_DCAM_IPCLKPORT_PCLK,
+	CLK_CON_GAT_GOUT_BLK_DCAM_UID_BCM_DCAM_IPCLKPORT_ACLK,
+	CLK_CON_GAT_GOUT_BLK_DCAM_UID_BCM_DCAM_IPCLKPORT_PCLK,
+	CLK_CON_GAT_GOUT_BLK_DCAM_UID_PXL_ASBM_DCAM_IPCLKPORT_CLK,
+	CLK_CON_GAT_GOUT_BLK_DCAM_UID_PXL_ASBS_DCAM_IPCLKPORT_CLK,
+	CLK_CON_GAT_GOUT_BLK_DCAM_UID_RSTNSYNC_CLK_DCAM_BUSD_IPCLKPORT_CLK,
+	CLK_CON_GAT_GOUT_BLK_DCAM_UID_RSTNSYNC_CLK_DCAM_BUSP_IPCLKPORT_CLK,
+	CLK_CON_GAT_GOUT_BLK_DCAM_UID_RSTNSYNC_CLK_DCAM_IMGD_IPCLKPORT_CLK,
+	CLK_CON_GAT_GOUT_BLK_DCAM_UID_SYSREG_DCAM_IPCLKPORT_PCLK,
+	CLK_CON_GAT_GOUT_BLK_DCAM_UID_XIU_P_DCAM_IPCLKPORT_ACLK,
+	QCH_CON_SYSREG_DCAM_QCH,
+	QCH_CON_BCM_DCAM_QCH,
+	QCH_CON_PMU_DCAM_QCH,
+	QCH_CON_LHS_AXI_D_DCAMSRDZ_QCH,
+	QCH_CON_LHS_ATB_DCAMSRDZ_QCH,
+	QCH_CON_LHM_AXI_P_SRDZDCAM_QCH,
+	QCH_CON_DCP_QCH,
+	QCH_CON_DCAM_CMU_DCAM_QCH,
+	QCH_CON_BTM_DCAM_QCH,
+	DCAM_CMU_CONTROLLER_OPTION,
+};
+
+/* List of parent clocks for Muxes in CMU_DCAM */
+PNAME(mout_dcam_bus_user_p)		= { "oscclk", "dout_cmu_dcam_bus" };
+PNAME(mout_dcam_imgd_user_p)		= { "oscclk", "dout_cmu_dcam_imgd" };
+
+static const struct samsung_mux_clock dcam_mux_clks[] __initconst = {
+	MUX(CLK_MOUT_DCAM_BUS_USER, "mout_dcam_bus_user", mout_dcam_bus_user_p,
+	    PLL_CON0_MUX_CLKCMU_DCAM_BUS_USER, 4, 1),
+	MUX(CLK_MOUT_DCAM_IMGD_USER, "mout_dcam_imgd_user",
+	    mout_dcam_imgd_user_p, PLL_CON0_MUX_CLKCMU_DCAM_IMGD_USER, 4, 1),
+};
+
+static const struct samsung_div_clock dcam_div_clks[] __initconst = {
+	DIV(CLK_DOUT_DCAM_BUSP, "dout_dcam_busp", "mout_dcam_bus_user",
+	    CLK_CON_DIV_DIV_CLK_DCAM_BUSP, 0, 3),
+};
+
+static const struct samsung_gate_clock dcam_gate_clks[] __initconst = {
+	GATE(CLK_GOUT_DCAM_CMU_DCAM_PCLK, "gout_dcam_cmu_dcam_pclk",
+	     "dout_dcam_busp",
+	     CLK_CON_GAT_CLK_BLK_DCAM_UID_DCAM_CMU_DCAM_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DCAM_AD_APB_DCAM_PCLKM, "gout_dcam_ad_apb_dcam_pclkm",
+	     "mout_dcam_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_DCAM_UID_AD_APB_DCAM_IPCLKPORT_PCLKM, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DCAM_AD_APB_DCAM_PCLKS, "gout_dcam_ad_apb_dcam_pclks",
+	     "dout_dcam_busp",
+	     CLK_CON_GAT_GOUT_BLK_DCAM_UID_AD_APB_DCAM_IPCLKPORT_PCLKS, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DCAM_AXI2APB_DCAM_ACLK, "gout_dcam_axi2apb_dcam_aclk",
+	     "dout_dcam_busp",
+	     CLK_CON_GAT_GOUT_BLK_DCAM_UID_AXI2APB_DCAM_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DCAM_AXI2APB_DCAM_SYS_ACLK,
+	     "gout_dcam_axi2apb_dcam_sys_aclk", "dout_dcam_busp",
+	     CLK_CON_GAT_GOUT_BLK_DCAM_UID_AXI2APB_DCAM_SYS_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DCAM_BTM_DCAM_I_ACLK, "gout_dcam_btm_dcam_i_aclk",
+	     "mout_dcam_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_DCAM_UID_BTM_DCAM_IPCLKPORT_I_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DCAM_BTM_DCAM_I_PCLK, "gout_dcam_btm_dcam_i_pclk",
+	     "dout_dcam_busp",
+	     CLK_CON_GAT_GOUT_BLK_DCAM_UID_BTM_DCAM_IPCLKPORT_I_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DCAM_DCP_CLK, "gout_dcam_dcp_clk", "mout_dcam_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_DCAM_UID_DCP_IPCLKPORT_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DCAM_LHM_AXI_P_SRDZDCAM_I_CLK,
+	     "gout_dcam_lhm_axi_p_srdzdcam_i_clk", "dout_dcam_busp",
+	     CLK_CON_GAT_GOUT_BLK_DCAM_UID_LHM_AXI_P_SRDZDCAM_IPCLKPORT_I_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DCAM_LHS_ATB_DCAMSRDZ_I_CLK,
+	     "gout_dcam_lhs_atb_dcamsrdz_i_clk", "mout_dcam_imgd_user",
+	     CLK_CON_GAT_GOUT_BLK_DCAM_UID_LHS_ATB_DCAMSRDZ_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DCAM_LHS_AXI_D_DCAMSRDZ_I_CLK,
+	     "gout_dcam_lhs_axi_d_dcamsrdz_i_clk", "mout_dcam_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_DCAM_UID_LHS_AXI_D_DCAMSRDZ_IPCLKPORT_I_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DCAM_PMU_DCAM_PCLK, "gout_dcam_pmu_dcam_pclk",
+	     "dout_dcam_busp",
+	     CLK_CON_GAT_GOUT_BLK_DCAM_UID_PMU_DCAM_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DCAM_BCM_DCAM_ACLK, "gout_dcam_bcm_dcam_aclk",
+	     "mout_dcam_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_DCAM_UID_BCM_DCAM_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DCAM_BCM_DCAM_PCLK, "gout_dcam_bcm_dcam_pclk",
+	     "dout_dcam_busp",
+	     CLK_CON_GAT_GOUT_BLK_DCAM_UID_BCM_DCAM_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DCAM_PXL_ASBM_DCAM_CLK, "gout_dcam_pxl_asbm_dcam_clk",
+	     "mout_dcam_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_DCAM_UID_PXL_ASBM_DCAM_IPCLKPORT_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DCAM_PXL_ASBS_DCAM_CLK, "gout_dcam_pxl_asbs_dcam_clk",
+	     "mout_dcam_imgd_user",
+	     CLK_CON_GAT_GOUT_BLK_DCAM_UID_PXL_ASBS_DCAM_IPCLKPORT_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DCAM_RSTNSYNC_CLK_DCAM_BUSD_CLK,
+	     "gout_dcam_rstnsync_clk_dcam_busd_clk", "mout_dcam_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_DCAM_UID_RSTNSYNC_CLK_DCAM_BUSD_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DCAM_RSTNSYNC_CLK_DCAM_BUSP_CLK,
+	     "gout_dcam_rstnsync_clk_dcam_busp_clk", "dout_dcam_busp",
+	     CLK_CON_GAT_GOUT_BLK_DCAM_UID_RSTNSYNC_CLK_DCAM_BUSP_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DCAM_RSTNSYNC_CLK_DCAM_IMGD_CLK,
+	     "gout_dcam_rstnsync_clk_dcam_imgd_clk", "mout_dcam_imgd_user",
+	     CLK_CON_GAT_GOUT_BLK_DCAM_UID_RSTNSYNC_CLK_DCAM_IMGD_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DCAM_SYSREG_DCAM_PCLK, "gout_dcam_sysreg_dcam_pclk",
+	     "dout_dcam_busp",
+	     CLK_CON_GAT_GOUT_BLK_DCAM_UID_SYSREG_DCAM_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_DCAM_XIU_P_DCAM_ACLK, "gout_dcam_xiu_p_dcam_aclk",
+	     "dout_dcam_busp",
+	     CLK_CON_GAT_GOUT_BLK_DCAM_UID_XIU_P_DCAM_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+};
+
+static const struct samsung_cmu_info dcam_cmu_info __initconst = {
+	.mux_clks		= dcam_mux_clks,
+	.nr_mux_clks		= ARRAY_SIZE(dcam_mux_clks),
+	.div_clks		= dcam_div_clks,
+	.nr_div_clks		= ARRAY_SIZE(dcam_div_clks),
+	.gate_clks		= dcam_gate_clks,
+	.nr_gate_clks		= ARRAY_SIZE(dcam_gate_clks),
+	.nr_clk_ids		= CLKS_NR_DCAM,
+	.clk_regs		= dcam_clk_regs,
+	.nr_clk_regs		= ARRAY_SIZE(dcam_clk_regs),
+	.clk_name		= "bus",
+};
+
 /* ---- CMU probe glue ------------------------------------------------------ */
 
 #define CMU_QCH_ENABLE			BIT(0)
@@ -5400,6 +5591,7 @@ static const struct exynos8895_busp_ratio exynos8895_busp[] __initconst = {
 	{ "samsung,exynos8895-cmu-g2d", CLK_DOUT_G2D_BUSP, 2 },
 	{ "samsung,exynos8895-cmu-isphq", CLK_DOUT_ISPHQ_BUSP, 2 },
 	{ "samsung,exynos8895-cmu-isplp", CLK_DOUT_ISPLP_BUSP, 2 },
+	{ "samsung,exynos8895-cmu-dcam", CLK_DOUT_DCAM_BUSP, 3 },
 };
 
 static void __init exynos8895_cmu_set_busp(struct platform_device *pdev)
@@ -5489,6 +5681,9 @@ static const struct of_device_id exynos8895_cmu_pd_of_match[] = {
 	}, {
 		.compatible = "samsung,exynos8895-cmu-isplp",
 		.data = &isplp_cmu_info,
+	}, {
+		.compatible = "samsung,exynos8895-cmu-dcam",
+		.data = &dcam_cmu_info,
 	},
 	{ }
 };
