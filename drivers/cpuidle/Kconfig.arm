@@ -130,3 +130,16 @@ config ARM_QCOM_SPM_CPUIDLE
 	  The Subsystem Power Manager (SPM) controls low power modes for the
 	  CPU and L2 cores. It interface with various system drivers to put
 	  the cores in low power modes.
+
+config ARM_EXYNOS8895_CPUIDLE
+	bool "Exynos8895 CPU idle driver"
+	depends on ARCH_EXYNOS && ARM64 && EXYNOS8895_PM
+	select CPU_IDLE_MULTIPLE_DRIVERS
+	select DT_IDLE_STATES
+	help
+	  Select this to enable the idle states of the Exynos8895 CPUs: WFI
+	  and C2 (core power-down) on both clusters. C2 is upgraded to a
+	  power-down of the Mongoose cluster, or on the boot cluster to the
+	  system idle clock-down (SICD), when every CPU concerned is idle long
+	  enough. The firmware takes Exynos PSCI power_state values, and the
+	  PMU is prepared by the kernel before each entry.
