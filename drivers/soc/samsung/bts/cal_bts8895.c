@@ -228,6 +228,8 @@ void bts_trex_init(void __iomem *base)
 
 void bts_set_qmax(void __iomem *base, unsigned int rmo, unsigned int wmo)
 {
+	if (!base)
+		return;
 	__raw_writel(set_mo(rmo), base + QMAX_THRESHOLD_R);
 	__raw_writel(set_mo(wmo), base + QMAX_THRESHOLD_W);
 
@@ -236,6 +238,9 @@ void bts_set_qmax(void __iomem *base, unsigned int rmo, unsigned int wmo)
 void bts_set_tq(void __iomem *base, unsigned int tq)
 {
 	unsigned int tmp_reg = 0;
+
+	if (!base)
+		return;
 	if (tq > 3)
 		tq = 0;
 	tmp_reg = __raw_readl(base + SCI_CRP0_CON);
@@ -255,6 +260,9 @@ void bts_set_tq(void __iomem *base, unsigned int tq)
 void bts_set_qbusy(void __iomem *base, unsigned int qbusy)
 {
 	unsigned int tmp_reg = 0;
+
+	if (!base)
+		return;
 	if (qbusy > 0x3f)
 		qbusy = 0x3f;
 	tmp_reg = __raw_readl(base + SMC_SCHEDCTL_BUNDLE_CTRL4);
@@ -269,6 +277,9 @@ void bts_set_qfull(void __iomem *base, unsigned int qfull_low,
 		   unsigned int qfull_high)
 {
 	unsigned int tmp_reg = 0;
+
+	if (!base)
+		return;
 	if (qfull_low > 0x3f)
 		qfull_low = 0x3f;
 	if (qfull_high < qfull_low)
