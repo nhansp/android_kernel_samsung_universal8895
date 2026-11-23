@@ -102,6 +102,46 @@ static int exynos_chipid_get_chipid_info(struct regmap *regmap,
 	return 0;
 }
 
+#ifdef CONFIG_EXYNOS_CHIPID_LEGACY_SYSFS
+/* One chip-id device per SoC, so the revision is a single static. */
+static u32 exynos_chipid_legacy_rev;
+
+static ssize_t revision_show(struct device *dev, struct device_attribute *attr,
+			     char *buf)
+{
+	return sysfs_emit(buf, "%08X\n", exynos_chipid_legacy_rev);
+}
+static DEVICE_ATTR_RO(revision);
+
+static struct attribute *chipid_legacy_attrs[] = {
+	&dev_attr_revision.attr,
+	NULL
+};
+ATTRIBUTE_GROUPS(chipid_legacy);
+
+static const struct bus_type chipid_subsys = {
+	.name = "chip-id",
+	.dev_name = "chip-id",
+};
+
+static void exynos_chipid_legacy_unregister(void *unused)
+{
+	bus_unregister(&chipid_subsys);
+}
+
+/* Not fatal: the SoC device is registered already. */
+static void exynos_chipid_legacy_register(struct device *dev)
+{
+	int ret = subsys_system_register(&chipid_subsys, chipid_legacy_groups);
+
+	if (!ret)
+		ret = devm_add_action_or_reset(dev, exynos_chipid_legacy_unregister,
+					       NULL);
+	if (ret)
+		dev_err(dev, "chip-id subsys: %d\n", ret);
+}
+#endif /* CONFIG_EXYNOS_CHIPID_LEGACY_SYSFS */
+
 static int exynos_chipid_probe(struct platform_device *pdev)
 {
 	const struct exynos_chipid_variant *drv_data;
@@ -123,6 +163,9 @@ static int exynos_chipid_probe(struct platform_device *pdev)
 	ret = exynos_chipid_get_chipid_info(regmap, drv_data, &soc_info);
 	if (ret < 0)
 		return ret;
+#ifdef CONFIG_EXYNOS_CHIPID_LEGACY_SYSFS
+	exynos_chipid_legacy_rev = soc_info.revision;
+#endif
 
 	soc_dev_attr = devm_kzalloc(&pdev->dev, sizeof(*soc_dev_attr),
 				    GFP_KERNEL);
@@ -158,6 +201,10 @@ static int exynos_chipid_probe(struct platform_device *pdev)
 
 	dev_info(&pdev->dev, "Exynos: CPU[%s] PRO_ID[0x%x] REV[0x%x] Detected\n",
 		 soc_dev_attr->soc_id, soc_info.product_id, soc_info.revision);
+
+#ifdef CONFIG_EXYNOS_CHIPID_LEGACY_SYSFS
+	exynos_chipid_legacy_register(&pdev->dev);
+#endif
 
 	return 0;
 

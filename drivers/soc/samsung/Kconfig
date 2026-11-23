@@ -23,6 +23,15 @@ config EXYNOS_CHIPID
 	  Support for Samsung Exynos SoC ChipID and Adaptive Supply Voltage.
 	  This driver can also be built as module (exynos_chipid).
 
+config EXYNOS_CHIPID_LEGACY_SYSFS
+	bool "Exynos chip-id revision in sysfs for vendor userspace"
+	depends on EXYNOS_CHIPID
+	help
+	  Registers the "chip-id" system subsystem of the Samsung vendor
+	  kernels with its "revision" attribute, the SoC main and sub
+	  revision as eight hex digits. Proprietary Exynos display HAL
+	  libraries read /sys/devices/system/chip-id/revision.
+
 config EXYNOS_USI
 	tristate "Exynos USI (Universal Serial Interface) driver"
 	default ARCH_EXYNOS && ARM64
