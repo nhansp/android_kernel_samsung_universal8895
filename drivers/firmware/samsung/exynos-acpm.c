@@ -21,6 +21,7 @@
 #include <linux/ktime.h>
 #include <linux/mailbox/exynos-message.h>
 #include <linux/mailbox_client.h>
+#include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/math.h>
@@ -30,6 +31,8 @@
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/reboot.h>
+#include <linux/regmap.h>
 #include <linux/sched/clock.h>
 #include <linux/seq_file.h>
 #include <linux/sizes.h>
@@ -58,6 +61,9 @@
 static unsigned int fw_log;
 module_param(fw_log, uint, 0644);
 MODULE_PARM_DESC(fw_log, "print APM firmware log entries: 0 none, 1 level 0 only, 2 all");
+
+#define ACPM_PROTOCOL_STOP		BIT(22)
+#define ACPM_APM_LOCAL_PWR_CFG		BIT(0)
 
 /* Firmware-log entry header */
 #define ACPM_LOG_ID			GENMASK(31, 29)
@@ -323,6 +329,8 @@ struct acpm_chan {
  * @fwlog_lock:	serializes ring drains.
  * @ts:		sched_clock() per timestamp index.
  * @fwlog_work:	periodic drain.
+ * @pmu:	PMU regmap for the APM core power-down.
+ * @stopped:	the APM firmware was stopped for a restart or power-off.
  */
 struct acpm_info {
 	struct acpm_shmem __iomem *shmem;
@@ -348,6 +356,8 @@ struct acpm_info {
 	spinlock_t fwlog_lock;	/* ring drain */
 	u64 ts[ACPM_MAX_TIMESTAMPS];
 	struct delayed_work fwlog_work;
+	struct regmap *pmu;
+	bool stopped;
 };
 
 /**
@@ -374,6 +384,11 @@ struct acpm_info {
  *			timestamp index updates.
  * @fwlog_first_ms:	delay of the first periodic drain after probe.
  * @num_timestamps:	modulus of the timestamp index (at most 32).
+ * @pmu_compatible:	compatible of the PMU syscon; non-NULL registers the APM
+ *			stop before a restart or power-off (STOP on plugin_chan,
+ *			then the APM core powered down).
+ * @pmu_apm_cfg:	offset of the APM core configuration register in that
+ *			syscon.
  */
 struct acpm_match_data {
 	loff_t initdata_base;
@@ -389,6 +404,8 @@ struct acpm_match_data {
 	u32 fwlog_period_ms;
 	u32 fwlog_first_ms;
 	u32 num_timestamps;
+	const char *pmu_compatible;
+	u32 pmu_apm_cfg;
 };
 
 #define client_to_acpm_chan(c) container_of(c, struct acpm_chan, cl)
@@ -943,6 +960,10 @@ int acpm_do_xfer(struct acpm_handle *handle, const struct acpm_xfer *xfer)
 
 	achan = &acpm->chans[xfer->acpm_chan_id];
 
+	/* After the APM stop no command can be answered. */
+	if (READ_ONCE(acpm->stopped))
+		return -ESHUTDOWN;
+
 	ret = __acpm_do_xfer(acpm, achan, xfer);
 	atomic_inc(&achan->stats.xfer);
 	if (ret)
@@ -1474,6 +1495,80 @@ static void acpm_debugfs_init(struct acpm_info *acpm)
 }
 
 /**
+ * acpm_stop_cb() - stop the APM before a restart or power-off.
+ * @data:	sys-off data; cb_data is the driver data.
+ *
+ * Sends STOP on the plugin channel, whose answer carries the STOP bit back,
+ * then powers the APM core down whatever the STOP result. Later transfers
+ * fail with -ESHUTDOWN instead of timing out.
+ *
+ * Return: NOTIFY_DONE.
+ */
+static int acpm_stop_cb(struct sys_off_data *data)
+{
+	struct acpm_info *acpm = data->cb_data;
+	u32 cmd[4] = { ACPM_PROTOCOL_STOP, 0, 0, 0 };
+	struct acpm_xfer xfer = {
+		.txd = cmd,
+		.txlen = sizeof(cmd),
+		.rxd = cmd,
+		.rxlen = sizeof(cmd),
+		.acpm_chan_id = acpm->match->plugin_chan,
+	};
+	int ret, pwr = -ENODEV;
+
+	ret = acpm_do_xfer(&acpm->handle, &xfer);
+	if (!ret && !(cmd[0] & ACPM_PROTOCOL_STOP))
+		ret = -EBADMSG;
+	WRITE_ONCE(acpm->stopped, true);
+
+	if (!IS_ERR(acpm->pmu))
+		pwr = regmap_update_bits(acpm->pmu, acpm->match->pmu_apm_cfg,
+					 ACPM_APM_LOCAL_PWR_CFG, 0);
+
+	if (ret || pwr)
+		dev_err(acpm->dev, "APM stop %s (%d), core power-down %d\n",
+			ret ? "failed" : "done", ret, pwr);
+	else
+		dev_dbg(acpm->dev, "APM stopped, core powered down\n");
+
+	return NOTIFY_DONE;
+}
+
+/**
+ * acpm_stop_init() - register the APM stop for restart and power-off.
+ * @acpm:	driver data.
+ *
+ * The prepare handlers run in process context after device_shutdown(), so
+ * every ACPM consumer is shut down, and before the reset or power-off.
+ * Default priority keeps the stop after higher-priority prepare handlers
+ * that may still use the firmware.
+ */
+static void acpm_stop_init(struct acpm_info *acpm)
+{
+	const struct acpm_match_data *match = acpm->match;
+	struct device *dev = acpm->dev;
+	int ret;
+
+	if (!match->pmu_compatible || match->plugin_chan < 0 ||
+	    match->plugin_chan >= acpm->num_chans)
+		return;
+
+	acpm->pmu = syscon_regmap_lookup_by_compatible(match->pmu_compatible);
+	if (IS_ERR(acpm->pmu))
+		dev_err(dev, "no PMU syscon (%ld): APM core left on at restart\n",
+			PTR_ERR(acpm->pmu));
+
+	ret = devm_register_sys_off_handler(dev, SYS_OFF_MODE_RESTART_PREPARE,
+					    SYS_OFF_PRIO_DEFAULT, acpm_stop_cb, acpm);
+	if (!ret)
+		ret = devm_register_sys_off_handler(dev, SYS_OFF_MODE_POWER_OFF_PREPARE,
+						    SYS_OFF_PRIO_DEFAULT, acpm_stop_cb, acpm);
+	if (ret)
+		dev_err(dev, "APM stop hook not registered (%d)\n", ret);
+}
+
+/**
  * acpm_setup_ops() - setup the operations structures.
  * @acpm:	pointer to the driver data.
  */
@@ -1545,6 +1640,8 @@ static int acpm_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, acpm);
 
 	acpm_debugfs_init(acpm);
+
+	acpm_stop_init(acpm);
 
 	if (match_data->fwlog_period_ms)
 		acpm_fwlog_init(acpm);
