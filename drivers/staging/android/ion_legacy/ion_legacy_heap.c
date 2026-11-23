@@ -6,15 +6,20 @@
  * Copyright (C) Linaro 2012
  */
 
+#include <linux/cacheflush.h>
 #include <linux/cma.h>
 #include <linux/device.h>
+#include <linux/genalloc.h>
 #include <linux/gfp.h>
 #include <linux/mm.h>
 #include <linux/of.h>
 #include <linux/of_reserved_mem.h>
+#include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/sort.h>
 #include <linux/string.h>
+
+#include <soc/samsung/exynos8895-smc.h>
 
 #include "ion_legacy.h"
 
@@ -131,9 +136,151 @@ static int ionl_cma_allocate(struct ionl_heap *heap, struct ionl_buffer *buf,
 	return 0;
 }
 
+#define IONL_PROTECTED_BUF_ALIGN	SZ_64K
+#define IONL_SECURE_IOVA_BASE		0x10000000UL
+#define IONL_SECURE_IOVA_END		0xE0000000UL
+#define IONL_SMC_DRM_PPMP_PROT		0x82002110
+#define IONL_SMC_DRM_PPMP_UNPROT	0x82002111
+#define IONL_DRMDRV_OK			0
+
+static struct gen_pool *ionl_siova_pool;
+
+static int ionl_siova_pool_create(void)
+{
+	if (ionl_siova_pool)
+		return 0;
+
+	ionl_siova_pool = gen_pool_create(PAGE_SHIFT, -1);
+	if (!ionl_siova_pool)
+		return -ENOMEM;
+
+	if (gen_pool_add(ionl_siova_pool, IONL_SECURE_IOVA_BASE,
+			 IONL_SECURE_IOVA_END - IONL_SECURE_IOVA_BASE, -1)) {
+		gen_pool_destroy(ionl_siova_pool);
+		ionl_siova_pool = NULL;
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+/* Unlike the vendor driver, the secure IOVA is given back when EL3 refuses. */
+static int ionl_secure_allocate(struct ionl_heap *heap, struct ionl_buffer *buf,
+				unsigned long len, unsigned long align)
+{
+	struct genpool_data_align data = { .align = IONL_PROTECTED_BUF_ALIGN };
+	unsigned long plen = ALIGN(len, IONL_PROTECTED_BUF_ALIGN);
+	unsigned long paddr, iova;
+	struct ionl_prot_info *prot;
+	int ret;
+
+	if ((align > PAGE_SIZE) && (align & (align - 1)))
+		return -EINVAL;
+
+	/* a power-of-two kmalloc is size-aligned: no other data shares its cache lines */
+	prot = kzalloc(ARCH_DMA_MINALIGN, GFP_KERNEL);
+	if (!prot)
+		return -ENOMEM;
+
+	paddr = gen_pool_alloc_algo(heap->pool, plen, gen_pool_first_fit_align, &data);
+	if (!paddr) {
+		ret = -ENOMEM;
+		goto err_prot;
+	}
+
+	iova = gen_pool_alloc(ionl_siova_pool, plen);
+	if (!iova) {
+		pr_err("%s: no secure IOVA for %lu bytes\n", __func__, plen);
+		ret = -ENOMEM;
+		goto err_pool;
+	}
+
+	ret = sg_alloc_table(&buf->sgt, 1, GFP_KERNEL);
+	if (ret)
+		goto err_iova;
+	sg_set_page(buf->sgt.sgl, pfn_to_page(PFN_DOWN(paddr)), len, 0);
+
+	prot->chunk_count = 1;
+	prot->flags = heap->id;
+	prot->chunk_size = plen;
+	prot->bus_address = paddr;
+	prot->dma_addr = iova;
+	dcache_clean_inval_poc((unsigned long)prot, (unsigned long)prot + sizeof(*prot));
+
+	ret = (int)exynos8895_smc(IONL_SMC_DRM_PPMP_PROT, virt_to_phys(prot), 0, 0);
+	if (ret != IONL_DRMDRV_OK) {
+		pr_err("%s: SMC_DRM_PPMP_PROT failed, err=%#x\n", __func__, ret);
+		ret = -EIO;
+		goto err_sgt;
+	}
+
+	buf->prot = prot;
+	return 0;
+
+err_sgt:
+	sg_free_table(&buf->sgt);
+err_iova:
+	gen_pool_free(ionl_siova_pool, iova, plen);
+err_pool:
+	gen_pool_free(heap->pool, paddr, plen);
+err_prot:
+	kfree(prot);
+	return ret;
+}
+
+/*
+ * When EL3 refuses to unprotect, the range stays out of the pool, where the
+ * vendor driver gave it back.
+ */
+static void ionl_secure_free(struct ionl_buffer *buf)
+{
+	struct ionl_prot_info *prot = buf->prot;
+	unsigned long plen = ALIGN(buf->size, IONL_PROTECTED_BUF_ALIGN);
+	int ret;
+
+	ret = (int)exynos8895_smc(IONL_SMC_DRM_PPMP_UNPROT, virt_to_phys(prot), 0, 0);
+	gen_pool_free(ionl_siova_pool, prot->dma_addr, plen);
+	if (ret != IONL_DRMDRV_OK)
+		pr_err("%s: SMC_DRM_PPMP_UNPROT failed, err=%#x; %#lx stays protected\n",
+		       __func__, ret, prot->bus_address);
+	else
+		gen_pool_free(buf->heap->pool, prot->bus_address, plen);
+
+	kfree(prot);
+	buf->prot = NULL;
+}
+
+static int ionl_secure_heap_init(struct device *dev, struct ionl_heap *h,
+				 struct reserved_mem *rmem)
+{
+	int ret;
+
+	ret = ionl_siova_pool_create();
+	if (ret)
+		return ret;
+
+	h->pool = devm_gen_pool_create(dev, PAGE_SHIFT, -1, NULL);
+	if (IS_ERR(h->pool))
+		return PTR_ERR(h->pool);
+	ret = gen_pool_add(h->pool, rmem->base, rmem->size, -1);
+	if (ret)
+		return ret;
+
+	/* no dirty line may be written back into a buffer after EL3 protects it */
+	if (pfn_valid(PHYS_PFN(rmem->base)))
+		dcache_clean_inval_poc((unsigned long)phys_to_virt(rmem->base),
+				       (unsigned long)phys_to_virt(rmem->base) + rmem->size);
+
+	h->type = IONL_HEAP_SECURE;
+	return 0;
+}
+
 int ionl_heap_allocate(struct ionl_heap *heap, struct ionl_buffer *buf,
 		       unsigned long len, unsigned long align)
 {
+	if (heap->type == IONL_HEAP_SECURE)
+		return ionl_secure_allocate(heap, buf, len, align);
+
 	if (heap->type == IONL_HEAP_CMA)
 		return ionl_cma_allocate(heap, buf, len, align);
 
@@ -142,6 +289,12 @@ int ionl_heap_allocate(struct ionl_heap *heap, struct ionl_buffer *buf,
 
 void ionl_heap_free(struct ionl_buffer *buf)
 {
+	if (buf->heap->type == IONL_HEAP_SECURE) {
+		ionl_secure_free(buf);
+		sg_free_table(&buf->sgt);
+		return;
+	}
+
 	if (buf->heap->type == IONL_HEAP_CMA)
 		cma_release(buf->heap->cma, buf->cma_page,
 			    PAGE_ALIGN(buf->size) >> PAGE_SHIFT);
@@ -158,6 +311,9 @@ void ionl_heap_free(struct ionl_buffer *buf)
  */
 bool ionl_heap_flush_at_alloc(struct ionl_buffer *buf)
 {
+	if (ionl_buffer_protected(buf))
+		return false;
+
 	if (!(buf->flags & ION_FLAG_CACHED))
 		return true;
 
@@ -201,19 +357,22 @@ int ionl_heaps_init(struct device *dev)
 		struct reserved_mem *rmem = NULL;
 		struct device_node *rnp;
 		const char *rname;
-		bool cma_pool;
+		bool cma_pool, secure;
 		int ret;
 
 		rnp = of_parse_phandle(np, "memory-region", i);
 		if (!rnp)
 			return -EINVAL;
-		cma_pool = of_device_is_compatible(rnp, "shared-dma-pool") &&
+		secure = of_property_read_bool(rnp, "ion,secure");
+		cma_pool = !secure && of_device_is_compatible(rnp, "shared-dma-pool") &&
 			   of_property_read_bool(rnp, "reusable");
-		if (cma_pool)
+		if (secure || cma_pool)
 			rmem = of_reserved_mem_lookup(rnp);
 		of_node_put(rnp);
-		if (!rmem || !rmem->priv || cma_get_base(rmem->priv) != rmem->base) {
-			dev_err(dev, "memory-region %d is not a reusable shared-dma-pool CMA area\n",
+		if (!rmem || (!secure && (!rmem->priv ||
+					  cma_get_base(rmem->priv) != rmem->base))) {
+			dev_err(dev,
+				"memory-region %d is neither an ion,secure region nor a reusable shared-dma-pool CMA area\n",
 				i);
 			return -EINVAL;
 		}
@@ -239,8 +398,14 @@ int ionl_heaps_init(struct device *dev)
 			}
 		}
 
-		h->type = IONL_HEAP_CMA;
-		h->cma = rmem->priv;
+		if (secure) {
+			ret = ionl_secure_heap_init(dev, h, rmem);
+			if (ret)
+				return ret;
+		} else {
+			h->type = IONL_HEAP_CMA;
+			h->cma = rmem->priv;
+		}
 		h->name = devm_kasprintf(dev, GFP_KERNEL, "%s_heap", rname);
 		if (!h->name)
 			return -ENOMEM;

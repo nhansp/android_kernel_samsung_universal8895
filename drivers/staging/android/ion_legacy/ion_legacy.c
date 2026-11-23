@@ -272,14 +272,16 @@ static struct ionl_handle *ionl_alloc(struct ionl_client *client, size_t len,
 	if (heap_id_mask == 0)
 		return ERR_PTR(-EINVAL);
 
-	/* no content path protection */
-	if (flags & ION_FLAG_PROTECTED)
-		return ERR_PTR(-ENODEV);
-
 	for (i = 0; i < ionl_dev.nr_heaps; i++) {
 		struct ionl_heap *heap = &ionl_dev.heaps[i];
 
 		if (!(BIT(heap->id) & heap_id_mask))
+			continue;
+		/*
+		 * Only a secure heap serves ION_FLAG_PROTECTED, and only that. The vendor
+		 * driver also served unprotected requests from the secure carveout.
+		 */
+		if (!!(flags & ION_FLAG_PROTECTED) != (heap->type == IONL_HEAP_SECURE))
 			continue;
 		buf = ionl_buffer_create(heap, len, align, flags);
 		if (!IS_ERR(buf))

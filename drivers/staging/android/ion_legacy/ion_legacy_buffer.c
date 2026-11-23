@@ -56,13 +56,15 @@ struct ionl_buffer *ionl_buffer_create(struct ionl_heap *heap, unsigned long len
 	if (ret)
 		goto err_free;
 
-	ret = dma_map_sgtable(ionl_dev.dev, &buf->sgt, DMA_BIDIRECTIONAL,
-			      DMA_ATTR_SKIP_CPU_SYNC);
-	if (ret)
-		goto err_heap;
+	if (!ionl_buffer_protected(buf)) {
+		ret = dma_map_sgtable(ionl_dev.dev, &buf->sgt, DMA_BIDIRECTIONAL,
+				      DMA_ATTR_SKIP_CPU_SYNC);
+		if (ret)
+			goto err_heap;
 
-	if (ionl_heap_flush_at_alloc(buf))
-		ionl_flush(buf);
+		if (ionl_heap_flush_at_alloc(buf))
+			ionl_flush(buf);
+	}
 
 	mutex_lock(&ionl_dev.buffers_lock);
 	buf->pid = task_pid_nr(current->group_leader);
@@ -97,7 +99,9 @@ static void ionl_buffer_release(struct kref *kref)
 	if (WARN_ON(buf->vmap_cnt > 0))
 		vunmap(buf->vaddr);
 
-	dma_unmap_sgtable(ionl_dev.dev, &buf->sgt, DMA_BIDIRECTIONAL, DMA_ATTR_SKIP_CPU_SYNC);
+	if (!ionl_buffer_protected(buf))
+		dma_unmap_sgtable(ionl_dev.dev, &buf->sgt, DMA_BIDIRECTIONAL,
+				  DMA_ATTR_SKIP_CPU_SYNC);
 	ionl_heap_free(buf);
 	mutex_destroy(&buf->lock);
 	kfree(buf);
@@ -165,6 +169,15 @@ static struct sg_table *ionl_map_dma_buf(struct dma_buf_attachment *attachment,
 	struct ionl_attachment *a = attachment->priv;
 	int ret;
 
+	/* devices address a protected buffer by the secure IOVA given to EL3 */
+	if (ionl_buffer_protected(buf)) {
+		if (!buf->prot || !buf->prot->dma_addr)
+			return ERR_PTR(-EINVAL);
+		sg_dma_address(a->table.sgl) = buf->prot->dma_addr;
+		sg_dma_len(a->table.sgl) = buf->size;
+		return &a->table;
+	}
+
 	ret = dma_map_sgtable(attachment->dev, &a->table, direction, ionl_map_attrs(buf));
 	if (ret)
 		return ERR_PTR(ret);
@@ -177,6 +190,9 @@ static void ionl_unmap_dma_buf(struct dma_buf_attachment *attachment,
 			       enum dma_data_direction direction)
 {
 	struct ionl_buffer *buf = attachment->dmabuf->priv;
+
+	if (ionl_buffer_protected(buf))
+		return;
 
 	dma_unmap_sgtable(attachment->dev, table, direction, ionl_map_attrs(buf));
 }
@@ -240,11 +256,17 @@ static void ionl_dma_buf_release(struct dma_buf *dmabuf)
 	ionl_buffer_put(dmabuf->priv);
 }
 
-/* The vendor driver did no cache maintenance here. */
+/*
+ * The vendor driver did no cache maintenance here, and allowed CPU access to
+ * protected buffers.
+ */
 static int ionl_dma_buf_begin_cpu_access(struct dma_buf *dmabuf,
 					 enum dma_data_direction direction)
 {
 	struct ionl_buffer *buf = dmabuf->priv;
+
+	if (ionl_buffer_protected(buf))
+		return -EPERM;
 
 	if (ionl_buffer_cached(buf))
 		dma_sync_sgtable_for_cpu(ionl_dev.dev, &buf->sgt, direction);
@@ -256,6 +278,9 @@ static int ionl_dma_buf_end_cpu_access(struct dma_buf *dmabuf,
 				       enum dma_data_direction direction)
 {
 	struct ionl_buffer *buf = dmabuf->priv;
+
+	if (ionl_buffer_protected(buf))
+		return -EPERM;
 
 	if (ionl_buffer_cached(buf))
 		dma_sync_sgtable_for_device(ionl_dev.dev, &buf->sgt, direction);
@@ -271,6 +296,9 @@ static int ionl_dma_buf_vmap(struct dma_buf *dmabuf, struct iosys_map *map)
 	struct page **pages, **tmp;
 	void *vaddr;
 	int ret = 0;
+
+	if (ionl_buffer_protected(buf))
+		return -EPERM;
 
 	mutex_lock(&buf->lock);
 	if (buf->vmap_cnt) {
@@ -392,7 +420,8 @@ static struct ionl_buffer *ionl_sync_get(int fd, struct dma_buf **dmabufp, int *
 	}
 	buf = dmabuf->priv;
 
-	if (!ionl_buffer_cached(buf) || ionl_buffer_autosync(buf)) {
+	if (!ionl_buffer_cached(buf) || ionl_buffer_autosync(buf) ||
+	    ionl_buffer_protected(buf)) {
 		dma_buf_put(dmabuf);
 		*ret = 0;
 		return NULL;

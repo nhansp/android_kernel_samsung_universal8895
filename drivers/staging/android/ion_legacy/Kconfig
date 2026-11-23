@@ -2,13 +2,15 @@
 config ION_LEGACY_EXYNOS
 	bool "Legacy Exynos ION ABI (/dev/ion)"
 	depends on DMA_SHARED_BUFFER && DMA_CMA && OF_RESERVED_MEM
+	select EXYNOS8895_SMC
 	help
 	  Provides /dev/ion with the ION user ABI of the Samsung Exynos 4.4
 	  kernels: client handles, ION_IOC_ALLOC, FREE, SHARE, MAP, IMPORT,
 	  SYNC and SYNC_PARTIAL, and the 32-bit compat ioctls. Buffers come
-	  from the page allocator and from the reusable CMA regions named
-	  in the "samsung,exynos8895-ion-legacy" DT node, and are exported
-	  as dma-bufs.
+	  from the page allocator and from the reusable CMA regions and
+	  secure carveouts named in the "samsung,exynos8895-ion-legacy" DT
+	  node, and are exported as dma-bufs. Secure carveout buffers are
+	  protected through EL3.
 
 	  Needed by prebuilt Exynos 8895 userspace that uses libion_exynos,
 	  such as the Samsung gralloc and camera HAL.

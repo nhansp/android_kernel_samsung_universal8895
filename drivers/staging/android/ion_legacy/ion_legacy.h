@@ -20,6 +20,7 @@
 
 struct cma;
 struct device;
+struct gen_pool;
 struct page;
 
 #define IONL_SYSTEM_HEAP_ID	0
@@ -30,6 +31,16 @@ struct page;
 enum ionl_heap_type {
 	IONL_HEAP_SYSTEM,
 	IONL_HEAP_CMA,
+	IONL_HEAP_SECURE,
+};
+
+/* Read by EL3 by physical address: the layout of the vendor struct ion_buffer_prot_info */
+struct ionl_prot_info {
+	unsigned int chunk_count;
+	unsigned int dma_addr;		/* secure IOVA */
+	unsigned int flags;		/* heap id */
+	unsigned int chunk_size;
+	unsigned long bus_address;	/* physical address */
 };
 
 /* Constant after probe, except the counters. */
@@ -39,12 +50,13 @@ struct ionl_heap {
 	enum ionl_heap_type type;
 	const char *name;
 	struct cma *cma;		/* IONL_HEAP_CMA */
+	struct gen_pool *pool;		/* IONL_HEAP_SECURE */
 	atomic_t nr_buffers;
 	atomic_long_t nr_bytes;
 };
 
 /*
- * heap, flags, size, sgt and cma_page are constant after creation.
+ * heap, flags, size, sgt, cma_page and prot are constant after creation.
  * node, pid and handle_count are protected by ionl_dev.buffers_lock.
  */
 struct ionl_buffer {
@@ -54,6 +66,7 @@ struct ionl_buffer {
 	size_t size;
 	struct sg_table sgt;		/* mapped for ionl_dev.dev */
 	struct page *cma_page;		/* IONL_HEAP_CMA */
+	struct ionl_prot_info *prot;	/* IONL_HEAP_SECURE */
 	struct mutex lock;		/* protects vaddr, vmap_cnt */
 	void *vaddr;
 	int vmap_cnt;
@@ -74,6 +87,15 @@ struct ionl_device {
 };
 
 extern struct ionl_device ionl_dev;
+
+/*
+ * The memory of a secure heap buffer belongs to EL3: the CPU never maps,
+ * cleans or DMA-maps it.
+ */
+static inline bool ionl_buffer_protected(const struct ionl_buffer *buf)
+{
+	return buf->heap->type == IONL_HEAP_SECURE;
+}
 
 /* ion_legacy_heap.c */
 int ionl_heap_allocate(struct ionl_heap *heap, struct ionl_buffer *buf,
