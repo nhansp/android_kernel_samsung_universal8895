@@ -21,7 +21,7 @@
 #include <media/frame_vector.h>
 
 #define VB2_MAX_FRAME	(64)
-#define VB2_MAX_PLANES	(8)
+#define VB2_MAX_PLANES	(17)
 
 /**
  * enum vb2_memory - type of memory model used to make the buffers visible

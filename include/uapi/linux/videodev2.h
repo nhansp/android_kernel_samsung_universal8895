@@ -71,7 +71,8 @@
  * Moved from videodev.h
  */
 #define VIDEO_MAX_FRAME               64
-#define VIDEO_MAX_PLANES               8
+/* 17 as in the Samsung uapi the Exynos vendor blobs are built against */
+#define VIDEO_MAX_PLANES              17
 
 /*
  *	M I S C E L L A N E O U S
