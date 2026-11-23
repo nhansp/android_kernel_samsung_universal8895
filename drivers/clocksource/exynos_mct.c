@@ -271,7 +271,7 @@ static void exynos4_mct_comp0_stop(void)
 	exynos4_mct_write(0, EXYNOS4_MCT_G_INT_ENB);
 }
 
-static void exynos4_mct_comp0_start(bool periodic, unsigned long cycles)
+static u64 exynos4_mct_comp0_start(bool periodic, unsigned long cycles)
 {
 	unsigned int tcon;
 	u64 comp_cycle;
@@ -291,14 +291,31 @@ static void exynos4_mct_comp0_start(bool periodic, unsigned long cycles)
 
 	tcon |= MCT_G_TCON_COMP0_ENABLE;
 	exynos4_mct_write(tcon , EXYNOS4_MCT_G_TCON);
+
+	return comp_cycle;
 }
 
 static int exynos4_comp_set_next_event(unsigned long cycles,
 				       struct clock_event_device *evt)
 {
-	exynos4_mct_comp0_start(false, cycles);
+	u64 comp = exynos4_mct_comp0_start(false, cycles);
+	u64 now = exynos4_read_count_64();
+	unsigned long took;
 
-	return 0;
+	/*
+	 * COMP0 only matches on equality. If the counter passed it while it was
+	 * being programmed, fail the event and raise min_delta past that time.
+	 */
+	if ((s64)(now - comp) <= 0)
+		return 0;
+
+	took = now - (comp - cycles);
+	if (2 * took > evt->min_delta_ticks) {
+		evt->min_delta_ticks = min_t(unsigned long, 2 * took, clk_rate / HZ);
+		evt->min_delta_ns = clockevent_delta2ns(evt->min_delta_ticks, evt);
+	}
+
+	return -ETIME;
 }
 
 static int mct_set_state_shutdown(struct clock_event_device *evt)
