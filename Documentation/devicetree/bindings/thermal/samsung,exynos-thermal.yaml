@@ -118,12 +118,32 @@ properties:
       The error (control temperature minus temperature) is integrated only
       while it is below this value, in degrees Celsius.
 
+  samsung,hotplug-cpus:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    items:
+      maxItems: 1
+    description:
+      CPUs taken offline while the temperature of this instance is at or
+      above samsung,hotplug-out-temp, until it falls below
+      samsung,hotplug-in-temp.
+
+  samsung,hotplug-out-temp:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Temperature in millicelsius that takes samsung,hotplug-cpus offline.
+
+  samsung,hotplug-in-temp:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Temperature in millicelsius below which samsung,hotplug-cpus come back.
+
 dependencies:
   samsung,ipa-k-po: [ samsung,ipa-k-pu, samsung,ipa-k-i, samsung,ipa-integral-max, samsung,ipa-integral-cutoff ]
   samsung,ipa-k-pu: [ samsung,ipa-k-po ]
   samsung,ipa-k-i: [ samsung,ipa-k-po ]
   samsung,ipa-integral-max: [ samsung,ipa-k-po ]
   samsung,ipa-integral-cutoff: [ samsung,ipa-k-po ]
+  samsung,hotplug-cpus: [ samsung,hotplug-out-temp, samsung,hotplug-in-temp ]
+  samsung,hotplug-out-temp: [ samsung,hotplug-cpus ]
+  samsung,hotplug-in-temp: [ samsung,hotplug-cpus ]
 
 required:
   - compatible
@@ -204,6 +224,9 @@ allOf:
         samsung,ipa-k-i: false
         samsung,ipa-integral-max: false
         samsung,ipa-integral-cutoff: false
+        samsung,hotplug-cpus: false
+        samsung,hotplug-out-temp: false
+        samsung,hotplug-in-temp: false
 
   - if:
       properties:
