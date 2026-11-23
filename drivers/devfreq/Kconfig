@@ -73,6 +73,14 @@ config DEVFREQ_GOV_PASSIVE
 	  through sysfs entries. The passive governor recommends that
 	  devfreq device uses the OPP table to get the frequency/voltage.
 
+config DEVFREQ_GOV_SIMPLE_INTERACTIVE
+	tristate "Simple Interactive"
+	help
+	  Sets the frequency at the PM QoS floor that the device driver
+	  hands in as governor data, raised to a floor coupled from another
+	  device. The driver may ask for a hold time: a decrease is then
+	  deferred until the frequency has been stable that long.
+
 comment "DEVFREQ Drivers"
 
 config ARM_EXYNOS_BUS_DEVFREQ
