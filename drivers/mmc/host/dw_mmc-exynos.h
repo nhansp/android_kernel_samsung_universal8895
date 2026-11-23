@@ -16,6 +16,10 @@
 #define SDMMC_HS400_ASYNC_FIFO_CTRL	0x184
 #define SDMMC_HS400_DLINE_CTRL		0x188
 
+/* Exynos8895 hardware auto clock gating control */
+#define SDMMC_FORCE_CLK_STOP		0x0B0
+#define SDMMC_MMC_HWACG_CONTROL		BIT(4)
+
 /* CLKSEL register defines */
 #define SDMMC_CLKSEL_CCLK_SAMPLE(x)	(((x) & 7) << 0)
 #define SDMMC_CLKSEL_CCLK_DRIVE(x)	(((x) & 7) << 16)
