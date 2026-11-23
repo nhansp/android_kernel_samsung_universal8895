@@ -24,13 +24,6 @@
 #include "mdnie.h"
 #include "copr.h"
 
-#ifdef CONFIG_SEC_FACTORY
-#define CONFIG_SUPPORT_PANEL_SWAP
-#define CONFIG_SUPPORT_XTALK_MODE
-#define CONFIG_DSC_DECODE_CRC
-#endif
-#define CONFIG_SUPPORT_MST
-#define CONFIG_SUPPORT_GRAYSPOT_TEST
 
 
 
@@ -64,9 +57,7 @@ struct mdnie_info;
 struct common_panel_ops {
 	int (*tx_cmds)(struct panel_info *, const void *, int);
 	int (*rx_cmds)(struct panel_info *, u8 *, const void *, int);
-#if CONFIG_OF
 	int (*parse_dt)(const struct device_node *);
-#endif
 };
 
 /*
@@ -137,10 +128,8 @@ enum {
 	SPI_PKT_TYPE_WR,
 	DSI_PKT_TYPE_WR,
 	DSI_PKT_TYPE_COMP,
-#ifdef CONFIG_ACTIVE_CLOCK
 /*Command to write ddi side ram */
 	DSI_PKT_TYPE_WR_SR,
-#endif
 	DSI_PKT_TYPE_WR_MEM,
 	DSI_PKT_TYPE_PPS,
 	CMD_TYPE_TX_PKT_END = DSI_PKT_TYPE_PPS,
@@ -515,40 +504,21 @@ enum PANEL_SEQ {
 	PANEL_ALPM_DELAY_SEQ,
 	PANEL_ALPM_EXIT_SEQ,
 	PANEL_SET_BL_SEQ,
-#ifdef CONFIG_SUPPORT_HMD
 	PANEL_HMD_ON_SEQ,
 	PANEL_HMD_OFF_SEQ,
 	PANEL_HMD_BL_SEQ,
-#endif
 	PANEL_HBM_ON_SEQ,
 	PANEL_HBM_OFF_SEQ,
-#ifdef CONFIG_SUPPORT_DSU
 	PANEL_DSU_SEQ,
-#endif
 	PANEL_MCD_ON_SEQ,
 	PANEL_MCD_OFF_SEQ,
-#ifdef CONFIG_ACTIVE_CLOCK
 	PANEL_ACTIVE_CLK_IMG_SEQ,
 	PANEL_ACTIVE_CLK_CTRL_SEQ,
 	PANEL_ACTIVE_CLK_UPDATE_SEQ,
-#endif
-#ifdef CONFIG_SUPPORT_MST
 	PANEL_MST_ON_SEQ,
 	PANEL_MST_OFF_SEQ,
-#endif
-#ifdef CONFIG_SUPPORT_GRAM_CHECKSUM
-	PANEL_GCT_ENTER_SEQ,
-	PANEL_GCT_VDDM_SEQ,
-	PANEL_GCT_IMG_UPDATE_SEQ,
-	PANEL_GCT_EXIT_SEQ,
-#endif
-#ifdef CONFIG_SUPPORT_GRAYSPOT_TEST
 	PANEL_GRAYSPOT_ON_SEQ,
 	PANEL_GRAYSPOT_OFF_SEQ,
-#endif
-#ifdef CONFIG_DSC_DECODE_CRC
-	PANEL_DSC_DECODE_CRC,
-#endif
 	PANEL_DUMP_SEQ,
 	PANEL_DUMMY_SEQ,
 	MAX_PANEL_SEQ,
@@ -595,9 +565,7 @@ struct common_panel_info {
 	int nr_dumpinfo;
 	struct mdnie_tune *mdnie_tune;
 	struct panel_dimming_info *panel_dim_info[2];
-#ifdef CONFIG_EXYNOS_DECON_LCD_COPR
 	struct panel_copr_data *copr_data;
-#endif
 };
 
 enum {
@@ -646,42 +614,7 @@ enum {
 	HLPM_HIGH_BR,
 };
 
-#ifdef CONFIG_SUPPORT_XTALK_MODE
-enum {
-	XTALK_OFF,
-	XTALK_ON,
-};
-#endif
 
-#ifdef CONFIG_SUPPORT_GRAM_CHECKSUM
-enum {
-	GRAM_CHKSUM_OFF,
-	GRAM_CHKSUM_LV_TEST_1,
-	GRAM_CHKSUM_LV_TEST_2,
-	GRAM_CHKSUM_HV_TEST_1,
-	GRAM_CHKSUM_HV_TEST_2,
-	MAX_GRAM_CHKSUM,
-};
-
-enum {
-	GCT_PATTERN_NONE,
-	GCT_PATTERN_1,
-	GCT_PATTERN_2,
-	MAX_GCT_PATTERN,
-};
-
-enum {
-	VDDM_ORIG,
-	VDDM_LV,
-	VDDM_HV,
-	MAX_VDDM,
-};
-
-enum {
-	GRAM_TEST_OFF,
-	GRAM_TEST_ON
-};
-#endif
 
 #define MAX_PANEL (32)
 #define MAX_PANEL_LUT (128)
@@ -712,27 +645,12 @@ struct panel_properties {
 	u32 alpm_mode;
 	u32 cur_alpm_mode;
 	u32 mcd_on;
-#ifdef CONFIG_SUPPORT_MST
 	u32 mst_on;
-#endif
 	u32 hmd_on;
 	u32 hmd_brightness;
 	u32 lux;
-#ifdef CONFIG_SUPPORT_XTALK_MODE
-	u32 xtalk_mode;
-#endif
-#ifdef CONFIG_SUPPORT_POC_FLASH
 	u32 poc_op;
-#endif
-#ifdef CONFIG_SUPPORT_GRAM_CHECKSUM
-	u32 gct_on;
-	u32 gct_vddm;
-	u32 gct_pattern;
-	u8 gct_valid_chksum;
-#endif
-#ifdef CONFIG_SUPPORT_GRAYSPOT_TEST
 	u32 grayspot;
-#endif
 	u32 poc_onoff;
 	u32 irc_onoff;
 	u32 key[MAX_CMD_LEVEL];
@@ -802,10 +720,6 @@ int check_panel_active(struct panel_device *panel, const char *caller);
 int read_panel_id(struct panel_device *panel, u8 *buf);
 int panel_resource_prepare(struct panel_device *panel);
 void print_panel_resource(struct panel_device *panel);
-#ifdef CONFIG_EXYNOS_DECON_LCD_SYSFS
 int panel_sysfs_probe(struct panel_device *panel);
-#else
-static inline int panel_sysfs_probe(struct panel_device *panel) { return 0; }
-#endif
 #define IS_PANEL_ACTIVE(_panel) check_panel_active(_panel, __func__)
 #endif /* __PANEL_H__ */

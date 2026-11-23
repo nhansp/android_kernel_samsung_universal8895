@@ -28,9 +28,7 @@
 #include "panel.h"
 #include "mdnie.h"
 #include "copr.h"
-#ifdef CONFIG_SUPPORT_POC_FLASH
 #include "panel_poc.h"
-#endif
 
 extern int panel_log_level;
 
@@ -141,12 +139,9 @@ struct panel_state {
 	int cur_state;
 	int power;
 	int disp_on;
-#ifdef CONFIG_SUPPORT_HMD
 	int hmd_on;
-#endif
 };
 
-#ifdef CONFIG_ACTIVE_CLOCK
 enum {
 	IMG_UPDATE_NEED = 0,
 	IMG_UPDATE_DONE,
@@ -193,7 +188,6 @@ struct act_clock_dev {
 	struct act_drawer_info draw_info;
 	u32 opened;
 };
-#endif
 
 
 struct copr_spi_gpios {
@@ -242,19 +236,13 @@ struct panel_device {
 	struct workqueue_struct *disp_det_workqueue;
 	struct work_struct disp_det_work;
 	struct notifier_block fb_notif;
-#ifdef CONFIG_DISPLAY_USE_INFO
 	struct notifier_block panel_dpui_notif;
-#endif
 	struct panel_info panel_data;
 
-#ifdef CONFIG_ACTIVE_CLOCK
 	struct act_clock_dev act_clk_dev;
-#endif
 	struct host_cb reset_cb;
 
-#ifdef CONFIG_SUPPORT_POC_FLASH
 	struct panel_poc_device poc_dev;
-#endif
 
 	ktime_t ktime_panel_on;
 	ktime_t ktime_panel_off;
@@ -283,15 +271,8 @@ struct panel_device {
 #define PANEL_IOC_EVT_FRAME_DONE		_IOW(PANEL_IOC_BASE, 11, struct timespec *)
 #define PANEL_IOC_EVT_VSYNC				_IOW(PANEL_IOC_BASE, 12, struct timespec *)
 
-#ifdef CONFIG_SUPPORT_DOZE
 #define PANEL_IOC_DOZE					_IO(PANEL_IOC_BASE, 13)
-#endif
 
-#ifdef CONFIG_SUPPORT_DSU
 #define PANEL_IOC_SET_DSU				_IOW(PANEL_IOC_BASE, 14, struct dsu_info *)
-#endif
 #define PANEL_IOC_REG_RESET_CB			_IOR(PANEL_IOC_BASE, 15, struct host_cb *)
-#ifdef CONFIG_SUPPORT_INDISPLAY
-#define PANEL_IOC_SET_FINGER_SET		_IO(PANEL_IOC_BASE, 16)
-#endif
 #endif //__PANEL_DRV_H__

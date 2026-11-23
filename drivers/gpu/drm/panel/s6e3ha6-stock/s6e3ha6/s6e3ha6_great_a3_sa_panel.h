@@ -16,20 +16,14 @@
 #include "s6e3ha6.h"
 #include "s6e3ha6_dimming.h"
 
-#ifdef CONFIG_EXYNOS_DECON_MDNIE_LITE
 #include "s6e3ha6_great_a3_sa_panel_mdnie.h"
-#endif
 
-#ifdef CONFIG_EXYNOS_DECON_LCD_COPR
 #include "s6e3ha6_great_a3_sa_panel_copr.h"
-#endif
 
 #include "s6e3ha6_great_a3_sa_panel_dimming.h"
 #include "s6e3ha6_great_a3_sa_panel_hmd_dimming.h"
 
-#ifdef CONFIG_ACTIVE_CLOCK
 #include "../active_clk_img_white.h"
-#endif
 
 #undef __pn_name__
 #define __pn_name__	great_a3_sa
@@ -54,7 +48,6 @@ static struct seqinfo great_a3_sa_seqtbl[MAX_PANEL_SEQ];
 /* ===================================================================================== */
 /* ============================== [S6E3HA6 MAPPING TABLE] ============================== */
 /* ===================================================================================== */
-#ifdef CONFIG_SUPPORT_HMD
 static u8 great_a3_sa_hmd_gamma_table[S6E3HA6_HMD_NR_LUMINANCE][GAMMA_CMD_CNT - 1];
 static u8 great_a3_sa_hmd_aor_table[S6E3HA6_HMD_NR_LUMINANCE][2] = {
 	{ 0x02, 0x56 }, { 0x02, 0x56 }, { 0x02, 0x56 }, { 0x02, 0x56 }, { 0x02, 0x56 }, { 0x02, 0x56 }, { 0x02, 0x56 }, { 0x02, 0x56 }, { 0x02, 0x56 }, { 0x02, 0x56 },
@@ -68,7 +61,6 @@ static u8 great_a3_sa_hmd_elvss_table[S6E3HA6_HMD_NR_LUMINANCE][1] = {
 	{ 0x0A }, { 0x0A }, { 0x0A }, { 0x0A }, { 0x0A }, { 0x0A }, { 0x0A }, { 0x0A }, { 0x0A }, { 0x0A },
 	{ 0x0A }, { 0x0A }, { 0x0A }, { 0x0A }, { 0x0A }, { 0x0A }, { 0x0A },
 };
-#endif /* CONFIG_SUPPORT_HMD */
 
 static u8 great_a3_sa_gamma_table[S6E3HA6_TOTAL_NR_LUMINANCE][GAMMA_CMD_CNT - 1];
 
@@ -128,10 +120,8 @@ static u8 great_a3_sa_aor_table[S6E3HA6_TOTAL_PAC_STEPS][2] = {
 	{ 0x00, 0x0C }, { 0x00, 0x0C },
 	/* HBM */
 	{ 0x00, 0x0C }, { 0x00, 0x0C }, { 0x00, 0x0C }, { 0x00, 0x0C }, { 0x00, 0x0C }, { 0x00, 0x0C }, { 0x00, 0x0C },
-#ifdef CONFIG_LCD_EXTEND_HBM
 	/* EXTEND_HBM */
 	{ 0x00, 0x0C },
-#endif
 };
 #endif	/* PANEL_BACKLIGHT_PAC_STEPS */
 
@@ -151,10 +141,8 @@ static u8 great_a3_sa_elvss_table[][S6E3HA6_TOTAL_NR_LUMINANCE][1] = {
 		{ 0x0A }, { 0x0A },
 		/* HBM */
 		{ 0x13 }, { 0x11 }, { 0x0F }, { 0x0E }, { 0x0D }, { 0x0B }, { 0x0A },
-#ifdef CONFIG_LCD_EXTEND_HBM
 		/* EXTEND_HBM */
 		{ 0x00 },
-#endif
 	},
 	{
 		/* UNDER_ZERO */
@@ -170,10 +158,8 @@ static u8 great_a3_sa_elvss_table[][S6E3HA6_TOTAL_NR_LUMINANCE][1] = {
 		{ 0x0A }, { 0x0A },
 		/* HBM */
 		{ 0x13 }, { 0x11 }, { 0x0F }, { 0x0E }, { 0x0D }, { 0x0B }, { 0x0A },
-#ifdef CONFIG_LCD_EXTEND_HBM
 		/* EXTEND_HBM */
 		{ 0x00 },
-#endif
 	},
 	{
 		/* UNDER_MINUS_FIFTEEN */
@@ -189,10 +175,8 @@ static u8 great_a3_sa_elvss_table[][S6E3HA6_TOTAL_NR_LUMINANCE][1] = {
 		{ 0x0A }, { 0x0A },
 		/* HBM */
 		{ 0x13 }, { 0x11 }, { 0x0F }, { 0x0E }, { 0x0D }, { 0x0B }, { 0x0A },
-#ifdef CONFIG_LCD_EXTEND_HBM
 		/* EXTEND_HBM */
 		{ 0x00 },
-#endif
 	},
 };
 
@@ -209,10 +193,8 @@ static u8 great_a3_sa_elvss_temp_table[][S6E3HA6_TOTAL_NR_LUMINANCE][1] = {
 		{ 0x0 }, { 0x0 }, { 0x0 }, { 0x0 },
 		/* HBM */
 		{ 0x0 }, { 0x0 }, { 0x0 }, { 0x0 }, { 0x0 }, { 0x0 }, { 0x0 },
-#ifdef CONFIG_LCD_EXTEND_HBM
 		/* EXTEND_HBM */
 		{ 0x0 },
-#endif
 	},
 	{
 		/* UNDER_ZERO */
@@ -226,10 +208,8 @@ static u8 great_a3_sa_elvss_temp_table[][S6E3HA6_TOTAL_NR_LUMINANCE][1] = {
 		{ 0x0 }, { 0x0 }, { 0x0 }, { 0x0 },
 		/* HBM */
 		{ 0x0 }, { 0x0 }, { 0x0 }, { 0x0 }, { 0x0 }, { 0x0 }, { 0x0 },
-#ifdef CONFIG_LCD_EXTEND_HBM
 		/* EXTEND_HBM */
 		{ 0x0 },
-#endif
 	},
 	{
 		/* UNDER_MINUS_FIFTEEN */
@@ -243,19 +223,11 @@ static u8 great_a3_sa_elvss_temp_table[][S6E3HA6_TOTAL_NR_LUMINANCE][1] = {
 		{ 0x0 }, { 0x0 }, { 0x0 }, { 0x0 },
 		/* HBM */
 		{ 0x0 }, { 0x0 }, { 0x0 }, { 0x0 }, { 0x0 }, { 0x0 }, { 0x0 },
-#ifdef CONFIG_LCD_EXTEND_HBM
 		/* EXTEND_HBM */
 		{ 0x0 },
-#endif
 	},
 };
 
-#ifdef CONFIG_SUPPORT_XTALK_MODE
-static u8 great_a3_sa_vgh_table[][1] = {
-	{ 0xEB }, /* VGH 7.0V */
-	{ 0x6B }, /* VGH 6.2V */
-};
-#endif
 
 static u8 great_a3_sa_vint_table[][1] = {
 	{ 0x17 }, { 0x17 }, { 0x17 }, { 0x17 }, { 0x17 },
@@ -294,10 +266,8 @@ static u8 great_a3_sa_poc_comp_table[S6E3HA6_TOTAL_NR_LUMINANCE][1] = {
 	{ 0xCF }, { 0xD2 }, { 0xD6 }, { 0xD9 },
 	/* HBM */
 	{ 0xFF }, { 0xFF }, { 0xFF }, { 0xFF }, { 0xFF }, { 0xFF }, { 0xFF },
-#ifdef CONFIG_LCD_EXTEND_HBM
 	/* EXTEND_HBM */
 	{ 0xFF },
-#endif
 };
 
 static u8 great_a3_sa_irc_onoff_table[][2] = {
@@ -856,10 +826,8 @@ static u8 great_a3_sa_irc_table[S6E3HA6_TOTAL_PAC_STEPS][20] = {
 	{ 0x61, 0xF0, 0x29, 0x26, 0x42, 0xBA, 0x33, 0x69, 0x12, 0x7A, 0xED, 0x99, 0x93, 0x96, 0x33, 0x31, 0x32, 0x33, 0x31, 0x34 },
 	{ 0x61, 0xF0, 0x29, 0x26, 0x42, 0xBA, 0x33, 0x69, 0x12, 0x7A, 0xED, 0x99, 0x93, 0x96, 0x33, 0x31, 0x32, 0x33, 0x31, 0x33 },
 	{ 0x61, 0xF0, 0x29, 0x26, 0x42, 0xBA, 0x33, 0x69, 0x12, 0x7A, 0xED, 0x99, 0x93, 0x96, 0x33, 0x31, 0x32, 0x33, 0x31, 0x32 },
-#ifdef CONFIG_LCD_EXTEND_HBM
 	/* EXTEND_HBM */
 	{ 0x61, 0xF0, 0x29, 0x26, 0x42, 0xBA, 0x33, 0x69, 0x12, 0x7A, 0xED, 0x99, 0x93, 0x96, 0x33, 0x31, 0x32, 0x33, 0x31, 0x32 },
-#endif
 };
 #elif PANEL_BACKLIGHT_PAC_STEPS == 256
 static u8 great_a3_sa_irc_table[S6E3HA6_TOTAL_PAC_STEPS][20] = {
@@ -1127,10 +1095,8 @@ static u8 great_a3_sa_irc_table[S6E3HA6_TOTAL_PAC_STEPS][20] = {
 	{ 0x61, 0xF0, 0x2E, 0x24, 0x46, 0xBD, 0x33, 0x69, 0x12, 0x7A, 0xE0, 0x76, 0x72, 0x76, 0x27, 0x26, 0x27, 0x28, 0x25, 0x28 },
 	{ 0x61, 0xF0, 0x2E, 0x24, 0x46, 0xBD, 0x33, 0x69, 0x12, 0x7A, 0xE0, 0x7A, 0x76, 0x7A, 0x2A, 0x28, 0x2A, 0x29, 0x27, 0x29 },
 	{ 0x61, 0xF0, 0x2E, 0x24, 0x46, 0xBD, 0x33, 0x69, 0x12, 0x7A, 0xE0, 0x7F, 0x7B, 0x7F, 0x2B, 0x29, 0x2B, 0x2B, 0x28, 0x2B },
-#ifdef CONFIG_LCD_EXTEND_HBM
 	/* EXTEND_HBM */
 	{ 0x61, 0xF0, 0x2E, 0x24, 0x46, 0xBD, 0x33, 0x69, 0x12, 0x7A, 0xE0, 0x7F, 0x7B, 0x7F, 0x2B, 0x29, 0x2B, 0x2B, 0x28, 0x2B },
-#endif
 };
 #else
 static u8 great_a3_sa_irc_table[S6E3HA6_TOTAL_NR_LUMINANCE][20] = {
@@ -1215,10 +1181,8 @@ static u8 great_a3_sa_irc_table[S6E3HA6_TOTAL_NR_LUMINANCE][20] = {
 	{ 0x61, 0xF0, 0x2D, 0x30, 0x3B, 0xBD, 0x33, 0x69, 0x12, 0x7A, 0xE0, 0x59, 0x5B, 0x59, 0x1D, 0x1F, 0x1D, 0x1D, 0x1E, 0x1D },
 	{ 0x61, 0xF0, 0x2D, 0x30, 0x3B, 0xBD, 0x33, 0x69, 0x12, 0x7A, 0xE0, 0x5D, 0x5F, 0x5D, 0x1E, 0x20, 0x1E, 0x1E, 0x20, 0x1E },
 	{ 0x61, 0xF0, 0x2D, 0x30, 0x3B, 0xBD, 0x33, 0x69, 0x12, 0x7A, 0xE0, 0x60, 0x63, 0x60, 0x20, 0x21, 0x20, 0x20, 0x21, 0x20 },
-#ifdef CONFIG_LCD_EXTEND_HBM
 	/* EXTEND_HBM */
 	{ 0x61, 0xF0, 0x2D, 0x30, 0x3B, 0xBD, 0x33, 0x69, 0x12, 0x7A, 0xE0, 0x64, 0x67, 0x64, 0x21, 0x22, 0x21, 0x21, 0x22, 0x21 },
-#endif
 };
 #endif	/* PANEL_BACKLIGHT_PAC_STEPS */
 
@@ -1328,15 +1292,7 @@ static u8 great_a3_sa_lpm_mode_table[][1] = {
 	{0x02}, // HLPM_60NIT
 };
 
-#ifdef CONFIG_SUPPORT_GRAM_CHECKSUM
-static u8 great_a3_sa_vddm_table[][1] = {
-	{0x00}, // VDDM ORIGINAL
-	{0x10}, // VDDM LOW VOLTAGE : 0.9V
-	{0x30}, // VDDM HIGH VOLTAGE : 1.1V
-};
-#endif
 
-#ifdef CONFIG_SUPPORT_DSU
 static u8 GREAT_A3_SA_OMOK_2CH_LATCH1[] = {
 	0xB0, 0x05
 };
@@ -1357,7 +1313,6 @@ DEFINE_STATIC_PACKET(great_a3_sa_omok_2ch_latch1, DSI_PKT_TYPE_WR, GREAT_A3_SA_O
 DEFINE_STATIC_PACKET(great_a3_sa_omok_2ch_latch2, DSI_PKT_TYPE_WR, GREAT_A3_SA_OMOK_2CH_LATCH2);
 DEFINE_STATIC_PACKET(great_a3_sa_omok_zero_black1, DSI_PKT_TYPE_WR, GREAT_A3_SA_OMOK_ZERO_BLACK1);
 DEFINE_STATIC_PACKET(great_a3_sa_omok_zero_black2, DSI_PKT_TYPE_WR, GREAT_A3_SA_OMOK_ZERO_BLACK2);
-#endif
 
 struct maptbl great_a3_sa_maptbl[MAX_MAPTBL] = {
 	[GAMMA_MAPTBL] = DEFINE_2D_MAPTBL(great_a3_sa_gamma_table, init_gamma_table, getidx_dimming_maptbl, copy_common_maptbl),
@@ -1370,9 +1325,6 @@ struct maptbl great_a3_sa_maptbl[MAX_MAPTBL] = {
 	[TSET_MAPTBL] = DEFINE_0D_MAPTBL(great_a3_sa_tset_table, init_common_table, NULL, copy_tset_maptbl),
 	[ELVSS_MAPTBL] = DEFINE_3D_MAPTBL(great_a3_sa_elvss_table, init_common_table, getidx_elvss_temp_table, copy_common_maptbl),
 	[ELVSS_TEMP_MAPTBL] = DEFINE_3D_MAPTBL(great_a3_sa_elvss_temp_table, init_elvss_temp_table, getidx_elvss_temp_table, copy_common_maptbl),
-#ifdef CONFIG_SUPPORT_XTALK_MODE
-	[VGH_MAPTBL] = DEFINE_2D_MAPTBL(great_a3_sa_vgh_table, init_common_table, getidx_vgh_table, copy_common_maptbl),
-#endif
 	[VINT_MAPTBL] = DEFINE_2D_MAPTBL(great_a3_sa_vint_table, init_common_table, getidx_vint_table, copy_common_maptbl),
 	[ACL_ONOFF_MAPTBL] = DEFINE_2D_MAPTBL(great_a3_sa_acl_onoff_table, init_common_table, getidx_acl_onoff_table, copy_common_maptbl),
 	[ACL_FRAME_AVG_MAPTBL] = DEFINE_2D_MAPTBL(great_a3_sa_acl_frame_avg_table, init_common_table, getidx_acl_onoff_table, copy_common_maptbl),
@@ -1384,11 +1336,9 @@ struct maptbl great_a3_sa_maptbl[MAX_MAPTBL] = {
 #else
 	[IRC_MAPTBL] = DEFINE_2D_MAPTBL(great_a3_sa_irc_table, init_common_table, getidx_dimming_maptbl, copy_common_maptbl),
 #endif
-#ifdef CONFIG_SUPPORT_HMD
 	[HMD_GAMMA_MAPTBL] = DEFINE_2D_MAPTBL(great_a3_sa_hmd_gamma_table, init_hmd_gamma_table, getidx_hmd_dimming_mtptbl, copy_common_maptbl),
 	[HMD_AOR_MAPTBL] = DEFINE_2D_MAPTBL(great_a3_sa_hmd_aor_table, init_common_table, getidx_hmd_dimming_mtptbl, copy_common_maptbl),
 	[HMD_ELVSS_MAPTBL] = DEFINE_2D_MAPTBL(great_a3_sa_hmd_elvss_table, init_common_table, getidx_hmd_dimming_mtptbl, copy_common_maptbl),
-#endif /* CONFIG_SUPPORT_HMD */
 	[DSC_MAPTBL] = DEFINE_2D_MAPTBL(great_a3_sa_dsc_table, init_common_table, getidx_dsc_table, copy_common_maptbl),
 	[PPS_MAPTBL] = DEFINE_2D_MAPTBL(great_a3_sa_pps_table, init_common_table, getidx_resolution_table, copy_common_maptbl),
 	[SCALER_MAPTBL] = DEFINE_2D_MAPTBL(great_a3_sa_scaler_table, init_common_table, getidx_resolution_table, copy_common_maptbl),
@@ -1396,16 +1346,9 @@ struct maptbl great_a3_sa_maptbl[MAX_MAPTBL] = {
 	[PASET_MAPTBL] = DEFINE_2D_MAPTBL(great_a3_sa_paset_table, init_common_table, getidx_resolution_table, copy_common_maptbl),
 	[LPM_NIT_MAPTBL] = DEFINE_2D_MAPTBL(great_a3_sa_lpm_nit_table, init_common_table, getidx_lpm_table, copy_common_maptbl),
 	[LPM_MODE_MAPTBL] = DEFINE_2D_MAPTBL(great_a3_sa_lpm_mode_table, init_common_table, getidx_lpm_table, copy_common_maptbl),
-#ifdef CONFIG_ACTIVE_CLOCK
 	[ACTIVE_CLK_CTRL_MAPTBL] = DEFINE_0D_MAPTBL(great_a3_sa_self_clk_ctrl_table, init_common_table, NULL, copy_self_clk_maptbl),
 	[ACTIVE_CLK_SELF_DRAWER] = DEFINE_0D_MAPTBL(great_a3_sa_self_drawer, init_common_table, NULL, copy_self_drawer),
 	[ACTIVE_CLK_CTRL_UPDATE_MAPTBL] = DEFINE_0D_MAPTBL(great_a3_sa_self_clk_update_table, init_common_table, NULL, copy_self_clk_update_maptbl),
-#endif
-#ifdef CONFIG_SUPPORT_GRAM_CHECKSUM
-	[VDDM_MAPTBL] = DEFINE_2D_MAPTBL(great_a3_sa_vddm_table, init_common_table, s6e3ha6_getidx_vddm_table, copy_common_maptbl),
-	[GRAM_IMG_0_MAPTBL] = DEFINE_0D_MAPTBL(great_a3_sa_gram_img_0_table, init_common_table, NULL, copy_gram_img_pattern_0),
-	[GRAM_IMG_1_MAPTBL] = DEFINE_0D_MAPTBL(great_a3_sa_gram_img_1_table, init_common_table, NULL, copy_gram_img_pattern_1),
-#endif
 	[POC_ONOFF_MAPTBL] = DEFINE_2D_MAPTBL(great_a3_sa_poc_onoff_table, init_common_table,
 		getidx_poc_onoff_table, copy_common_maptbl),
 	[POC_COMP_MAPTBL] = DEFINE_2D_MAPTBL(great_a3_sa_poc_comp_table, init_common_table,
@@ -1428,28 +1371,6 @@ u8 GREAT_A3_SA_SLEEP_IN[] = { 0x10 };
 u8 GREAT_A3_SA_DISPLAY_OFF[] = { 0x28 };
 u8 GREAT_A3_SA_DISPLAY_ON[] = { 0x29 };
 
-#ifdef CONFIG_SUPPORT_GRAM_CHECKSUM
-u8 GREAT_A3_SA_SW_RESET[] = { 0x01 };
-u8 GREAT_A3_SA_GCT_DSC[] = { 0x9D, 0x01 };
-u8 GREAT_A3_SA_GCT_PPS[] = { 0x9E,
-	0x11, 0x00, 0x00, 0x89, 0x30, 0x80, 0x0B, 0x90,
-	0x05, 0xA0, 0x00, 0x28, 0x02, 0xD0, 0x02, 0xD0,
-	0x02, 0x00, 0x02, 0x68, 0x00, 0x20, 0x04, 0x6C,
-	0x00, 0x0A, 0x00, 0x0C, 0x02, 0x77, 0x01, 0xE9,
-	0x18, 0x00, 0x10, 0xF0, 0x03, 0x0C, 0x20, 0x00,
-	0x06, 0x0B, 0x0B, 0x33, 0x0E, 0x1C, 0x2A, 0x38,
-	0x46, 0x54, 0x62, 0x69, 0x70, 0x77, 0x79, 0x7B,
-	0x7D, 0x7E, 0x01, 0x02, 0x01, 0x00, 0x09, 0x40,
-	0x09, 0xBE, 0x19, 0xFC, 0x19, 0xFA, 0x19, 0xF8,
-	0x1A, 0x38, 0x1A, 0x78, 0x1A, 0xB6, 0x2A, 0xF6,
-	0x2B, 0x34, 0x2B, 0x74, 0x3B, 0x74, 0x6B, 0xF4,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-};
-#endif
 u8 GREAT_A3_SA_DSC[] = { 0x00 };
 u8 GREAT_A3_SA_PPS[] = {
 	// QHD :2960x1440
@@ -1475,7 +1396,6 @@ u8 GREAT_A3_SA_SET_AREA[] = {
 	0x1A, 0x1F, 0x00, 0x00, 0x00, 0x00,
 };
 
-#ifdef CONFIG_ACTIVE_CLOCK
 u8 GREAT_A3_SA_ENABLE_ACTIVE_CLK[] = {
 	0xE3,
 	0x00, 0x00, 0x00, 0x08, 0x11, 0x00, 0x00, 0x00,
@@ -1512,7 +1432,6 @@ u8 GREAT_A3_SA_DISABLE_SELF_DRAWER[] = {
 	0xE2,
 	0x00, 0x00
 };
-#endif
 
 u8 GREAT_A3_SA_SCALER[] = { 0xBA, 0x01, 0x02, 0x06, 0x08, 0x08, 0x1E, 0x03 };
 u8 GREAT_A3_SA_TE_ON[] = { 0x35, 0x00 };
@@ -1673,23 +1592,12 @@ u8 GREAT_A3_SA_ISC_04[] = { 0xF6, 0x80 };
 
 u8 GREAT_A3_SA_DISPLAY_OFF_HLPM_ON[] = { 0x53, 0x02 };
 
-#ifdef CONFIG_SUPPORT_MST
 u8 GREAT_A3_SA_MST_ON_01[] = { 0xF6, 0x43, 0x04, 0x57, 0x53, 0xA2, 0x50, 0xCC, 0xE1, 0x80, 0x00 };
 u8 GREAT_A3_SA_MST_ON_02[] = { 0xBF, 0x33, 0x25, 0xFF, 0x00, 0x00, 0x10 };
 u8 GREAT_A3_SA_MST_OFF_01[] = { 0xF6, 0x43, 0x04, 0x57, 0x53, 0xAA, 0xBF, 0xCC, 0xE1, 0x80, 0x00 };
 u8 GREAT_A3_SA_MST_OFF_02[] = { 0xBF, 0x00, 0x07, 0xFF, 0x00, 0x00, 0x10 };
-#endif
 
-#ifdef CONFIG_SUPPORT_GRAM_CHECKSUM
-static u8 GREAT_A3_SA_GRAM_IMG_PATTERN[S6E3HA6_GRAM_IMG_SIZE] = { 0, };
-static u8 GREAT_A3_SA_VDDM_PARA[] = { 0xB0, 0x09 };
-static u8 GREAT_A3_SA_VDDM_ORIG[] = { 0xF4, 0x00 };
-static u8 GREAT_A3_SA_VDDM_VOLT[] = { 0xF4, 0x00 };
-static u8 GREAT_A3_SA_VDDM_UPDATE_ENABLE[] = { 0xFE, 0xB0 };
-static u8 GREAT_A3_SA_VDDM_UPDATE_DISABLE[] = { 0xFE, 0x30 };
-#endif
 
-#ifdef CONFIG_SUPPORT_GRAYSPOT_TEST
 u8 GREAT_A3_SA_GRAYSPOT_ON_01[] = {
 	0xF6,
 	0x43, 0x04, 0x57, 0x53, 0xAA, 0x00
@@ -1710,7 +1618,6 @@ u8 GREAT_A3_SA_GRAYSPOT_OFF_02[] = {
 	0xCD, 0x01, 0x22, 0x33, 0x44, 0x00, 0x00, 0x08,
 	0x88, 0xFF, 0x0F, 0x01, 0x11, 0x11, 0x10, 0x1F
 };
-#endif
 
 DEFINE_STATIC_PACKET(great_a3_sa_level1_key_enable, DSI_PKT_TYPE_WR, GREAT_A3_SA_KEY1_ENABLE);
 DEFINE_STATIC_PACKET(great_a3_sa_level2_key_enable, DSI_PKT_TYPE_WR, GREAT_A3_SA_KEY2_ENABLE);
@@ -1733,11 +1640,9 @@ DEFINE_STATIC_PACKET(great_a3_sa_tsp_hsync, DSI_PKT_TYPE_WR, GREAT_A3_SA_TSP_HSY
 DEFINE_VARIABLE_PACKET(great_a3_sa_dsc, DSI_PKT_TYPE_COMP, GREAT_A3_SA_DSC, &great_a3_sa_maptbl[DSC_MAPTBL], 0);
 DEFINE_VARIABLE_PACKET(great_a3_sa_pps, DSI_PKT_TYPE_PPS, GREAT_A3_SA_PPS, &great_a3_sa_maptbl[PPS_MAPTBL], 0);
 
-#ifdef CONFIG_SUPPORT_DSU
 DEFINE_VARIABLE_PACKET(great_a3_sa_scaler, DSI_PKT_TYPE_WR, GREAT_A3_SA_SCALER, &great_a3_sa_maptbl[SCALER_MAPTBL], 1);
 DEFINE_VARIABLE_PACKET(great_a3_sa_caset, DSI_PKT_TYPE_WR, GREAT_A3_SA_CASET, &great_a3_sa_maptbl[CASET_MAPTBL], 1);
 DEFINE_VARIABLE_PACKET(great_a3_sa_paset, DSI_PKT_TYPE_WR, GREAT_A3_SA_PASET, &great_a3_sa_maptbl[PASET_MAPTBL], 1);
-#endif
 
 DEFINE_STATIC_PACKET(great_a3_sa_set_area, DSI_PKT_TYPE_WR, GREAT_A3_SA_SET_AREA);
 DEFINE_STATIC_PACKET(great_a3_sa_lpm_aor, DSI_PKT_TYPE_WR, GREAT_A3_SA_LPM_AOR);
@@ -1748,27 +1653,13 @@ DEFINE_STATIC_PACKET(great_a3_sa_lpm_off_ltps, DSI_PKT_TYPE_WR, GREAT_A3_SA_LPM_
 DEFINE_VARIABLE_PACKET(great_a3_sa_lpm_nit, DSI_PKT_TYPE_WR, GREAT_A3_SA_LPM_NIT, &great_a3_sa_maptbl[LPM_NIT_MAPTBL], 1);
 DEFINE_VARIABLE_PACKET(great_a3_sa_lpm_mode, DSI_PKT_TYPE_WR, GREAT_A3_SA_LPM_MODE, &great_a3_sa_maptbl[LPM_MODE_MAPTBL], 1);
 
-#ifdef CONFIG_ACTIVE_CLOCK
 DEFINE_VARIABLE_PACKET(great_a3_sa_enable_active_clk, DSI_PKT_TYPE_WR, GREAT_A3_SA_ENABLE_ACTIVE_CLK, &great_a3_sa_maptbl[ACTIVE_CLK_CTRL_MAPTBL], 1);
 DEFINE_VARIABLE_PACKET(great_a3_sa_set_self_drawer, DSI_PKT_TYPE_WR, GREAT_A3_SA_SET_SELF_DRAWER, &great_a3_sa_maptbl[ACTIVE_CLK_SELF_DRAWER], 1);
 DEFINE_VARIABLE_PACKET(great_a3_sa_update_active_clk, DSI_PKT_TYPE_WR, GREAT_A3_SA_UPDATE_ACTIVE_CLK, &great_a3_sa_maptbl[ACTIVE_CLK_CTRL_UPDATE_MAPTBL], 1);
 DEFINE_STATIC_PACKET(great_a3_sa_disable_self_drawer, DSI_PKT_TYPE_WR, GREAT_A3_SA_DISABLE_SELF_DRAWER);
 DEFINE_STATIC_PACKET(great_a3_sa_disable_active_clk, DSI_PKT_TYPE_WR, GREAT_A3_SA_DISABLE_ACTIVE_CLK);
 DEFINE_STATIC_PACKET(great_a3_sa_active_clk_img_pkt, DSI_PKT_TYPE_WR_SR, live_clock_image);
-#endif
 
-#ifdef CONFIG_SUPPORT_GRAM_CHECKSUM
-DEFINE_STATIC_PACKET(great_a3_sa_sw_reset, DSI_PKT_TYPE_WR, GREAT_A3_SA_SW_RESET);
-DEFINE_STATIC_PACKET(great_a3_sa_gct_dsc, DSI_PKT_TYPE_WR, GREAT_A3_SA_GCT_DSC);
-DEFINE_STATIC_PACKET(great_a3_sa_gct_pps, DSI_PKT_TYPE_WR, GREAT_A3_SA_GCT_PPS);
-DEFINE_STATIC_PACKET(great_a3_sa_vddm_para, DSI_PKT_TYPE_WR, GREAT_A3_SA_VDDM_PARA);
-DEFINE_STATIC_PACKET(great_a3_sa_vddm_orig, DSI_PKT_TYPE_WR, GREAT_A3_SA_VDDM_ORIG);
-DEFINE_VARIABLE_PACKET(great_a3_sa_vddm_volt, DSI_PKT_TYPE_WR, GREAT_A3_SA_VDDM_VOLT, &great_a3_sa_maptbl[VDDM_MAPTBL], 1);
-DEFINE_STATIC_PACKET(great_a3_sa_vddm_update_enable, DSI_PKT_TYPE_WR, GREAT_A3_SA_VDDM_UPDATE_ENABLE);
-DEFINE_STATIC_PACKET(great_a3_sa_vddm_update_disable, DSI_PKT_TYPE_WR, GREAT_A3_SA_VDDM_UPDATE_DISABLE);
-DEFINE_VARIABLE_PACKET(great_a3_sa_gram_img_pattern_0, DSI_PKT_TYPE_WR_MEM, GREAT_A3_SA_GRAM_IMG_PATTERN, &great_a3_sa_maptbl[GRAM_IMG_0_MAPTBL], 0);
-DEFINE_VARIABLE_PACKET(great_a3_sa_gram_img_pattern_1, DSI_PKT_TYPE_WR_MEM, GREAT_A3_SA_GRAM_IMG_PATTERN, &great_a3_sa_maptbl[GRAM_IMG_1_MAPTBL], 0);
-#endif
 
 DEFINE_VARIABLE_PACKET(great_a3_sa_gamma, DSI_PKT_TYPE_WR, GREAT_A3_SA_GAMMA, &great_a3_sa_maptbl[GAMMA_MAPTBL], 1);
 DEFINE_VARIABLE_PACKET(great_a3_sa_aor, DSI_PKT_TYPE_WR, GREAT_A3_SA_AOR, &great_a3_sa_maptbl[AOR_MAPTBL], 1);
@@ -1782,7 +1673,6 @@ static struct pkt_update_info pktui_great_a3_sa_tset_mps_elvss[] = {
 static DEFINE_PACKET(great_a3_sa_tset_mps_elvss, DSI_PKT_TYPE_WR, GREAT_A3_SA_TSET_MPS_ELVSS,
 		PKTUI(great_a3_sa_tset_mps_elvss), ARRAY_SIZE(PKTUI(great_a3_sa_tset_mps_elvss)));
 
-#ifdef CONFIG_SUPPORT_HMD
 /* Command for hmd on */
 u8 GREAT_A3_SA_HMD_ON_AOR[] = {
 	0xB1,
@@ -1833,12 +1723,8 @@ static struct pkt_update_info pktui_great_a3_sa_hmd_tset_mps_elvss[] = {
 };
 static DEFINE_PACKET(great_a3_sa_hmd_tset_mps_elvss, DSI_PKT_TYPE_WR, GREAT_A3_SA_TSET_MPS_ELVSS,
 		PKTUI(great_a3_sa_hmd_tset_mps_elvss), ARRAY_SIZE(PKTUI(great_a3_sa_hmd_tset_mps_elvss)));
-#endif /* CONFIG_SUPPORT_HMD */
 
 static struct pkt_update_info pktui_great_a3_sa_vgh_vint[] = {
-#ifdef CONFIG_SUPPORT_XTALK_MODE
-	{ .offset = 1, .maptbl = &great_a3_sa_maptbl[VGH_MAPTBL] },
-#endif
 	{ .offset = 2, .maptbl = &great_a3_sa_maptbl[VINT_MAPTBL] },
 };
 static DEFINE_PACKET(great_a3_sa_vgh_vint, DSI_PKT_TYPE_WR, GREAT_A3_SA_VGH_VINT,
@@ -1885,14 +1771,11 @@ DEFINE_STATIC_PACKET(great_a3_sa_isc_02, DSI_PKT_TYPE_WR, GREAT_A3_SA_ISC_02);
 DEFINE_STATIC_PACKET(great_a3_sa_isc_03, DSI_PKT_TYPE_WR, GREAT_A3_SA_ISC_03);
 DEFINE_STATIC_PACKET(great_a3_sa_isc_04, DSI_PKT_TYPE_WR, GREAT_A3_SA_ISC_04);
 
-#ifdef CONFIG_SUPPORT_MST
 DEFINE_STATIC_PACKET(great_a3_sa_mst_on_01, DSI_PKT_TYPE_WR, GREAT_A3_SA_MST_ON_01);
 DEFINE_STATIC_PACKET(great_a3_sa_mst_on_02, DSI_PKT_TYPE_WR, GREAT_A3_SA_MST_ON_02);
 DEFINE_STATIC_PACKET(great_a3_sa_mst_off_01, DSI_PKT_TYPE_WR, GREAT_A3_SA_MST_OFF_01);
 DEFINE_STATIC_PACKET(great_a3_sa_mst_off_02, DSI_PKT_TYPE_WR, GREAT_A3_SA_MST_OFF_02);
-#endif
 
-#ifdef CONFIG_SUPPORT_GRAYSPOT_TEST
 DEFINE_STATIC_PACKET(great_a3_sa_grayspot_on_01, DSI_PKT_TYPE_WR, GREAT_A3_SA_GRAYSPOT_ON_01);
 DEFINE_STATIC_PACKET(great_a3_sa_grayspot_on_02, DSI_PKT_TYPE_WR, GREAT_A3_SA_GRAYSPOT_ON_02);
 DEFINE_STATIC_PACKET(great_a3_sa_grayspot_off_01, DSI_PKT_TYPE_WR, GREAT_A3_SA_GRAYSPOT_OFF_01);
@@ -1904,7 +1787,6 @@ static struct pkt_update_info pktui_great_a3_sa_grayspot_off_02[] = {
 };
 static DEFINE_PACKET(great_a3_sa_grayspot_off_02, DSI_PKT_TYPE_WR, GREAT_A3_SA_GRAYSPOT_OFF_02,
 		PKTUI(great_a3_sa_grayspot_off_02), ARRAY_SIZE(PKTUI(great_a3_sa_grayspot_off_02)));
-#endif
 
 DEFINE_STATIC_PACKET(great_a3_sa_display_off_hlpm_on, DSI_PKT_TYPE_WR, GREAT_A3_SA_DISPLAY_OFF_HLPM_ON);
 
@@ -1915,16 +1797,7 @@ static DEFINE_PANEL_UDELAY(great_a3_sa_wait_1_frame_in_60hz, 16700);
 static DEFINE_PANEL_UDELAY(great_a3_sa_wait_1_frame_in_30hz, 33400);
 static DEFINE_PANEL_MDELAY(great_a3_sa_wait_100msec, 100);
 static DEFINE_PANEL_MDELAY(great_a3_sa_wait_124msec, 124);
-#ifdef CONFIG_DSC_DECODE_CRC
-static DEFINE_PANEL_MDELAY(great_a3_sa_wait_110msec,  110);
-static DEFINE_PANEL_MDELAY(great_a3_sa_wait_20msec,  20);
-#endif
 
-#ifdef CONFIG_SUPPORT_GRAM_CHECKSUM
-static DEFINE_PANEL_MDELAY(great_a3_sa_wait_120msec, 120);
-static DEFINE_PANEL_MDELAY(great_a3_sa_wait_vddm_update, 100);
-static DEFINE_PANEL_MDELAY(great_a3_sa_wait_gram_checksum, 300);
-#endif
 
 static DEFINE_PANEL_KEY(great_a3_sa_level1_key_enable, CMD_LEVEL_1, KEY_ENABLE, &PKTINFO(great_a3_sa_level1_key_enable));
 static DEFINE_PANEL_KEY(great_a3_sa_level2_key_enable, CMD_LEVEL_2, KEY_ENABLE, &PKTINFO(great_a3_sa_level2_key_enable));
@@ -1941,10 +1814,7 @@ static void *great_a3_sa_init_cmdtbl[] = {
 	&KEYINFO(great_a3_sa_level1_key_disable),
 	&PKTINFO(great_a3_sa_sleep_out),
 	&DLYINFO(great_a3_sa_wait_sleep_out),
-#ifdef CONFIG_DISPLAY_USE_INFO
 	&s6e3ha6_dmptbl[DUMP_SELF_DIAG],
-#endif
-#ifdef CONFIG_SUPPORT_DSU
 	&KEYINFO(great_a3_sa_level2_key_enable),
 	&PKTINFO(great_a3_sa_scaler),
 	&KEYINFO(great_a3_sa_level2_key_disable),
@@ -1957,7 +1827,6 @@ static void *great_a3_sa_init_cmdtbl[] = {
 	&PKTINFO(great_a3_sa_omok_zero_black1),
 	&PKTINFO(great_a3_sa_omok_zero_black2),
 	&KEYINFO(great_a3_sa_level3_key_disable),
-#endif
 	&KEYINFO(great_a3_sa_level1_key_enable),
 	&PKTINFO(great_a3_sa_set_area),
 	&PKTINFO(great_a3_sa_te_on),
@@ -1973,9 +1842,7 @@ static void *great_a3_sa_init_cmdtbl[] = {
 	&KEYINFO(great_a3_sa_level2_key_disable),
 
 	&SEQINFO(great_a3_sa_seqtbl[PANEL_SET_BL_SEQ]),
-#ifdef CONFIG_EXYNOS_DECON_LCD_COPR
 	&SEQINFO(great_a3_sa_copr_seqtbl[COPR_SET_SEQ]),
-#endif
 };
 
 static void *great_a3_sa_res_init_cmdtbl[] = {
@@ -1991,44 +1858,15 @@ static void *great_a3_sa_res_init_cmdtbl[] = {
 	&s6e3ha6_restbl[RES_DATE],
 	&s6e3ha6_restbl[RES_HBM_GAMMA],
 	&s6e3ha6_restbl[RES_OCTA_ID],
-#ifdef CONFIG_DISPLAY_USE_INFO
 	&s6e3ha6_restbl[RES_CHIP_ID],
 	&s6e3ha6_restbl[RES_SELF_DIAG],
 	&s6e3ha6_restbl[RES_ERR_FG],
 	&s6e3ha6_restbl[RES_DSI_ERR],
-#endif
 	&KEYINFO(great_a3_sa_level3_key_disable),
 	&KEYINFO(great_a3_sa_level2_key_disable),
 	&KEYINFO(great_a3_sa_level1_key_disable),
 };
 
-#ifdef CONFIG_DSC_DECODE_CRC
-u8 GREAT_A3_SA_DSC_CRC_GPARAM[] = {
-	0xB0,
-	0x43
-};
-u8 GREAT_A3_SA_DSC_CRC_ON[] = {
-	0xD8,
-	0x10,
-};
-
-DEFINE_STATIC_PACKET(great_a3_sa_dsc_crc_gparam, DSI_PKT_TYPE_WR, GREAT_A3_SA_DSC_CRC_GPARAM);
-DEFINE_STATIC_PACKET(great_a3_sa_dsc_crc_on, DSI_PKT_TYPE_WR, GREAT_A3_SA_DSC_CRC_ON);
-
-static void *great_a3_sa_dsc_decode_crc_cmdtbl[] = {
-	&KEYINFO(great_a3_sa_level2_key_enable),
-	&KEYINFO(great_a3_sa_level3_key_enable),
-	&DLYINFO(great_a3_sa_wait_110msec),
-	&PKTINFO(great_a3_sa_dsc_crc_gparam),
-	&PKTINFO(great_a3_sa_dsc_crc_on),
-	&DLYINFO(great_a3_sa_wait_20msec),
-	&DLYINFO(great_a3_sa_wait_20msec),
-	&DLYINFO(great_a3_sa_wait_20msec),
-	&s6e3ha6_restbl[RES_DSC_DECODE_CRC],
-	&KEYINFO(great_a3_sa_level3_key_disable),
-	&KEYINFO(great_a3_sa_level2_key_disable),
-};
-#endif
 
 static void *great_a3_sa_set_bl_cmdtbl[] = {
 	&KEYINFO(great_a3_sa_level2_key_enable),
@@ -2093,12 +1931,10 @@ static void *great_a3_sa_display_off_cmdtbl[] = {
 
 static void *great_a3_sa_exit_cmdtbl[] = {
 	&KEYINFO(great_a3_sa_level1_key_enable),
-#ifdef CONFIG_DISPLAY_USE_INFO
 	&KEYINFO(great_a3_sa_level2_key_enable),
 	&s6e3ha6_dmptbl[DUMP_ERR_FG],
 	&KEYINFO(great_a3_sa_level2_key_disable),
 	&s6e3ha6_dmptbl[DUMP_DSI_ERR],
-#endif
 	&PKTINFO(great_a3_sa_sleep_in),
 	&KEYINFO(great_a3_sa_level1_key_disable),
 	&DLYINFO(great_a3_sa_wait_sleep_in),
@@ -2127,10 +1963,8 @@ static void *great_a3_sa_alpm_enter_delay_cmdtbl[] = {
 
 static void *great_a3_sa_alpm_exit_cmdtbl[] = {
 	&KEYINFO(great_a3_sa_level2_key_enable),
-#ifdef CONFIG_ACTIVE_CLOCK
 	&PKTINFO(great_a3_sa_disable_active_clk),
 	&PKTINFO(great_a3_sa_disable_self_drawer),
-#endif
 	&PKTINFO(great_a3_sa_lpm_off_nit_00),
 	&PKTINFO(great_a3_sa_lpm_off_nit_01),
 	&PKTINFO(great_a3_sa_gamma_update_enable),
@@ -2184,7 +2018,6 @@ static void *great_a3_sa_mcd_off_cmdtbl[] = {
 	&KEYINFO(great_a3_sa_level2_key_disable),
 };
 
-#ifdef CONFIG_SUPPORT_MST
 static void *great_a3_sa_mst_on_cmdtbl[] = {
 	&KEYINFO(great_a3_sa_level2_key_enable),
 	&PKTINFO(great_a3_sa_mst_on_01),
@@ -2198,59 +2031,8 @@ static void *great_a3_sa_mst_off_cmdtbl[] = {
 	&PKTINFO(great_a3_sa_mst_off_02),
 	&KEYINFO(great_a3_sa_level2_key_disable),
 };
-#endif
 
-#ifdef CONFIG_SUPPORT_GRAM_CHECKSUM
-static void *great_a3_sa_gct_enter_cmdtbl[] = {
-	&KEYINFO(great_a3_sa_level1_key_enable),
-	&PKTINFO(great_a3_sa_sw_reset),
-	&DLYINFO(great_a3_sa_wait_120msec),
-	&PKTINFO(great_a3_sa_sleep_out),
-	&DLYINFO(great_a3_sa_wait_sleep_out),
-	&PKTINFO(great_a3_sa_gct_dsc),
-	&PKTINFO(great_a3_sa_gct_pps),
-	&KEYINFO(great_a3_sa_level1_key_disable),
-};
 
-static void *great_a3_sa_gct_vddm_cmdtbl[] = {
-	&KEYINFO(great_a3_sa_level2_key_enable),
-	&KEYINFO(great_a3_sa_level3_key_enable),
-	&PKTINFO(great_a3_sa_vddm_para),
-	&PKTINFO(great_a3_sa_vddm_volt),
-	&PKTINFO(great_a3_sa_vddm_update_enable),
-	&PKTINFO(great_a3_sa_vddm_update_disable),
-	&DLYINFO(great_a3_sa_wait_vddm_update),
-	&KEYINFO(great_a3_sa_level3_key_disable),
-	&KEYINFO(great_a3_sa_level2_key_disable),
-};
-
-static void *great_a3_sa_gct_img_update_cmdtbl[] = {
-	&PKTINFO(great_a3_sa_gram_img_pattern_0),
-	&PKTINFO(great_a3_sa_gram_img_pattern_1),
-	&DLYINFO(great_a3_sa_wait_gram_checksum),
-	&s6e3ha6_restbl[RES_GRAM_CHECKSUM],
-};
-
-static void *great_a3_sa_gct_exit_cmdtbl[] = {
-	&KEYINFO(great_a3_sa_level2_key_enable),
-	&KEYINFO(great_a3_sa_level3_key_enable),
-	&PKTINFO(great_a3_sa_vddm_para),
-	&PKTINFO(great_a3_sa_vddm_orig),
-	&PKTINFO(great_a3_sa_vddm_update_enable),
-	&PKTINFO(great_a3_sa_vddm_update_disable),
-	&DLYINFO(great_a3_sa_wait_vddm_update),
-	&KEYINFO(great_a3_sa_level3_key_disable),
-	&KEYINFO(great_a3_sa_level2_key_disable),
-
-	&KEYINFO(great_a3_sa_level1_key_enable),
-	&PKTINFO(great_a3_sa_sw_reset),
-	&DLYINFO(great_a3_sa_wait_120msec),
-	&KEYINFO(great_a3_sa_level1_key_disable),
-	&SEQINFO(great_a3_sa_seqtbl[PANEL_INIT_SEQ]),
-};
-#endif
-
-#ifdef CONFIG_SUPPORT_GRAYSPOT_TEST
 static void *great_a3_sa_grayspot_on_cmdtbl[] = {
 	&KEYINFO(great_a3_sa_level2_key_enable),
 	&PKTINFO(great_a3_sa_grayspot_on_01),
@@ -2266,7 +2048,6 @@ static void *great_a3_sa_grayspot_off_cmdtbl[] = {
 	&PKTINFO(great_a3_sa_gamma_update_enable),
 	&KEYINFO(great_a3_sa_level2_key_disable),
 };
-#endif
 
 static void *great_a3_sa_active_clk_img_cmdtbl[] = {
 	&PKTINFO(great_a3_sa_active_clk_img_pkt),
@@ -2311,44 +2092,25 @@ static struct seqinfo great_a3_sa_seqtbl[MAX_PANEL_SEQ] = {
 	[PANEL_INIT_SEQ] = SEQINFO_INIT("init-seq", great_a3_sa_init_cmdtbl),
 	[PANEL_RES_INIT_SEQ] = SEQINFO_INIT("resource-init-seq", great_a3_sa_res_init_cmdtbl),
 	[PANEL_SET_BL_SEQ] = SEQINFO_INIT("set-bl-seq", great_a3_sa_set_bl_cmdtbl),
-#ifdef CONFIG_SUPPORT_HMD
 	[PANEL_HMD_ON_SEQ] = SEQINFO_INIT("hmd-on-seq", great_a3_sa_hmd_on_cmdtbl),
 	[PANEL_HMD_OFF_SEQ] = SEQINFO_INIT("hmd-off-seq", great_a3_sa_hmd_off_cmdtbl),
 	[PANEL_HMD_BL_SEQ] = SEQINFO_INIT("hmd-bl-seq", great_a3_sa_hmd_bl_cmdtbl),
-#endif /* CONFIG_SUPPORT_HMD */
 	[PANEL_DISPLAY_ON_SEQ] = SEQINFO_INIT("display-on-seq", great_a3_sa_display_on_cmdtbl),
 	[PANEL_DISPLAY_OFF_SEQ] = SEQINFO_INIT("display-off-seq", great_a3_sa_display_off_cmdtbl),
 	[PANEL_EXIT_SEQ] = SEQINFO_INIT("exit-seq", great_a3_sa_exit_cmdtbl),
 	[PANEL_ALPM_ENTER_SEQ] = SEQINFO_INIT("alpm-enter-seq", great_a3_sa_alpm_enter_cmdtbl),
 	[PANEL_ALPM_DELAY_SEQ] = SEQINFO_INIT("alpm-enter-delay-seq", great_a3_sa_alpm_enter_delay_cmdtbl),
 	[PANEL_ALPM_EXIT_SEQ] = SEQINFO_INIT("alpm-exit-seq", great_a3_sa_alpm_exit_cmdtbl),
-#ifdef CONFIG_SUPPORT_DSU
 	[PANEL_DSU_SEQ] = SEQINFO_INIT("dsu-mode-seq", great_a3_sa_dsu_mode_cmdtbl),
-#endif
 	[PANEL_MCD_ON_SEQ] = SEQINFO_INIT("mcd-on-seq", great_a3_sa_mcd_on_cmdtbl),
 	[PANEL_MCD_OFF_SEQ] = SEQINFO_INIT("mcd-off-seq", great_a3_sa_mcd_off_cmdtbl),
-#ifdef CONFIG_SUPPORT_MST
 	[PANEL_MST_ON_SEQ] = SEQINFO_INIT("mst-on-seq", great_a3_sa_mst_on_cmdtbl),
 	[PANEL_MST_OFF_SEQ] = SEQINFO_INIT("mst-off-seq", great_a3_sa_mst_off_cmdtbl),
-#endif
-#ifdef CONFIG_ACTIVE_CLOCK
 	[PANEL_ACTIVE_CLK_IMG_SEQ] = SEQINFO_INIT("active-clk-img-seq", great_a3_sa_active_clk_img_cmdtbl),
 	[PANEL_ACTIVE_CLK_CTRL_SEQ] = SEQINFO_INIT("active-clk-ctrl-seq", great_a3_sa_active_clk_ctrl_cmdtbl),
 	[PANEL_ACTIVE_CLK_UPDATE_SEQ] = SEQINFO_INIT("active-clk-update-seq", great_a3_sa_active_clk_update_cmdtbl),
-#endif
-#ifdef CONFIG_SUPPORT_GRAM_CHECKSUM
-	[PANEL_GCT_ENTER_SEQ] = SEQINFO_INIT("gct-enter-seq", great_a3_sa_gct_enter_cmdtbl),
-	[PANEL_GCT_VDDM_SEQ] = SEQINFO_INIT("gct-vddm-seq", great_a3_sa_gct_vddm_cmdtbl),
-	[PANEL_GCT_IMG_UPDATE_SEQ] = SEQINFO_INIT("gct-img-update-seq", great_a3_sa_gct_img_update_cmdtbl),
-	[PANEL_GCT_EXIT_SEQ] = SEQINFO_INIT("gct-exit-seq", great_a3_sa_gct_exit_cmdtbl),
-#endif
-#ifdef CONFIG_SUPPORT_GRAYSPOT_TEST
 	[PANEL_GRAYSPOT_ON_SEQ] = SEQINFO_INIT("grayspot-on-seq", great_a3_sa_grayspot_on_cmdtbl),
 	[PANEL_GRAYSPOT_OFF_SEQ] = SEQINFO_INIT("grayspot-off-seq", great_a3_sa_grayspot_off_cmdtbl),
-#endif
-#ifdef CONFIG_DSC_DECODE_CRC
-	[PANEL_DSC_DECODE_CRC] = SEQINFO_INIT("dsc-decode-crc", great_a3_sa_dsc_decode_crc_cmdtbl),
-#endif
 	[PANEL_DUMP_SEQ] = SEQINFO_INIT("dump-seq", great_a3_sa_dump_cmdtbl),
 	[PANEL_DUMMY_SEQ] = SEQINFO_INIT("dummy-seq", great_a3_sa_dummy_cmdtbl),
 };
@@ -2370,16 +2132,12 @@ struct common_panel_info s6e3ha6_great_a3_sa_default_panel_info = {
 	.nr_restbl = ARRAY_SIZE(s6e3ha6_restbl),
 	.dumpinfo = s6e3ha6_dmptbl,
 	.nr_dumpinfo = ARRAY_SIZE(s6e3ha6_dmptbl),
-#ifdef CONFIG_EXYNOS_DECON_MDNIE_LITE
 	.mdnie_tune = &s6e3ha6_great_a3_sa_mdnie_tune,
-#endif
 	.panel_dim_info = {
 		&s6e3ha6_great_a3_sa_panel_dimming_info,
 		&s6e3ha6_great_a3_sa_panel_hmd_dimming_info,
 	},
-#ifdef CONFIG_EXYNOS_DECON_LCD_COPR
 	.copr_data = &s6e3ha6_great_a3_sa_copr_data,
-#endif
 };
 
 static int __init s6e3ha6_great_a3_sa_panel_init(void)

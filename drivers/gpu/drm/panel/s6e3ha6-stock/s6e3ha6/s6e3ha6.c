@@ -18,13 +18,10 @@
 #include "../panel.h"
 #include "s6e3ha6.h"
 #include "s6e3ha6_panel.h"
-#ifdef CONFIG_PANEL_AID_DIMMING
 #include "../dimming.h"
 #include "../panel_dimming.h"
-#endif
 #include "../panel_drv.h"
 
-#ifdef CONFIG_PANEL_AID_DIMMING
 static int hbm_ctoi(s32 (*dst)[MAX_COLOR], u8 *hbm, int nr_tp)
 {
 	unsigned int i, c, pos = 1;
@@ -96,13 +93,6 @@ static int init_dimming(struct panel_info *panel_data, int id,
 		return -EINVAL;
 	}
 
-#ifdef CONFIG_SUPPORT_PANEL_SWAP
-	if (panel_data->dim_info[id]) {
-		kfree(panel_data->dim_info[id]);
-		panel_data->dim_info[id] = NULL;
-		pr_info("%s panel_bl-%d free dimming info\n", __func__, id);
-	}
-#endif
 
 	if (panel_data->dim_info[id]) {
 		pr_warn("%s panel_bl-%d already initialized\n", __func__, id);
@@ -128,9 +118,7 @@ static int init_dimming(struct panel_info *panel_data, int id,
 	nr_extend_hbm_luminance = panel_dim_info->nr_extend_hbm_luminance;
 
 	if (id == PANEL_BL_SUBDEV_TYPE_HMD) {
-#ifdef CONFIG_SUPPORT_HMD
 		gamma_maptbl = find_panel_maptbl_by_index(panel_data, HMD_GAMMA_MAPTBL);
-#endif
 	} else {
 		gamma_maptbl = find_panel_maptbl_by_index(panel_data, GAMMA_MAPTBL);
 	}
@@ -239,13 +227,6 @@ static int init_subdev_gamma_table(struct maptbl *tbl, int id)
 
 	return 0;
 }
-#else
-static int init_subdev_gamma_table(struct maptbl *tbl, int id)
-{
-	panel_err("%s aid dimming unspported\n", __func__);
-	return -ENODEV;
-}
-#endif /* CONFIG_PANEL_AID_DIMMING */
 
 int init_common_table(struct maptbl *tbl)
 {
@@ -288,7 +269,6 @@ int getidx_dimming_maptbl(struct maptbl *tbl)
 	return tbl->ncol * row;
 }
 
-#ifdef CONFIG_SUPPORT_HMD
 int init_hmd_gamma_table(struct maptbl *tbl)
 {
 	return init_subdev_gamma_table(tbl, PANEL_BL_SUBDEV_TYPE_HMD);
@@ -310,7 +290,6 @@ int getidx_hmd_dimming_mtptbl(struct maptbl *tbl)
 exit:
 	return tbl->ncol * row;
 }
-#endif /* CONFIG_SUPPORT_HMD */
 
 int getidx_brt_tbl(struct maptbl *tbl)
 {
@@ -467,26 +446,6 @@ int getidx_elvss_temp_table(struct maptbl *tbl)
 	return maptbl_index(tbl, plane, row, 0);
 }
 
-#ifdef CONFIG_SUPPORT_XTALK_MODE
-int getidx_vgh_table(struct maptbl *tbl)
-{
-	struct panel_device *panel = (struct panel_device *)tbl->pdata;
-	struct panel_info *panel_data;
-	int row = 0;
-
-	if (panel == NULL) {
-		panel_err("PANEL:ERR:%s:panel is null\n", __func__);
-		return -EINVAL;
-	}
-
-	panel_data = &panel->panel_data;
-
-	row = ((panel_data->props.xtalk_mode) ? 1 : 0);
-	panel_info("%s xtalk_mode %d\n", __func__, row);
-
-	return row;
-}
-#endif
 
 int getidx_vint_table(struct maptbl *tbl)
 {
@@ -567,7 +526,6 @@ int getidx_dsc_table(struct maptbl *tbl)
 int getidx_resolution_table(struct maptbl *tbl)
 {
 	int row = 0;
-#ifdef CONFIG_SUPPORT_DSU
 	struct panel_device *panel = (struct panel_device *)tbl->pdata;
 	struct decon_lcd *lcd_info = &panel->lcd_info;
 
@@ -587,7 +545,6 @@ int getidx_resolution_table(struct maptbl *tbl)
 			row = 0;
 			break;
 	}
-#endif
 
 	return tbl->ncol * row;
 }
@@ -595,7 +552,6 @@ int getidx_resolution_table(struct maptbl *tbl)
 int getidx_lpm_table(struct maptbl *tbl)
 {
 	int row = 0;
-#ifdef CONFIG_SUPPORT_DOZE
 	struct panel_device *panel = (struct panel_device *)tbl->pdata;
 	struct panel_properties *props = &panel->panel_data.props;
 		switch (props->alpm_mode) {
@@ -618,11 +574,9 @@ int getidx_lpm_table(struct maptbl *tbl)
 				break;
 	}
 	props->cur_alpm_mode = props->alpm_mode;
-#endif
 	return tbl->ncol * row;
 }
 
-#ifdef CONFIG_SUPPORT_POC_FLASH
 void copy_poc_maptbl(struct maptbl *tbl, u8 *dst)
 {
 	struct panel_device *panel;
@@ -663,109 +617,7 @@ void copy_poc_maptbl(struct maptbl *tbl, u8 *dst)
 
 	pr_info("%s poc %d, gray %02x->%02x\n", __func__, poc, gray, *dst);
 }
-#endif
 
-#ifdef CONFIG_SUPPORT_GRAM_CHECKSUM
-static u8 s6e3ha6_gct_pattern[2][192 * 3];
-static u8 s6e3ha6_gct_pattern_line[2][192 * 3 * 5];
-int s6e3ha6_getidx_vddm_table(struct maptbl *tbl)
-{
-	struct panel_device *panel = (struct panel_device *)tbl->pdata;
-	struct panel_properties *props = &panel->panel_data.props;
-
-	pr_info("%s vddm %d\n", __func__, props->gct_vddm);
-
-	return tbl->ncol * props->gct_vddm;
-}
-
-static void generate_gct_pattern(u8 *dst, int pattern, int size)
-{
-	static u8 s6e3ha6_gct_value[2] = { 0x5A, 0xA5 };
-	static bool initialized = false;
-	int i;
-
-	if (size != 192 * 3 * 5 * 1480) {
-		pr_err("%s, invalid size %d\n", __func__, size);
-		return;
-	}
-
-	if (!initialized) {
-		/* generate gct pattern */
-		for (i = 0; i < 2; i++) {
-			memset(s6e3ha6_gct_pattern[i % 2], s6e3ha6_gct_value[i % 2], sizeof(u8) * 192 * 3);
-			pr_info("%s %02X pattern\n", __func__, s6e3ha6_gct_value[i % 2]);
-			print_data(s6e3ha6_gct_pattern[i % 2], 128);
-		}
-
-		/* generate gct pattern line */
-		for (i = 0; i < 960 / 192; i++) {
-			memcpy(&s6e3ha6_gct_pattern_line[i % 2][i * sizeof(s6e3ha6_gct_pattern[0])],
-					s6e3ha6_gct_pattern[i % 2], sizeof(s6e3ha6_gct_pattern[0]));
-			memcpy(&s6e3ha6_gct_pattern_line[(i + 1) % 2][i * sizeof(s6e3ha6_gct_pattern[0])],
-					s6e3ha6_gct_pattern[(i + 1) % 2], sizeof(s6e3ha6_gct_pattern[0]));
-		}
-		print_data(s6e3ha6_gct_pattern_line[i % 2], 128);
-		initialized = true;
-	}
-
-	/* generate gct pattern img */
-	for (i = 0; i < 1480; i++) {
-		if (pattern == GCT_PATTERN_1)
-			memcpy(&dst[i * sizeof(s6e3ha6_gct_pattern_line[i % 2])], 
-					s6e3ha6_gct_pattern_line[i % 2],
-					sizeof(s6e3ha6_gct_pattern_line[i % 2]));
-		else if (pattern == GCT_PATTERN_2)
-			memcpy(&dst[i * sizeof(s6e3ha6_gct_pattern_line[(i + 1) % 2])], 
-					s6e3ha6_gct_pattern_line[(i + 1) % 2],
-					sizeof(s6e3ha6_gct_pattern_line[(i + 1) % 2]));
-	}
-
-	pr_info("%s generate gct pattern(%d) %d done!!\n",
-			__func__, pattern, size);
-}
-
-void copy_gram_img_pattern_0(struct maptbl *tbl, u8 *dst)
-{
-	struct panel_device *panel;
-	struct panel_info *panel_data;
-	struct panel_properties *props;
-
-	if (!tbl || !dst)
-		return;
-
-	panel = (struct panel_device *)tbl->pdata;
-	if (unlikely(!panel))
-		return;
-
-	panel_data = &panel->panel_data;
-	props = &panel_data->props;
-
-	props->gct_valid_chksum = S6E3HA6_GRAM_CHECKSUM_VALID;
-
-	generate_gct_pattern(dst, props->gct_pattern == GCT_PATTERN_1 ?
-			GCT_PATTERN_1 : GCT_PATTERN_2, S6E3HA6_GRAM_IMG_SIZE);
-}
-
-void copy_gram_img_pattern_1(struct maptbl *tbl, u8 *dst)
-{
-	struct panel_device *panel;
-	struct panel_info *panel_data;
-	struct panel_properties *props;
-
-	if (!tbl || !dst)
-		return;
-
-	panel = (struct panel_device *)tbl->pdata;
-	if (unlikely(!panel))
-		return;
-
-	panel_data = &panel->panel_data;
-	props = &panel_data->props;
-
-	generate_gct_pattern(dst, props->gct_pattern == GCT_PATTERN_1 ?
-			GCT_PATTERN_2 : GCT_PATTERN_1, S6E3HA6_GRAM_IMG_SIZE);
-}
-#endif
 
 void copy_common_maptbl(struct maptbl *tbl, u8 *dst)
 {
@@ -839,7 +691,6 @@ void copy_copr_maptbl(struct maptbl *tbl, u8 *dst)
 	print_data(dst, 12);
 #endif
 }
-#ifdef CONFIG_ACTIVE_CLOCK
 
 #define SELF_CLK_ANA_CLOCK_EN 	0x10
 #define SELF_CLK_BLINK_EN		0x01
@@ -1005,9 +856,7 @@ void copy_self_drawer(struct maptbl *tbl, u8 *dst)
 
 	dst[45] = (unsigned char)(draw_info->sd_radius & 0xff);
 }
-#endif
 
-#ifdef CONFIG_EXYNOS_DECON_MDNIE_LITE
 int init_color_blind_table(struct maptbl *tbl)
 {
 	struct mdnie_info *mdnie;
@@ -1448,10 +1297,8 @@ int getidx_mdnie_scr_white_maptbl(struct pkt_update_info *pktui)
 		return MDNIE_SCR_WHITE_NONE_MAPTBL;
 	}
 }
-#endif /* CONFIG_EXYNOS_DECON_MDNIE_LITE */
 
 
-#ifdef CONFIG_LOGGING_BIGDATA_BUG
 static unsigned int g_rddpm = 0xff;
 static unsigned int g_rddsm = 0xff;
 
@@ -1463,7 +1310,6 @@ unsigned int get_panel_bigdata(void)
 
 	return val;
 }
-#endif
 
 
 static void show_rddpm(struct dumpinfo *info)
@@ -1493,9 +1339,7 @@ static void show_rddpm(struct dumpinfo *info)
 	panel_info("* Normal Mode   : %s\n", rddpm[0] & 0x08 ? "OK (GD)" : "SLEEP (NG)");
 	panel_info("* Display ON    : %s\n", rddpm[0] & 0x04 ? "ON (GD)" : "OFF (NG)");
 	panel_info("=================================================\n");
-#ifdef CONFIG_LOGGING_BIGDATA_BUG
 	g_rddpm = (unsigned int)rddpm[0];
-#endif
 }
 
 static void show_rddsm(struct dumpinfo *info)
@@ -1520,9 +1364,7 @@ static void show_rddsm(struct dumpinfo *info)
 			rddsm[0], (rddsm[0] == 0x80) ? "GOOD" : "NG");
 	panel_info("* TE Mode : %s\n", rddsm[0] & 0x80 ? "ON(GD)" : "OFF(NG)");
 	panel_info("=================================================\n");
-#ifdef CONFIG_LOGGING_BIGDATA_BUG
 	g_rddsm = (unsigned int)rddsm[0];
-#endif
 }
 
 static void show_err(struct dumpinfo *info)

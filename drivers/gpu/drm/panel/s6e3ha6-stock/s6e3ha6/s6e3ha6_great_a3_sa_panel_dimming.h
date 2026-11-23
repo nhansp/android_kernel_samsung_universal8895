@@ -286,9 +286,7 @@ static unsigned int great_a3_sa_brt_to_step_tbl[S6E3HA6_TOTAL_PAC_STEPS] = {
 	24000, 24100, 24200, 24300, 24400, 24500, 24600, 24700, 24800, 24900, 25000, 25100, 25200, 25300, 25400, 28100,
 	/* HBM */
 	29500, 30900, 32300, 33600, 35000, 36400, 36500,
-#ifdef CONFIG_LCD_EXTEND_HBM
 	36600,
-#endif
 };
 #elif PANEL_BACKLIGHT_PAC_STEPS == 256
 static unsigned int great_a3_sa_brt_to_step_tbl[S6E3HA6_TOTAL_PAC_STEPS] = {
@@ -310,9 +308,7 @@ static unsigned int great_a3_sa_brt_to_step_tbl[S6E3HA6_TOTAL_PAC_STEPS] = {
 	BRT(240), BRT(241), BRT(242), BRT(243), BRT(244), BRT(245), BRT(246), BRT(247), BRT(248), BRT(249), BRT(250), BRT(251), BRT(252), BRT(253), BRT(254), BRT(281),
 	/*HBM*/
 	BRT(295), BRT(309), BRT(323), BRT(336), BRT(350), BRT(364), BRT(365),
-#ifdef CONFIG_LCD_EXTEND_HBM
 	BRT(366),
-#endif
 };
 #endif	/* PANEL_BACKLIGHT_PAC_STEPS  */
 
@@ -330,9 +326,7 @@ static unsigned int great_a3_sa_brt_tbl[S6E3HA6_TOTAL_NR_LUMINANCE] = {
 	BRT(242), BRT(246), BRT(250), BRT(281),
 	/* HBM */
 	BRT(295), BRT(309), BRT(323), BRT(336), BRT(350), BRT(364), BRT(365),
-#ifdef CONFIG_LCD_EXTEND_HBM
 	BRT(366),
-#endif
 };
 
 static unsigned int great_a3_sa_lum_tbl[S6E3HA6_TOTAL_NR_LUMINANCE] = {
@@ -346,10 +340,8 @@ static unsigned int great_a3_sa_lum_tbl[S6E3HA6_TOTAL_NR_LUMINANCE] = {
 	395, 403, 412, 420,
 	/* HBM */
 	465, 488, 510, 533, 555, 578, 600,
-#ifdef CONFIG_LCD_EXTEND_HBM
 	/* EXTEND_HBM */
 	720,
-#endif
 };
 
 struct brightness_table s6e3ha6_great_a3_sa_panel_brightness_table = {
