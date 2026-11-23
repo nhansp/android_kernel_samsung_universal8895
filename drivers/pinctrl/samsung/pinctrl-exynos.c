@@ -19,6 +19,7 @@
 #include <linux/irqdomain.h>
 #include <linux/irq.h>
 #include <linux/irqchip/chained_irq.h>
+#include <linux/mfd/syscon.h>
 #include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/slab.h>
@@ -1100,6 +1101,54 @@ exynos_retention_init(struct samsung_pinctrl_drv_data *drvdata,
 	/* Ensure that retention is disabled on driver init */
 	for (i = 0; i < ctrl->nr_regs; i++)
 		regmap_write(pmu_regs, ctrl->regs[i], ctrl->value);
+
+	return ctrl;
+}
+
+static void exynos8895_retention_disable(struct samsung_pinctrl_drv_data *drvdata)
+{
+	struct samsung_retention_ctrl *ctrl = drvdata->retention_ctrl;
+	int i;
+
+	if (ctrl->refcnt && !atomic_dec_and_test(ctrl->refcnt))
+		return;
+
+	for (i = 0; i < ctrl->nr_regs; i++)
+		regmap_update_bits(ctrl->priv, ctrl->regs[i], ctrl->value, ctrl->value);
+}
+
+/*
+ * The vendor PMU code updates only the release bit of these registers, so do
+ * the same. The PMU regmap comes from syscon directly: exynos_get_pmu_regmap()
+ * defers until exynos-pmu binds, which happens after most pin controllers.
+ */
+struct samsung_retention_ctrl *
+exynos8895_retention_init(struct samsung_pinctrl_drv_data *drvdata,
+			  const struct samsung_retention_data *data)
+{
+	struct samsung_retention_ctrl *ctrl;
+	struct regmap *pmu_regs;
+	int i;
+
+	ctrl = devm_kzalloc(drvdata->dev, sizeof(*ctrl), GFP_KERNEL);
+	if (!ctrl)
+		return ERR_PTR(-ENOMEM);
+
+	pmu_regs = syscon_regmap_lookup_by_compatible("samsung,exynos8895-pmu");
+	if (IS_ERR(pmu_regs))
+		return ERR_CAST(pmu_regs);
+
+	ctrl->priv = pmu_regs;
+	ctrl->regs = data->regs;
+	ctrl->nr_regs = data->nr_regs;
+	ctrl->value = data->value;
+	ctrl->refcnt = data->refcnt;
+	ctrl->enable = exynos_retention_enable;
+	ctrl->disable = exynos8895_retention_disable;
+
+	/* Ensure that retention is disabled on driver init */
+	for (i = 0; i < ctrl->nr_regs; i++)
+		regmap_update_bits(pmu_regs, ctrl->regs[i], ctrl->value, ctrl->value);
 
 	return ctrl;
 }

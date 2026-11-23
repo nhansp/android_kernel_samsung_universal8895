@@ -1552,6 +1552,27 @@ static const struct samsung_pin_bank_data exynos8895_pin_banks7[] __initconst = 
 	EXYNOS_PIN_BANK_EINTG(2, 0x1a0, "gpg0", 0x34),
 };
 
+/* UART_BT is released by the SoC PM driver, not here */
+static const u32 exynos8895_retention_regs[] = {
+	EXYNOS8895_PAD_RETENTION_LPDDR4_OPTION,
+	EXYNOS8895_PAD_RETENTION_TOP_OPTION,
+	EXYNOS8895_PAD_RETENTION_SPI_OPTION,
+	EXYNOS8895_PAD_RETENTION_BOOTLDO_0_OPTION,
+	EXYNOS8895_PAD_RETENTION_BOOTLDO_1_OPTION,
+	EXYNOS8895_PAD_RETENTION_MMC0_OPTION,
+	EXYNOS8895_PAD_RETENTION_MMC2_OPTION,
+	EXYNOS8895_PAD_RETENTION_PCIE_OPTION,
+	EXYNOS8895_PAD_RETENTION_UFS_CARD_OPTION,
+};
+
+static const struct samsung_retention_data exynos8895_retention_data __initconst = {
+	.regs	 = exynos8895_retention_regs,
+	.nr_regs = ARRAY_SIZE(exynos8895_retention_regs),
+	.value	 = EXYNOS_WAKEUP_FROM_LOWPWR,
+	.refcnt	 = &exynos_shared_retention_refcnt,
+	.init	 = exynos8895_retention_init,
+};
+
 static const struct samsung_pin_ctrl exynos8895_pin_ctrl[] __initconst = {
 	{
 		/* pin-controller instance 0 ALIVE data */
@@ -1561,6 +1582,7 @@ static const struct samsung_pin_ctrl exynos8895_pin_ctrl[] __initconst = {
 		.eint_wkup_init = exynos_eint_wkup_init,
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
+		.retention_data	= &exynos8895_retention_data,
 	}, {
 		/* pin-controller instance 1 ABOX data */
 		.pin_banks	= exynos8895_pin_banks1,
@@ -1579,6 +1601,7 @@ static const struct samsung_pin_ctrl exynos8895_pin_ctrl[] __initconst = {
 		.eint_gpio_init = exynos_eint_gpio_init,
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
+		.retention_data	= &exynos8895_retention_data,
 	}, {
 		/* pin-controller instance 4 FSYS1 data */
 		.pin_banks	= exynos8895_pin_banks4,
@@ -1586,6 +1609,7 @@ static const struct samsung_pin_ctrl exynos8895_pin_ctrl[] __initconst = {
 		.eint_gpio_init = exynos_eint_gpio_init,
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
+		.retention_data	= &exynos8895_retention_data,
 	}, {
 		/* pin-controller instance 5 BUSC data */
 		.pin_banks	= exynos8895_pin_banks5,
@@ -1593,6 +1617,7 @@ static const struct samsung_pin_ctrl exynos8895_pin_ctrl[] __initconst = {
 		.eint_gpio_init = exynos_eint_gpio_init,
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
+		.retention_data	= &exynos8895_retention_data,
 	}, {
 		/* pin-controller instance 6 PERIC0 data */
 		.pin_banks	= exynos8895_pin_banks6,
@@ -1600,6 +1625,7 @@ static const struct samsung_pin_ctrl exynos8895_pin_ctrl[] __initconst = {
 		.eint_gpio_init = exynos_eint_gpio_init,
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
+		.retention_data	= &exynos8895_retention_data,
 	}, {
 		/* pin-controller instance 7 PERIC1 data */
 		.pin_banks	= exynos8895_pin_banks7,
@@ -1607,6 +1633,7 @@ static const struct samsung_pin_ctrl exynos8895_pin_ctrl[] __initconst = {
 		.eint_gpio_init = exynos_eint_gpio_init,
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
+		.retention_data	= &exynos8895_retention_data,
 	},
 };
 
