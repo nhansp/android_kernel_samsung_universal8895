@@ -557,6 +557,8 @@ struct exynos5_usbdrd_phy_drvdata {
  * @vdd_dp: Exynos8895 optional 1.8V DP/PHY supply
  * @cal_probed: Exynos8895 register layout revision probed
  * @cal_port: Exynos8895 window in use: 0, 1 or -1 (unknown)
+ * @sw_port: Exynos8895 window reported by the orientation switch
+ * @cal_inited: Exynos8895 PIPE3 PHY initialised, under @phy_mutex
  * @tune_armed: Exynos8895 re-tune after a dwc3 core soft reset
  * @host_mode: Exynos8895 controller in host mode
  */
@@ -590,6 +592,8 @@ struct exynos5_usbdrd_phy {
 	struct regulator *vdd_dp;
 	bool cal_probed;
 	int cal_port;
+	int sw_port;
+	bool cal_inited;
 	bool tune_armed;
 	bool host_mode;
 };
@@ -1933,10 +1937,14 @@ static void exynos8895_cal_enable(struct exynos5_usbdrd_phy *d)
 	void __iomem *b0, *qbase;
 	u32 v, c;
 
-	/* the orientation input is active low: its value is the window to use */
-	d->cal_port = d->port_gpio ? gpiod_get_value(d->port_gpio) : 0;
-	if (d->cal_port < 0)
-		d->cal_port = 0;
+	if (d->sw) {
+		d->cal_port = d->sw_port;
+	} else {
+		/* the orientation input is active low: its value is the window to use */
+		d->cal_port = d->port_gpio ? gpiod_get_value(d->port_gpio) : 0;
+		if (d->cal_port < 0)
+			d->cal_port = 0;
+	}
 	dev_dbg(d->dev, "init on port %d\n", d->cal_port);
 
 	v = readl(d->reg_refclk + EXYNOS8895_REFCLK_CTRL);
@@ -2198,6 +2206,7 @@ static int exynos8895_usbdrd_phy_set_mode(struct phy *phy, enum phy_mode mode, i
 	if (mode != PHY_MODE_USB_HOST && mode != PHY_MODE_USB_DEVICE)
 		return 0;
 
+	guard(mutex)(&d->phy_mutex);
 	if (mode == PHY_MODE_USB_HOST) {
 		WRITE_ONCE(d->host_mode, true);
 		exynos8895_cal_tune_host(d);
@@ -2269,7 +2278,10 @@ static int exynos8895_usbdrd_phy_init(struct phy *phy)
 		goto err_core;
 	}
 	inst->phy_cfg->phy_isol(inst, false);
-	exynos8895_cal_enable(d);
+	scoped_guard(mutex, &d->phy_mutex) {
+		exynos8895_cal_enable(d);
+		d->cal_inited = true;
+	}
 	return 0;
 
 err_core:
@@ -2290,6 +2302,7 @@ static int exynos8895_usbdrd_phy_power_on(struct phy *phy)
 	if (inst->phy_cfg->id != EXYNOS5_DRDPHY_PIPE3)
 		return 0;
 	d = to_usbdrd_phy(inst);
+	guard(mutex)(&d->phy_mutex);
 	exynos8895_cal_tune_dev(d);
 	WRITE_ONCE(d->tune_armed, true);
 	return 0;
@@ -2302,13 +2315,63 @@ static int exynos8895_usbdrd_phy_exit(struct phy *phy)
 
 	if (inst->phy_cfg->id != EXYNOS5_DRDPHY_PIPE3)
 		return 0;
-	WRITE_ONCE(d->tune_armed, false);
-	exynos8895_cal_disable(d);
+	scoped_guard(mutex, &d->phy_mutex) {
+		WRITE_ONCE(d->tune_armed, false);
+		d->cal_inited = false;
+		exynos8895_cal_disable(d);
+	}
 	inst->phy_cfg->phy_isol(inst, true);
 	clk_bulk_disable_unprepare(d->drv_data->n_core_clks, d->core_clks);
 	clk_bulk_disable_unprepare(d->drv_data->n_clks, d->clks);
 	if (d->vdd_dp)
 		regulator_disable(d->vdd_dp);
+	return 0;
+}
+
+/*
+ * Called before the USB role is set. Unlike the vendor driver, which redid the
+ * register init on every attach, only a change of window redoes it.
+ */
+static int exynos8895_orien_sw_set(struct typec_switch_dev *sw,
+				   enum typec_orientation orientation)
+{
+	struct exynos5_usbdrd_phy *d = typec_switch_get_drvdata(sw);
+	bool armed;
+	int port;
+
+	guard(mutex)(&d->phy_mutex);
+	d->orientation = orientation;
+	if (orientation == TYPEC_ORIENTATION_NONE)
+		return 0;
+
+	port = orientation == TYPEC_ORIENTATION_NORMAL ? 1 : 0;
+	d->sw_port = port;
+	if (!d->cal_inited)
+		return 0;
+
+	/*
+	 * The soft reset re-tune runs in atomic context without phy_mutex and
+	 * changes cal_port for a moment: disarm it and wait for a running one.
+	 */
+	armed = READ_ONCE(d->tune_armed);
+	WRITE_ONCE(d->tune_armed, false);
+	synchronize_rcu();
+	if (port != d->cal_port) {
+		dev_dbg(d->dev, "orientation %s, re-init on port %d\n",
+			orientation == TYPEC_ORIENTATION_NORMAL ? "normal" : "reverse", port);
+		exynos8895_cal_disable(d);
+		exynos8895_cal_enable(d);
+		if (armed) {
+			if (READ_ONCE(d->host_mode)) {
+				exynos8895_cal_tune_host(d);
+				exynos8895_cal_host_mode(d);
+			} else {
+				exynos8895_cal_tune_dev(d);
+			}
+		}
+	}
+	if (armed)
+		WRITE_ONCE(d->tune_armed, true);
 	return 0;
 }
 
@@ -2379,9 +2442,12 @@ static int exynos8895_usbdrd_probe_extra(struct exynos5_usbdrd_phy *d,
 	d->cal_base[1] = d->reg_phy2;
 	d->cal_port = 0;
 
-	d->port_gpio = devm_gpiod_get_optional(d->dev, "samsung,phy-port", GPIOD_IN);
-	if (IS_ERR(d->port_gpio))
-		return dev_err_probe(d->dev, PTR_ERR(d->port_gpio), "phy-port gpio\n");
+	/* with an orientation switch, the Type-C port controller owns the input */
+	if (!device_property_present(d->dev, "orientation-switch")) {
+		d->port_gpio = devm_gpiod_get_optional(d->dev, "samsung,phy-port", GPIOD_IN);
+		if (IS_ERR(d->port_gpio))
+			return dev_err_probe(d->dev, PTR_ERR(d->port_gpio), "phy-port gpio\n");
+	}
 
 	d->vdd_dp = devm_regulator_get_optional(d->dev, "vdd18-dp");
 	if (IS_ERR(d->vdd_dp)) {
@@ -2802,6 +2868,7 @@ static const struct exynos5_usbdrd_phy_drvdata exynos8895_usbdrd_phy = {
 	.core_clk_names		= exynos5_core_clk_names,
 	.n_core_clks		= ARRAY_SIZE(exynos5_core_clk_names),
 	.probe_extra		= exynos8895_usbdrd_probe_extra,
+	.orien_sw_set		= exynos8895_orien_sw_set,
 };
 
 static const struct exynos5_usbdrd_phy_tuning exynos990_tunes_utmi_postinit[] = {
