@@ -528,6 +528,8 @@ struct exynos5_usbdrd_phy_drvdata {
 	u32 pmu_offset_usbdrd1_phy;
 	int (*probe_extra)(struct exynos5_usbdrd_phy *phy_drd,
 			   struct platform_device *pdev);
+	int (*orien_sw_set)(struct typec_switch_dev *sw,
+			    enum typec_orientation orientation);
 };
 
 /**
@@ -2602,7 +2604,7 @@ static int exynos5_usbdrd_setup_notifiers(struct exynos5_usbdrd_phy *phy_drd)
 
 		sw_desc.drvdata = phy_drd;
 		sw_desc.fwnode = dev_fwnode(phy_drd->dev);
-		sw_desc.set = exynos5_usbdrd_orien_sw_set;
+		sw_desc.set = phy_drd->drv_data->orien_sw_set ?: exynos5_usbdrd_orien_sw_set;
 
 		phy_drd->sw = typec_switch_register(phy_drd->dev, &sw_desc);
 		if (IS_ERR(phy_drd->sw))
