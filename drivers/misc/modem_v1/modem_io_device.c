@@ -1445,8 +1445,8 @@ int sipc5_init_io_device(struct io_device *iod)
 			mif_info("%s: ERR! misc_register failed\n", iod->name);
 
 		if (iod->id == SIPC_CH_ID_CPLOG1) {
-			iod->ndev = alloc_netdev(0, iod->name,
-					NET_NAME_UNKNOWN, vnet_setup);
+			iod->ndev = alloc_netdev(sizeof(struct vnet), iod->name,
+						 NET_NAME_UNKNOWN, vnet_setup);
 			if (!iod->ndev) {
 				mif_info("%s: ERR! alloc_netdev fail\n", iod->name);
 				return -ENOMEM;
@@ -1470,11 +1470,13 @@ int sipc5_init_io_device(struct io_device *iod)
 		INIT_LIST_HEAD(&iod->node_ndev);
 
 		if (iod->use_handover)
-			iod->ndev = alloc_netdev_mqs(0, iod->name, NET_NAME_UNKNOWN,
-				vnet_setup_ether, MAX_NDEV_TX_Q, MAX_NDEV_RX_Q);
+			iod->ndev = alloc_netdev_mqs(sizeof(struct vnet), iod->name,
+						     NET_NAME_UNKNOWN, vnet_setup_ether,
+						     MAX_NDEV_TX_Q, MAX_NDEV_RX_Q);
 		else
-			iod->ndev = alloc_netdev_mqs(0, iod->name, NET_NAME_UNKNOWN,
-				vnet_setup, MAX_NDEV_TX_Q, MAX_NDEV_RX_Q);
+			iod->ndev = alloc_netdev_mqs(sizeof(struct vnet), iod->name,
+						     NET_NAME_UNKNOWN, vnet_setup,
+						     MAX_NDEV_TX_Q, MAX_NDEV_RX_Q);
 
 		if (!iod->ndev) {
 			mif_info("%s: ERR! alloc_netdev fail\n", iod->name);
