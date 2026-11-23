@@ -21,6 +21,9 @@
 #define ACPM_DVFS_FREQ_GET		1
 #define ACPM_DVFS_COLDTEMP_REQ		3
 
+#define ACPM_DVFS_DATA_INIT		5
+#define ACPM_DVFS_RELEASE		2
+
 static void acpm_dvfs_set_xfer(struct acpm_xfer *xfer, u32 *cmd, size_t cmdlen,
 			       unsigned int acpm_chan_id, bool response)
 {
@@ -73,6 +76,37 @@ int acpm_dvfs_set_cold_temp(struct acpm_handle *handle,
 	cmd[1] = cold;
 	cmd[2] = FIELD_PREP(ACPM_DVFS_REQ_TYPE, ACPM_DVFS_COLDTEMP_REQ);
 	cmd[3] = acpm_cmd_timestamp(handle);
+	acpm_dvfs_set_xfer(&xfer, cmd, sizeof(cmd), acpm_chan_id, true);
+
+	return acpm_do_xfer(handle, &xfer);
+}
+
+/*
+ * Tell the firmware whether the AP is running or going to sleep, for one
+ * devfreq domain. The answer is not interpreted.
+ */
+int acpm_dvfs_sleep_release(struct acpm_handle *handle,
+			    unsigned int acpm_chan_id, unsigned int type,
+			    bool running)
+{
+	u32 cmd[4] = { type, running, ACPM_DVFS_DATA_INIT, ACPM_DVFS_RELEASE };
+	struct acpm_xfer xfer = {0};
+
+	acpm_dvfs_set_xfer(&xfer, cmd, sizeof(cmd), acpm_chan_id, true);
+
+	return acpm_do_xfer(handle, &xfer);
+}
+
+/*
+ * Send one message of a devfreq domain's DATA_INIT table. The answer is not
+ * interpreted.
+ */
+int acpm_dvfs_data_init(struct acpm_handle *handle, unsigned int acpm_chan_id,
+			u32 cmd0, u32 cmd1, u32 cmd3)
+{
+	u32 cmd[4] = { cmd0, cmd1, ACPM_DVFS_DATA_INIT, cmd3 };
+	struct acpm_xfer xfer = {0};
+
 	acpm_dvfs_set_xfer(&xfer, cmd, sizeof(cmd), acpm_chan_id, true);
 
 	return acpm_do_xfer(handle, &xfer);
