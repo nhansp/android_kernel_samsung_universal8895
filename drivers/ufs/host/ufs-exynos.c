@@ -982,8 +982,9 @@ static void exynos_ufs_config_unipro(struct exynos_ufs *ufs)
 		ufshcd_dme_set(hba, UIC_ARG_MIB(attr->pa_dbg_clk_period_off),
 			       DIV_ROUND_UP(NSEC_PER_SEC, ufs->mclk_rate));
 
-	ufshcd_dme_set(hba, UIC_ARG_MIB(PA_TXTRAILINGCLOCKS),
-			ufs->drv_data->uic_attr->tx_trailingclks);
+	if (attr->tx_trailingclks)
+		ufshcd_dme_set(hba, UIC_ARG_MIB(PA_TXTRAILINGCLOCKS),
+			       attr->tx_trailingclks);
 
 	if (attr->pa_dbg_opt_suite1_off)
 		ufshcd_dme_set(hba, UIC_ARG_MIB(attr->pa_dbg_opt_suite1_off),
