@@ -8,6 +8,7 @@
 
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
+#include <linux/delay.h>
 #include <linux/mod_devicetable.h>
 #include <linux/io.h>
 #include <linux/of.h>
@@ -41,6 +42,7 @@
 #define CLKS_NR_SRDZ	(CLK_GOUT_SRDZ_XIU_P_SRDZ_ACLK + 1)
 #define CLKS_NR_BUSC	(CLK_GOUT_BUSC_TREX_P_BUSC_PCLK_BUSC + 1)
 #define CLKS_NR_G3D	(CLK_GOUT_G3D_XIU_P_G3D_ACLK + 1)
+#define CLKS_NR_ABOX	(CLK_GOUT_ABOX_CODEC_MCLK + 1)
 
 /*
  * The gates of the always-on CMUs stay under hardware auto-gating, as the
@@ -6260,6 +6262,409 @@ static const struct samsung_cmu_info g3d_cmu_info __initconst = {
 	.nr_clk_ids		= CLKS_NR_G3D,
 };
 
+/* ---- CMU_ABOX ------------------------------------------------------------ */
+
+/* Register Offset definitions for CMU_ABOX (0x13e00000) */
+#define PLL_LOCKTIME_PLL_AUD							0x0000
+#define PLL_CON0_MUX_CLKCMU_ABOX_CPUABOX_USER					0x0100
+#define PLL_CON0_PLL_AUD							0x0120
+#define PLL_CON1_PLL_AUD							0x0124
+#define PLL_CON2_PLL_AUD							0x0128
+#define PLL_CON3_PLL_AUD							0x012c
+#define PLL_CON4_PLL_AUD							0x0130
+#define ABOX_CMU_CONTROLLER_OPTION						0x0800
+#define CLK_CON_MUX_MUX_CLK_ABOX_CPU						0x1000
+#define CLK_CON_MUX_MUX_CLK_ABOX_UAIF0						0x1004
+#define CLK_CON_MUX_MUX_CLK_ABOX_UAIF1						0x1008
+#define CLK_CON_MUX_MUX_CLK_ABOX_UAIF2						0x100c
+#define CLK_CON_MUX_MUX_CLK_ABOX_UAIF3						0x1010
+#define CLK_CON_MUX_MUX_CLK_ABOX_UAIF4						0x1014
+#define CLK_CON_DIV_DIV_CLK_ABOX_AUDIF						0x1800
+#define CLK_CON_DIV_DIV_CLK_ABOX_BUS						0x1804
+#define CLK_CON_DIV_DIV_CLK_ABOX_BUSP						0x1808
+#define CLK_CON_DIV_DIV_CLK_ABOX_CPU_ACLK					0x180c
+#define CLK_CON_DIV_DIV_CLK_ABOX_CPU_ATCLK					0x1810
+#define CLK_CON_DIV_DIV_CLK_ABOX_CPU_PCLKDBG					0x1814
+#define CLK_CON_DIV_DIV_CLK_ABOX_DMIC						0x1818
+#define CLK_CON_DIV_DIV_CLK_ABOX_DSIF						0x181c
+#define CLK_CON_DIV_DIV_CLK_ABOX_PLL						0x1820
+#define CLK_CON_DIV_DIV_CLK_ABOX_UAIF0						0x1828
+#define CLK_CON_DIV_DIV_CLK_ABOX_UAIF1						0x182c
+#define CLK_CON_DIV_DIV_CLK_ABOX_UAIF2						0x1830
+#define CLK_CON_DIV_DIV_CLK_ABOX_UAIF3						0x1834
+#define CLK_CON_DIV_DIV_CLK_ABOX_UAIF4						0x1838
+#define CLK_CON_GAT_CLK_BLK_ABOX_UID_ABOX_CMU_ABOX_IPCLKPORT_PCLK		0x2000
+#define CLK_CON_GAT_CLK_BLK_ABOX_UID_DFTMUX_ABOX_IPCLKPORT_AUD_CODEC_MCLK	0x2004
+#define CLK_CON_GAT_CLK_BLK_ABOX_UID_DMIC_IPCLKPORT_CLK				0x2008
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_DAP_IPCLKPORT_DAPCLK			0x2018
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_ACLK			0x201c
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_BCLK_DSIF		0x2020
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_BCLK_UAIF0		0x2024
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_BCLK_UAIF1		0x2028
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_BCLK_UAIF2		0x202c
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_BCLK_UAIF3		0x2030
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_BCLK_UAIF4		0x2034
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_CCLK_ASB		0x2038
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_CCLK_ATB		0x203c
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_CCLK_CA7		0x2040
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_AXI_US_32TO128_IPCLKPORT_ACLK		0x2048
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_BTM_ABOX_IPCLKPORT_I_ACLK			0x204c
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_BTM_ABOX_IPCLKPORT_I_PCLK			0x2050
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_GPIO_ABOX_IPCLKPORT_PCLK			0x2058
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_LHM_AXI_P_ABOX_IPCLKPORT_I_CLK		0x205c
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_LHS_ATB_ABOX_IPCLKPORT_I_CLK		0x2060
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_LHS_AXI_D_ABOX_IPCLKPORT_I_CLK		0x2064
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_PERI_AXI_ASB_IPCLKPORT_ACLKM		0x2068
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_PERI_AXI_ASB_IPCLKPORT_ACLKS		0x206c
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_PERI_AXI_ASB_IPCLKPORT_PCLK		0x2070
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_PMU_ABOX_IPCLKPORT_PCLK			0x2074
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_BCM_ABOX_IPCLKPORT_ACLK			0x2078
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_BCM_ABOX_IPCLKPORT_PCLK			0x207c
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_BUSP_IPCLKPORT_CLK	0x2080
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_BUS_IPCLKPORT_CLK	0x2084
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_CPU_ACLK_IPCLKPORT_CLK	0x2088
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_CPU_ATCLK_IPCLKPORT_CLK	0x208c
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_CPU_IPCLKPORT_CLK	0x2090
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_CPU_PCLKDBG_IPCLKPORT_CLK	0x2094
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_DSIF_IPCLKPORT_CLK	0x2098
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_UAIF0_IPCLKPORT_CLK	0x209c
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_UAIF1_IPCLKPORT_CLK	0x20a0
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_UAIF2_IPCLKPORT_CLK	0x20a4
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_UAIF3_IPCLKPORT_CLK	0x20a8
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_UAIF4_IPCLKPORT_CLK	0x20ac
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_SMMU_ABOX_IPCLKPORT_ACLK			0x20b0
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_SMMU_ABOX_IPCLKPORT_PCLK			0x20b4
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_SYSREG_ABOX_IPCLKPORT_PCLK		0x20b8
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_TREX_ABOX_IPCLKPORT_CLK			0x20bc
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_WDT_ABOXCPU_IPCLKPORT_PCLK		0x20c0
+#define CLK_CON_GAT_GOUT_BLK_ABOX_UID_WRAP2_CONV_ABOX_IPCLKPORT_I_CLK		0x20c4
+#define DMYQCH_CON_ABOX_TOP_QCH							0x3000
+#define DMYQCH_CON_DMIC_QCH							0x3004
+#define QCH_CON_ABOX_CMU_ABOX_QCH						0x300c
+#define QCH_CON_BTM_ABOX_QCH							0x3010
+#define QCH_CON_GPIO_ABOX_QCH							0x3014
+#define QCH_CON_LHM_AXI_P_ABOX_QCH						0x3018
+#define QCH_CON_LHS_ATB_ABOX_QCH						0x301c
+#define QCH_CON_LHS_AXI_D_ABOX_QCH						0x3020
+#define QCH_CON_PMU_ABOX_QCH							0x3024
+#define QCH_CON_BCM_ABOX_QCH							0x3028
+#define QCH_CON_SMMU_ABOX_QCH							0x302c
+#define QCH_CON_SYSREG_ABOX_QCH							0x3030
+#define QCH_CON_TREX_ABOX_QCH							0x3034
+#define QCH_CON_WDT_ABOXCPU_QCH							0x3038
+
+/* Saved and restored across pd_abox power cycles, in the vendor order */
+static const unsigned long abox_clk_regs[] __initconst = {
+	PLL_LOCKTIME_PLL_AUD,
+	PLL_CON1_PLL_AUD,
+	PLL_CON2_PLL_AUD,
+	PLL_CON3_PLL_AUD,
+	PLL_CON4_PLL_AUD,
+	CLK_CON_DIV_DIV_CLK_ABOX_UAIF4,
+	CLK_CON_DIV_DIV_CLK_ABOX_UAIF3,
+	CLK_CON_DIV_DIV_CLK_ABOX_UAIF2,
+	CLK_CON_DIV_DIV_CLK_ABOX_UAIF1,
+	CLK_CON_DIV_DIV_CLK_ABOX_UAIF0,
+	CLK_CON_DIV_DIV_CLK_ABOX_PLL,
+	CLK_CON_DIV_DIV_CLK_ABOX_DSIF,
+	CLK_CON_DIV_DIV_CLK_ABOX_DMIC,
+	CLK_CON_DIV_DIV_CLK_ABOX_CPU_PCLKDBG,
+	CLK_CON_DIV_DIV_CLK_ABOX_CPU_ATCLK,
+	CLK_CON_DIV_DIV_CLK_ABOX_CPU_ACLK,
+	CLK_CON_DIV_DIV_CLK_ABOX_BUSP,
+	CLK_CON_DIV_DIV_CLK_ABOX_BUS,
+	CLK_CON_DIV_DIV_CLK_ABOX_AUDIF,
+	CLK_CON_MUX_MUX_CLK_ABOX_UAIF4,
+	CLK_CON_MUX_MUX_CLK_ABOX_UAIF3,
+	CLK_CON_MUX_MUX_CLK_ABOX_UAIF2,
+	CLK_CON_MUX_MUX_CLK_ABOX_UAIF1,
+	CLK_CON_MUX_MUX_CLK_ABOX_UAIF0,
+	CLK_CON_MUX_MUX_CLK_ABOX_CPU,
+	CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_BCLK_UAIF4,
+	CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_BCLK_UAIF3,
+	CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_BCLK_UAIF2,
+	CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_BCLK_UAIF1,
+	CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_BCLK_UAIF0,
+	CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_BCLK_DSIF,
+	PLL_CON0_MUX_CLKCMU_ABOX_CPUABOX_USER,
+	PLL_CON0_PLL_AUD,
+	QCH_CON_WDT_ABOXCPU_QCH,
+	QCH_CON_TREX_ABOX_QCH,
+	QCH_CON_SYSREG_ABOX_QCH,
+	QCH_CON_SMMU_ABOX_QCH,
+	QCH_CON_BCM_ABOX_QCH,
+	QCH_CON_PMU_ABOX_QCH,
+	QCH_CON_LHS_AXI_D_ABOX_QCH,
+	QCH_CON_LHS_ATB_ABOX_QCH,
+	QCH_CON_LHM_AXI_P_ABOX_QCH,
+	QCH_CON_GPIO_ABOX_QCH,
+	QCH_CON_BTM_ABOX_QCH,
+	QCH_CON_ABOX_CMU_ABOX_QCH,
+	DMYQCH_CON_DMIC_QCH,
+	DMYQCH_CON_ABOX_TOP_QCH,
+	ABOX_CMU_CONTROLLER_OPTION,
+};
+
+/* The vendor's 1179.648 and 1083.8016 MHz rows, at the exact rates M, P, S, K give */
+static const struct samsung_pll_rate_table pll_aud_rate_table[] __initconst = {
+	PLL_36XX_RATE(26 * MHZ, 1179648040U, 45, 1, 0, 24319),
+	PLL_36XX_RATE(26 * MHZ, 1083801605U, 42, 1, 0, -20665),
+};
+
+/* List of parent clocks for Muxes in CMU_ABOX */
+/* PLL_CON0 bit 4 selects between OSCCLK and the PLL output */
+PNAME(mout_abox_pll_aud_p)		= { "oscclk", "fout_pll_aud" };
+PNAME(mout_abox_cpuabox_user_p)		= { "oscclk", "dout_cmu_cmu_abox_cpuabox" };
+PNAME(mout_abox_cpu_p)			= { "dout_abox_pll", "mout_abox_cpuabox_user" };
+PNAME(mout_abox_uaif0_p)		= { "dout_abox_uaif0", "clkio_abox_uaif0" };
+PNAME(mout_abox_uaif1_p)		= { "dout_abox_uaif1", "clkio_abox_uaif1" };
+PNAME(mout_abox_uaif2_p)		= { "dout_abox_uaif2", "clkio_abox_uaif2" };
+PNAME(mout_abox_uaif3_p)		= { "dout_abox_uaif3", "clkio_abox_uaif3" };
+PNAME(mout_abox_uaif4_p)		= { "dout_abox_uaif4", "clkio_abox_uaif4" };
+
+static const struct samsung_fixed_rate_clock abox_fixed_clks[] __initconst = {
+	FRATE(0, "clkio_abox_uaif0", NULL, 0, 0),
+	FRATE(0, "clkio_abox_uaif1", NULL, 0, 0),
+	FRATE(0, "clkio_abox_uaif2", NULL, 0, 0),
+	FRATE(0, "clkio_abox_uaif3", NULL, 0, 0),
+	FRATE(0, "clkio_abox_uaif4", NULL, 0, 0),
+};
+
+static const struct samsung_pll_clock abox_pll_clks[] __initconst = {
+	PLL(pll_1061x, CLK_FOUT_PLL_AUD, "fout_pll_aud", "oscclk",
+	    PLL_LOCKTIME_PLL_AUD, PLL_CON0_PLL_AUD, pll_aud_rate_table),
+};
+
+static const struct samsung_mux_clock abox_mux_clks[] __initconst = {
+	MUX_F(CLK_MOUT_ABOX_PLL_AUD, "mout_abox_pll_aud", mout_abox_pll_aud_p,
+	      PLL_CON0_PLL_AUD, 4, 1, CLK_SET_RATE_PARENT, 0),
+	MUX(CLK_MOUT_ABOX_CPUABOX_USER, "mout_abox_cpuabox_user",
+	    mout_abox_cpuabox_user_p, PLL_CON0_MUX_CLKCMU_ABOX_CPUABOX_USER, 4,
+	    1),
+	MUX(CLK_MOUT_ABOX_CPU, "mout_abox_cpu", mout_abox_cpu_p,
+	    CLK_CON_MUX_MUX_CLK_ABOX_CPU, 0, 1),
+	MUX(CLK_MOUT_ABOX_UAIF0, "mout_abox_uaif0", mout_abox_uaif0_p,
+	    CLK_CON_MUX_MUX_CLK_ABOX_UAIF0, 0, 1),
+	MUX(CLK_MOUT_ABOX_UAIF1, "mout_abox_uaif1", mout_abox_uaif1_p,
+	    CLK_CON_MUX_MUX_CLK_ABOX_UAIF1, 0, 1),
+	MUX(CLK_MOUT_ABOX_UAIF2, "mout_abox_uaif2", mout_abox_uaif2_p,
+	    CLK_CON_MUX_MUX_CLK_ABOX_UAIF2, 0, 1),
+	MUX(CLK_MOUT_ABOX_UAIF3, "mout_abox_uaif3", mout_abox_uaif3_p,
+	    CLK_CON_MUX_MUX_CLK_ABOX_UAIF3, 0, 1),
+	MUX(CLK_MOUT_ABOX_UAIF4, "mout_abox_uaif4", mout_abox_uaif4_p,
+	    CLK_CON_MUX_MUX_CLK_ABOX_UAIF4, 0, 1),
+};
+
+static const struct samsung_div_clock abox_div_clks[] __initconst = {
+	DIV_F(CLK_DOUT_ABOX_PLL, "dout_abox_pll", "mout_abox_pll_aud",
+	      CLK_CON_DIV_DIV_CLK_ABOX_PLL, 0, 4, 0, CLK_DIVIDER_ROUND_CLOSEST),
+	DIV_F(CLK_DOUT_ABOX_AUDIF, "dout_abox_audif", "mout_abox_pll_aud",
+	      CLK_CON_DIV_DIV_CLK_ABOX_AUDIF, 0, 9, 0,
+	      CLK_DIVIDER_ROUND_CLOSEST),
+	DIV_F(CLK_DOUT_ABOX_BUS, "dout_abox_bus", "mout_abox_pll_aud",
+	      CLK_CON_DIV_DIV_CLK_ABOX_BUS, 0, 3, 0, CLK_DIVIDER_ROUND_CLOSEST),
+	DIV_F(CLK_DOUT_ABOX_BUSP, "dout_abox_busp", "dout_abox_bus",
+	      CLK_CON_DIV_DIV_CLK_ABOX_BUSP, 0, 2, 0,
+	      CLK_DIVIDER_ROUND_CLOSEST),
+	DIV_F(CLK_DOUT_ABOX_CPU_ACLK, "dout_abox_cpu_aclk", "mout_abox_cpu",
+	      CLK_CON_DIV_DIV_CLK_ABOX_CPU_ACLK, 0, 3, 0,
+	      CLK_DIVIDER_ROUND_CLOSEST),
+	DIV_F(CLK_DOUT_ABOX_CPU_ATCLK, "dout_abox_cpu_atclk", "mout_abox_cpu",
+	      CLK_CON_DIV_DIV_CLK_ABOX_CPU_ATCLK, 0, 3, 0,
+	      CLK_DIVIDER_ROUND_CLOSEST),
+	DIV_F(CLK_DOUT_ABOX_CPU_PCLKDBG, "dout_abox_cpu_pclkdbg",
+	      "mout_abox_cpu", CLK_CON_DIV_DIV_CLK_ABOX_CPU_PCLKDBG, 0, 3, 0,
+	      CLK_DIVIDER_ROUND_CLOSEST),
+	DIV_F(CLK_DOUT_ABOX_DSIF, "dout_abox_dsif", "dout_abox_audif",
+	      CLK_CON_DIV_DIV_CLK_ABOX_DSIF, 0, 5, 0,
+	      CLK_DIVIDER_ROUND_CLOSEST),
+	DIV_F(CLK_DOUT_ABOX_DMIC, "dout_abox_dmic", "dout_abox_dsif",
+	      CLK_CON_DIV_DIV_CLK_ABOX_DMIC, 0, 2, 0,
+	      CLK_DIVIDER_ROUND_CLOSEST),
+	DIV_F(CLK_DOUT_ABOX_UAIF0, "dout_abox_uaif0", "dout_abox_audif",
+	      CLK_CON_DIV_DIV_CLK_ABOX_UAIF0, 0, 5, 0,
+	      CLK_DIVIDER_ROUND_CLOSEST),
+	DIV_F(CLK_DOUT_ABOX_UAIF1, "dout_abox_uaif1", "dout_abox_audif",
+	      CLK_CON_DIV_DIV_CLK_ABOX_UAIF1, 0, 5, 0,
+	      CLK_DIVIDER_ROUND_CLOSEST),
+	DIV_F(CLK_DOUT_ABOX_UAIF2, "dout_abox_uaif2", "dout_abox_audif",
+	      CLK_CON_DIV_DIV_CLK_ABOX_UAIF2, 0, 5, 0,
+	      CLK_DIVIDER_ROUND_CLOSEST),
+	DIV_F(CLK_DOUT_ABOX_UAIF3, "dout_abox_uaif3", "dout_abox_audif",
+	      CLK_CON_DIV_DIV_CLK_ABOX_UAIF3, 0, 5, 0,
+	      CLK_DIVIDER_ROUND_CLOSEST),
+	DIV_F(CLK_DOUT_ABOX_UAIF4, "dout_abox_uaif4", "dout_abox_audif",
+	      CLK_CON_DIV_DIV_CLK_ABOX_UAIF4, 0, 5, 0,
+	      CLK_DIVIDER_ROUND_CLOSEST),
+};
+
+static const struct samsung_gate_clock abox_gate_clks[] __initconst = {
+	GATE(CLK_GOUT_ABOX_BCLK_UAIF0, "gout_abox_top_bclk_uaif0",
+	     "mout_abox_uaif0",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_BCLK_UAIF0, 21, 0,
+	     0),
+	GATE(CLK_GOUT_ABOX_BCLK_UAIF1, "gout_abox_top_bclk_uaif1",
+	     "mout_abox_uaif1",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_BCLK_UAIF1, 21, 0,
+	     0),
+	GATE(CLK_GOUT_ABOX_BCLK_UAIF2, "gout_abox_top_bclk_uaif2",
+	     "mout_abox_uaif2",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_BCLK_UAIF2, 21, 0,
+	     0),
+	GATE(CLK_GOUT_ABOX_BCLK_UAIF3, "gout_abox_top_bclk_uaif3",
+	     "mout_abox_uaif3",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_BCLK_UAIF3, 21, 0,
+	     0),
+	GATE(CLK_GOUT_ABOX_BCLK_UAIF4, "gout_abox_top_bclk_uaif4",
+	     "mout_abox_uaif4",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_BCLK_UAIF4, 21, 0,
+	     0),
+	GATE(CLK_GOUT_ABOX_BCLK_DSIF, "gout_abox_top_bclk_dsif",
+	     "dout_abox_dsif",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_BCLK_DSIF, 21, 0,
+	     0),
+	GATE(CLK_GOUT_ABOX_CCLK_CA7, "gout_abox_top_cclk_ca7", "mout_abox_cpu",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_CCLK_CA7, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ABOX_SMMU_ACLK, "gout_abox_smmu_abox_aclk",
+	     "dout_abox_bus",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_SMMU_ABOX_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ABOX_SMMU_PCLK, "gout_abox_smmu_abox_pclk",
+	     "dout_abox_bus",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_SMMU_ABOX_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ABOX_DMIC, "gout_abox_dmic_clk", "dout_abox_dmic",
+	     CLK_CON_GAT_CLK_BLK_ABOX_UID_DMIC_IPCLKPORT_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ABOX_CODEC_MCLK, "gout_abox_dftmux_abox_aud_codec_mclk",
+	     "dout_abox_audif",
+	     CLK_CON_GAT_CLK_BLK_ABOX_UID_DFTMUX_ABOX_IPCLKPORT_AUD_CODEC_MCLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_cmu_abox_pclk", "dout_abox_bus",
+	     CLK_CON_GAT_CLK_BLK_ABOX_UID_ABOX_CMU_ABOX_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_dap_dapclk", "dout_abox_cpu_pclkdbg",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_DAP_IPCLKPORT_DAPCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_top_aclk", "dout_abox_bus",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_top_cclk_asb", "dout_abox_cpu_aclk",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_CCLK_ASB, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_top_cclk_atb", "dout_abox_cpu_atclk",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_CCLK_ATB, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_axi_us_32to128_aclk", "dout_abox_bus",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_AXI_US_32TO128_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_btm_abox_i_aclk", "dout_abox_bus",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_BTM_ABOX_IPCLKPORT_I_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_btm_abox_i_pclk", "dout_abox_bus",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_BTM_ABOX_IPCLKPORT_I_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_gpio_abox_pclk", "dout_abox_bus",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_GPIO_ABOX_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_lhm_axi_p_abox_i_clk", "dout_abox_busp",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_LHM_AXI_P_ABOX_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_lhs_atb_abox_i_clk", "dout_abox_cpu_atclk",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_LHS_ATB_ABOX_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_lhs_axi_d_abox_i_clk", "dout_abox_bus",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_LHS_AXI_D_ABOX_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_peri_axi_asb_aclkm", "dout_abox_bus",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_PERI_AXI_ASB_IPCLKPORT_ACLKM, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_peri_axi_asb_aclks", "dout_abox_busp",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_PERI_AXI_ASB_IPCLKPORT_ACLKS, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_peri_axi_asb_pclk", "dout_abox_bus",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_PERI_AXI_ASB_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_pmu_abox_pclk", "dout_abox_bus",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_PMU_ABOX_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_bcm_abox_aclk", "dout_abox_bus",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_BCM_ABOX_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_bcm_abox_pclk", "dout_abox_bus",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_BCM_ABOX_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_rstnsync_clk_abox_busp_clk", "dout_abox_busp",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_BUSP_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_rstnsync_clk_abox_bus_clk", "dout_abox_bus",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_BUS_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_rstnsync_clk_abox_cpu_aclk_clk",
+	     "dout_abox_cpu_aclk",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_CPU_ACLK_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_rstnsync_clk_abox_cpu_atclk_clk",
+	     "dout_abox_cpu_atclk",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_CPU_ATCLK_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_rstnsync_clk_abox_cpu_clk", "mout_abox_cpu",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_CPU_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_rstnsync_clk_abox_cpu_pclkdbg_clk",
+	     "dout_abox_cpu_pclkdbg",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_CPU_PCLKDBG_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_rstnsync_clk_abox_dsif_clk", "dout_abox_dsif",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_DSIF_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_rstnsync_clk_abox_uaif0_clk", "mout_abox_uaif0",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_UAIF0_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_rstnsync_clk_abox_uaif1_clk", "mout_abox_uaif1",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_UAIF1_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_rstnsync_clk_abox_uaif2_clk", "mout_abox_uaif2",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_UAIF2_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_rstnsync_clk_abox_uaif3_clk", "mout_abox_uaif3",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_UAIF3_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_rstnsync_clk_abox_uaif4_clk", "mout_abox_uaif4",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_RSTNSYNC_CLK_ABOX_UAIF4_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_sysreg_abox_pclk", "dout_abox_bus",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_SYSREG_ABOX_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_trex_abox_clk", "dout_abox_bus",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_TREX_ABOX_IPCLKPORT_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_wdt_aboxcpu_pclk", "dout_abox_bus",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_WDT_ABOXCPU_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(0, "gout_abox_wrap2_conv_abox_i_clk", "dout_abox_bus",
+	     CLK_CON_GAT_GOUT_BLK_ABOX_UID_WRAP2_CONV_ABOX_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+};
+
+static const struct samsung_cmu_info abox_cmu_info __initconst = {
+	.pll_clks		= abox_pll_clks,
+	.nr_pll_clks		= ARRAY_SIZE(abox_pll_clks),
+	.mux_clks		= abox_mux_clks,
+	.nr_mux_clks		= ARRAY_SIZE(abox_mux_clks),
+	.div_clks		= abox_div_clks,
+	.nr_div_clks		= ARRAY_SIZE(abox_div_clks),
+	.gate_clks		= abox_gate_clks,
+	.nr_gate_clks		= ARRAY_SIZE(abox_gate_clks),
+	.fixed_clks		= abox_fixed_clks,
+	.nr_fixed_clks		= ARRAY_SIZE(abox_fixed_clks),
+	.nr_clk_ids		= CLKS_NR_ABOX,
+	.clk_regs		= abox_clk_regs,
+	.nr_clk_regs		= ARRAY_SIZE(abox_clk_regs),
+	.clk_name		= "cpuabox",
+};
+
 /* ---- CMU probe glue ------------------------------------------------------ */
 
 #define CMU_QCH_ENABLE			BIT(0)
@@ -6407,10 +6812,88 @@ static void __init exynos8895_cmu_set_busp(struct platform_device *pdev)
 	}
 }
 
+/*
+ * The vendor kernel programs the audio blocks once at boot, outside its clock
+ * framework; pd_abox only restores what was written since.
+ */
+#define CMU_PLL_ENABLE			BIT(31)
+#define CMU_PLL_STABLE			BIT(29)
+#define CMU_PLL_MUX_BUSY		BIT(7)
+#define CMU_PLL_MUX_SEL			BIT(4)
+#define CMU_PLL_PMS_MASK		(GENMASK(25, 16) | GENMASK(13, 8) | GENMASK(2, 0))
+#define CMU_PLL_PMS(m, p, s)		(((m) << 16) | ((p) << 8) | (s))
+#define CMU_BUSY			BIT(16)
+#define CMU_GATE_CG_VAL			BIT(21)
+#define CMU_GATE_MANUAL			BIT(20)
+
+static void __iomem *cmu_abox_base;
+
+static int exynos8895_cmu_wait_bit(void __iomem *reg, u32 bit, bool set, int us)
+{
+	while (us--) {
+		if (!!(readl(reg) & bit) == set)
+			return 0;
+		udelay(1);
+	}
+
+	return -ETIMEDOUT;
+}
+
+static void exynos8895_cmu_rmw(void __iomem *reg, u32 mask, u32 val)
+{
+	writel((readl(reg) & ~mask) | val, reg);
+}
+
+/*
+ * Vendor boot setup of BLK_ABOX (pd_abox on, ABOX CPU off): PLL_AUD at
+ * 1179.648 MHz, the CPU/BUSP/AUDIF/DSIF dividers, BCLK gates manual and off.
+ */
+static void __init exynos8895_cmu_abox_boot_init(void __iomem *b)
+{
+	int i;
+
+	exynos8895_cmu_rmw(b + PLL_CON0_PLL_AUD, CMU_PLL_MUX_SEL, 0);
+	exynos8895_cmu_wait_bit(b + PLL_CON0_PLL_AUD, CMU_PLL_MUX_BUSY, false, 100);
+	exynos8895_cmu_rmw(b + PLL_CON0_PLL_AUD, CMU_PLL_ENABLE, 0);
+	writel(1 * 1500, b + PLL_LOCKTIME_PLL_AUD);
+	exynos8895_cmu_rmw(b + PLL_CON3_PLL_AUD, 0xffff, 24319);
+	exynos8895_cmu_rmw(b + PLL_CON0_PLL_AUD,
+			   CMU_PLL_PMS_MASK | CMU_PLL_ENABLE | CMU_PLL_MUX_SEL,
+			   CMU_PLL_PMS(45, 1, 0) | CMU_PLL_ENABLE | CMU_PLL_MUX_SEL);
+	if (exynos8895_cmu_wait_bit(b + PLL_CON0_PLL_AUD, CMU_PLL_STABLE, true, 100))
+		pr_err("cmu_abox: PLL_AUD lock timeout\n");
+
+	exynos8895_cmu_rmw(b + CLK_CON_DIV_DIV_CLK_ABOX_CPU_ATCLK, 0x7, 1);
+	exynos8895_cmu_wait_bit(b + CLK_CON_DIV_DIV_CLK_ABOX_CPU_ATCLK, CMU_BUSY, false, 100);
+	exynos8895_cmu_rmw(b + CLK_CON_DIV_DIV_CLK_ABOX_BUSP, 0x3, 2);
+	exynos8895_cmu_wait_bit(b + CLK_CON_DIV_DIV_CLK_ABOX_BUSP, CMU_BUSY, false, 100);
+	exynos8895_cmu_rmw(b + CLK_CON_DIV_DIV_CLK_ABOX_AUDIF, 0x1ff, 23);
+	exynos8895_cmu_wait_bit(b + CLK_CON_DIV_DIV_CLK_ABOX_AUDIF, CMU_BUSY, false, 100);
+	exynos8895_cmu_rmw(b + CLK_CON_DIV_DIV_CLK_ABOX_DSIF, 0x1f, 1);
+	exynos8895_cmu_wait_bit(b + CLK_CON_DIV_DIV_CLK_ABOX_DSIF, CMU_BUSY, false, 100);
+
+	for (i = CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_BCLK_DSIF;
+	     i <= CLK_CON_GAT_GOUT_BLK_ABOX_UID_ABOX_TOP_IPCLKPORT_BCLK_UAIF4; i += 4)
+		exynos8895_cmu_rmw(b + i, CMU_GATE_MANUAL | CMU_GATE_CG_VAL,
+				   CMU_GATE_MANUAL);
+}
+
 /* CMUs in power domains keep their gates in the mode the boot loader left */
 static int __init exynos8895_cmu_pd_probe(struct platform_device *pdev)
 {
+	struct device_node *np = pdev->dev.of_node;
+	struct resource *res;
 	int ret;
+
+	if (of_device_is_compatible(np, "samsung,exynos8895-cmu-abox")) {
+		res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+		if (!res)
+			return -EINVAL;
+		cmu_abox_base = ioremap(res->start, resource_size(res));
+		if (!cmu_abox_base)
+			return -ENOMEM;
+		exynos8895_cmu_abox_boot_init(cmu_abox_base);
+	}
 
 	ret = exynos_arm64_register_cmu_pm(pdev, false);
 	if (ret)
@@ -6421,13 +6904,35 @@ static int __init exynos8895_cmu_pd_probe(struct platform_device *pdev)
 	return 0;
 }
 
+static bool exynos8895_cmu_pd_is_audio(struct device *dev)
+{
+	return of_device_is_compatible(dev->of_node, "samsung,exynos8895-cmu-abox");
+}
+
+/* After a restore, wait for an enabled PLL_AUD to lock again */
+static int exynos8895_cmu_pd_runtime_resume(struct device *dev)
+{
+	int ret = exynos_arm64_cmu_resume(dev);
+	void __iomem *r = NULL;
+
+	if (cmu_abox_base &&
+	    of_device_is_compatible(dev->of_node, "samsung,exynos8895-cmu-abox"))
+		r = cmu_abox_base + PLL_CON0_PLL_AUD;
+	if (r && (readl(r) & CMU_PLL_ENABLE) &&
+	    exynos8895_cmu_wait_bit(r, CMU_PLL_STABLE, true, 1000))
+		dev_err(dev, "PLL/OSC relock timeout\n");
+
+	return ret;
+}
+
 /*
  * genpd powers these domains off in suspend_noirq even with the CMU runtime
  * active; CMU_DPU0 always is, as the DPU0 syscon keeps its PCLK prepared.
  */
 static bool exynos8895_cmu_pd_sleep_save(struct device *dev)
 {
-	return of_device_is_compatible(dev->of_node, "samsung,exynos8895-cmu-dpu0");
+	return exynos8895_cmu_pd_is_audio(dev) ||
+	       of_device_is_compatible(dev->of_node, "samsung,exynos8895-cmu-dpu0");
 }
 
 static int exynos8895_cmu_pd_suspend_noirq(struct device *dev)
@@ -6468,13 +6973,16 @@ static const struct of_device_id exynos8895_cmu_pd_of_match[] = {
 	}, {
 		.compatible = "samsung,exynos8895-cmu-srdz",
 		.data = &srdz_cmu_info,
+	}, {
+		.compatible = "samsung,exynos8895-cmu-abox",
+		.data = &abox_cmu_info,
 	},
 	{ }
 };
 
 static const struct dev_pm_ops exynos8895_cmu_pd_pm_ops = {
-	SET_RUNTIME_PM_OPS(exynos_arm64_cmu_suspend, exynos_arm64_cmu_resume,
-			   NULL)
+	SET_RUNTIME_PM_OPS(exynos_arm64_cmu_suspend,
+			   exynos8895_cmu_pd_runtime_resume, NULL)
 	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(exynos8895_cmu_pd_suspend_noirq,
 				      exynos8895_cmu_pd_resume_noirq)
 };
