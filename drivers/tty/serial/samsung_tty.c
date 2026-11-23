@@ -22,6 +22,7 @@
  */
 
 #include <linux/console.h>
+#include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/cpufreq.h>
 #include <linux/delay.h>
@@ -156,6 +157,9 @@ struct s3c24xx_uart_port {
 
 	/* set with s3c24xx_serial_set_wake_peer() */
 	void (*wake_peer)(struct uart_port *port);
+
+	/* UMCON RTS trigger level field from "samsung,rts-trig-level" */
+	u32				umcon_rts_trig;
 };
 
 static void s3c24xx_serial_tx_chars(struct s3c24xx_uart_port *ourport);
@@ -1587,6 +1591,7 @@ static void s3c24xx_serial_set_termios(struct uart_port *port,
 		umcon |= S3C2410_UMCOM_AFC;
 		/* Disable RTS when RX FIFO contains 63 bytes */
 		umcon &= ~S3C2412_UMCON_AFC_8;
+		umcon |= ourport->umcon_rts_trig;
 		port->status = UPSTAT_AUTOCTS;
 	} else {
 		umcon &= ~S3C2410_UMCOM_AFC;
@@ -1965,6 +1970,7 @@ static int s3c24xx_serial_probe(struct platform_device *pdev)
 	struct s3c24xx_uart_port *ourport;
 	int index = probe_index;
 	int ret, prop = 0, fifosize_prop = 1;
+	u32 rts_trig_level;
 
 	if (np) {
 		ret = of_alias_get_id(np, "serial");
@@ -2006,6 +2012,11 @@ static int s3c24xx_serial_probe(struct platform_device *pdev)
 	if (np) {
 		fifosize_prop = of_property_read_u32(np, "samsung,uart-fifosize",
 				&ourport->port.fifosize);
+
+		ourport->umcon_rts_trig = 0;
+		if (!of_property_read_u32(np, "samsung,rts-trig-level", &rts_trig_level))
+			ourport->umcon_rts_trig = FIELD_PREP(S3C2412_UMCON_AFC_8,
+							     rts_trig_level);
 
 		if (of_property_read_u32(np, "reg-io-width", &prop) == 0) {
 			switch (prop) {
