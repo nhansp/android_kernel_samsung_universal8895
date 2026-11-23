@@ -152,6 +152,9 @@ struct s3c24xx_uart_port {
 	const struct s3c2410_uartcfg	*cfg;
 
 	struct s3c24xx_uart_dma		*dma;
+
+	/* set with s3c24xx_serial_set_wake_peer() */
+	void (*wake_peer)(struct uart_port *port);
 };
 
 static void s3c24xx_serial_tx_chars(struct s3c24xx_uart_port *ourport);
@@ -491,6 +494,11 @@ static void s3c24xx_serial_start_tx(struct uart_port *port)
 {
 	struct s3c24xx_uart_port *ourport = to_ourport(port);
 	struct tty_port *tport = &port->state->port;
+	void (*wp)(struct uart_port *port) = READ_ONCE(ourport->wake_peer);
+
+	/* uart_resume_port() calls start_tx() with nothing queued */
+	if (wp && (port->x_char || !kfifo_is_empty(&tport->xmit_fifo)))
+		wp(port);
 
 	if (!ourport->tx_enabled) {
 		if (port->flags & UPF_CONS_FLOW)
@@ -2676,6 +2684,25 @@ static struct platform_driver samsung_serial_driver = {
 		.of_match_table	= of_match_ptr(s3c24xx_uart_dt_match),
 	},
 };
+
+/**
+ * s3c24xx_serial_set_wake_peer() - set the function that wakes a UART's peer
+ * @uart_dev: device of the UART
+ * @fn: called with the port lock held before data is transmitted, or NULL
+ *
+ * Return: 0, or -EPROBE_DEFER if the UART has not been probed yet.
+ */
+int s3c24xx_serial_set_wake_peer(struct device *uart_dev, void (*fn)(struct uart_port *))
+{
+	struct uart_port *port = dev_get_drvdata(uart_dev);
+
+	if (!port)
+		return -EPROBE_DEFER;
+
+	WRITE_ONCE(to_ourport(port)->wake_peer, fn);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(s3c24xx_serial_set_wake_peer);
 
 static int __init samsung_serial_init(void)
 {

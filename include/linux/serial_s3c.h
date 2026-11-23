@@ -294,6 +294,11 @@ struct s3c2410_uartcfg {
 	unsigned long	   ufcon;	 /* value of ufcon for port */
 };
 
+struct device;
+struct uart_port;
+
+int s3c24xx_serial_set_wake_peer(struct device *uart_dev, void (*fn)(struct uart_port *));
+
 #endif /* __ASSEMBLY__ */
 
 #endif /* __ASM_ARM_REGS_SERIAL_H */
