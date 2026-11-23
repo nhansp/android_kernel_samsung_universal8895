@@ -130,4 +130,13 @@ config EXYNOS_UFS_SRPMB
 	  the Trustonic TEE uses for its secure storage, to the RPMB
 	  well-known logical unit of the UFS device. The vendor kernels
 	  call this CONFIG_UFS_SRPMB.
+
+config EXYNOS_SECURE_LOG
+	bool "Exynos secure log"
+	depends on ARCH_EXYNOS && OF_RESERVED_MEM
+	select EXYNOS8895_SMC
+	help
+	  Prints the log messages that Samsung's EL3 monitor and its
+	  loadable firmwares write into a reserved memory region to the
+	  kernel log.
 endif
