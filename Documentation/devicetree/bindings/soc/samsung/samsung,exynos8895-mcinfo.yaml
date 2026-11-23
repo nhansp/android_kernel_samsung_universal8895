@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/samsung/samsung,exynos8895-mcinfo.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8895 DRAM temperature trip (mcinfo)
+
+maintainers:
+  - nhansp <nhan.094.vn@gmail.com>
+
+description: |
+  One status word in each of the four Exynos8895 memory controller channels
+  (DMC0..3) that carries the DRAM temperature range read from MR4, and the
+  four DMC over-temperature interrupts. The driver reports the fields on
+  demand and panics on any of the interrupts. The position of the field is
+  data of the compatible.
+
+properties:
+  compatible:
+    const: samsung,exynos8895-mcinfo
+
+  reg:
+    minItems: 4
+    maxItems: 4
+    description: the status word of DMC channel 0, 1, 2 and 3
+
+  interrupts:
+    minItems: 4
+    maxItems: 4
+    description: the over-temperature interrupt of DMC channel 0, 1, 2 and 3
+
+required:
+  - compatible
+  - reg
+  - interrupts
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    mcinfo@1603004c {
+        compatible = "samsung,exynos8895-mcinfo";
+        reg = <0x1603004c 0x4>, <0x1613004c 0x4>,
+              <0x1623004c 0x4>, <0x1633004c 0x4>;
+        interrupts = <GIC_SPI 115 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 122 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 129 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 136 IRQ_TYPE_LEVEL_HIGH>;
+    };
