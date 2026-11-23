@@ -2989,6 +2989,7 @@ static DEVICE_ATTR_RO(dev);
 
 /* /sys/devices/ */
 struct kset *devices_kset;
+EXPORT_SYMBOL_GPL(devices_kset);
 
 /**
  * devices_kset_move_before - Move device in the devices_kset's list.
