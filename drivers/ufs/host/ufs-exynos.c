@@ -160,6 +160,9 @@ enum {
 #define UNIPRO_DME_POWERMODE_REQ_REMOTEL2TIMER0	0x78B8
 #define UNIPRO_DME_POWERMODE_REQ_REMOTEL2TIMER1	0x78BC
 #define UNIPRO_DME_POWERMODE_REQ_REMOTEL2TIMER2	0x78C0
+#define UNIPRO_DME_HIBERN8_ENTER_IND_RESULT	0x7868
+#define UNIPRO_DME_HIBERN8_EXIT_IND_RESULT	0x7878
+#define UNIPRO_DME_PWR_IND_RESULT		0x78EC
 
 /*
  * UFS Protector registers
@@ -2022,6 +2025,38 @@ static int gs101_ufs_pre_pwr_change(struct exynos_ufs *ufs,
 	return 0;
 }
 
+/*
+ * Hosts with EXYNOS_UFS_OPT_UPMCRS_IN_UNIPRO leave HCS.UPMCRS at 0 after a
+ * power control command and report the result in UniPro registers instead.
+ */
+static u8 exynos_ufs_get_upmcrs(struct ufs_hba *hba, const struct uic_command *cmd)
+{
+	struct exynos_ufs *ufs = ufshcd_get_variant(hba);
+	u32 reg;
+
+	if (!(ufs->opts & EXYNOS_UFS_OPT_UPMCRS_IN_UNIPRO))
+		goto hcs;
+
+	switch (cmd->command) {
+	case UIC_CMD_DME_SET:
+		if (cmd->argument1 != UIC_ARG_MIB(PA_PWRMODE))
+			goto hcs;
+		reg = UNIPRO_DME_PWR_IND_RESULT;
+		break;
+	case UIC_CMD_DME_HIBER_ENTER:
+		reg = UNIPRO_DME_HIBERN8_ENTER_IND_RESULT;
+		break;
+	case UIC_CMD_DME_HIBER_EXIT:
+		reg = UNIPRO_DME_HIBERN8_EXIT_IND_RESULT;
+		break;
+	default:
+		goto hcs;
+	}
+	return unipro_readl(ufs, reg);
+hcs:
+	return (ufshcd_readl(hba, REG_CONTROLLER_STATUS) >> 8) & 0x7;
+}
+
 static const struct ufs_hba_variant_ops ufs_hba_exynos_ops = {
 	.name				= "exynos_ufs",
 	.init				= exynos_ufs_init,
@@ -2037,6 +2072,7 @@ static const struct ufs_hba_variant_ops ufs_hba_exynos_ops = {
 	.suspend			= exynos_ufs_suspend,
 	.resume				= exynos_ufs_resume,
 	.fill_crypto_prdt		= exynos_ufs_fmp_fill_prdt,
+	.get_upmcrs			= exynos_ufs_get_upmcrs,
 };
 
 static struct ufs_hba_variant_ops ufs_hba_exynosauto_vh_ops = {
