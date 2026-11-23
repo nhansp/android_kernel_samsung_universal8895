@@ -12,10 +12,15 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/platform_device.h>
+#include <linux/notifier.h>
 #include <linux/clk.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/regulator/consumer.h>
+#include <linux/usb/gadget.h>
+#include <linux/usb/role.h>
+
+#include "core.h"
 
 #define DWC3_EXYNOS_MAX_CLOCKS	4
 
@@ -23,6 +28,7 @@ struct dwc3_exynos_driverdata {
 	const char		*clk_names[DWC3_EXYNOS_MAX_CLOCKS];
 	int			num_clks;
 	int			suspend_clk_idx;
+	bool			vbus_session;
 };
 
 struct dwc3_exynos {
@@ -35,7 +41,111 @@ struct dwc3_exynos {
 
 	struct regulator	*vdd33;
 	struct regulator	*vdd10;
+
+	struct notifier_block	core_nb;
+	bool			watch_core;
 };
+
+/*
+ * dwc3 maps USB_ROLE_NONE to its default mode, which in device mode changes
+ * nothing, so a detach has to end the UDC's VBUS session from here.
+ */
+static void dwc3_exynos_set_role(struct dwc3 *dwc, enum usb_role role)
+{
+	/*
+	 * A switch to host frees the gadget without clearing dwc->gadget, and a
+	 * switch back to device adds a new one with the session on.
+	 */
+	mutex_lock(&dwc->mutex);
+	if (dwc->current_dr_role != DWC3_GCTL_PRTCAP_DEVICE || !dwc->gadget)
+		goto out;
+
+	switch (role) {
+	case USB_ROLE_NONE:
+		usb_udc_vbus_handler(dwc->gadget, false);
+		dev_dbg(dwc->dev, "no cable: VBUS session ended\n");
+		break;
+	case USB_ROLE_DEVICE:
+		usb_udc_vbus_handler(dwc->gadget, true);
+		dev_dbg(dwc->dev, "cable: VBUS session started\n");
+		break;
+	case USB_ROLE_HOST:
+		break;
+	}
+out:
+	mutex_unlock(&dwc->mutex);
+}
+
+static const struct dwc3_glue_ops dwc3_exynos_8895_glue_ops = {
+	.pre_set_role	= dwc3_exynos_set_role,
+};
+
+/*
+ * dwc3_probe() clears dwc->glue_ops, so the ops are set once the core has
+ * bound; dwc3 reads them on every role switch.
+ */
+static void dwc3_exynos_glue_core(struct dwc3_exynos *exynos, struct device *dev)
+{
+	struct dwc3 *dwc;
+
+	if (!of_device_is_compatible(dev->of_node, "snps,dwc3"))
+		return;
+
+	dwc = dev_get_drvdata(dev);
+	if (!dwc) {
+		dev_err(exynos->dev, "%s: no dwc3 core, no VBUS session\n",
+			dev_name(dev));
+		return;
+	}
+
+	if (dwc->glue_ops == &dwc3_exynos_8895_glue_ops)
+		return;
+
+	dwc->glue_ops = &dwc3_exynos_8895_glue_ops;
+	dev_dbg(exynos->dev, "USB VBUS session on %s\n", dev_name(dev));
+}
+
+/* the core may bind long after of_platform_populate() when its probe defers */
+static int dwc3_exynos_core_bound(struct notifier_block *nb, unsigned long action,
+				  void *data)
+{
+	struct dwc3_exynos *exynos = container_of(nb, struct dwc3_exynos, core_nb);
+	struct device *dev = data;
+
+	if (action != BUS_NOTIFY_BOUND_DRIVER)
+		return NOTIFY_DONE;
+
+	if (dev->parent != exynos->dev)
+		return NOTIFY_DONE;
+
+	dwc3_exynos_glue_core(exynos, dev);
+	return NOTIFY_OK;
+}
+
+static void dwc3_exynos_set_vbus_session(struct dwc3_exynos *exynos,
+					 struct device_node *node)
+{
+	struct device_node *child;
+	struct platform_device *core;
+
+	for (child = of_get_next_available_child(node, NULL);
+	     child;
+	     child = of_get_next_available_child(node, child)) {
+		if (of_device_is_compatible(child, "snps,dwc3"))
+			break;
+	}
+	if (!child)
+		return;
+
+	core = of_find_device_by_node(child);
+	if (!core) {
+		dev_err(exynos->dev, "no dwc3 core device, no VBUS session\n");
+		return;
+	}
+
+	dwc3_exynos_glue_core(exynos, &core->dev);
+	put_device(&core->dev);
+}
 
 static int dwc3_exynos_probe(struct platform_device *pdev)
 {
@@ -100,20 +210,38 @@ static int dwc3_exynos_probe(struct platform_device *pdev)
 		goto vdd10_err;
 	}
 
-	if (node) {
-		ret = of_platform_populate(node, NULL, NULL, dev);
-		if (ret) {
-			dev_err(dev, "failed to add dwc3 core\n");
-			goto populate_err;
-		}
-	} else {
+	if (!node) {
 		dev_err(dev, "no device node, failed to add dwc3 core\n");
 		ret = -ENODEV;
 		goto populate_err;
 	}
 
+	if (driver_data->vbus_session) {
+		exynos->core_nb.notifier_call = dwc3_exynos_core_bound;
+		ret = bus_register_notifier(&platform_bus_type,
+					    &exynos->core_nb);
+		if (ret) {
+			dev_err(dev, "failed to watch the dwc3 core\n");
+			goto populate_err;
+		}
+		exynos->watch_core = true;
+	}
+
+	ret = of_platform_populate(node, NULL, NULL, dev);
+	if (ret) {
+		dev_err(dev, "failed to add dwc3 core\n");
+		goto notifier_err;
+	}
+
+	if (driver_data->vbus_session)
+		dwc3_exynos_set_vbus_session(exynos, node);
+
 	return 0;
 
+notifier_err:
+	if (exynos->watch_core)
+		bus_unregister_notifier(&platform_bus_type,
+					&exynos->core_nb);
 populate_err:
 	regulator_disable(exynos->vdd10);
 vdd10_err:
@@ -132,6 +260,10 @@ static void dwc3_exynos_remove(struct platform_device *pdev)
 {
 	struct dwc3_exynos	*exynos = platform_get_drvdata(pdev);
 	int i;
+
+	if (exynos->watch_core)
+		bus_unregister_notifier(&platform_bus_type,
+					&exynos->core_nb);
 
 	of_platform_depopulate(&pdev->dev);
 
@@ -185,6 +317,7 @@ static const struct dwc3_exynos_driverdata exynos8895_drvdata = {
 	.clk_names = { "aclk", "ref", "usbtvh_ahb", "usbtvh_core" },
 	.num_clks = 4,
 	.suspend_clk_idx = -1,
+	.vbus_session = true,
 };
 
 static const struct dwc3_exynos_driverdata gs101_drvdata = {
