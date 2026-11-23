@@ -134,6 +134,7 @@ struct exynos_adc_data {
 	int phy_offset;
 	u32 mask;
 	unsigned int data_reg;	/* data register offset, 0 for ADC_V1_DATX */
+	bool clk_per_conv;	/* clock gated except around register accesses */
 
 	void (*init_hw)(struct exynos_adc *info);
 	void (*exit_hw)(struct exynos_adc *info);
@@ -435,6 +436,7 @@ static const struct exynos_adc_data exynos8895_adc_data = {
 	.exit_hw	= exynos8895_adc_exit_hw,
 	.clear_irq	= exynos_adc_v2_clear_irq,
 	.start_conv	= exynos8895_adc_start_conv,
+	.clk_per_conv	= true,
 };
 
 static const struct of_device_id exynos_adc_match[] = {
@@ -500,6 +502,11 @@ static int exynos_read_raw(struct iio_dev *indio_dev,
 	}
 
 	mutex_lock(&info->lock);
+	if (info->data->clk_per_conv) {
+		ret = exynos_adc_enable_clk(info);
+		if (ret)
+			goto out_unlock;
+	}
 	reinit_completion(&info->completion);
 
 	/* Select the channel to be used and Trigger conversion */
@@ -519,6 +526,9 @@ static int exynos_read_raw(struct iio_dev *indio_dev,
 		ret = IIO_VAL_INT;
 	}
 
+	if (info->data->clk_per_conv)
+		exynos_adc_disable_clk(info);
+out_unlock:
 	mutex_unlock(&info->lock);
 
 	return ret;
@@ -693,6 +703,9 @@ static int exynos_adc_probe(struct platform_device *pdev)
 		goto err_of_populate;
 	}
 
+	if (info->data->clk_per_conv)
+		exynos_adc_disable_clk(info);
+
 	return 0;
 
 err_of_populate:
@@ -719,6 +732,12 @@ static void exynos_adc_remove(struct platform_device *pdev)
 	of_platform_depopulate(&indio_dev->dev);
 	iio_device_unregister(indio_dev);
 	free_irq(info->irq, info);
+	/* exit_hw() needs the clock */
+	if (info->data->clk_per_conv && exynos_adc_enable_clk(info)) {
+		exynos_adc_unprepare_clk(info);
+		regulator_disable(info->vdd);
+		return;
+	}
 	if (info->data->exit_hw)
 		info->data->exit_hw(info);
 	exynos_adc_disable_clk(info);
@@ -730,7 +749,14 @@ static int exynos_adc_suspend(struct device *dev)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(dev);
 	struct exynos_adc *info = iio_priv(indio_dev);
+	int ret;
 
+	/* exit_hw() needs the clock */
+	if (info->data->clk_per_conv) {
+		ret = exynos_adc_enable_clk(info);
+		if (ret)
+			return ret;
+	}
 	if (info->data->exit_hw)
 		info->data->exit_hw(info);
 	exynos_adc_disable_clk(info);
@@ -755,6 +781,9 @@ static int exynos_adc_resume(struct device *dev)
 
 	if (info->data->init_hw)
 		info->data->init_hw(info);
+
+	if (info->data->clk_per_conv)
+		exynos_adc_disable_clk(info);
 
 	return 0;
 }
