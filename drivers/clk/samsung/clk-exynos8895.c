@@ -35,6 +35,7 @@
 #define CLKS_NR_MFC	(CLK_GOUT_MFC_SYSREG_MFC_PCLK + 1)
 #define CLKS_NR_CAM	(CLK_DOUT_CAM_BUSD_DIV2 + 1)
 #define CLKS_NR_G2D	(CLK_GOUT_G2D_XIU_P_G2D_ACLK + 1)
+#define CLKS_NR_ISPHQ	(CLK_GOUT_ISPHQ_SYSREG_ISPHQ_PCLK + 1)
 
 /*
  * The gates of the always-on CMUs stay under hardware auto-gating, as the
@@ -4869,6 +4870,190 @@ static const struct samsung_cmu_info g2d_cmu_info __initconst = {
 	.clk_name		= "jpeg",
 };
 
+/* ---- CMU_ISPHQ ----------------------------------------------------------- */
+
+/* Register Offset definitions for CMU_ISPHQ (0x13100000) */
+#define PLL_CON0_MUX_CLKCMU_ISPHQ_BUS_USER					0x0100
+#define ISPHQ_CMU_CONTROLLER_OPTION						0x0800
+#define CLK_CON_DIV_DIV_CLK_ISPHQ_BUSP						0x1800
+#define CLK_CON_GAT_CLK_BLK_ISPHQ_UID_ISPHQ_CMU_ISPHQ_IPCLKPORT_PCLK		0x2004
+#define CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_ISP_EWGEN_ISPHQ_IPCLKPORT_I_PCLK		0x2014
+#define CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_APB_ASYNC_TOP_3AA_PCLKM	0x2018
+#define CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_APB_ASYNC_TOP_3AA_PCLKS	0x201c
+#define CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_APB_ASYNC_TOP_ISPHQ_PCLKM	0x2020
+#define CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_APB_ASYNC_TOP_ISPHQ_PCLKS	0x2024
+#define CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_AXI2APB_BRIDGE_ISPHQ_ACLK	0x2028
+#define CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_ISPHQ_ACLK		0x202c
+#define CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_QE_3AA_ACLK		0x2030
+#define CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_QE_3AA_PCLK		0x2034
+#define CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_QE_ISPHQ_ACLK		0x2038
+#define CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_QE_ISPHQ_PCLK		0x203c
+#define CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_TAA_ACLK		0x2040
+#define CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_XIU_D_ISPHQ_ACLK	0x2044
+#define CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_LHM_AXI_P_ISPHQ_IPCLKPORT_I_CLK		0x2048
+#define CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_LHS_AXI_LD_ISPHQ_IPCLKPORT_I_CLK		0x204c
+#define CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_PMU_ISPHQ_IPCLKPORT_PCLK			0x2050
+#define CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_RSTNSYNC_CLK_ISPHQ_BUSD_IPCLKPORT_CLK	0x2054
+#define CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_RSTNSYNC_CLK_ISPHQ_BUSP_IPCLKPORT_CLK	0x2058
+#define CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_SYSREG_ISPHQ_IPCLKPORT_PCLK		0x205c
+#define QCH_CON_ISPHQ_CMU_ISPHQ_QCH						0x3000
+#define QCH_CON_ISP_EWGEN_ISPHQ_QCH						0x3004
+#define QCH_CON_IS_ISPHQ_QCH_3AA						0x3008
+#define QCH_CON_IS_ISPHQ_QCH_ISPHQ						0x300c
+#define QCH_CON_IS_ISPHQ_QCH_QE_3AA						0x3010
+#define QCH_CON_IS_ISPHQ_QCH_QE_ISPHQ						0x3014
+#define QCH_CON_LHM_AXI_P_ISPHQ_QCH						0x3018
+#define QCH_CON_LHS_AXI_LD_ISPHQ_QCH						0x301c
+#define QCH_CON_PMU_ISPHQ_QCH							0x3020
+#define QCH_CON_SYSREG_ISPHQ_QCH						0x3024
+
+static const unsigned long isphq_clk_regs[] __initconst = {
+	PLL_CON0_MUX_CLKCMU_ISPHQ_BUS_USER,
+	CLK_CON_DIV_DIV_CLK_ISPHQ_BUSP,
+	CLK_CON_GAT_CLK_BLK_ISPHQ_UID_ISPHQ_CMU_ISPHQ_IPCLKPORT_PCLK,
+	CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_ISP_EWGEN_ISPHQ_IPCLKPORT_I_PCLK,
+	CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_APB_ASYNC_TOP_3AA_PCLKM,
+	CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_APB_ASYNC_TOP_3AA_PCLKS,
+	CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_APB_ASYNC_TOP_ISPHQ_PCLKM,
+	CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_APB_ASYNC_TOP_ISPHQ_PCLKS,
+	CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_AXI2APB_BRIDGE_ISPHQ_ACLK,
+	CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_ISPHQ_ACLK,
+	CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_QE_3AA_ACLK,
+	CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_QE_3AA_PCLK,
+	CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_QE_ISPHQ_ACLK,
+	CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_QE_ISPHQ_PCLK,
+	CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_TAA_ACLK,
+	CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_XIU_D_ISPHQ_ACLK,
+	CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_LHM_AXI_P_ISPHQ_IPCLKPORT_I_CLK,
+	CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_LHS_AXI_LD_ISPHQ_IPCLKPORT_I_CLK,
+	CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_PMU_ISPHQ_IPCLKPORT_PCLK,
+	CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_RSTNSYNC_CLK_ISPHQ_BUSD_IPCLKPORT_CLK,
+	CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_RSTNSYNC_CLK_ISPHQ_BUSP_IPCLKPORT_CLK,
+	CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_SYSREG_ISPHQ_IPCLKPORT_PCLK,
+	QCH_CON_SYSREG_ISPHQ_QCH,
+	QCH_CON_PMU_ISPHQ_QCH,
+	QCH_CON_LHS_AXI_LD_ISPHQ_QCH,
+	QCH_CON_LHM_AXI_P_ISPHQ_QCH,
+	QCH_CON_IS_ISPHQ_QCH_QE_ISPHQ,
+	QCH_CON_IS_ISPHQ_QCH_QE_3AA,
+	QCH_CON_IS_ISPHQ_QCH_ISPHQ,
+	QCH_CON_IS_ISPHQ_QCH_3AA,
+	QCH_CON_ISP_EWGEN_ISPHQ_QCH,
+	QCH_CON_ISPHQ_CMU_ISPHQ_QCH,
+	ISPHQ_CMU_CONTROLLER_OPTION,
+};
+
+/* List of parent clocks for Muxes in CMU_ISPHQ */
+PNAME(mout_isphq_bus_user_p)		= { "oscclk", "dout_cmu_isphq_bus" };
+
+static const struct samsung_mux_clock isphq_mux_clks[] __initconst = {
+	MUX(CLK_MOUT_ISPHQ_BUS_USER, "mout_isphq_bus_user",
+	    mout_isphq_bus_user_p, PLL_CON0_MUX_CLKCMU_ISPHQ_BUS_USER, 4, 1),
+};
+
+static const struct samsung_div_clock isphq_div_clks[] __initconst = {
+	DIV(CLK_DOUT_ISPHQ_BUSP, "dout_isphq_busp", "mout_isphq_bus_user",
+	    CLK_CON_DIV_DIV_CLK_ISPHQ_BUSP, 0, 3),
+};
+
+static const struct samsung_gate_clock isphq_gate_clks[] __initconst = {
+	GATE(CLK_GOUT_ISPHQ_CMU_ISPHQ_PCLK, "gout_isphq_cmu_isphq_pclk",
+	     "dout_isphq_busp",
+	     CLK_CON_GAT_CLK_BLK_ISPHQ_UID_ISPHQ_CMU_ISPHQ_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ISPHQ_ISP_EWGEN_ISPHQ_I_PCLK,
+	     "gout_isphq_isp_ewgen_isphq_i_pclk", "dout_isphq_busp",
+	     CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_ISP_EWGEN_ISPHQ_IPCLKPORT_I_PCLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ISPHQ_IS_ISPHQ_APB_ASYNC_TOP_3AA_PCLKM,
+	     "gout_isphq_is_isphq_apb_async_top_3aa_pclkm",
+	     "mout_isphq_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_APB_ASYNC_TOP_3AA_PCLKM,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ISPHQ_IS_ISPHQ_APB_ASYNC_TOP_3AA_PCLKS,
+	     "gout_isphq_is_isphq_apb_async_top_3aa_pclks", "dout_isphq_busp",
+	     CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_APB_ASYNC_TOP_3AA_PCLKS,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ISPHQ_IS_ISPHQ_APB_ASYNC_TOP_ISPHQ_PCLKM,
+	     "gout_isphq_is_isphq_apb_async_top_isphq_pclkm",
+	     "mout_isphq_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_APB_ASYNC_TOP_ISPHQ_PCLKM,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ISPHQ_IS_ISPHQ_APB_ASYNC_TOP_ISPHQ_PCLKS,
+	     "gout_isphq_is_isphq_apb_async_top_isphq_pclks", "dout_isphq_busp",
+	     CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_APB_ASYNC_TOP_ISPHQ_PCLKS,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ISPHQ_IS_ISPHQ_AXI2APB_BRIDGE_ISPHQ_ACLK,
+	     "gout_isphq_is_isphq_axi2apb_bridge_isphq_aclk", "dout_isphq_busp",
+	     CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_AXI2APB_BRIDGE_ISPHQ_ACLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ISPHQ_IS_ISPHQ_ISPHQ_ACLK,
+	     "gout_isphq_is_isphq_isphq_aclk", "mout_isphq_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_ISPHQ_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ISPHQ_IS_ISPHQ_QE_3AA_ACLK,
+	     "gout_isphq_is_isphq_qe_3aa_aclk", "mout_isphq_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_QE_3AA_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ISPHQ_IS_ISPHQ_QE_3AA_PCLK,
+	     "gout_isphq_is_isphq_qe_3aa_pclk", "dout_isphq_busp",
+	     CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_QE_3AA_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ISPHQ_IS_ISPHQ_QE_ISPHQ_ACLK,
+	     "gout_isphq_is_isphq_qe_isphq_aclk", "mout_isphq_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_QE_ISPHQ_ACLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ISPHQ_IS_ISPHQ_QE_ISPHQ_PCLK,
+	     "gout_isphq_is_isphq_qe_isphq_pclk", "dout_isphq_busp",
+	     CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_QE_ISPHQ_PCLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ISPHQ_IS_ISPHQ_TAA_ACLK, "gout_isphq_is_isphq_taa_aclk",
+	     "mout_isphq_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_TAA_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ISPHQ_IS_ISPHQ_XIU_D_ISPHQ_ACLK,
+	     "gout_isphq_is_isphq_xiu_d_isphq_aclk", "mout_isphq_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_IS_ISPHQ_IPCLKPORT_XIU_D_ISPHQ_ACLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ISPHQ_LHM_AXI_P_ISPHQ_I_CLK,
+	     "gout_isphq_lhm_axi_p_isphq_i_clk", "dout_isphq_busp",
+	     CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_LHM_AXI_P_ISPHQ_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ISPHQ_LHS_AXI_LD_ISPHQ_I_CLK,
+	     "gout_isphq_lhs_axi_ld_isphq_i_clk", "mout_isphq_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_LHS_AXI_LD_ISPHQ_IPCLKPORT_I_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ISPHQ_PMU_ISPHQ_PCLK, "gout_isphq_pmu_isphq_pclk",
+	     "dout_isphq_busp",
+	     CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_PMU_ISPHQ_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ISPHQ_RSTNSYNC_CLK_ISPHQ_BUSD_CLK,
+	     "gout_isphq_rstnsync_clk_isphq_busd_clk", "mout_isphq_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_RSTNSYNC_CLK_ISPHQ_BUSD_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ISPHQ_RSTNSYNC_CLK_ISPHQ_BUSP_CLK,
+	     "gout_isphq_rstnsync_clk_isphq_busp_clk", "dout_isphq_busp",
+	     CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_RSTNSYNC_CLK_ISPHQ_BUSP_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_ISPHQ_SYSREG_ISPHQ_PCLK, "gout_isphq_sysreg_isphq_pclk",
+	     "dout_isphq_busp",
+	     CLK_CON_GAT_GOUT_BLK_ISPHQ_UID_SYSREG_ISPHQ_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+};
+
+static const struct samsung_cmu_info isphq_cmu_info __initconst = {
+	.mux_clks		= isphq_mux_clks,
+	.nr_mux_clks		= ARRAY_SIZE(isphq_mux_clks),
+	.div_clks		= isphq_div_clks,
+	.nr_div_clks		= ARRAY_SIZE(isphq_div_clks),
+	.gate_clks		= isphq_gate_clks,
+	.nr_gate_clks		= ARRAY_SIZE(isphq_gate_clks),
+	.nr_clk_ids		= CLKS_NR_ISPHQ,
+	.clk_regs		= isphq_clk_regs,
+	.nr_clk_regs		= ARRAY_SIZE(isphq_clk_regs),
+	.clk_name		= "bus",
+};
+
 /* ---- CMU probe glue ------------------------------------------------------ */
 
 #define CMU_QCH_ENABLE			BIT(0)
@@ -4972,6 +5157,7 @@ static const struct exynos8895_busp_ratio exynos8895_busp[] __initconst = {
 	{ "samsung,exynos8895-cmu-mfc", CLK_DOUT_MFC_BUSP, 4 },
 	{ "samsung,exynos8895-cmu-cam", CLK_DOUT_CAM_BUSP, 2 },
 	{ "samsung,exynos8895-cmu-g2d", CLK_DOUT_G2D_BUSP, 2 },
+	{ "samsung,exynos8895-cmu-isphq", CLK_DOUT_ISPHQ_BUSP, 2 },
 };
 
 static void __init exynos8895_cmu_set_busp(struct platform_device *pdev)
@@ -5055,6 +5241,9 @@ static const struct of_device_id exynos8895_cmu_pd_of_match[] = {
 	}, {
 		.compatible = "samsung,exynos8895-cmu-g2d",
 		.data = &g2d_cmu_info,
+	}, {
+		.compatible = "samsung,exynos8895-cmu-isphq",
+		.data = &isphq_cmu_info,
 	},
 	{ }
 };
