@@ -1519,6 +1519,20 @@ void pm_runtime_unblock(struct device *dev)
 	spin_unlock_irq(&dev->power.lock);
 }
 
+/**
+ * pm_runtime_has_callbacks - Check if PM-runtime callbacks power a device.
+ * @dev: Device to check.
+ *
+ * Return %true if rpm_suspend() or rpm_resume() would invoke a callback for
+ * @dev.  The caller must hold the device lock.
+ */
+bool pm_runtime_has_callbacks(struct device *dev)
+{
+	return !dev->power.no_callbacks &&
+		(RPM_GET_CALLBACK(dev, runtime_suspend) ||
+		 RPM_GET_CALLBACK(dev, runtime_resume));
+}
+
 void __pm_runtime_disable(struct device *dev, bool check_resume)
 {
 	spin_lock_irq(&dev->power.lock);

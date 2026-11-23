@@ -22,6 +22,7 @@ extern void pm_runtime_init(struct device *dev);
 extern void pm_runtime_reinit(struct device *dev);
 extern void pm_runtime_remove(struct device *dev);
 extern u64 pm_runtime_active_time(struct device *dev);
+bool pm_runtime_has_callbacks(struct device *dev);
 
 #define WAKE_IRQ_DEDICATED_ALLOCATED	BIT(0)
 #define WAKE_IRQ_DEDICATED_MANAGED	BIT(1)
