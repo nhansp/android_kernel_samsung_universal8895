@@ -3508,7 +3508,7 @@ static int madera_extcon_probe(struct platform_device *pdev)
 	int jack_irq_fall, jack_irq_rise;
 	int hpdet_short;
 	int ret;
-	bool bound;
+	bool bound, rpm_ref = false;
 
 	/* quick exit if Madera irqchip driver hasn't completed probe */
 	if (!madera->irq_dev) {
@@ -3774,6 +3774,7 @@ static int madera_extcon_probe(struct platform_device *pdev)
 	pm_runtime_idle(&pdev->dev);
 
 	pm_runtime_get_sync(&pdev->dev);
+	rpm_ref = true;
 
 	madera_extcon_read_calibration(info);
 	switch (madera->type) {
@@ -3865,6 +3866,7 @@ static int madera_extcon_probe(struct platform_device *pdev)
 			 "Failed to set MICVDD to bypass: %d\n", ret);
 
 	pm_runtime_put(&pdev->dev);
+	rpm_ref = false;
 
 	ret = input_register_device(info->input);
 	if (ret) {
@@ -3890,6 +3892,14 @@ err_hpdet:
 err_micdet:
 	madera_free_irq(madera, MADERA_IRQ_MICDET1, info);
 err_pm:
+	/* the IRQs are gone: nothing can queue the works or change state now */
+	cancel_delayed_work_sync(&info->micd_detect_work);
+	cancel_delayed_work_sync(&info->state_timeout_work);
+	mutex_lock(&info->lock);
+	madera_jds_set_state(info, NULL);
+	mutex_unlock(&info->lock);
+	if (rpm_ref)
+		pm_runtime_put_noidle(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
 err_wakelock:
 	wakeup_source_unregister(info->detection_wake_lock);
@@ -3921,11 +3931,21 @@ static void madera_extcon_remove(struct platform_device *pdev)
 	madera_free_irq(madera, MADERA_IRQ_MICDET1, info);
 	madera_free_irq(madera, jack_irq_rise, info);
 	madera_free_irq(madera, jack_irq_fall, info);
+
+	/*
+	 * With the IRQs freed, stop the works they queue and idle the state
+	 * machine, which drops the MICVDD enable and runtime-PM reference.
+	 */
+	cancel_delayed_work_sync(&info->micd_detect_work);
+	cancel_delayed_work_sync(&info->state_timeout_work);
+	mutex_lock(&info->lock);
+	madera_jds_set_state(info, NULL);
+	mutex_unlock(&info->lock);
+
 	regmap_update_bits(madera->regmap, MADERA_JACK_DETECT_ANALOGUE,
 			   MADERA_JD1_ENA | MADERA_JD2_ENA, 0);
 
 	wakeup_source_unregister(info->detection_wake_lock);
-	kfree(info->hpdet_trims);
 }
 
 static struct platform_driver madera_extcon_driver = {
