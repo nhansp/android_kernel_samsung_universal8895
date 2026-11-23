@@ -627,6 +627,9 @@ int ss310ap_init_modemctl_device(struct modem_ctl *mc, struct modem_data *pdata)
 	mc->irq_cp_wdt.active = true;
 	mif_disable_irq(&mc->irq_cp_wdt);
 
+	init_completion(&mc->init_cmpl);
+	init_completion(&mc->off_cmpl);
+
 	/*
 	** Register LTE_ACTIVE MBOX interrupt handler
 	*/
@@ -636,9 +639,6 @@ int ss310ap_init_modemctl_device(struct modem_ctl *mc, struct modem_data *pdata)
 				mc->irq_phone_active, ret);
 		return ret;
 	}
-
-	init_completion(&mc->init_cmpl);
-	init_completion(&mc->off_cmpl);
 
 	/*
 	** Get/set CP_RST_N
