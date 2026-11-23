@@ -992,4 +992,15 @@ config INPUT_STPMIC1_ONKEY
 	  To compile this driver as a module, choose M here: the
 	  module will be called stpmic1_onkey.
 
+config INPUT_SAMSUNG_SEC_KEY
+	bool "Samsung sec_key hall sensor device"
+	depends on ARCH_EXYNOS
+	select SAMSUNG_SEC_CLASS
+	help
+	  Say Y here to create the sec_key device of the Samsung vendor
+	  kernels. Its hall_detect and certify_hall_detect attributes show
+	  the state of the "hall" (SW_LID) and "certify_hall"
+	  (SW_MACHINE_COVER) switch input devices, for the userspace of
+	  Samsung phones such as the Galaxy Note 8.
+
 endif
