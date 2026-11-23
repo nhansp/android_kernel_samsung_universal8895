@@ -1651,6 +1651,16 @@ static const struct samsung_gate_clock fsys0_gate_clks[] __initconst = {
 	     21, CLK_IS_CRITICAL, 0),
 };
 
+/*
+ * USER muxes the vendor kernel has on OSCCLK when the SoC enters SLEEP, where
+ * each followed the last clk_disable() of its consumers.
+ */
+static const struct samsung_clk_reg_dump fsys0_suspend_regs[] = {
+	{ PLL_CON0_MUX_CLKCMU_FSYS0_BUS_USER, 0x0 },
+	{ PLL_CON0_MUX_CLKCMU_FSYS0_UFS_EMBD_USER, 0x0 },
+	{ PLL_CON0_MUX_CLKCMU_FSYS0_USBDRD30_USER, 0x0 },
+};
+
 static const struct samsung_cmu_info fsys0_cmu_info __initconst = {
 	.mux_clks		= fsys0_mux_clks,
 	.nr_mux_clks		= ARRAY_SIZE(fsys0_mux_clks),
@@ -1659,6 +1669,8 @@ static const struct samsung_cmu_info fsys0_cmu_info __initconst = {
 	.nr_clk_ids		= CLKS_NR_FSYS0,
 	.clk_regs		= fsys0_clk_regs,
 	.nr_clk_regs		= ARRAY_SIZE(fsys0_clk_regs),
+	.suspend_regs		= fsys0_suspend_regs,
+	.nr_suspend_regs	= ARRAY_SIZE(fsys0_suspend_regs),
 	.clk_name		= "bus",
 	.hwacg_gates		= true,
 };
@@ -2108,6 +2120,14 @@ static const struct samsung_gate_clock peric0_gate_clks[] __initconst = {
 	     "gout_peric0_usi00_i_pclk", QCH_CON_USI00_QCH, 1, 0, 0),
 };
 
+/* USER muxes the vendor kernel has on OSCCLK in SLEEP, as in CMU_FSYS0 */
+static const struct samsung_clk_reg_dump peric0_suspend_regs[] = {
+	{ PLL_CON0_MUX_CLKCMU_PERIC0_USI00_USER, 0x0 },
+	{ PLL_CON0_MUX_CLKCMU_PERIC0_USI01_USER, 0x0 },
+	{ PLL_CON0_MUX_CLKCMU_PERIC0_USI02_USER, 0x0 },
+	{ PLL_CON0_MUX_CLKCMU_PERIC0_USI03_USER, 0x0 },
+};
+
 static const struct samsung_cmu_info peric0_cmu_info __initconst = {
 	.mux_clks		= peric0_mux_clks,
 	.nr_mux_clks		= ARRAY_SIZE(peric0_mux_clks),
@@ -2116,6 +2136,8 @@ static const struct samsung_cmu_info peric0_cmu_info __initconst = {
 	.nr_clk_ids		= CLKS_NR_PERIC0,
 	.clk_regs		= peric0_clk_regs,
 	.nr_clk_regs		= ARRAY_SIZE(peric0_clk_regs),
+	.suspend_regs		= peric0_suspend_regs,
+	.nr_suspend_regs	= ARRAY_SIZE(peric0_suspend_regs),
 	.clk_name		= "bus",
 	.hwacg_gates		= true,
 };
@@ -2548,6 +2570,22 @@ static const struct samsung_gate_clock peric1_gate_clks[] __initconst = {
 	     21, CLK_IS_CRITICAL, 0),
 };
 
+/* USER muxes the vendor kernel has on OSCCLK in SLEEP, as in CMU_FSYS0 */
+static const struct samsung_clk_reg_dump peric1_suspend_regs[] = {
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_BUS_USER, 0x0 },
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_SPI_CAM0_USER, 0x0 },
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_SPI_CAM1_USER, 0x0 },
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_UART_BT_USER, 0x0 },
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_USI05_USER, 0x0 },
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_USI06_USER, 0x0 },
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_USI08_USER, 0x0 },
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_USI09_USER, 0x0 },
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_USI10_USER, 0x0 },
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_USI11_USER, 0x0 },
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_USI12_USER, 0x0 },
+	{ PLL_CON0_MUX_CLKCMU_PERIC1_USI13_USER, 0x0 },
+};
+
 static const struct samsung_cmu_info peric1_cmu_info __initconst = {
 	.mux_clks		= peric1_mux_clks,
 	.nr_mux_clks		= ARRAY_SIZE(peric1_mux_clks),
@@ -2556,6 +2594,8 @@ static const struct samsung_cmu_info peric1_cmu_info __initconst = {
 	.nr_clk_ids		= CLKS_NR_PERIC1,
 	.clk_regs		= peric1_clk_regs,
 	.nr_clk_regs		= ARRAY_SIZE(peric1_clk_regs),
+	.suspend_regs		= peric1_suspend_regs,
+	.nr_suspend_regs	= ARRAY_SIZE(peric1_suspend_regs),
 	.clk_name		= "bus",
 	.hwacg_gates		= true,
 };
