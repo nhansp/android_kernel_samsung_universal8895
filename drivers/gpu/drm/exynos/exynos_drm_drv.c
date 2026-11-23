@@ -32,6 +32,7 @@
 #include "exynos_drm_ipp.h"
 #include "exynos_drm_plane.h"
 #include "exynos_drm_vidi.h"
+#include "exynos8895_s3cfb.h"
 
 #define DRIVER_NAME	"exynos"
 #define DRIVER_DESC	"Samsung SoC DRM"
@@ -291,7 +292,11 @@ static int exynos_drm_bind(struct device *dev)
 	if (ret < 0)
 		goto err_cleanup_poll;
 
-	drm_client_setup(drm, NULL);
+	exynos8895_s3cfb_init(drm);
+
+	/* the S3CFB front-end provides fb0 itself */
+	if (!IS_ENABLED(CONFIG_DRM_EXYNOS8895_S3CFB))
+		drm_client_setup(drm, NULL);
 
 	return 0;
 
@@ -314,6 +319,7 @@ static void exynos_drm_unbind(struct device *dev)
 {
 	struct drm_device *drm = dev_get_drvdata(dev);
 
+	exynos8895_s3cfb_fini(drm);
 	drm_dev_unregister(drm);
 
 	drm_kms_helper_poll_fini(drm);

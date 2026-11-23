@@ -66,6 +66,17 @@ config DRM_EXYNOS8895_DECON_HIBER
 	  one-shot trigger of the S3CFB front-end; without it the pipe
 	  never idles and hibernation never engages.
 
+config DRM_EXYNOS8895_S3CFB
+	bool "S3CFB fbdev front-end of the vendor composer on the Exynos8895 DECON0"
+	depends on DRM_EXYNOS8895_DECON && FB && FB_DEVICE
+	select DRM_CLIENT
+	help
+	  Choose this option to serve the fbdev interface of the Samsung
+	  vendor DECON driver (/dev/fb0 with S3CFB_WIN_CONFIG and sync
+	  fences, and the vsync and psr_info files of 12860000.decon_f) to
+	  the vendor hwcomposer, as an in-kernel client of the Exynos8895
+	  DECON0 CRTC. The DRM fbdev emulation is then not set up.
+
 comment "Encoders and Bridges"
 
 config DRM_EXYNOS_DPI
