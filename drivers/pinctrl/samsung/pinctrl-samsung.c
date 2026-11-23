@@ -21,11 +21,13 @@
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/irqdomain.h>
+#include <linux/notifier.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
+#include <linux/soc/samsung/exynos-pinctrl-pm.h>
 #include <linux/spinlock.h>
 #include <linux/syscore_ops.h>
 
@@ -1489,6 +1491,15 @@ static int __maybe_unused samsung_pinctrl_resume(struct device *dev)
 	return samsung_pinctrl_restore(drvdata);
 }
 
+/* Called from syscore resume, IRQs off, before any bank is restored */
+static RAW_NOTIFIER_HEAD(samsung_pinctrl_resume_chain);
+
+int samsung_pinctrl_register_resume_notifier(struct notifier_block *nb)
+{
+	return raw_notifier_chain_register(&samsung_pinctrl_resume_chain, nb);
+}
+EXPORT_SYMBOL_GPL(samsung_pinctrl_register_resume_notifier);
+
 static int samsung_pinctrl_syscore_suspend(void)
 {
 	struct samsung_pinctrl_drv_data *drvdata;
@@ -1509,6 +1520,8 @@ static int samsung_pinctrl_syscore_suspend(void)
 static void samsung_pinctrl_syscore_resume(void)
 {
 	struct samsung_pinctrl_drv_data *drvdata;
+
+	raw_notifier_call_chain(&samsung_pinctrl_resume_chain, 0, NULL);
 
 	list_for_each_entry_reverse(drvdata, &samsung_pinctrl_syscore_list, node)
 		samsung_pinctrl_restore(drvdata);
