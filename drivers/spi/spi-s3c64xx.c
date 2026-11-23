@@ -816,6 +816,12 @@ static size_t s3c64xx_spi_max_transfer_size(struct spi_device *spi)
 	return ctlr->can_dma ? S3C64XX_SPI_PACKET_CNT_MASK : SIZE_MAX;
 }
 
+/* One byte short of the FIFO, rounded down to whole words */
+static unsigned int s3c64xx_spi_pio_chunk(struct s3c64xx_spi_driver_data *sdd)
+{
+	return rounddown(sdd->fifo_depth - 1, sdd->cur_bpw / 8);
+}
+
 static int s3c64xx_spi_transfer_one(struct spi_controller *host,
 				    struct spi_device *spi,
 				    struct spi_transfer *xfer)
@@ -857,7 +863,7 @@ static int s3c64xx_spi_transfer_one(struct spi_controller *host,
 		rx_buf = xfer->rx_buf;
 		origin_len = xfer->len;
 		target_len = xfer->len;
-		xfer->len = fifo_len - 1;
+		xfer->len = s3c64xx_spi_pio_chunk(sdd);
 	}
 
 	do {
@@ -953,7 +959,7 @@ static int s3c64xx_spi_transfer_one(struct spi_controller *host,
 				xfer->rx_buf += xfer->len;
 
 			if (target_len >= fifo_len)
-				xfer->len = fifo_len - 1;
+				xfer->len = s3c64xx_spi_pio_chunk(sdd);
 			else
 				xfer->len = target_len;
 		}
