@@ -447,6 +447,9 @@ int madera_init_dai(struct madera_priv *priv, int id);
 int madera_set_output_mode(struct snd_soc_component *component, int output,
 			   bool differential);
 
+int madera_enable_force_bypass(struct snd_soc_component *component);
+int madera_disable_force_bypass(struct snd_soc_component *component);
+
 /* Following functions are for use by machine drivers */
 static inline int madera_register_notifier(struct snd_soc_component *component,
 					   struct notifier_block *nb)
