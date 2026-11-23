@@ -1,17 +1,27 @@
 // SPDX-License-Identifier: GPL-2.0
 //
-// Exynos8895 PMU data: the vendor boot-time PMU programming (PMUCAL lpm_init)
-// and the restart defaults of the boot loader's INFORM registers.
+// Exynos8895 PMU data: the vendor boot-time PMU programming (PMUCAL lpm_init),
+// the restart defaults of the boot loader's INFORM registers and the CPU and
+// cluster power hooks used by deep idle and CPU hotplug.
 
 #include <linux/array_size.h>
+#include <linux/bug.h>
 #include <linux/compiler.h>
+#include <linux/cpu.h>
+#include <linux/cpuhotplug.h>
+#include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/io.h>
+#include <linux/kconfig.h>
 #include <linux/notifier.h>
 #include <linux/printk.h>
 #include <linux/reboot.h>
 #include <linux/soc/samsung/exynos-pmu.h>
+#include <linux/soc/samsung/exynos8895-pm.h>
+#include <linux/spinlock.h>
 #include <linux/types.h>
+#include <asm/cputype.h>
+#include <asm/smp_plat.h>
 
 #include "exynos-pmu.h"
 
@@ -205,6 +215,250 @@ static void exynos8895_lpm_init_cmu_apply(void)
 	}
 }
 
+/*
+ * CPU and cluster power hooks for deep idle and CPU hotplug: the vendor core
+ * and cluster PMUCAL sequences. Raw MMIO, not the syscon regmap: they run in
+ * the idle path and in the hotplug STARTING/DYING context with IRQs off.
+ */
+#define E8895_CPU_CONF(pc)	(0x2000 + (pc) * 0x80)
+#define E8895_CPU_PWR		0xf
+#define E8895_NONCPU_STAT(cl)	(0x2404 + (cl) * 0x20)
+#define E8895_L2_STAT(cl)	(0x2604 + (cl) * 0x20)
+/* Mongoose droop detector block: DD0..DD3 per core, DD4 for the cluster */
+#define E8895_DD_PHYS		0x16840000
+#define E8895_DD_SIZE		0x2000
+#define E8895_DD_CORE(pc)	((pc) * 0x400)
+#define E8895_DD_CLUSTER	0x1000
+
+enum { E_W, E_WAIT, E_DD };
+
+struct e8895_cl_step {
+	u8 op;
+	u16 off;
+	u32 mask, val;
+};
+
+/* cluster 0 = Mongoose (MPIDR Aff1 0) */
+static const struct e8895_cl_step e8895_cl0_on[] = {
+	{ E_W,    0x3C20, 0x1, 0x1 },	/* CPU_QCH_EMBEDDED_CMU_CPUCL0_CONFIGURATION */
+	{ E_WAIT, 0x3C24, 0x1, 0x1 },	/* CPU_QCH_EMBEDDED_CMU_CPUCL0_STATUS */
+	{ E_W,    0x45C0, 0x1, 0x1 },	/* CLKSTOP_CMU_EMBEDDED_CMU_CPUCL0_CONFIGURATION */
+	{ E_WAIT, 0x45C4, 0x1, 0x1 },	/* CLKSTOP_CMU_EMBEDDED_CMU_CPUCL0_STATUS */
+	{ E_DD,   E8895_DD_CLUSTER, 0x1, 0x1 },	/* DD4_DD_DA_INPUT_0 */
+	{ E_W,    0x2488, 0x1, 0x0 },	/* CLUSTER0_CPUSEQUENCER_OPTION */
+};
+
+static const struct e8895_cl_step e8895_cl0_off[] = {
+	{ E_DD,   E8895_DD_CLUSTER, 0x1, 0x0 },	/* DD4_DD_DA_INPUT_0 */
+	{ E_W,    0x1438, 0xf, 0x0 },	/* EMBEDDED_CMU_CPUCL0_SYS_PWR_REG */
+	{ E_W,    0x1384, 0x1, 0x1 },	/* CPU_QCH_EMBEDDED_CMU_CPUCL0 */
+	{ E_W,    0x13F8, 0x3, 0x3 },	/* CLKSTOP_OPEN_CMU_EMBEDDED_CMU_CPUCL0 */
+	{ E_W,    0x14B8, 0x1, 0x1 },	/* CLKSTOP_CMU_EMBEDDED_CMU_CPUCL0 */
+	{ E_W,    0x2488, 0x1, 0x1 },	/* CLUSTER0_CPUSEQUENCER_OPTION */
+};
+
+/* cluster 1 = A53 (MPIDR Aff1 1); the vendor read of 0x24A4 is omitted */
+static const struct e8895_cl_step e8895_cl1_on[] = {
+	{ E_W,    0x24A8, 0x1, 0x0 },	/* CLUSTER1_CPUSEQUENCER_OPTION */
+};
+
+static const struct e8895_cl_step e8895_cl1_off[] = {
+	{ E_W,    0x143C, 0xf, 0x0 },	/* EMBEDDED_CMU_CPUCL1_SYS_PWR_REG */
+	{ E_W,    0x13FC, 0x3, 0x3 },	/* CLKSTOP_OPEN_CMU_EMBEDDED_CMU_CPUCL1 */
+	{ E_W,    0x24A8, 0x1, 0x1 },	/* CLUSTER1_CPUSEQUENCER_OPTION */
+};
+
+static void __iomem *e8895_dd;
+static bool e8895_hooks_ready;
+static DEFINE_RAW_SPINLOCK(e8895_pmu_cpu_lock);
+
+bool e8895_pmu_cpu_hooks_ready(void)
+{
+	return READ_ONCE(e8895_hooks_ready);
+}
+
+/* every mask in these tables is partial */
+static void e8895_rmw(void __iomem *base, u32 off, u32 mask, u32 val)
+{
+	writel_relaxed((readl_relaxed(base + off) & ~mask) | val, base + off);
+}
+
+static int e8895_run(const struct e8895_cl_step *s, unsigned int n)
+{
+	unsigned int i, t;
+
+	for (i = 0; i < n; i++, s++) {
+		void __iomem *b = s->op == E_DD ? e8895_dd : pmu_base_addr;
+
+		if (s->op != E_WAIT) {
+			e8895_rmw(b, s->off, s->mask, s->val);
+			continue;
+		}
+		for (t = 0; (readl_relaxed(b + s->off) & s->mask) != s->val; ) {
+			t++;
+			udelay(1);
+			if (t > 1000)
+				return -ETIMEDOUT;
+		}
+	}
+	return 0;
+}
+
+unsigned int e8895_phycluster(unsigned int cpu)
+{
+	return MPIDR_AFFINITY_LEVEL(cpu_logical_map(cpu), 1);
+}
+
+static unsigned int e8895_phycpu(unsigned int cpu)
+{
+	u64 mpidr = cpu_logical_map(cpu);
+
+	return (MPIDR_AFFINITY_LEVEL(mpidr, 1) << 2) | MPIDR_AFFINITY_LEVEL(mpidr, 0);
+}
+
+/* Mongoose cores 0-3: droop detector bit first, then CONFIGURATION */
+void e8895_pmu_cpu_down(unsigned int cpu)
+{
+	unsigned int pc = e8895_phycpu(cpu);
+
+	if (pc < 4)
+		e8895_rmw(e8895_dd, E8895_DD_CORE(pc), 0x1, 0x0);
+	e8895_rmw(pmu_base_addr, E8895_CPU_CONF(pc), E8895_CPU_PWR, 0x0);
+}
+
+/* Mongoose cores 0-3: CONFIGURATION first, then the droop detector bit */
+void e8895_pmu_cpu_up(unsigned int cpu)
+{
+	unsigned int pc = e8895_phycpu(cpu);
+
+	e8895_rmw(pmu_base_addr, E8895_CPU_CONF(pc), E8895_CPU_PWR, E8895_CPU_PWR);
+	if (pc < 4)
+		e8895_rmw(e8895_dd, E8895_DD_CORE(pc), 0x1, 0x1);
+}
+
+/* true when the core is in the state e8895_pmu_cpu_up() leaves */
+bool e8895_pmu_cpu_conf_ok(unsigned int cpu)
+{
+	unsigned int pc = e8895_phycpu(cpu);
+
+	if ((readl_relaxed(pmu_base_addr + E8895_CPU_CONF(pc)) & E8895_CPU_PWR) != E8895_CPU_PWR)
+		return false;
+	return pc >= 4 || (readl_relaxed(e8895_dd + E8895_DD_CORE(pc)) & 0x1);
+}
+
+void e8895_pmu_cluster_down(unsigned int cpu)
+{
+	if (e8895_phycluster(cpu) == 0)
+		e8895_run(e8895_cl0_off, ARRAY_SIZE(e8895_cl0_off));
+	else
+		e8895_run(e8895_cl1_off, ARRAY_SIZE(e8895_cl1_off));
+}
+
+int e8895_pmu_cluster_up(unsigned int cpu)
+{
+	int ret;
+
+	if (e8895_phycluster(cpu) == 0)
+		ret = e8895_run(e8895_cl0_on, ARRAY_SIZE(e8895_cl0_on));
+	else
+		ret = e8895_run(e8895_cl1_on, ARRAY_SIZE(e8895_cl1_on));
+	if (ret)
+		pr_err("exynos8895-pmu: cluster%u on: wait timed out\n", e8895_phycluster(cpu));
+	return ret;
+}
+
+static bool e8895_pmu_cluster_is_on(unsigned int cpu)
+{
+	unsigned int cl = e8895_phycluster(cpu);
+
+	return (readl_relaxed(pmu_base_addr + E8895_L2_STAT(cl)) & 0x7) &&
+	       (readl_relaxed(pmu_base_addr + E8895_NONCPU_STAT(cl)) & 0xf);
+}
+
+/* no other online CPU in this cluster */
+static bool e8895_cluster_empty(unsigned int cpu)
+{
+	unsigned int c;
+
+	for_each_online_cpu(c)
+		if (c != cpu && e8895_phycluster(c) == e8895_phycluster(cpu))
+			return false;
+	return true;
+}
+
+/* incoming CPU, IRQs off */
+static int e8895_pmu_cpu_starting(unsigned int cpu)
+{
+	raw_spin_lock(&e8895_pmu_cpu_lock);
+	if (e8895_cluster_empty(cpu))
+		e8895_pmu_cluster_up(cpu);
+	e8895_pmu_cpu_up(cpu);
+	raw_spin_unlock(&e8895_pmu_cpu_lock);
+	return 0;
+}
+
+/* outgoing CPU after __cpu_disable(), IRQs off */
+static int e8895_pmu_cpu_dying(unsigned int cpu)
+{
+	raw_spin_lock(&e8895_pmu_cpu_lock);
+	e8895_pmu_cpu_down(cpu);
+	if (e8895_cluster_empty(cpu))
+		e8895_pmu_cluster_down(cpu);
+	raw_spin_unlock(&e8895_pmu_cpu_lock);
+	return 0;
+}
+
+/* control CPU; the vendor driver waits here without a bound */
+static int e8895_pmu_cpu_dead(unsigned int cpu)
+{
+	unsigned int t;
+
+	if (!e8895_cluster_empty(cpu))
+		return 0;
+	for (t = 0; e8895_pmu_cluster_is_on(cpu); t++) {
+		if (t > 1000) {
+			pr_warn("exynos8895-pmu: cluster%u still on 1 ms after cpu%u died\n",
+				e8895_phycluster(cpu), cpu);
+			break;
+		}
+		udelay(1);
+	}
+	return 0;
+}
+
+static int e8895_pmu_cpu_hooks_init(void)
+{
+	unsigned int c, done = 0;
+	int ret;
+
+	e8895_dd = ioremap(E8895_DD_PHYS, E8895_DD_SIZE);
+	if (!e8895_dd)
+		return -ENOMEM;
+	/*
+	 * The secondaries are already up, so STARTING never sees an empty cluster.
+	 * Power each such cluster on once, as the vendor notifier did at SMP boot:
+	 * with CPUSEQUENCER_OPTION bit 0 set, a cluster with all cores in C2 hangs.
+	 */
+	for_each_online_cpu(c) {
+		unsigned int cl = e8895_phycluster(c);
+
+		if (!c || (done & BIT(cl)))
+			continue;
+		done |= BIT(cl);
+		e8895_pmu_cluster_up(c);
+	}
+	ret = cpuhp_setup_state(CPUHP_AP_EXYNOS8895_PMU_STARTING, "soc/exynos8895-pmu:starting",
+				e8895_pmu_cpu_starting, e8895_pmu_cpu_dying);
+	if (ret)
+		return ret;
+	ret = cpuhp_setup_state_nocalls(CPUHP_BP_PREPARE_DYN, "soc/exynos8895-pmu:dead",
+					NULL, e8895_pmu_cpu_dead);
+	if (ret < 0)
+		return ret;
+	WRITE_ONCE(e8895_hooks_ready, true);
+	return 0;
+}
+
 #define EXYNOS8895_INFORM2		0x0808
 #define EXYNOS8895_INFORM3		0x080c
 #define SEC_POWER_RESET			0x12345678
@@ -280,6 +534,9 @@ static void exynos8895_pmu_init(void)
 	register_reboot_notifier(&exynos8895_inform_nb);
 	register_sys_off_handler(SYS_OFF_MODE_RESTART, SYS_OFF_PRIO_HIGH + 1,
 				 exynos8895_inform_restart, NULL);
+
+	if (IS_ENABLED(CONFIG_EXYNOS8895_PM))
+		WARN_ON(e8895_pmu_cpu_hooks_init());
 }
 
 const struct exynos_pmu_data exynos8895_pmu_data = {
