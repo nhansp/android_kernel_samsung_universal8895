@@ -731,6 +731,34 @@ config CHARGER_MAX77865_USB_SS
 	  set by the DWC3 gadget driver and cannot be written from
 	  userspace.
 
+config WIRELESS_CHARGER_IDT_MFC
+	bool "IDT wireless charging receiver"
+	depends on I2C && GPIOLIB && CHARGER_MAX77865
+	select REGMAP_I2C
+	help
+	  Driver for the IDT wireless charging receiver of the Samsung Galaxy
+	  Note 8, as a "wireless" power supply for the MAX77865 charger. On
+	  its own it reports the pad type and keeps the receiver output
+	  off; the options below let the charger charge from it.
+
+config WIRELESS_CHARGER_IDT_MFC_NV
+	bool "IDT wireless charging at 5 V"
+	depends on WIRELESS_CHARGER_IDT_MFC && CHARGER_MAX77865_CHARGE_CONTROL
+	help
+	  Charge from the wireless receiver at 5 V under the MAX77865 charge
+	  policy: the receiver output follows charge control, and the
+	  charger sets the input limit and sends the receiver the FOD,
+	  headroom, CV mode, full and end of power commands.
+
+config WIRELESS_CHARGER_IDT_MFC_HV
+	bool "IDT wireless charging at 10 V"
+	depends on WIRELESS_CHARGER_IDT_MFC_NV
+	help
+	  Switch pads that support it to 10 V while the MAX77865 charge
+	  policy allows it, and back to 5 V in steps when the policy
+	  withdraws it or the battery is full. Needs the 5 V charging
+	  policy.
+
 config CHARGER_MAX77976
 	tristate "Maxim MAX77976 battery charger driver"
 	depends on I2C
