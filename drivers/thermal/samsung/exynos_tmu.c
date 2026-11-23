@@ -13,6 +13,8 @@
 
 #include <linux/cleanup.h>
 #include <linux/clk.h>
+#include <linux/cpu.h>
+#include <linux/cpumask.h>
 #include <linux/io.h>
 #include <linux/interrupt.h>
 #include <linux/list.h>
@@ -24,6 +26,7 @@
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 #include <linux/thermal.h>
+#include <linux/workqueue.h>
 
 #include <dt-bindings/thermal/thermal_exynos.h>
 
@@ -233,6 +236,13 @@ enum soc_type {
  * @ipa_integral_cutoff: Exynos8895: samsung,ipa-integral-cutoff, degrees.
  * @ipa_node: Exynos8895: entry in the list of zones waiting for the
  *	power_allocator selection.
+ * @hp_cpus: Exynos8895: samsung,hotplug-cpus (empty: no hotplug throttle).
+ * @hp_off: Exynos8895: the CPUs of @hp_cpus this driver took offline.
+ * @hp_out_temp: Exynos8895: samsung,hotplug-out-temp, millicelsius.
+ * @hp_in_temp: Exynos8895: samsung,hotplug-in-temp, millicelsius.
+ * @hp_on: Exynos8895: the hotplug throttle is on.
+ * @hp_retry: Exynos8895: the last hotplug pass left a CPU in the wrong state.
+ * @hp_work: Exynos8895: takes @hp_cpus offline or brings them back.
  */
 struct exynos_tmu_data {
 	void __iomem *base;
@@ -278,6 +288,13 @@ struct exynos_tmu_data {
 	u32 ipa_integral_max;
 	u32 ipa_integral_cutoff;
 	struct list_head ipa_node;
+	struct cpumask hp_cpus;
+	struct cpumask hp_off;
+	int hp_out_temp;
+	int hp_in_temp;
+	bool hp_on;
+	bool hp_retry;
+	struct work_struct hp_work;
 };
 
 /*
@@ -981,6 +998,106 @@ static void exynos7_tmu_control(struct platform_device *pdev, bool on)
 	writel(con, data->base + EXYNOS_TMU_REG_CONTROL);
 }
 
+/*
+ * The vendor kernel caps the number of online CPUs through a PM QoS class
+ * that does not exist here, so the CPUs are taken offline directly.
+ */
+static void exynos8895_hotplug_work(struct work_struct *work)
+{
+	struct exynos_tmu_data *data = container_of(work, struct exynos_tmu_data,
+						    hp_work);
+	bool on = READ_ONCE(data->hp_on);
+	bool retry = false;
+	unsigned int cpu;
+	int ret;
+
+	for_each_cpu(cpu, &data->hp_cpus) {
+		if (on) {
+			if (cpumask_test_cpu(cpu, &data->hp_off))
+				continue;
+			ret = remove_cpu(cpu);
+			/* > 0: already offline, not this driver's to bring back */
+			if (!ret)
+				cpumask_set_cpu(cpu, &data->hp_off);
+		} else {
+			if (!cpumask_test_cpu(cpu, &data->hp_off))
+				continue;
+			ret = add_cpu(cpu);
+			/* > 0: already online */
+			if (ret >= 0)
+				cpumask_clear_cpu(cpu, &data->hp_off);
+		}
+		if (ret < 0) {
+			retry = true;
+			dev_warn_ratelimited(data->dev, "cpu%u %s failed: %d\n", cpu,
+					     on ? "offline" : "online", ret);
+		}
+	}
+
+	WRITE_ONCE(data->hp_retry, retry);
+}
+
+/* Temperature reads, and so these calls, are serialized by the zone lock. */
+static void exynos8895_hotplug_check(struct exynos_tmu_data *data, int temp)
+{
+	bool on = READ_ONCE(data->hp_on);
+	bool change = on ? temp < data->hp_in_temp : temp >= data->hp_out_temp;
+
+	if (change) {
+		on = !on;
+		WRITE_ONCE(data->hp_on, on);
+		dev_dbg(data->dev, "hotplug throttle %s at %d mC\n",
+			on ? "on" : "off", temp);
+	}
+
+	/* a failed pass is retried at the next read */
+	if (change || READ_ONCE(data->hp_retry))
+		queue_work(system_unbound_wq, &data->hp_work);
+}
+
+static void exynos8895_hotplug_stop(void *arg)
+{
+	struct exynos_tmu_data *data = arg;
+	unsigned int cpu;
+
+	cancel_work_sync(&data->hp_work);
+	for_each_cpu(cpu, &data->hp_off)
+		add_cpu(cpu);
+	cpumask_clear(&data->hp_off);
+}
+
+static int exynos8895_hotplug_parse(struct platform_device *pdev,
+				    struct exynos_tmu_data *data)
+{
+	struct device_node *np = pdev->dev.of_node;
+	struct device_node *cpu_np;
+	u32 out_temp, in_temp;
+	int i, n, cpu;
+
+	n = of_count_phandle_with_args(np, "samsung,hotplug-cpus", NULL);
+	if (n <= 0 ||
+	    of_property_read_u32(np, "samsung,hotplug-out-temp", &out_temp) ||
+	    of_property_read_u32(np, "samsung,hotplug-in-temp", &in_temp)) {
+		dev_err(&pdev->dev, "incomplete samsung,hotplug-* properties\n");
+		return -EINVAL;
+	}
+	data->hp_out_temp = out_temp;
+	data->hp_in_temp = in_temp;
+
+	for (i = 0; i < n; i++) {
+		cpu_np = of_parse_phandle(np, "samsung,hotplug-cpus", i);
+		cpu = of_cpu_node_to_id(cpu_np);
+		of_node_put(cpu_np);
+		if (cpu < 0) {
+			dev_err(&pdev->dev, "samsung,hotplug-cpus[%d] is not a CPU\n", i);
+			return -EINVAL;
+		}
+		cpumask_set_cpu(cpu, &data->hp_cpus);
+	}
+
+	return 0;
+}
+
 static int exynos_get_temp(struct thermal_zone_device *tz, int *temp)
 {
 	struct exynos_tmu_data *data = thermal_zone_device_priv(tz);
@@ -1008,6 +1125,9 @@ static int exynos_get_temp(struct thermal_zone_device *tz, int *temp)
 
 	clk_disable(data->clk);
 	mutex_unlock(&data->lock);
+
+	if (!ret && !cpumask_empty(&data->hp_cpus))
+		exynos8895_hotplug_check(data, *temp);
 
 	return ret;
 }
@@ -1348,6 +1468,13 @@ static int exynos_map_dt_data(struct platform_device *pdev)
 			}
 			data->ipa = true;
 		}
+
+		if (of_property_present(pdev->dev.of_node, "samsung,hotplug-cpus")) {
+			int ret = exynos8895_hotplug_parse(pdev, data);
+
+			if (ret)
+				return ret;
+		}
 		break;
 	}
 	default:
@@ -1596,6 +1723,14 @@ static int exynos_tmu_probe(struct platform_device *pdev)
 	if (ret) {
 		dev_err(dev, "Failed to initialize TMU\n");
 		goto err_sclk;
+	}
+
+	/* before the zone: its reads queue the work, its teardown cancels it */
+	if (!cpumask_empty(&data->hp_cpus)) {
+		INIT_WORK(&data->hp_work, exynos8895_hotplug_work);
+		ret = devm_add_action_or_reset(dev, exynos8895_hotplug_stop, data);
+		if (ret)
+			goto err_sclk;
 	}
 
 	data->tzd = devm_thermal_of_zone_register(dev, 0, data,
