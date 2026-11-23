@@ -1437,6 +1437,38 @@ static const struct regulator_desc s2mps17_regulators[] = {
 	regulator_desc_s2mps17_buck(12, &s2mps17_buck_ops, B12OUT1, 1, 1),
 };
 
+/*
+ * The vendor driver takes these from DT properties that have no binding;
+ * the values are those of the Galaxy Note8 device tree.
+ */
+static int s2mps17_init(struct device *dev, struct regmap *pmic)
+{
+	int ret;
+
+	/* BUCK6 under G3D power-down pin control, LDO9 sync enabled */
+	ret = regmap_update_bits(pmic, S2MPS17_PMIC_REG_B6CTRL, 0xc0, 0x80);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to enable BUCK6 pin control\n");
+	ret = regmap_update_bits(pmic, S2MPS17_PMIC_REG_L9CTRL1, 0xc0, 0x40);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to enable LDO9 sync\n");
+
+	/* SMPL warning threshold 2.9 V, hysteresis 100 mV */
+	ret = regmap_update_bits(pmic, S2MPS17_PMIC_REG_CTRL2, 0xe0, 0x80);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to set SMPL warning threshold\n");
+	ret = regmap_update_bits(pmic, S2MPS17_PMIC_REG_CTRL2, 0x18, 0x00);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to set SMPL warning hysteresis\n");
+
+	/* The vendor driver ignores errors of these two writes. */
+	regmap_update_bits(pmic, S2MPS17_PMIC_REG_RTCBUF, 0x04, 0x04);
+	/* SELMIF: LDO4, 5, 8, 11 and 12 */
+	regmap_write(pmic, S2MPS17_PMIC_REG_SELMIF1, 0xd6);
+
+	return 0;
+}
+
 static int s2mps11_pmic_probe(struct platform_device *pdev)
 {
 	struct sec_pmic_dev *iodev = dev_get_drvdata(pdev->dev.parent);
@@ -1552,6 +1584,12 @@ static int s2mps11_pmic_probe(struct platform_device *pdev)
 				return ret;
 			}
 		}
+	}
+
+	if (s2mps11->dev_type == S2MPS17X) {
+		ret = s2mps17_init(&pdev->dev, iodev->regmap_pmic);
+		if (ret)
+			return ret;
 	}
 
 	return 0;
