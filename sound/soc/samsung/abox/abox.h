@@ -1,18 +1,21 @@
-/* sound/soc/samsung/abox/abox.h
- *
- * ALSA SoC - Samsung Abox driver
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * sound/soc/samsung/abox/abox.h - Samsung ABOX driver
  *
  * Copyright (c) 2016 Samsung Electronics Co. Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef __SND_SOC_ABOX_H
 #define __SND_SOC_ABOX_H
 
-#include <linux/wakelock.h>
+#include <linux/mutex.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
+#include <linux/pm_wakeup.h>
+#include <linux/spinlock.h>
+#include <linux/wait.h>
+#include <linux/workqueue.h>
+#include <sound/compress_driver.h>
 #include <sound/samsung/abox.h>
 
 #define ABOX_MASK(name) (GENMASK(ABOX_##name##_H, ABOX_##name##_L))
@@ -440,7 +443,7 @@ static inline unsigned long abox_probe_quirks(struct device_node *np)
 		}
 		for (i = 0; i < ARRAY_SIZE(map); i++) {
 			ret = of_property_match_string(np, QUIRKS, map[i].str);
-			if (!IS_ERR_VALUE(ret))
+			if (ret >= 0)
 				quirks |= map[i].bit;
 		}
 		break;
@@ -508,10 +511,12 @@ struct abox_component_kcontrol_value {
 
 struct abox_data {
 	struct platform_device *pdev;
-	struct snd_soc_codec *codec;
+	struct snd_soc_component *cmpnt;
 	struct regmap *regmap;
+	struct regmap *sysreg;
+	struct regmap *pmu;
+	struct platform_device *mem_dev; /* dma-direct helper for the buffers */
 	void __iomem *sfr_base;
-	void __iomem *sysreg_base;
 	void __iomem *sram_base;
 	phys_addr_t sram_base_phys;
 	size_t sram_size;
@@ -547,8 +552,12 @@ struct abox_data {
 	spinlock_t ipc_spinlock;
 	struct mutex ipc_mutex;
 	struct clk *clk_pll;
+	struct clk *clk_pll_fout;
+	struct clk *clk_osc;
 	struct clk *clk_audif;
 	struct clk *clk_ca7;
+	struct clk *clk_bus;
+	unsigned int ca7_khz;
 	struct clk *clk_uaif;
 	struct clk *clk_bclk[ABOX_DAI_COUNT];
 	struct clk *clk_bclk_gate[ABOX_DAI_COUNT];
@@ -558,7 +567,6 @@ struct abox_data {
 	struct abox_qos_request ca7_gear_requests[32];
 	struct work_struct change_cpu_gear_work;
 	unsigned int mif_freq;
-	struct work_struct change_mif_freq_work;
 	unsigned int lit_freq;
 	struct abox_qos_request lit_requests[16];
 	struct work_struct change_lit_freq_work;
@@ -584,16 +592,12 @@ struct abox_data {
 	bool l2c_enabled;
 	struct abox_l2c_request l2c_requests[8];
 	struct work_struct l2c_work;
-	struct notifier_block pm_nb;
 	struct notifier_block modem_nb;
-	struct notifier_block itmon_nb;
 	int pm_qos_int[5];
-	struct ima_client *ima_client;
-	void *ima_vaddr;
-	bool ima_claimed;
-	struct mutex ima_lock;
+	void *vss_base;			/* CPU view of the VSS carve-out */
+	size_t vss_size;
 	struct work_struct boot_done_work;
-	struct wake_lock wake_lock;
+	struct wakeup_source *ws;
 	unsigned long long audio_mode_time;
 	enum audio_mode audio_mode;
 };
@@ -931,12 +935,4 @@ extern int abox_request_l2c_sync(struct device *dev, struct abox_data *data,
 extern void abox_request_dram_on(struct platform_device *pdev_abox, void *id,
 		bool on);
 
-/**
- * claim IVA memory
- * @param[in]	dev		pointer to struct dev which invokes this API
- * @param[in]	data		pointer to abox_data structure
- * @param[out]	addr		optional argument to get physical address
- */
-extern int abox_ima_claim(struct device *dev, struct abox_data *data,
-		phys_addr_t *addr);
 #endif /* __SND_SOC_ABOX_H */

@@ -1,11 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * ALSA SoC - Samsung VTS driver
  *
  * Copyright (c) 2016 Samsung Electronics Co. Ltd.
-  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef __VTS_H
@@ -41,8 +38,8 @@ extern int vts_clear_sram(struct platform_device *pdev);
  * Check VTS is on
  * @return		true if VTS is on, false on otherwise
  */
-extern volatile bool vts_is_on(void);
-extern volatile bool vts_is_recognitionrunning(void);
+extern bool vts_is_on(void);
+extern bool vts_is_recognitionrunning(void);
 #else /* !CONFIG_SND_SOC_SAMSUNG_VTS */
 static inline int vts_acquire_sram(struct platform_device *pdev, int vts)
 { return -ENODEV; }
