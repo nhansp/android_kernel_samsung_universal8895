@@ -15,6 +15,7 @@
 
 #include <linux/device.h>
 #include <linux/gpio/consumer.h>
+#include <drm/drm_mipi_dsi.h>
 #include <linux/notifier.h>
 #include <linux/kernel.h>
 #include <linux/regulator/consumer.h>
@@ -79,6 +80,7 @@ struct panel_pad {
 	struct regulator *regulator[REGULATOR_MAX];
 };
 
+/* the DSI command path, set up by panel_dsi_init() */
 struct mipi_drv_ops {
 	int (*read)(u32 id, u8 addr, u8 *buf, int size);
 	int (*write)(u32 id, u8 cmd_id, const u8 *cmd, int size);
@@ -199,6 +201,9 @@ struct panel_device {
 
 	unsigned char panel_id[3];
 
+	struct mipi_dsi_device *dsi;
+	bool link_on;		/* the DSI link is up: DSIM_STATE_ON */
+
 	struct panel_pad pad;
 
 	struct decon_lcd lcd_info;
@@ -244,4 +249,5 @@ struct panel_device {
 int panel_drv_init(struct panel_device *panel, struct device *dev,
 		   bool init_at_boot, bool connected);
 long panel_drv_ioctl(struct panel_device *panel, unsigned int cmd, void *arg);
+void panel_dsi_init(struct panel_device *panel, struct mipi_dsi_device *dsi);
 #endif //__PANEL_DRV_H__

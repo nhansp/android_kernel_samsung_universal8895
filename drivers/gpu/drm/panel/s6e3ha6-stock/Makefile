@@ -8,3 +8,4 @@ obj-y += spi.o
 obj-y += copr.o
 obj-y += active_clock.o
 obj-y += panel_poc.o
+obj-y += panel_dsi.o
