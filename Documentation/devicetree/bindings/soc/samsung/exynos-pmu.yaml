@@ -80,6 +80,9 @@ properties:
 
   '#clock-cells':
     const: 1
+    description:
+      Index 0 is CLKOUT, whose inputs are named by clock-names. Index 1 is
+      CLKOUT1, the TCXO reference output, and exists on Exynos8895 only.
 
   clock-names:
     description:
