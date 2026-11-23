@@ -397,6 +397,38 @@ bool ionl_dmabuf_is_autosync(struct dma_buf *dmabuf)
 }
 EXPORT_SYMBOL_GPL(ionl_dmabuf_is_autosync);
 
+/**
+ * ionl_dmabuf_phys() - get the physical range of a contiguous legacy ION buffer
+ * @dmabuf: the dma-buf
+ * @addr: returns the physical start address
+ * @len: returns the size
+ *
+ * Return: 0 on success, -EINVAL if @dmabuf was not exported by this driver,
+ * -ENODEV if it comes from the system heap.
+ */
+int ionl_dmabuf_phys(struct dma_buf *dmabuf, phys_addr_t *addr, size_t *len)
+{
+	struct ionl_buffer *buf;
+
+	if (dmabuf->ops != &ionl_dma_buf_ops)
+		return -EINVAL;
+	buf = dmabuf->priv;
+
+	switch (buf->heap->type) {
+	case IONL_HEAP_SECURE:
+		*addr = buf->prot->bus_address;
+		break;
+	case IONL_HEAP_CMA:
+		*addr = page_to_phys(buf->cma_page);
+		break;
+	default:
+		return -ENODEV;
+	}
+	*len = buf->size;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(ionl_dmabuf_phys);
+
 /*
  * The fd's buffer if it needs a sync, else NULL with *ret set: -EINVAL for a
  * foreign dma-buf, 0 for a buffer that needs none. On success the caller holds

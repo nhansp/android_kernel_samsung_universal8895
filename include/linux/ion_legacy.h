@@ -6,6 +6,7 @@
 #ifndef _LINUX_ION_LEGACY_H
 #define _LINUX_ION_LEGACY_H
 
+#include <linux/errno.h>
 #include <linux/types.h>
 
 struct dma_buf;
@@ -17,10 +18,17 @@ struct dma_buf;
  * cleans it with dma_buf_end_cpu_access(dmabuf, DMA_TO_DEVICE) before each one.
  */
 bool ionl_dmabuf_is_autosync(struct dma_buf *dmabuf);
+
+int ionl_dmabuf_phys(struct dma_buf *dmabuf, phys_addr_t *addr, size_t *len);
 #else
 static inline bool ionl_dmabuf_is_autosync(struct dma_buf *dmabuf)
 {
 	return false;
+}
+
+static inline int ionl_dmabuf_phys(struct dma_buf *dmabuf, phys_addr_t *addr, size_t *len)
+{
+	return -ENODEV;
 }
 #endif
 
