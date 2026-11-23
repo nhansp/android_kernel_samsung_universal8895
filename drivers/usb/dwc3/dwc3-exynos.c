@@ -11,8 +11,10 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 #include <linux/platform_device.h>
 #include <linux/notifier.h>
+#include <linux/pm_wakeup.h>
 #include <linux/clk.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
@@ -44,7 +46,30 @@ struct dwc3_exynos {
 
 	struct notifier_block	core_nb;
 	bool			watch_core;
+
+	/* held from attach to detach */
+	struct wakeup_source	*vbus_ws;
+	spinlock_t		vbus_lock;	/* protects vbus_held */
+	bool			vbus_held;
 };
+
+static void dwc3_exynos_vbus_hold(struct dwc3_exynos *exynos, bool hold)
+{
+	unsigned long flags;
+
+	if (!exynos || !exynos->vbus_ws)
+		return;
+
+	spin_lock_irqsave(&exynos->vbus_lock, flags);
+	if (hold && !exynos->vbus_held) {
+		__pm_stay_awake(exynos->vbus_ws);
+		exynos->vbus_held = true;
+	} else if (!hold && exynos->vbus_held) {
+		__pm_relax(exynos->vbus_ws);
+		exynos->vbus_held = false;
+	}
+	spin_unlock_irqrestore(&exynos->vbus_lock, flags);
+}
 
 /*
  * dwc3 maps USB_ROLE_NONE to its default mode, which in device mode changes
@@ -52,6 +77,18 @@ struct dwc3_exynos {
  */
 static void dwc3_exynos_set_role(struct dwc3 *dwc, enum usb_role role)
 {
+	struct dwc3_exynos *exynos = NULL;
+
+	/* only the core under this glue gets these ops */
+	if (dwc->dev && dwc->dev->parent)
+		exynos = dev_get_drvdata(dwc->dev->parent);
+
+	/* keep the system awake for a host session as well */
+	if (role == USB_ROLE_NONE)
+		dwc3_exynos_vbus_hold(exynos, false);
+	else
+		dwc3_exynos_vbus_hold(exynos, true);
+
 	/*
 	 * A switch to host frees the gadget without clearing dwc->gadget, and a
 	 * switch back to device adds a new one with the session on.
@@ -217,6 +254,8 @@ static int dwc3_exynos_probe(struct platform_device *pdev)
 	}
 
 	if (driver_data->vbus_session) {
+		spin_lock_init(&exynos->vbus_lock);
+		exynos->vbus_ws = wakeup_source_register(dev, "dwc3-exynos-vbus");
 		exynos->core_nb.notifier_call = dwc3_exynos_core_bound;
 		ret = bus_register_notifier(&platform_bus_type,
 					    &exynos->core_nb);
@@ -243,6 +282,11 @@ notifier_err:
 		bus_unregister_notifier(&platform_bus_type,
 					&exynos->core_nb);
 populate_err:
+	if (exynos->vbus_ws) {
+		dwc3_exynos_vbus_hold(exynos, false);
+		wakeup_source_unregister(exynos->vbus_ws);
+		exynos->vbus_ws = NULL;
+	}
 	regulator_disable(exynos->vdd10);
 vdd10_err:
 	regulator_disable(exynos->vdd33);
@@ -264,6 +308,12 @@ static void dwc3_exynos_remove(struct platform_device *pdev)
 	if (exynos->watch_core)
 		bus_unregister_notifier(&platform_bus_type,
 					&exynos->core_nb);
+
+	if (exynos->vbus_ws) {
+		dwc3_exynos_vbus_hold(exynos, false);
+		wakeup_source_unregister(exynos->vbus_ws);
+		exynos->vbus_ws = NULL;
+	}
 
 	of_platform_depopulate(&pdev->dev);
 
