@@ -420,6 +420,7 @@ static int get_v4l2_buffer32(struct v4l2_buffer *vb,
 		.m.offset	= vb32.m.offset,
 		.length		= vb32.length,
 		.request_fd	= vb32.request_fd,
+		.reserved2	= vb32.reserved2,
 	};
 
 	switch (vb->memory) {
@@ -465,6 +466,7 @@ static int get_v4l2_buffer32_time32(struct v4l2_buffer *vb,
 		.m.offset	= vb32.m.offset,
 		.length		= vb32.length,
 		.request_fd	= vb32.request_fd,
+		.reserved2	= vb32.reserved2,
 	};
 	switch (vb->memory) {
 	case V4L2_MEMORY_MMAP:
@@ -507,6 +509,7 @@ static int put_v4l2_buffer32(struct v4l2_buffer *vb,
 		.m.offset	= vb->m.offset,
 		.length		= vb->length,
 		.request_fd	= vb->request_fd,
+		.reserved2	= vb->reserved2,
 	};
 
 	switch (vb->memory) {
@@ -552,6 +555,7 @@ static int put_v4l2_buffer32_time32(struct v4l2_buffer *vb,
 		.m.offset	= vb->m.offset,
 		.length		= vb->length,
 		.request_fd	= vb->request_fd,
+		.reserved2	= vb->reserved2,
 	};
 	switch (vb->memory) {
 	case V4L2_MEMORY_MMAP:
