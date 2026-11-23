@@ -19,6 +19,7 @@
 
 #define ACPM_DVFS_FREQ_REQ		0
 #define ACPM_DVFS_FREQ_GET		1
+#define ACPM_DVFS_COLDTEMP_REQ		3
 
 static void acpm_dvfs_set_xfer(struct acpm_xfer *xfer, u32 *cmd, size_t cmdlen,
 			       unsigned int acpm_chan_id, bool response)
@@ -59,6 +60,22 @@ static void acpm_dvfs_init_get_rate_cmd(u32 cmd[4], unsigned int clk_id)
 {
 	cmd[0] = FIELD_PREP(ACPM_DVFS_ID, clk_id);
 	cmd[2] = FIELD_PREP(ACPM_DVFS_REQ_TYPE, ACPM_DVFS_FREQ_GET);
+}
+
+int acpm_dvfs_set_cold_temp(struct acpm_handle *handle,
+			    unsigned int acpm_chan_id, unsigned int clk_id,
+			    bool cold)
+{
+	struct acpm_xfer xfer = {0};
+	u32 cmd[4] = {0};
+
+	cmd[0] = FIELD_PREP(ACPM_DVFS_ID, clk_id);
+	cmd[1] = cold;
+	cmd[2] = FIELD_PREP(ACPM_DVFS_REQ_TYPE, ACPM_DVFS_COLDTEMP_REQ);
+	cmd[3] = acpm_cmd_timestamp(handle);
+	acpm_dvfs_set_xfer(&xfer, cmd, sizeof(cmd), acpm_chan_id, true);
+
+	return acpm_do_xfer(handle, &xfer);
 }
 
 unsigned long acpm_dvfs_get_rate(struct acpm_handle *handle,
