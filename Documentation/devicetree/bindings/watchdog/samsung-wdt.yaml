@@ -25,6 +25,7 @@ properties:
           - samsung,exynos5420-wdt                # for Exynos5420
           - samsung,exynos7-wdt                   # for Exynos7
           - samsung,exynos850-wdt                 # for Exynos850
+          - samsung,exynos8895-wdt                # for Exynos8895
           - samsung,exynos990-wdt                 # for Exynos990
           - samsung,exynosautov9-wdt              # for Exynosautov9
           - samsung,exynosautov920-wdt            # for Exynosautov920
@@ -57,7 +58,7 @@ properties:
     $ref: /schemas/types.yaml#/definitions/phandle
     description:
       Phandle to the PMU system controller node (in case of Exynos5250,
-      Exynos5420, Exynos7, Exynos850, Exynos990 and gs101).
+      Exynos5420, Exynos7, Exynos850, Exynos8895, Exynos990 and gs101).
 
 required:
   - compatible
@@ -78,6 +79,7 @@ allOf:
               - samsung,exynos5420-wdt
               - samsung,exynos7-wdt
               - samsung,exynos850-wdt
+              - samsung,exynos8895-wdt
               - samsung,exynos990-wdt
               - samsung,exynosautov9-wdt
               - samsung,exynosautov920-wdt
@@ -91,6 +93,7 @@ allOf:
             enum:
               - google,gs101-wdt
               - samsung,exynos850-wdt
+              - samsung,exynos8895-wdt
               - samsung,exynos990-wdt
               - samsung,exynosautov9-wdt
               - samsung,exynosautov920-wdt
@@ -104,10 +107,6 @@ allOf:
           items:
             - const: watchdog
             - const: watchdog_src
-        samsung,cluster-index:
-          enum: [0, 1, 2]
-      required:
-        - samsung,cluster-index
     else:
       properties:
         clocks:
@@ -116,6 +115,24 @@ allOf:
         clock-names:
           items:
             - const: watchdog
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - google,gs101-wdt
+              - samsung,exynos850-wdt
+              - samsung,exynos990-wdt
+              - samsung,exynosautov9-wdt
+              - samsung,exynosautov920-wdt
+    then:
+      properties:
+        samsung,cluster-index:
+          enum: [0, 1, 2]
+      required:
+        - samsung,cluster-index
+    else:
+      properties:
         samsung,cluster-index: false
 
 unevaluatedProperties: false
