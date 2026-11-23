@@ -87,9 +87,11 @@ config EXYNOS8895_SMC
 config EXYNOS8895_PM
 	bool "Exynos8895 system suspend, SICD and PM-DVS support"
 	depends on ARCH_EXYNOS && ARM64 && EXYNOS_PMU && SUSPEND && ARM_PSCI_FW
+	select EXYNOS8895_SMC
 	help
 	  System suspend to the Exynos8895 SLEEP state with the vendor PMU
 	  sequences, the SICD entry, exit and veto used by the Exynos8895
-	  cpuidle driver, the suspend voltages of the BUCK8-11 rails, and
-	  the PMU CPU and cluster power hooks for deep idle and CPU hotplug.
+	  cpuidle driver, the suspend voltages of the BUCK8-11 rails, the
+	  PMU CPU and cluster power hooks for deep idle and CPU hotplug, and
+	  the EL3 monitor debug page and exception handler.
 endif
