@@ -107,6 +107,19 @@ config ARM_EXYNOS_BUS_DEVFREQ
 	  and adjusts the operating frequencies and voltages with OPP support.
 	  This does not yet operate with optimal voltages.
 
+config ARM_EXYNOS8895_BUS_DEVFREQ
+	bool "ARM Exynos8895 Memory Bus DEVFREQ Driver"
+	depends on ARCH_EXYNOS || COMPILE_TEST
+	depends on EXYNOS_ACPM_PROTOCOL=y && EXYNOS_ACPM_CLK=y && PM_OPP
+	select DEVFREQ_GOV_SIMPLE_INTERACTIVE
+	select CRC32
+	help
+	  This adds the DEVFREQ driver for the MIF, INT, INTCAM, CAM and DISP
+	  bus domains of the Exynos8895. The APM firmware sets their clocks
+	  and voltages on request. The driver aggregates the bus throughput
+	  requests of the other drivers and applies the vendor's bus
+	  constraints.
+
 config ARM_HISI_UNCORE_DEVFREQ
 	tristate "HiSilicon uncore DEVFREQ Driver"
 	depends on ACPI && ACPI_PPTT && PCC

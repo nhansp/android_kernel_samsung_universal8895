@@ -11,6 +11,7 @@ obj-$(CONFIG_DEVFREQ_GOV_TABLE_INTERACTIVE)	+= governor_tableinteractive.o
 
 # DEVFREQ Drivers
 obj-$(CONFIG_ARM_EXYNOS_BUS_DEVFREQ)	+= exynos-bus.o
+obj-$(CONFIG_ARM_EXYNOS8895_BUS_DEVFREQ)	+= exynos8895-bus.o
 obj-$(CONFIG_ARM_HISI_UNCORE_DEVFREQ)	+= hisi_uncore_freq.o
 obj-$(CONFIG_ARM_IMX_BUS_DEVFREQ)	+= imx-bus.o
 obj-$(CONFIG_ARM_IMX8M_DDRC_DEVFREQ)	+= imx8m-ddrc.o
