@@ -17,6 +17,7 @@
 #include <linux/slab.h>
 #include <linux/pm_domain.h>
 #include <linux/delay.h>
+#include <linux/clk.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/pm_runtime.h>
@@ -61,6 +62,7 @@ struct exynos_pm_domain {
 	void __iomem *seq_base;
 	struct regmap *pmu;
 	struct regmap *sysreg;
+	struct clk *bus_clk;		/* the block's bus clock, on around the SYSREG accesses */
 	u32 saved[2];
 	bool saved_valid;
 };
@@ -96,8 +98,10 @@ static void exynos_pd_before(struct exynos_pm_domain *pd, bool power_on)
 	}
 
 	if (pd->sysreg) {
+		clk_enable(pd->bus_clk);
 		for (i = 0; i < x->nr_sysreg; i++)
 			regmap_read(pd->sysreg, x->sysreg[i], &pd->saved[i]);
+		clk_disable(pd->bus_clk);
 		pd->saved_valid = true;
 	}
 	if (pd->pmu && x->pmu_off_mask)
@@ -121,8 +125,10 @@ static void exynos_pd_after(struct exynos_pm_domain *pd, bool power_on)
 
 	/* restore only what a power-off saved */
 	if (pd->sysreg && pd->saved_valid) {
+		clk_enable(pd->bus_clk);
 		for (i = 0; i < x->nr_sysreg; i++)
 			regmap_write(pd->sysreg, x->sysreg[i], pd->saved[i]);
+		clk_disable(pd->bus_clk);
 		pd->saved_valid = false;
 	}
 }
@@ -335,6 +341,17 @@ static int exynos_pd_get_extra(struct device *dev, struct exynos_pm_domain *pd,
 		if (IS_ERR(pd->sysreg))
 			return dev_err_probe(dev, PTR_ERR(pd->sysreg),
 					     "samsung,sysreg\n");
+	}
+
+	if (!pd->bus_clk) {
+		/*
+		 * Kept prepared: the clk prepare_lock nests the CMU's genpd, so
+		 * only clk_enable()/clk_disable() run under the genpd lock.
+		 */
+		pd->bus_clk = devm_clk_get_optional_prepared(dev, "bus");
+		if (IS_ERR(pd->bus_clk))
+			return dev_err_probe(dev, PTR_ERR(pd->bus_clk),
+					     "bus clock\n");
 	}
 
 	if (x->nr_pre_on || x->nr_post_off) {
