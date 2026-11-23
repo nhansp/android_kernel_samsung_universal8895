@@ -162,7 +162,7 @@
 #define HSI2C_MASTER_ID(x)			((x & 0xff) << 24)
 #define MASTER_ID(x)				((x & 0x7) + 0x08)
 
-#define EXYNOS5_I2C_TIMEOUT (msecs_to_jiffies(100))
+#define EXYNOS5_I2C_TIMEOUT (msecs_to_jiffies(1000))
 
 enum i2c_type_exynos {
 	I2C_TYPE_EXYNOS5,
