@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/devfreq/samsung,exynos8895-bus.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8895 bus DVFS domain
+
+maintainers:
+  - nhansp <nhan.094.vn@gmail.com>
+
+description: |
+  One bus DVFS domain of the Samsung Exynos8895 SoC: MIF, INT, INTCAM, CAM or
+  DISP. The APM firmware sets the frequency and voltage of the domain; the
+  kernel requests a level through the domain's ACPM DVFS clock. The operating
+  points are the levels of the ECT DVFS table that the ASV data enables. The
+  other per-domain constants are implied by the compatible.
+
+properties:
+  compatible:
+    enum:
+      - samsung,exynos8895-bus-mif
+      - samsung,exynos8895-bus-int
+      - samsung,exynos8895-bus-intcam
+      - samsung,exynos8895-bus-cam
+      - samsung,exynos8895-bus-disp
+
+  clocks:
+    maxItems: 1
+    description: the domain's ACPM DVFS clock
+
+  operating-points-v2: true
+
+  memory-region:
+    maxItems: 1
+    description:
+      the copy of the ECT in DRAM; the driver checks that it is the ECT its
+      tables were taken from before it uses any of them
+
+required:
+  - compatible
+  - clocks
+  - operating-points-v2
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/samsung,exynos8895-acpm.h>
+
+    bus-int {
+        compatible = "samsung,exynos8895-bus-int";
+        clocks = <&acpm_ipc EXYNOS8895_CLK_ACPM_DVFS_INT>;
+        operating-points-v2 = <&bus_int_opp_table>;
+        memory-region = <&ect_mem>;
+    };
