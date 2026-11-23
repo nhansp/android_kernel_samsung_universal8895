@@ -15,6 +15,7 @@ properties:
     enum:
       - samsung,exynos5250-trng
       - samsung,exynos850-trng
+      - samsung,exynos8895-trng
 
   clocks:
     minItems: 1
@@ -29,9 +30,6 @@ properties:
 
 required:
   - compatible
-  - clocks
-  - clock-names
-  - reg
 
 allOf:
   - if:
@@ -62,6 +60,26 @@ allOf:
           items:
             - const: secss
 
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: samsung,exynos8895-trng
+
+    # Owned by the secure world and reached only through the SMC_CMD_RANDOM
+    # secure monitor call: no register window and no clocks.
+    then:
+      properties:
+        clocks: false
+        clock-names: false
+        reg: false
+
+    else:
+      required:
+        - clocks
+        - clock-names
+        - reg
+
 additionalProperties: false
 
 examples:
@@ -73,4 +91,9 @@ examples:
         reg = <0x10830600 0x100>;
         clocks = <&clock CLK_SSS>;
         clock-names = "secss";
+    };
+
+  - |
+    rng {
+        compatible = "samsung,exynos8895-trng";
     };
