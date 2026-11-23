@@ -20,6 +20,7 @@
 
 #include <linux/of_device.h>
 #include <linux/of_gpio.h>
+#include "spi.h"
 
 #define DRIVER_NAME "panel_spi"
 #define MAX_PANEL_SPI_RX_BUF	(256)
@@ -157,9 +158,8 @@ static int panel_spi_probe(struct spi_device *spi)
 	return 0;
 }
 
-static int panel_spi_remove(struct spi_device *spi)
+static void panel_spi_remove(struct spi_device *spi)
 {
-	return 0;
 }
 
 static const struct of_device_id panel_spi_match_table[] = {

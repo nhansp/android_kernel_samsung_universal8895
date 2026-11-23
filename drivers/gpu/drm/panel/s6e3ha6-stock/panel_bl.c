@@ -12,7 +12,7 @@
  */
 
 #include <linux/backlight.h>
-#include "../dpu/dsim.h"
+#include "panel_dpu.h"
 #include "panel.h"
 #include "panel_bl.h"
 #include "copr.h"

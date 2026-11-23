@@ -13,8 +13,7 @@
 #include <linux/of_gpio.h>
 #include <video/mipi_display.h>
 /* TODO : remove dsim dependent code */
-#include "../../dpu/decon.h"
-#include "../../dpu/dsim.h"
+#include "../panel_dpu.h"
 #include "../panel.h"
 #include "s6e3ha6.h"
 #include "s6e3ha6_panel.h"
@@ -71,7 +70,7 @@ static int init_dimming(struct panel_info *panel_data, int id,
 	char strbuf[1024];
 	struct dimming_info *dim_info;
 	struct maptbl *gamma_maptbl = NULL;
-	u32 luminance, nr_luminance, nr_hbm_luminance, nr_extend_hbm_luminance;
+	u32 luminance, nr_luminance, nr_hbm_luminance;
 	struct panel_device *panel = to_panel_device(panel_data);
 	struct panel_bl_device *panel_bl;
 	struct brightness_table *brt_tbl;
@@ -105,7 +104,7 @@ static int init_dimming(struct panel_info *panel_data, int id,
 		return -ENOMEM;
 	}
 
-	ret = init_dimming_info(dim_info, &panel_dim_info->dim_init_info);
+	ret = s6e3ha6_init_dimming_info(dim_info, &panel_dim_info->dim_init_info);
 	if (unlikely(ret)) {
 		pr_err("%s panel_bl-%d failed to init_dimming_info\n", __func__, id);
 		kfree(dim_info);
@@ -115,7 +114,6 @@ static int init_dimming(struct panel_info *panel_data, int id,
 	memcpy(brt_tbl, panel_dim_info->brt_tbl, sizeof(struct brightness_table));
 	nr_luminance = panel_dim_info->nr_luminance;
 	nr_hbm_luminance = panel_dim_info->nr_hbm_luminance;
-	nr_extend_hbm_luminance = panel_dim_info->nr_extend_hbm_luminance;
 
 	if (id == PANEL_BL_SUBDEV_TYPE_HMD) {
 		gamma_maptbl = find_panel_maptbl_by_index(panel_data, HMD_GAMMA_MAPTBL);
@@ -128,20 +126,20 @@ static int init_dimming(struct panel_info *panel_data, int id,
 		return -EINVAL;
 	}
 
-	init_dimming_mtp(dim_info, mtp);
+	s6e3ha6_init_dimming_mtp(dim_info, mtp);
 	if (hbm && (panel_dim_info->hbm_target_luminance >
 			panel_dim_info->target_luminance))
-		init_dimming_hbm_info(dim_info,
-				hbm, panel_dim_info->hbm_target_luminance);
-	process_dimming(dim_info);
+		s6e3ha6_init_dimming_hbm_info(dim_info,
+					      hbm, panel_dim_info->hbm_target_luminance);
+	s6e3ha6_process_dimming(dim_info);
 
 	for (i = 0; i < brt_tbl->sz_lum; i++) {
 		if (i >= nr_luminance + nr_hbm_luminance)
 			luminance = brt_tbl->lum[nr_luminance + nr_hbm_luminance - 1];
 		else
 			luminance = brt_tbl->lum[i];
-		get_dimming_gamma_compact(dim_info, luminance,
-				(u8 *)&gamma_maptbl->arr[i * gamma_maptbl->ncol]);
+		s6e3ha6_get_dimming_gamma_compact(dim_info, luminance,
+						  (u8 *)&gamma_maptbl->arr[i * gamma_maptbl->ncol]);
 	}
 
 	panel_data->dim_info[id] = dim_info;

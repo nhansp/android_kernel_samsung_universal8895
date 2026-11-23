@@ -130,7 +130,7 @@ static const char * const accessibility_name[] = {
 	[COLOR_BLIND_HBM] = "color_blind_hbm",
 };
 
-int mdnie_current_state(struct mdnie_info *mdnie)
+static int mdnie_current_state(struct mdnie_info *mdnie)
 {
 	if (IS_BYPASS_MODE(mdnie))
 		return MDNIE_BYPASS_MODE;
@@ -231,15 +231,6 @@ struct maptbl *mdnie_find_etc_maptbl(struct mdnie_info *mdnie, int index)
 		return NULL;
 	}
 	return &mdnie->etc_maptbl[index];
-}
-
-struct maptbl *mdnie_find_scr_white_maptbl(struct mdnie_info *mdnie, int index)
-{
-	if (unlikely(index < 0 || index >= mdnie->nr_scr_white_maptbl)) {
-		pr_err("%s, failed to find maptbl %d\n", __func__, index);
-		return NULL;
-	}
-	return &mdnie->scr_white_maptbl[index];
 }
 
 static int mdnie_get_coordinate(struct mdnie_info *mdnie, int *x, int *y)
@@ -1151,42 +1142,14 @@ int mdnie_disable(struct mdnie_info *mdnie)
 	return 0;
 }
 
-static int fb_notifier_callback(struct notifier_block *self,
-				 unsigned long event, void *data)
+/*
+ * The vendor driver did this on FB_BLANK_UNBLANK of fb0. There is no
+ * FB_EVENT_BLANK any more: the DRM panel calls it when it is enabled.
+ */
+void mdnie_unblank(struct mdnie_info *mdnie)
 {
-	struct mdnie_info *mdnie;
-	struct fb_event *evdata = data;
-	int fb_blank;
-
-	switch (event) {
-	case FB_EVENT_BLANK:
-		break;
-	default:
-		return 0;
-	}
-
-	mdnie = container_of(self, struct mdnie_info, fb_notif);
-
-	fb_blank = *(int *)evdata->data;
-
-	pr_debug("%s: %d\n", __func__, fb_blank);
-
-	if (evdata->info->node != 0)
-		return 0;
-
-	if (fb_blank == FB_BLANK_UNBLANK) {
-		mdnie->props.light_notification = LIGHT_NOTIFICATION_OFF;
-		mdnie_update(mdnie);
-	}
-
-	return 0;
-}
-
-static int mdnie_register_fb(struct mdnie_info *mdnie)
-{
-	memset(&mdnie->fb_notif, 0, sizeof(mdnie->fb_notif));
-	mdnie->fb_notif.notifier_call = fb_notifier_callback;
-	return fb_register_client(&mdnie->fb_notif);
+	mdnie->props.light_notification = LIGHT_NOTIFICATION_OFF;
+	mdnie_update(mdnie);
 }
 
 int mdnie_probe(struct panel_device *panel, struct mdnie_tune *mdnie_tune)
@@ -1199,7 +1162,7 @@ int mdnie_probe(struct panel_device *panel, struct mdnie_tune *mdnie_tune)
 		return -ENODEV;
 	}
 
-	mdnie->class = class_create(THIS_MODULE, "mdnie");
+	mdnie->class = class_create("mdnie");
 	if (IS_ERR_OR_NULL(mdnie->class)) {
 		pr_err("failed to create mdnie class\n");
 		ret = -EINVAL;
@@ -1207,7 +1170,7 @@ int mdnie_probe(struct panel_device *panel, struct mdnie_tune *mdnie_tune)
 	}
 
 	mdnie->dev = device_create(mdnie->class,
-			&panel->lcd->dev, 0, &mdnie, "mdnie");
+			&panel->lcd->dev, 0, mdnie, "mdnie");
 	if (IS_ERR_OR_NULL(mdnie->dev)) {
 		pr_err("failed to create mdnie device\n");
 		ret = -EINVAL;
@@ -1292,7 +1255,6 @@ int mdnie_probe(struct panel_device *panel, struct mdnie_tune *mdnie_tune)
 		}
 	}
 
-	mdnie_register_fb(mdnie);
 	mutex_unlock(&mdnie->lock);
 	mdnie_enable(mdnie);
 	dev_info(mdnie->dev, "registered successfully\n");
@@ -1342,7 +1304,7 @@ ssize_t attr_store_for_each(struct class *cls,
 
 	if (!class)
 		return -EINVAL;
-	if (!class->p) {
+	if (!class_is_registered(class)) {
 		WARN(1, "%s called for class '%s' before it was initialized",
 				__func__, class->name);
 		return -EINVAL;

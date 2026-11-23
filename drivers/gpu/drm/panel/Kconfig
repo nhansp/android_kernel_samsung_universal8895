@@ -819,6 +819,19 @@ config DRM_PANEL_SAMSUNG_S6E3HA6
 	  S6E3HA6 1440x2960 AMOLED panel of the Galaxy Note 8, a MIPI DSI
 	  command-mode panel with VESA DSC. It registers the backlight
 	  device "panel" and the lcd class device "panel".
+config DRM_PANEL_SAMSUNG_S6E3HA6_STOCK
+	bool "Samsung S6E3HA6 vendor panel framework"
+	depends on DRM_PANEL_SAMSUNG_S6E3HA6=y
+	depends on BACKLIGHT_CLASS_DEVICE=y
+	depends on SPI=y
+	depends on LCD_CLASS_DEVICE=y
+	help
+	  Drive the S6E3HA6 panel through Samsung's panel framework from the
+	  Galaxy Note 8 vendor kernel: the panel's own sequence tables, AID
+	  dimming with the "panel" backlight device, mDNIe, COPR (read over
+	  the panel's spi-gpio port), the AOD active clock, POC, and the lcd
+	  class "panel" device with its sysfs nodes. Without it the S6E3HA6
+	  driver sends its fixed sequences only.
 
 config DRM_PANEL_SAMSUNG_S6E3HA8
 	tristate "Samsung S6E3HA8 DSI video mode panel"

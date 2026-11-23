@@ -197,7 +197,7 @@ enum {
 extern const char *tag_name[];
 extern const char *global_dim_info_name[];
 extern const char *dim_lut_field_name[];
-extern const char *color_name[];
+extern const char *s6e3ha6_color_name[];
 extern const char *volt_src_name[];
 
 struct gamma_curve {
@@ -238,14 +238,14 @@ typedef struct timespec mytime_t;
 #endif	/* __KERNEL__ */
 #endif	/* DEBUG_EXCUTION_TIME */
 
-#define in_range(i, r)					\
+#define dim_in_range(i, r)					\
 	((r).from <= (r).to) ?				\
 	((r).from <= (i) && (i) < (r).to) :	\
 	((r).from >= (i) && (i) > (r).to)
 
 #define for_each_range(i, r)	\
 for ((i) = (r).from;		\
-	(i) != (r).to && in_range(i, r);			\
+	(i) != (r).to && dim_in_range(i, r);			\
 	(i) += (r).step)
 
 #define for_each_tp(__pos__)	\
@@ -379,12 +379,18 @@ struct dimming_init_info {
 	s32 hbm_luminance;
 };
 
-int init_dimming_info(struct dimming_info *, struct dimming_init_info *);
-int init_dimming_mtp(struct dimming_info *, s32 (*)[MAX_COLOR]);
-int init_dimming_hbm_info(struct dimming_info *, s32 (*)[MAX_COLOR], u32);
-int process_dimming(struct dimming_info *);
-void get_dimming_gamma_compact(struct dimming_info *, u32, u8 *);
-void get_dimming_gamma(struct dimming_info *, u32, u8 *);
+/*
+ * Prefixed, unlike the vendor names: panel-samsung-s6e3ha6-dimming.c defines
+ * the same symbols in the same image.
+ */
+int s6e3ha6_init_dimming_info(struct dimming_info *dim_info, struct dimming_init_info *src);
+int s6e3ha6_init_dimming_mtp(struct dimming_info *dim_info, s32 (*mtp)[MAX_COLOR]);
+int s6e3ha6_init_dimming_hbm_info(struct dimming_info *dim_info,
+				  s32 (*hbm_gamma_tbl)[MAX_COLOR], u32 hbm_luminance);
+int s6e3ha6_process_dimming(struct dimming_info *dim_info);
+void s6e3ha6_get_dimming_gamma_compact(struct dimming_info *dim_info, u32 luminance,
+				       u8 *output);
+void s6e3ha6_get_dimming_gamma(struct dimming_info *dim_info, u32 luminance, u8 *output);
 /* for debug */
 void print_dimming_info(struct dimming_info *dim_info, int tag);
 #endif	/* _DIMMING_H_ */
