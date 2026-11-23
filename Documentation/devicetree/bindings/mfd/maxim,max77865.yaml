@@ -1,0 +1,132 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/mfd/maxim,max77865.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Maxim MAX77865 companion power management IC
+
+maintainers:
+  - nhansp <nhan.094.vn@gmail.com>
+
+description: |
+  The MAX77865 is the companion PMIC of Exynos 8895 phones (Samsung Galaxy
+  Note 8). This node is its top-level page at I2C address 0x66: the register
+  map and the interrupt source register (INTSRC), whose bits are exposed as a
+  one-cell interrupt controller: 0 charger, 1 top-level (system), 2 fuel gauge.
+  The charger (0x69) and the fuel gauge (0x36) are separate nodes on the same
+  bus (maxim,max77865-charger, maxim,max77865-battery).
+
+properties:
+  compatible:
+    const: maxim,max77865
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  interrupt-controller: true
+
+  "#interrupt-cells":
+    const: 1
+
+  wakeup-source: true
+
+  haptic:
+    type: object
+    additionalProperties: false
+    description: Haptic motor driver for MAX77865.
+
+    properties:
+      compatible:
+        const: maxim,max77865-haptic
+
+      pwms:
+        maxItems: 1
+
+      maxim,max-duty-ns:
+        description: Maximum duty cycle in nanoseconds.
+
+      maxim,max-timeout-ms:
+        description: Maximum vibration timeout in milliseconds.
+
+      maxim,multi-freq-duty-ns:
+        minItems: 7
+        maxItems: 7
+        description:
+          Duty cycle of each of the seven vibration frequencies (alert, low,
+          mid, high, 0, home key press, home key release). Entries 5 and 6
+          drive the tick of the pressure home key.
+
+      maxim,multi-freq-period-ns:
+        minItems: 7
+        maxItems: 7
+        description:
+          PWM period of each of the seven vibration frequencies, in the order
+          of maxim,multi-freq-duty-ns.
+
+    required:
+      - compatible
+      - pwms
+
+  leds:
+    type: object
+    additionalProperties: false
+    description: RGB LED controller for MAX77865.
+
+    properties:
+      compatible:
+        const: maxim,max77865-rgb
+
+      maxim,normal-current:
+        $ref: /schemas/types.yaml#/definitions/uint32
+        description: Current limit in normal power mode.
+
+      maxim,lowpower-current:
+        $ref: /schemas/types.yaml#/definitions/uint32
+        description: Current limit in low power mode.
+
+      maxim,brightness-ratio:
+        $ref: /schemas/types.yaml#/definitions/uint32-array
+        minItems: 3
+        maxItems: 3
+        description: Brightness ratios for R, G, B channels in normal power mode.
+
+      maxim,brightness-ratio-low:
+        $ref: /schemas/types.yaml#/definitions/uint32-array
+        minItems: 3
+        maxItems: 3
+        description: Brightness ratios for R, G, B channels in low power mode.
+
+    required:
+      - compatible
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - interrupt-controller
+  - "#interrupt-cells"
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        pmic@66 {
+            compatible = "maxim,max77865";
+            reg = <0x66>;
+            interrupt-parent = <&gpa1>;
+            interrupts = <6 IRQ_TYPE_LEVEL_LOW>;
+            interrupt-controller;
+            #interrupt-cells = <1>;
+            wakeup-source;
+        };
+    };
