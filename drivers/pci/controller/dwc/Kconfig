@@ -377,6 +377,17 @@ config PCI_EXYNOS
 	  hardware and therefore the driver re-uses the DesignWare core
 	  functions to implement the driver.
 
+config PCIE_EXYNOS8895
+	bool "Samsung Exynos8895 PCIe controller"
+	depends on ARCH_EXYNOS && OF && PCI_MSI
+	select PCIE_DW_HOST
+	select MFD_SYSCON
+	help
+	  Enables support for PCIe root complex 0 of the Samsung Exynos8895
+	  SoC, the channel wired to the Wi-Fi chip. The link is brought up
+	  and down on request of the endpoint driver through the
+	  exynos_pcie_pm_resume() and exynos_pcie_pm_suspend() interface.
+
 config PCIE_FU740
 	bool "SiFive FU740 PCIe controller"
 	depends on PCI_MSI
