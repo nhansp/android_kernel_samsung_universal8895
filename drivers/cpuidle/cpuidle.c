@@ -529,6 +529,7 @@ void cpuidle_pause(void)
 	cpuidle_uninstall_idle_handler();
 	mutex_unlock(&cpuidle_lock);
 }
+EXPORT_SYMBOL_GPL(cpuidle_pause);
 
 /* Currently used in suspend/resume path to resume cpuidle */
 void cpuidle_resume(void)
@@ -537,6 +538,7 @@ void cpuidle_resume(void)
 	cpuidle_install_idle_handler();
 	mutex_unlock(&cpuidle_lock);
 }
+EXPORT_SYMBOL_GPL(cpuidle_resume);
 
 /**
  * cpuidle_enable_device - enables idle PM for a CPU
