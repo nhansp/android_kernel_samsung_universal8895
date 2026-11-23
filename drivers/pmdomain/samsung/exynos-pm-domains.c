@@ -36,9 +36,11 @@ struct exynos_pd_extra {
 	unsigned int nr_pre_on;
 	const struct exynos_pd_write *post_off;	/* reg 1, after power-off */
 	unsigned int nr_post_off;
+	u32 pmu_off_reg, pmu_off_mask;		/* PMU bits set before power-off */
 	u32 sysreg[2];				/* saved before off, restored after on */
 	unsigned int nr_sysreg;
 	bool sysreg_required;			/* not only DRCG_EN: samsung,sysreg required */
+	unsigned int genpd_flags;
 };
 
 struct exynos_pm_domain_config {
@@ -57,6 +59,7 @@ struct exynos_pm_domain {
 	u32 local_pwr_cfg;
 	const struct exynos_pd_extra *extra;
 	void __iomem *seq_base;
+	struct regmap *pmu;
 	struct regmap *sysreg;
 	u32 saved[2];
 	bool saved_valid;
@@ -97,6 +100,9 @@ static void exynos_pd_before(struct exynos_pm_domain *pd, bool power_on)
 			regmap_read(pd->sysreg, x->sysreg[i], &pd->saved[i]);
 		pd->saved_valid = true;
 	}
+	if (pd->pmu && x->pmu_off_mask)
+		regmap_update_bits(pd->pmu, x->pmu_off_reg, x->pmu_off_mask,
+				   x->pmu_off_mask);
 }
 
 static void exynos_pd_after(struct exynos_pm_domain *pd, bool power_on)
@@ -213,7 +219,14 @@ static const struct exynos_pd_write exynos8895_g3d_post_off[] = {
 };
 
 #define EXYNOS8895_SYSREG_DRCG_EN	0x0200
+#define EXYNOS8895_SYSREG_SNPS_EMA	0x0300
+#define EXYNOS8895_ABOX_CA7_OPTION	0x2528
+#define EXYNOS8895_ABOX_CA7_USE_STANDBYWFI	BIT(16)
 
+/*
+ * ABOX and VTS stay powered through system suspend while a device in them is
+ * on the wakeup path.
+ */
 static const struct exynos_pd_extra exynos8895_pd_extra[] = {
 	{	/* g3d */
 		.conf		= 0x164840e0,
@@ -242,6 +255,21 @@ static const struct exynos_pd_extra exynos8895_pd_extra[] = {
 	},
 	{	/* srdz */
 		.conf = 0x16485420, .sysreg = { EXYNOS8895_SYSREG_DRCG_EN }, .nr_sysreg = 1,
+	},
+	{	/* abox */
+		.conf		= 0x16484000,
+		.pmu_off_reg	= EXYNOS8895_ABOX_CA7_OPTION,
+		.pmu_off_mask	= EXYNOS8895_ABOX_CA7_USE_STANDBYWFI,
+		.sysreg		= { EXYNOS8895_SYSREG_DRCG_EN, EXYNOS8895_SYSREG_SNPS_EMA },
+		.nr_sysreg	= 2,
+		.sysreg_required = true,
+		.genpd_flags	= GENPD_FLAG_ACTIVE_WAKEUP,
+	},
+	{	/* vts */
+		.conf		= 0x164841a0,
+		.sysreg		= { EXYNOS8895_SYSREG_DRCG_EN },
+		.nr_sysreg	= 1,
+		.genpd_flags	= GENPD_FLAG_ACTIVE_WAKEUP,
 	},
 };
 
@@ -292,6 +320,13 @@ static int exynos_pd_get_extra(struct device *dev, struct exynos_pm_domain *pd,
 	if (!x)
 		return 0;
 
+	if (x->pmu_off_mask) {
+		pd->pmu = syscon_regmap_lookup_by_phandle(np, "samsung,pmu-syscon");
+		if (IS_ERR(pd->pmu))
+			return dev_err_probe(dev, PTR_ERR(pd->pmu),
+					     "power sequence needs samsung,pmu-syscon\n");
+	}
+
 	if (x->nr_sysreg) {
 		if (x->sysreg_required)
 			pd->sysreg = syscon_regmap_lookup_by_phandle(np, "samsung,sysreg");
@@ -311,6 +346,7 @@ static int exynos_pd_get_extra(struct device *dev, struct exynos_pm_domain *pd,
 	}
 
 	pd->extra = x;
+	pd->pd.flags |= x->genpd_flags;
 	return 0;
 }
 
