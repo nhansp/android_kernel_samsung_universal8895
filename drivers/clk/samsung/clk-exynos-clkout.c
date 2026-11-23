@@ -20,7 +20,8 @@
 
 #define DRV_NAME			"exynos-clkout"
 
-#define EXYNOS_CLKOUT_NR_CLKS		1
+/* CLKOUT, and CLKOUT1 on Exynos8895 */
+#define EXYNOS_CLKOUT_MAX_CLKS		2
 #define EXYNOS_CLKOUT_PARENTS		32
 
 #define EXYNOS_PMU_DEBUG_REG		0xa00
@@ -30,6 +31,18 @@
 #define EXYNOS5_CLKOUT_MUX_MASK		0x1f
 #define EXYNOS8895_CLKOUT_MUX_MASK	0x3f
 
+#define EXYNOS8895_PMU_DEBUG1_REG	0xa0c
+#define EXYNOS8895_CLKOUT1_SEL_SHIFT	8
+#define EXYNOS8895_CLKOUT1_SEL_MASK	0x3f
+#define EXYNOS8895_CLKOUT1_SEL_TCXO	0x0
+#define EXYNOS8895_CLKOUT1_DISABLE_BIT	0
+
+struct exynos_clkout1 {
+	struct clk_hw hw;
+	void __iomem *reg;
+	spinlock_t *lock;	/* shared with the CLKOUT mux and gate */
+};
+
 struct exynos_clkout {
 	struct clk_gate gate;
 	struct clk_mux mux;
@@ -37,11 +50,14 @@ struct exynos_clkout {
 	void __iomem *reg;
 	struct device_node *np;
 	u32 pmu_debug_save;
+	struct exynos_clkout1 clkout1;
+	bool has_clkout1;
 	struct clk_hw_onecell_data data;
 };
 
 struct exynos_clkout_variant {
 	u32 mux_mask;
+	bool has_clkout1;
 };
 
 static const struct exynos_clkout_variant exynos_clkout_exynos4 = {
@@ -54,6 +70,7 @@ static const struct exynos_clkout_variant exynos_clkout_exynos5 = {
 
 static const struct exynos_clkout_variant exynos_clkout_exynos8895 = {
 	.mux_mask	= EXYNOS8895_CLKOUT_MUX_MASK,
+	.has_clkout1	= true,
 };
 
 static const struct of_device_id exynos_clkout_ids[] = {
@@ -91,14 +108,13 @@ static const struct of_device_id exynos_clkout_ids[] = {
  * Device will be instantiated as child of PMU device without its own
  * device node.  Therefore match compatibles against parent.
  */
-static int exynos_clkout_match_parent_dev(struct device *dev, u32 *mux_mask)
+static const struct exynos_clkout_variant *exynos_clkout_match_parent_dev(struct device *dev)
 {
-	const struct exynos_clkout_variant *variant;
 	const struct of_device_id *match;
 
 	if (!dev->parent) {
 		dev_err(dev, "not instantiated from MFD\n");
-		return -EINVAL;
+		return NULL;
 	}
 
 	/*
@@ -109,32 +125,100 @@ static int exynos_clkout_match_parent_dev(struct device *dev, u32 *mux_mask)
 	match = of_match_device(exynos_clkout_ids, dev->parent);
 	if (!match) {
 		dev_err(dev, "cannot match parent device\n");
-		return -EINVAL;
+		return NULL;
 	}
-	variant = match->data;
 
-	*mux_mask = variant->mux_mask;
+	return match->data;
+}
+
+static struct exynos_clkout1 *to_exynos_clkout1(struct clk_hw *hw)
+{
+	return container_of(hw, struct exynos_clkout1, hw);
+}
+
+/* Select TCXO, then clear the disable bit, in two writes as the vendor driver */
+static int exynos8895_clkout1_enable(struct clk_hw *hw)
+{
+	struct exynos_clkout1 *c = to_exynos_clkout1(hw);
+	unsigned long flags;
+	u32 v;
+
+	spin_lock_irqsave(c->lock, flags);
+	v = readl(c->reg);
+	v &= ~(EXYNOS8895_CLKOUT1_SEL_MASK << EXYNOS8895_CLKOUT1_SEL_SHIFT);
+	v |= EXYNOS8895_CLKOUT1_SEL_TCXO << EXYNOS8895_CLKOUT1_SEL_SHIFT;
+	writel(v, c->reg);
+	v = readl(c->reg);
+	v &= ~BIT(EXYNOS8895_CLKOUT1_DISABLE_BIT);
+	writel(v, c->reg);
+	spin_unlock_irqrestore(c->lock, flags);
 
 	return 0;
+}
+
+static void exynos8895_clkout1_disable(struct clk_hw *hw)
+{
+	struct exynos_clkout1 *c = to_exynos_clkout1(hw);
+	unsigned long flags;
+	u32 v;
+
+	spin_lock_irqsave(c->lock, flags);
+	v = readl(c->reg);
+	v |= BIT(EXYNOS8895_CLKOUT1_DISABLE_BIT);
+	writel(v, c->reg);
+	spin_unlock_irqrestore(c->lock, flags);
+}
+
+static int exynos8895_clkout1_is_enabled(struct clk_hw *hw)
+{
+	struct exynos_clkout1 *c = to_exynos_clkout1(hw);
+
+	return !(readl(c->reg) & BIT(EXYNOS8895_CLKOUT1_DISABLE_BIT));
+}
+
+static const struct clk_ops exynos8895_clkout1_ops = {
+	.enable		= exynos8895_clkout1_enable,
+	.disable	= exynos8895_clkout1_disable,
+	.is_enabled	= exynos8895_clkout1_is_enabled,
+};
+
+/* CLKOUT1 (Exynos8895): the NFC reference clock, always sourced from TCXO */
+static int exynos8895_clkout1_register(struct exynos_clkout *clkout)
+{
+	static const char * const parent_names[] = { "oscclk" };
+	struct clk_init_data init = {
+		.name		= "clkout1",
+		.ops		= &exynos8895_clkout1_ops,
+		.parent_names	= parent_names,
+		.num_parents	= ARRAY_SIZE(parent_names),
+		.flags		= 0,
+	};
+
+	clkout->clkout1.reg = clkout->reg + EXYNOS8895_PMU_DEBUG1_REG;
+	clkout->clkout1.lock = &clkout->slock;
+	clkout->clkout1.hw.init = &init;
+
+	return clk_hw_register(NULL, &clkout->clkout1.hw);
 }
 
 static int exynos_clkout_probe(struct platform_device *pdev)
 {
 	const char *parent_names[EXYNOS_CLKOUT_PARENTS];
 	struct clk *parents[EXYNOS_CLKOUT_PARENTS];
+	const struct exynos_clkout_variant *variant;
 	struct exynos_clkout *clkout;
 	int parent_count, ret, i;
-	u32 mux_mask;
 
 	clkout = devm_kzalloc(&pdev->dev,
-			      struct_size(clkout, data.hws, EXYNOS_CLKOUT_NR_CLKS),
+			      struct_size(clkout, data.hws, EXYNOS_CLKOUT_MAX_CLKS),
 			      GFP_KERNEL);
 	if (!clkout)
 		return -ENOMEM;
 
-	ret = exynos_clkout_match_parent_dev(&pdev->dev, &mux_mask);
-	if (ret)
-		return ret;
+	variant = exynos_clkout_match_parent_dev(&pdev->dev);
+	if (!variant)
+		return -EINVAL;
+	clkout->has_clkout1 = variant->has_clkout1;
 
 	clkout->np = pdev->dev.of_node;
 	if (!clkout->np) {
@@ -179,11 +263,11 @@ static int exynos_clkout_probe(struct platform_device *pdev)
 	clkout->gate.lock = &clkout->slock;
 
 	clkout->mux.reg = clkout->reg + EXYNOS_PMU_DEBUG_REG;
-	clkout->mux.mask = mux_mask;
+	clkout->mux.mask = variant->mux_mask;
 	clkout->mux.shift = EXYNOS_CLKOUT_MUX_SHIFT;
 	clkout->mux.lock = &clkout->slock;
 
-	clkout->data.num = EXYNOS_CLKOUT_NR_CLKS;
+	clkout->data.num = clkout->has_clkout1 ? 2 : 1;
 	clkout->data.hws[0] = clk_hw_register_composite(NULL, "clkout",
 				parent_names, parent_count, &clkout->mux.hw,
 				&clk_mux_ops, NULL, NULL, &clkout->gate.hw,
@@ -194,12 +278,22 @@ static int exynos_clkout_probe(struct platform_device *pdev)
 		goto err_unmap;
 	}
 
+	if (clkout->has_clkout1) {
+		ret = exynos8895_clkout1_register(clkout);
+		if (ret)
+			goto err_clk_unreg;
+		clkout->data.hws[1] = &clkout->clkout1.hw;
+	}
+
 	ret = of_clk_add_hw_provider(clkout->np, of_clk_hw_onecell_get, &clkout->data);
 	if (ret)
-		goto err_clk_unreg;
+		goto err_clkout1_unreg;
 
 	return 0;
 
+err_clkout1_unreg:
+	if (clkout->has_clkout1)
+		clk_hw_unregister(&clkout->clkout1.hw);
 err_clk_unreg:
 	clk_hw_unregister(clkout->data.hws[0]);
 err_unmap:
@@ -219,6 +313,8 @@ static void exynos_clkout_remove(struct platform_device *pdev)
 	struct exynos_clkout *clkout = platform_get_drvdata(pdev);
 
 	of_clk_del_provider(clkout->np);
+	if (clkout->has_clkout1)
+		clk_hw_unregister(&clkout->clkout1.hw);
 	clk_hw_unregister(clkout->data.hws[0]);
 	iounmap(clkout->reg);
 }
