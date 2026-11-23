@@ -1,0 +1,162 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/pci/samsung,exynos8895-pcie.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos8895 PCIe Host Controller
+
+maintainers:
+  - nhansp <nhan.094.vn@gmail.com>
+
+description:
+  Root complex 0 of the Samsung Exynos8895 SoC, a single-lane Synopsys
+  DesignWare PCIe controller with its own PHY and PCS register blocks. It
+  shares the PHY and the FSYS1 sub-controller with channel 1, so it holds the
+  channel 1 and TOE clocks as well.
+
+allOf:
+  - $ref: /schemas/pci/pci-host-bridge.yaml#
+
+properties:
+  compatible:
+    const: samsung,exynos8895-pcie
+
+  reg:
+    items:
+      - description: Data Bus Interface (DBI) registers
+      - description: External Local Bus Interface (ELBI) registers
+      - description: PHY registers
+      - description: PCS registers
+      - description: Config space page
+
+  reg-names:
+    items:
+      - const: dbi
+      - const: elbi
+      - const: phy
+      - const: pcs
+      - const: config
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    items:
+      - description: DBI clock
+      - description: Master ACLK
+      - description: Slave ACLK
+      - description: Driver APB clock
+      - description: Pipe APB clock
+      - description: PHY APB clock
+      - description: PHY reference clock
+      - description: DBI clock of channel 1 (shared sub-controller)
+      - description: Master ACLK of channel 1
+      - description: Slave ACLK of channel 1
+      - description: Driver APB clock of channel 1
+      - description: TOE Wi-Fi 0 clock
+      - description: TOE Wi-Fi 1 clock
+
+  clock-names:
+    items:
+      - const: dbi
+      - const: mstr
+      - const: slv
+      - const: apb
+      - const: pipe_apb
+      - const: phy_apb
+      - const: ref
+      - const: dbi1
+      - const: mstr1
+      - const: slv1
+      - const: apb1
+      - const: toe0
+      - const: toe1
+
+  samsung,pmu-syscon:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Phandle to the PMU system controller
+
+  samsung,fsys-sysreg:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    items:
+      - items:
+          - description: phandle to the FSYS1 sysreg syscon
+          - description: offset of the PHY control register
+    description: Phandle and offset to the FSYS1 syscon for PHY and bifurcation control
+
+  num-lanes:
+    const: 1
+
+  reset-gpios:
+    description: GPIO specification for PERST# reset line (active low)
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - clocks
+  - clock-names
+  - samsung,pmu-syscon
+  - samsung,fsys-sysreg
+  - "#address-cells"
+  - "#size-cells"
+  - device_type
+  - ranges
+  - bus-range
+  - "#interrupt-cells"
+  - interrupt-map-mask
+  - interrupt-map
+  - num-lanes
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/clock/samsung,exynos8895.h>
+
+    soc {
+        #address-cells = <1>;
+        #size-cells = <1>;
+
+        pcie0: pcie@11700000 {
+            compatible = "samsung,exynos8895-pcie";
+            reg = <0x11700000 0x1000>,
+                  <0x116a0000 0x1000>,
+                  <0x116d0000 0x1000>,
+                  <0x116c0000 0x1fc>,
+                  <0x11bff000 0x1000>;
+            reg-names = "dbi", "elbi", "phy", "pcs", "config";
+            interrupts = <GIC_SPI 345 IRQ_TYPE_LEVEL_HIGH>;
+            clocks = <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_DBI_ACLK_0>,
+                     <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_MSTR_ACLK_0>,
+                     <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_SLV_ACLK_0>,
+                     <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_PCIE_SUB_CTRL_INST_0_I_DRIVER_APB_CLK>,
+                     <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_PIPE2_DIGITAL_X2_WRAP_INST_0_I_APB_PCLK_SCL>,
+                     <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_IEEE1500_WRAPPER_FOR_PCIE_PHY_LC_X2_INST_0_I_SCL_APB_PCLK>,
+                     <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_PHY_REF_CLK_IN>,
+                     <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_DBI_ACLK_1>,
+                     <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_MSTR_ACLK_1>,
+                     <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_SLV_ACLK_1>,
+                     <&cmu_fsys1 CLK_GOUT_FSYS1_PCIE_PCIE_SUB_CTRL_INST_1_I_DRIVER_APB_CLK>,
+                     <&cmu_fsys1 CLK_GOUT_FSYS1_TOE_WIFI0_I_CLK>,
+                     <&cmu_fsys1 CLK_GOUT_FSYS1_TOE_WIFI1_I_CLK>;
+            clock-names = "dbi", "mstr", "slv", "apb", "pipe_apb", "phy_apb", "ref",
+                          "dbi1", "mstr1", "slv1", "apb1", "toe0", "toe1";
+            samsung,pmu-syscon = <&pmu_system_controller>;
+            samsung,fsys-sysreg = <&syscon_fsys1 0x1044>;
+            #address-cells = <3>;
+            #size-cells = <2>;
+            device_type = "pci";
+            ranges = <0x82000000 0x0 0x11800000 0x11800000 0x0 0x400000>;
+            bus-range = <0x00 0xff>;
+            #interrupt-cells = <1>;
+            interrupt-map-mask = <0 0 0 0>;
+            interrupt-map = <0 0 0 0 &gic GIC_SPI 345 IRQ_TYPE_LEVEL_HIGH>;
+            num-lanes = <1>;
+            status = "disabled";
+        };
+    };
