@@ -506,6 +506,46 @@ config HW_RANDOM_EXYNOS
 
 	  If unsure, say Y.
 
+config HW_RANDOM_EXYNOS8895_FIPS
+	bool "Exynos8895 secure TRNG start-up health test"
+	depends on HW_RANDOM_EXYNOS && ARCH_EXYNOS
+	default y
+	help
+	  Run the start-up health test of the Exynos8895 secure-world TRNG
+	  before its first read, and issue the HWRNG_RESUME secure monitor
+	  call on system resume, as the vendor kernel does when built with
+	  its FIPS compliance option.
+
+	  If unsure, say Y.
+
+choice
+	prompt "Exynos8895 secure TRNG health test failure policy"
+	depends on HW_RANDOM_EXYNOS8895_FIPS
+	default HW_RANDOM_EXYNOS8895_FAIL_RESET
+	help
+	  Select what happens when the secure world reports that a health
+	  test of the Exynos8895 TRNG failed, meaning that the TRNG may not
+	  deliver enough entropy: panic, as the vendor kernel does, or stop
+	  using the TRNG until the next boot.
+
+config HW_RANDOM_EXYNOS8895_FAIL_RESET
+	bool "Panic"
+	help
+	  Panic when a health test fails. The system then restarts as the
+	  panic= setting says, and the TRNG runs its start-up test again
+	  on the next boot before any of its output is used. This is the
+	  behaviour of the vendor kernel.
+
+config HW_RANDOM_EXYNOS8895_FAIL_DISABLE
+	bool "Stop using the TRNG"
+	help
+	  Log the failure and fail every further read from the TRNG until
+	  the next boot. The kernel keeps running without the TRNG as an
+	  entropy source, and reads from /dev/hwrng return an error while
+	  it is the current hwrng.
+
+endchoice
+
 config HW_RANDOM_OPTEE
 	tristate "OP-TEE based Random Number Generator support"
 	depends on OPTEE

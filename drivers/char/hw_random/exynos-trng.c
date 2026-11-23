@@ -24,6 +24,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/property.h>
+#include <linux/spinlock.h>
 
 #define EXYNOS_TRNG_CLKDIV		0x0
 
@@ -48,6 +49,7 @@
 
 /* Driver feature flags */
 #define EXYNOS_SMC			BIT(0)
+#define EXYNOS_SMC_SESSION		BIT(1)
 
 #define EXYNOS_SMC_CALL_VAL(func_num)			\
 	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,		\
@@ -67,8 +69,15 @@
 /* SMC_CMD_RANDOM: return values */
 #define HWRNG_RET_OK			0x0
 #define HWRNG_RET_RETRY_ERROR		0x2
+#define HWRNG_RET_TEST_ERROR		0x4
+#define HWRNG_RET_START_UP_TEST_DONE	0x5
+#define HWRNG_RET_TEST_KAT_ERROR	0xc
 
 #define HWRNG_MAX_TRIES			100
+
+/* EXYNOS_SMC_SESSION: start-up test length in bytes, retries per SMC phase */
+#define EXYRNG_START_UP_SIZE		(4096 + 1)
+#define EXYRNG_RETRY_MAX_COUNT		1000000
 
 struct exynos_trng_dev {
 	struct device	*dev;
@@ -77,6 +86,11 @@ struct exynos_trng_dev {
 	struct clk	*pclk;	/* bus clock */
 	struct hwrng	rng;
 	unsigned long	flags;
+	/* EXYNOS_SMC_SESSION only */
+	spinlock_t	lock;		/* serializes the session SMCs */
+	bool		read_flag;	/* a session is open */
+	bool		startup_test;	/* the start-up test has yet to run */
+	bool		disabled;	/* a health test failed */
 };
 
 static int exynos_trng_do_read_reg(struct hwrng *rng, void *data, size_t max,
@@ -128,6 +142,191 @@ static int exynos_trng_do_read_smc(struct hwrng *rng, void *data, size_t max,
 	}
 
 	return copied;
+}
+
+static int exynos_trng_session_smc(unsigned long op, unsigned long arg,
+				   struct arm_smccc_res *res)
+{
+	arm_smccc_smc(SMC_CMD_RANDOM, op, arg, 0, 0, 0, 0, 0, res);
+
+	return (int)res->a0;
+}
+
+static void exynos_trng_session_test_fail(struct exynos_trng_dev *trng)
+{
+	if (IS_ENABLED(CONFIG_HW_RANDOM_EXYNOS8895_FAIL_DISABLE)) {
+		trng->disabled = true;
+		dev_err(trng->dev, "[ExyRNG] disabled for test failures\n");
+		return;
+	}
+
+	panic("[ExyRNG] health test failed: the TRNG may not deliver enough entropy\n");
+}
+
+/* The vendor driver issues the start-up test SMCs without the lock. */
+static int exynos_trng_session_startup_test(struct exynos_trng_dev *trng)
+{
+	u32 start_up_size = EXYRNG_START_UP_SIZE;
+	struct arm_smccc_res res;
+	u32 retry_cnt = 0;
+	int ret = HWRNG_RET_OK;
+
+	while (start_up_size) {
+		ret = exynos_trng_session_smc(HWRNG_GET_DATA, 1, &res);
+		if (ret == HWRNG_RET_RETRY_ERROR) {
+			if (retry_cnt++ > EXYRNG_RETRY_MAX_COUNT) {
+				dev_err(trng->dev, "[ExyRNG] exceed retry in start-up test\n");
+				break;
+			}
+			usleep_range(50, 100);
+			continue;
+		}
+
+		if (ret == HWRNG_RET_TEST_ERROR ||
+		    ret == HWRNG_RET_TEST_KAT_ERROR) {
+			exynos_trng_session_test_fail(trng);
+			return -EFAULT;
+		}
+
+		/* start-up test is performed already */
+		if (ret == HWRNG_RET_START_UP_TEST_DONE) {
+			ret = HWRNG_RET_OK;
+			break;
+		}
+
+		if (ret != HWRNG_RET_OK)
+			return -EFAULT;
+
+		if (start_up_size >= 32)
+			start_up_size -= 32;
+		else
+			start_up_size = 0;
+
+		retry_cnt = 0;
+	}
+
+	return ret;
+}
+
+/*
+ * Open a session (INIT), run the start-up test once, read 8 bytes per
+ * GET_DATA and close the session (EXIT), as the vendor driver does.
+ */
+static int exynos_trng_read_session(struct hwrng *rng, void *data, size_t max,
+				    bool wait)
+{
+	struct exynos_trng_dev *trng = (struct exynos_trng_dev *)rng->priv;
+	struct arm_smccc_res res;
+	unsigned long flags;
+	size_t copied = 0;
+	u32 retry_cnt;
+	u32 r[2];
+	int ret = HWRNG_RET_OK;
+
+	if (trng->disabled)
+		return -EPERM;
+
+	retry_cnt = 0;
+	do {
+		spin_lock_irqsave(&trng->lock, flags);
+		if (!trng->read_flag) {
+			ret = exynos_trng_session_smc(HWRNG_INIT, 0, &res);
+			if (ret == HWRNG_RET_OK)
+				trng->read_flag = true;
+			spin_unlock_irqrestore(&trng->lock, flags);
+
+			if (ret == HWRNG_RET_RETRY_ERROR) {
+				if (retry_cnt++ > EXYRNG_RETRY_MAX_COUNT) {
+					dev_err(trng->dev, "[ExyRNG] exceed retry in init\n");
+					break;
+				}
+				usleep_range(50, 100);
+			} else if (ret == HWRNG_RET_TEST_ERROR) {
+				dev_err(trng->dev, "[ExyRNG] health test fail after resume\n");
+				ret = -EAGAIN;
+				goto out;
+			}
+		} else {
+			spin_unlock_irqrestore(&trng->lock, flags);
+			break;
+		}
+	} while (ret == HWRNG_RET_RETRY_ERROR);
+	if (ret != HWRNG_RET_OK) {
+		msleep(1);
+		return -EFAULT;
+	}
+
+	if (trng->startup_test) {
+		ret = exynos_trng_session_startup_test(trng);
+		if (ret != HWRNG_RET_OK) {
+			/* the vendor driver returned the retry code as a byte count */
+			if (ret > 0)
+				ret = -EFAULT;
+			goto out;
+		}
+
+		trng->startup_test = false;
+		dev_info(trng->dev, "[ExyRNG] passed the start-up test\n");
+	}
+
+	retry_cnt = 0;
+	while (copied < max) {
+		size_t n;
+
+		spin_lock_irqsave(&trng->lock, flags);
+		ret = exynos_trng_session_smc(HWRNG_GET_DATA, 0, &res);
+		r[0] = (u32)res.a2;
+		r[1] = (u32)res.a3;
+		spin_unlock_irqrestore(&trng->lock, flags);
+
+		if (ret == HWRNG_RET_RETRY_ERROR) {
+			if (retry_cnt++ > EXYRNG_RETRY_MAX_COUNT) {
+				ret = -EFAULT;
+				dev_err(trng->dev, "[ExyRNG] exceed retry in read\n");
+				goto out;
+			}
+			usleep_range(50, 100);
+			continue;
+		}
+
+		if (ret == HWRNG_RET_TEST_ERROR) {
+			ret = -EAGAIN;
+			goto out;
+		}
+
+		if (ret != HWRNG_RET_OK) {
+			ret = -EFAULT;
+			goto out;
+		}
+
+		/* unlike the vendor driver, never write past max */
+		n = min(sizeof(r), max - copied);
+		memcpy(data + copied, r, n);
+		copied += n;
+		retry_cnt = 0;
+	}
+
+	ret = max;
+
+out:
+	retry_cnt = 0;
+	do {
+		spin_lock_irqsave(&trng->lock, flags);
+		if (!exynos_trng_session_smc(HWRNG_EXIT, 0, &res)) {
+			trng->read_flag = false;
+			spin_unlock_irqrestore(&trng->lock, flags);
+			break;
+		}
+		spin_unlock_irqrestore(&trng->lock, flags);
+
+		if (retry_cnt++ > EXYRNG_RETRY_MAX_COUNT) {
+			dev_err(trng->dev, "[ExyRNG] exceed retry in exit\n");
+			break;
+		}
+		usleep_range(50, 100);
+	} while (1);
+
+	return ret;
 }
 
 static int exynos_trng_init_reg(struct hwrng *rng)
@@ -202,7 +401,12 @@ static int exynos_trng_probe(struct platform_device *pdev)
 
 	trng->rng.priv = (unsigned long)trng;
 
-	if (trng->flags & EXYNOS_SMC) {
+	if (trng->flags & EXYNOS_SMC_SESSION) {
+		trng->rng.read = exynos_trng_read_session;
+		trng->rng.quality = 500;
+		spin_lock_init(&trng->lock);
+		trng->startup_test = IS_ENABLED(CONFIG_HW_RANDOM_EXYNOS8895_FIPS);
+	} else if (trng->flags & EXYNOS_SMC) {
 		trng->rng.init = exynos_trng_init_smc;
 		trng->rng.read = exynos_trng_do_read_smc;
 	} else {
@@ -221,18 +425,20 @@ static int exynos_trng_probe(struct platform_device *pdev)
 		goto err_pm_get;
 	}
 
-	trng->clk = devm_clk_get_enabled(&pdev->dev, "secss");
-	if (IS_ERR(trng->clk)) {
-		ret = dev_err_probe(&pdev->dev, PTR_ERR(trng->clk),
-				    "Could not get clock\n");
-		goto err_clock;
-	}
+	if (!(trng->flags & EXYNOS_SMC_SESSION)) {
+		trng->clk = devm_clk_get_enabled(&pdev->dev, "secss");
+		if (IS_ERR(trng->clk)) {
+			ret = dev_err_probe(&pdev->dev, PTR_ERR(trng->clk),
+					    "Could not get clock\n");
+			goto err_clock;
+		}
 
-	trng->pclk = devm_clk_get_optional_enabled(&pdev->dev, "pclk");
-	if (IS_ERR(trng->pclk)) {
-		ret = dev_err_probe(&pdev->dev, PTR_ERR(trng->pclk),
-				    "Could not get pclk\n");
-		goto err_clock;
+		trng->pclk = devm_clk_get_optional_enabled(&pdev->dev, "pclk");
+		if (IS_ERR(trng->pclk)) {
+			ret = dev_err_probe(&pdev->dev, PTR_ERR(trng->pclk),
+					    "Could not get pclk\n");
+			goto err_clock;
+		}
 	}
 
 	ret = devm_hwrng_register(&pdev->dev, &trng->rng);
@@ -258,7 +464,7 @@ static void exynos_trng_remove(struct platform_device *pdev)
 {
 	struct exynos_trng_dev *trng = platform_get_drvdata(pdev);
 
-	if (trng->flags & EXYNOS_SMC) {
+	if ((trng->flags & EXYNOS_SMC) && !(trng->flags & EXYNOS_SMC_SESSION)) {
 		struct arm_smccc_res res;
 
 		arm_smccc_smc(SMC_CMD_RANDOM, HWRNG_EXIT, 0, 0, 0, 0, 0, 0,
@@ -269,12 +475,59 @@ static void exynos_trng_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 }
 
+static int exynos_trng_session_suspend(struct exynos_trng_dev *trng)
+{
+	struct arm_smccc_res res;
+	unsigned long flags;
+	int ret = HWRNG_RET_OK;
+
+	spin_lock_irqsave(&trng->lock, flags);
+	if (trng->read_flag) {
+		ret = exynos_trng_session_smc(HWRNG_EXIT, 0, &res);
+		if (ret != HWRNG_RET_OK)
+			dev_err(trng->dev, "[ExyRNG] failed to enter suspend with %d\n",
+				ret);
+	}
+	spin_unlock_irqrestore(&trng->lock, flags);
+
+	return ret != HWRNG_RET_OK ? -EIO : 0;
+}
+
+static int exynos_trng_session_resume(struct exynos_trng_dev *trng)
+{
+	struct arm_smccc_res res;
+	unsigned long flags;
+	int ret = HWRNG_RET_OK;
+
+	spin_lock_irqsave(&trng->lock, flags);
+	if (IS_ENABLED(CONFIG_HW_RANDOM_EXYNOS8895_FIPS)) {
+		ret = exynos_trng_session_smc(HWRNG_RESUME, 0, &res);
+		if (ret != HWRNG_RET_OK)
+			dev_err(trng->dev, "[ExyRNG] failed to resume with %d\n",
+				ret);
+	}
+	if (trng->read_flag) {
+		ret = exynos_trng_session_smc(HWRNG_INIT, 0, &res);
+		if (ret != HWRNG_RET_OK)
+			dev_err(trng->dev, "[ExyRNG] failed to resume with %d\n",
+				ret);
+	}
+	spin_unlock_irqrestore(&trng->lock, flags);
+
+	return ret != HWRNG_RET_OK ? -EIO : 0;
+}
+
 static int exynos_trng_suspend(struct device *dev)
 {
 	struct exynos_trng_dev *trng = dev_get_drvdata(dev);
 	struct arm_smccc_res res;
 
-	if (trng->flags & EXYNOS_SMC) {
+	if (trng->flags & EXYNOS_SMC_SESSION) {
+		int ret = exynos_trng_session_suspend(trng);
+
+		if (ret)
+			return ret;
+	} else if (trng->flags & EXYNOS_SMC) {
 		arm_smccc_smc(SMC_CMD_RANDOM, HWRNG_EXIT, 0, 0, 0, 0, 0, 0,
 			      &res);
 		if (res.a0 != HWRNG_RET_OK)
@@ -296,6 +549,9 @@ static int exynos_trng_resume(struct device *dev)
 		dev_err(dev, "Could not get runtime PM.\n");
 		return ret;
 	}
+
+	if (trng->flags & EXYNOS_SMC_SESSION)
+		return exynos_trng_session_resume(trng);
 
 	if (trng->flags & EXYNOS_SMC) {
 		struct arm_smccc_res res;
@@ -323,6 +579,9 @@ static const struct of_device_id exynos_trng_dt_match[] = {
 	}, {
 		.compatible = "samsung,exynos850-trng",
 		.data = (void *)EXYNOS_SMC,
+	}, {
+		.compatible = "samsung,exynos8895-trng",
+		.data = (void *)(EXYNOS_SMC | EXYNOS_SMC_SESSION),
 	},
 	{ },
 };
