@@ -39,6 +39,7 @@
 #define CLKS_NR_ISPLP	(CLK_GOUT_ISPLP_SYSREG_ISPLP_PCLK + 1)
 #define CLKS_NR_DCAM	(CLK_GOUT_DCAM_XIU_P_DCAM_ACLK + 1)
 #define CLKS_NR_SRDZ	(CLK_GOUT_SRDZ_XIU_P_SRDZ_ACLK + 1)
+#define CLKS_NR_BUSC	(CLK_GOUT_BUSC_TREX_P_BUSC_PCLK_BUSC + 1)
 
 /*
  * The gates of the always-on CMUs stay under hardware auto-gating, as the
@@ -5727,6 +5728,436 @@ static const struct samsung_cmu_info srdz_cmu_info __initconst = {
 	.clk_name		= "bus",
 };
 
+/* ---- CMU_BUSC ------------------------------------------------------------ */
+
+/* Register Offset definitions for CMU_BUSC (0x15a00000) */
+#define PLL_CON0_MUX_CLKCMU_BUSC_BUSPHSI2C_USER					0x0120
+#define PLL_CON0_MUX_CLKCMU_BUSC_BUS_USER					0x0140
+#define CLK_CON_DIV_DIV_CLK_BUSC_BUSP						0x1800
+#define CLK_CON_GAT_CLK_BLK_BUSC_UID_BUSC_CMU_BUSC_IPCLKPORT_PCLK		0x2000
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_ADCIF_BUSC_IPCLKPORT_PCLK_S0		0x2010
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_ADCIF_BUSC_IPCLKPORT_PCLK_S1		0x2014
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_AD_APB_HSI2CDF_IPCLKPORT_PCLKM		0x2018
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_AD_APB_HSI2CDF_IPCLKPORT_PCLKS		0x201c
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_AD_APB_PDMA0_IPCLKPORT_PCLKM		0x2020
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_AD_APB_PDMA0_IPCLKPORT_PCLKS		0x2024
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_AD_APB_SPDMA_IPCLKPORT_PCLKM		0x2028
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_AD_APB_SPDMA_IPCLKPORT_PCLKS		0x202c
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_ASYNCSFR_WR_SCI_IPCLKPORT_I_PCLK		0x2030
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_ASYNCSFR_WR_SMC_IPCLKPORT_I_PCLK		0x2034
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_AXI2APB_BUSCP0_IPCLKPORT_ACLK		0x2038
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_AXI2APB_BUSCP1_IPCLKPORT_ACLK		0x203c
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_AXI2APB_BUSC_TDP_IPCLKPORT_ACLK		0x2040
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_BUSIF_CMUTOPC_IPCLKPORT_PCLK		0x2044
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_GNSSMBOX_IPCLKPORT_PCLK			0x2048
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_GPIO_BUSC_IPCLKPORT_PCLK			0x204c
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_HSI2CDF_IPCLKPORT_IPCLK			0x2050
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_ACEL_D0_G2D_IPCLKPORT_I_CLK		0x2054
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_ACEL_D1_G2D_IPCLKPORT_I_CLK		0x2058
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_ACEL_D2_G2D_IPCLKPORT_I_CLK		0x205c
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_ACEL_D_DSP_IPCLKPORT_I_CLK		0x2060
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_ACEL_D_FSYS0_IPCLKPORT_I_CLK		0x2064
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_ACEL_D_IVA_IPCLKPORT_I_CLK		0x2068
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_ACEL_D_VPU_IPCLKPORT_I_CLK		0x206c
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D0_CAM_IPCLKPORT_I_CLK		0x2070
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D0_DPU_IPCLKPORT_I_CLK		0x2074
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D0_MFC_IPCLKPORT_I_CLK		0x2078
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D1_CAM_IPCLKPORT_I_CLK		0x207c
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D1_DPU_IPCLKPORT_I_CLK		0x2080
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D1_MFC_IPCLKPORT_I_CLK		0x2084
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D2_DPU_IPCLKPORT_I_CLK		0x2088
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D_ABOX_IPCLKPORT_I_CLK		0x208c
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D_ISPLP_IPCLKPORT_I_CLK		0x2090
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D_SRDZ_IPCLKPORT_I_CLK		0x2094
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D_VTS_IPCLKPORT_I_CLK		0x2098
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_G_CSSYS_IPCLKPORT_I_CLK		0x209c
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_D_IVASC_IPCLKPORT_I_CLK		0x20a0
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P0_DPU_IPCLKPORT_I_CLK		0x20a4
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P1_DPU_IPCLKPORT_I_CLK		0x20a8
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_ABOX_IPCLKPORT_I_CLK		0x20ac
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_CAM_IPCLKPORT_I_CLK		0x20b0
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_DSP_IPCLKPORT_I_CLK		0x20b4
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_FSYS0_IPCLKPORT_I_CLK		0x20b8
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_G2D_IPCLKPORT_I_CLK		0x20bc
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_ISPHQ_IPCLKPORT_I_CLK		0x20c0
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_ISPLP_IPCLKPORT_I_CLK		0x20c4
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_IVA_IPCLKPORT_I_CLK		0x20c8
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_MFC_IPCLKPORT_I_CLK		0x20cc
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_MIF0_IPCLKPORT_I_CLK		0x20d0
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_MIF1_IPCLKPORT_I_CLK		0x20d4
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_MIF2_IPCLKPORT_I_CLK		0x20d8
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_MIF3_IPCLKPORT_I_CLK		0x20dc
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_PERIC0_IPCLKPORT_I_CLK		0x20e0
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_PERIC1_IPCLKPORT_I_CLK		0x20e4
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_PERIS_IPCLKPORT_I_CLK		0x20e8
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_SRDZ_IPCLKPORT_I_CLK		0x20ec
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_VPU_IPCLKPORT_I_CLK		0x20f0
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_VTS_IPCLKPORT_I_CLK		0x20f4
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_MBOX_IPCLKPORT_PCLK			0x20f8
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_PDMA0_IPCLKPORT_ACLK			0x20fc
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_PMU_BUSC_IPCLKPORT_PCLK			0x2100
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_RSTNSYNC_CLK_BUSC_BUSD_IPCLKPORT_CLK	0x2104
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_RSTNSYNC_CLK_BUSC_BUSPHSI2C_IPCLKPORT_CLK	0x2108
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_RSTNSYNC_CLK_BUSC_BUSP_IPCLKPORT_CLK	0x210c
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_SECMBOX_IPCLKPORT_PCLK			0x2110
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_SPDMA_IPCLKPORT_ACLK			0x2114
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_SPEEDY_BATCHER_WRAP_IPCLKPORT_I_PCLK_BATCHER_AP	0x2118
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_SPEEDY_BATCHER_WRAP_IPCLKPORT_I_PCLK_BATCHER_CP	0x211c
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_SPEEDY_BATCHER_WRAP_IPCLKPORT_PCLK_BATCHER_SPEEDY	0x2120
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_SPEEDY_IPCLKPORT_PCLK			0x2124
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_SYSREG_BUSC_IPCLKPORT_PCLK		0x2128
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_TREX_D_BUSC_IPCLKPORT_ACLK		0x212c
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_TREX_D_BUSC_IPCLKPORT_PCLK		0x2130
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_TREX_P_BUSC_IPCLKPORT_ACLK_BUSC		0x2134
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_TREX_P_BUSC_IPCLKPORT_PCLK		0x2138
+#define CLK_CON_GAT_GOUT_BLK_BUSC_UID_TREX_P_BUSC_IPCLKPORT_PCLK_BUSC		0x213c
+
+/* List of parent clocks for Muxes in CMU_BUSC */
+PNAME(mout_busc_busphsi2c_user_p)	= { "oscclk", "dout_cmu_busc_busphsi2c" };
+PNAME(mout_busc_bus_user_p)		= { "oscclk", "dout_cmu_busc_bus" };
+
+static const struct samsung_mux_clock busc_mux_clks[] __initconst = {
+	MUX_F(CLK_MOUT_BUSC_BUSPHSI2C_USER, "mout_busc_busphsi2c_user",
+	      mout_busc_busphsi2c_user_p,
+	      PLL_CON0_MUX_CLKCMU_BUSC_BUSPHSI2C_USER, 4, 1,
+	      CLK_GET_RATE_NOCACHE, CLK_MUX_READ_ONLY),
+	MUX_F(CLK_MOUT_BUSC_BUS_USER, "mout_busc_bus_user",
+	      mout_busc_bus_user_p, PLL_CON0_MUX_CLKCMU_BUSC_BUS_USER, 4, 1,
+	      CLK_GET_RATE_NOCACHE, CLK_MUX_READ_ONLY),
+};
+
+static const struct samsung_div_clock busc_div_clks[] __initconst = {
+	DIV_F(CLK_DOUT_BUSC_BUSP, "dout_busc_busp", "mout_busc_bus_user",
+	      CLK_CON_DIV_DIV_CLK_BUSC_BUSP, 0, 3, CLK_GET_RATE_NOCACHE,
+	      CLK_DIVIDER_READ_ONLY),
+};
+
+static const struct samsung_gate_clock busc_gate_clks[] __initconst = {
+	GATE(CLK_GOUT_BUSC_CMU_BUSC_PCLK, "gout_busc_cmu_busc_pclk",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_CLK_BLK_BUSC_UID_BUSC_CMU_BUSC_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_ADCIF_BUSC_PCLK_S0, "gout_busc_adcif_busc_pclk_s0",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_ADCIF_BUSC_IPCLKPORT_PCLK_S0, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_ADCIF_BUSC_PCLK_S1, "gout_busc_adcif_busc_pclk_s1",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_ADCIF_BUSC_IPCLKPORT_PCLK_S1, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_AD_APB_HSI2CDF_PCLKM,
+	     "gout_busc_ad_apb_hsi2cdf_pclkm", "mout_busc_busphsi2c_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_AD_APB_HSI2CDF_IPCLKPORT_PCLKM, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_AD_APB_HSI2CDF_PCLKS,
+	     "gout_busc_ad_apb_hsi2cdf_pclks", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_AD_APB_HSI2CDF_IPCLKPORT_PCLKS, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_AD_APB_PDMA0_PCLKM, "gout_busc_ad_apb_pdma0_pclkm",
+	     "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_AD_APB_PDMA0_IPCLKPORT_PCLKM, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_AD_APB_PDMA0_PCLKS, "gout_busc_ad_apb_pdma0_pclks",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_AD_APB_PDMA0_IPCLKPORT_PCLKS, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_AD_APB_SPDMA_PCLKM, "gout_busc_ad_apb_spdma_pclkm",
+	     "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_AD_APB_SPDMA_IPCLKPORT_PCLKM, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_AD_APB_SPDMA_PCLKS, "gout_busc_ad_apb_spdma_pclks",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_AD_APB_SPDMA_IPCLKPORT_PCLKS, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_ASYNCSFR_WR_SCI_I_PCLK,
+	     "gout_busc_asyncsfr_wr_sci_i_pclk", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_ASYNCSFR_WR_SCI_IPCLKPORT_I_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_ASYNCSFR_WR_SMC_I_PCLK,
+	     "gout_busc_asyncsfr_wr_smc_i_pclk", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_ASYNCSFR_WR_SMC_IPCLKPORT_I_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_AXI2APB_BUSCP0_ACLK, "gout_busc_axi2apb_buscp0_aclk",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_AXI2APB_BUSCP0_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_AXI2APB_BUSCP1_ACLK, "gout_busc_axi2apb_buscp1_aclk",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_AXI2APB_BUSCP1_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_AXI2APB_BUSC_TDP_ACLK,
+	     "gout_busc_axi2apb_busc_tdp_aclk", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_AXI2APB_BUSC_TDP_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_BUSIF_CMUTOPC_PCLK, "gout_busc_busif_cmutopc_pclk",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_BUSIF_CMUTOPC_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_GNSSMBOX_PCLK, "gout_busc_gnssmbox_pclk",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_GNSSMBOX_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_GPIO_BUSC_PCLK, "gout_busc_gpio_busc_pclk",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_GPIO_BUSC_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_HSI2CDF_IPCLK, "gout_busc_hsi2cdf_ipclk",
+	     "mout_busc_busphsi2c_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_HSI2CDF_IPCLKPORT_IPCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHM_ACEL_D0_G2D_I_CLK,
+	     "gout_busc_lhm_acel_d0_g2d_i_clk", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_ACEL_D0_G2D_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHM_ACEL_D1_G2D_I_CLK,
+	     "gout_busc_lhm_acel_d1_g2d_i_clk", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_ACEL_D1_G2D_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHM_ACEL_D2_G2D_I_CLK,
+	     "gout_busc_lhm_acel_d2_g2d_i_clk", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_ACEL_D2_G2D_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHM_ACEL_D_DSP_I_CLK,
+	     "gout_busc_lhm_acel_d_dsp_i_clk", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_ACEL_D_DSP_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHM_ACEL_D_FSYS0_I_CLK,
+	     "gout_busc_lhm_acel_d_fsys0_i_clk", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_ACEL_D_FSYS0_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHM_ACEL_D_IVA_I_CLK,
+	     "gout_busc_lhm_acel_d_iva_i_clk", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_ACEL_D_IVA_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHM_ACEL_D_VPU_I_CLK,
+	     "gout_busc_lhm_acel_d_vpu_i_clk", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_ACEL_D_VPU_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHM_AXI_D0_CAM_I_CLK,
+	     "gout_busc_lhm_axi_d0_cam_i_clk", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D0_CAM_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHM_AXI_D0_DPU_I_CLK,
+	     "gout_busc_lhm_axi_d0_dpu_i_clk", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D0_DPU_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHM_AXI_D0_MFC_I_CLK,
+	     "gout_busc_lhm_axi_d0_mfc_i_clk", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D0_MFC_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHM_AXI_D1_CAM_I_CLK,
+	     "gout_busc_lhm_axi_d1_cam_i_clk", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D1_CAM_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHM_AXI_D1_DPU_I_CLK,
+	     "gout_busc_lhm_axi_d1_dpu_i_clk", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D1_DPU_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHM_AXI_D1_MFC_I_CLK,
+	     "gout_busc_lhm_axi_d1_mfc_i_clk", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D1_MFC_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHM_AXI_D2_DPU_I_CLK,
+	     "gout_busc_lhm_axi_d2_dpu_i_clk", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D2_DPU_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHM_AXI_D_ABOX_I_CLK,
+	     "gout_busc_lhm_axi_d_abox_i_clk", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D_ABOX_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHM_AXI_D_ISPLP_I_CLK,
+	     "gout_busc_lhm_axi_d_isplp_i_clk", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D_ISPLP_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHM_AXI_D_SRDZ_I_CLK,
+	     "gout_busc_lhm_axi_d_srdz_i_clk", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D_SRDZ_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHM_AXI_D_VTS_I_CLK, "gout_busc_lhm_axi_d_vts_i_clk",
+	     "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_D_VTS_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHM_AXI_G_CSSYS_I_CLK,
+	     "gout_busc_lhm_axi_g_cssys_i_clk", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHM_AXI_G_CSSYS_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_D_IVASC_I_CLK,
+	     "gout_busc_lhs_axi_d_ivasc_i_clk", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_D_IVASC_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P0_DPU_I_CLK,
+	     "gout_busc_lhs_axi_p0_dpu_i_clk", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P0_DPU_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P1_DPU_I_CLK,
+	     "gout_busc_lhs_axi_p1_dpu_i_clk", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P1_DPU_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P_ABOX_I_CLK,
+	     "gout_busc_lhs_axi_p_abox_i_clk", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_ABOX_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P_CAM_I_CLK, "gout_busc_lhs_axi_p_cam_i_clk",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_CAM_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P_DSP_I_CLK, "gout_busc_lhs_axi_p_dsp_i_clk",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_DSP_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P_FSYS0_I_CLK,
+	     "gout_busc_lhs_axi_p_fsys0_i_clk", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_FSYS0_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P_G2D_I_CLK, "gout_busc_lhs_axi_p_g2d_i_clk",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_G2D_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P_ISPHQ_I_CLK,
+	     "gout_busc_lhs_axi_p_isphq_i_clk", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_ISPHQ_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P_ISPLP_I_CLK,
+	     "gout_busc_lhs_axi_p_isplp_i_clk", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_ISPLP_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P_IVA_I_CLK, "gout_busc_lhs_axi_p_iva_i_clk",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_IVA_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P_MFC_I_CLK, "gout_busc_lhs_axi_p_mfc_i_clk",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_MFC_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P_MIF0_I_CLK,
+	     "gout_busc_lhs_axi_p_mif0_i_clk", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_MIF0_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P_MIF1_I_CLK,
+	     "gout_busc_lhs_axi_p_mif1_i_clk", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_MIF1_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P_MIF2_I_CLK,
+	     "gout_busc_lhs_axi_p_mif2_i_clk", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_MIF2_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P_MIF3_I_CLK,
+	     "gout_busc_lhs_axi_p_mif3_i_clk", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_MIF3_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P_PERIC0_I_CLK,
+	     "gout_busc_lhs_axi_p_peric0_i_clk", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_PERIC0_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P_PERIC1_I_CLK,
+	     "gout_busc_lhs_axi_p_peric1_i_clk", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_PERIC1_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P_PERIS_I_CLK,
+	     "gout_busc_lhs_axi_p_peris_i_clk", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_PERIS_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P_SRDZ_I_CLK,
+	     "gout_busc_lhs_axi_p_srdz_i_clk", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_SRDZ_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P_VPU_I_CLK, "gout_busc_lhs_axi_p_vpu_i_clk",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_VPU_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_LHS_AXI_P_VTS_I_CLK, "gout_busc_lhs_axi_p_vts_i_clk",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_LHS_AXI_P_VTS_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_MBOX_PCLK, "gout_busc_mbox_pclk", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_MBOX_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_PDMA0_ACLK, "gout_busc_pdma0_aclk",
+	     "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_PDMA0_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_PMU_BUSC_PCLK, "gout_busc_pmu_busc_pclk",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_PMU_BUSC_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_RSTNSYNC_CLK_BUSC_BUSD_CLK,
+	     "gout_busc_rstnsync_clk_busc_busd_clk", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_RSTNSYNC_CLK_BUSC_BUSD_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_RSTNSYNC_CLK_BUSC_BUSPHSI2C_CLK,
+	     "gout_busc_rstnsync_clk_busc_busphsi2c_clk",
+	     "mout_busc_busphsi2c_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_RSTNSYNC_CLK_BUSC_BUSPHSI2C_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_RSTNSYNC_CLK_BUSC_BUSP_CLK,
+	     "gout_busc_rstnsync_clk_busc_busp_clk", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_RSTNSYNC_CLK_BUSC_BUSP_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_SECMBOX_PCLK, "gout_busc_secmbox_pclk",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_SECMBOX_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_SPDMA_ACLK, "gout_busc_spdma_aclk",
+	     "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_SPDMA_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_SPEEDY_BATCHER_WRAP_I_PCLK_BATCHER_AP,
+	     "gout_busc_speedy_batcher_wrap_i_pclk_batcher_ap",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_SPEEDY_BATCHER_WRAP_IPCLKPORT_I_PCLK_BATCHER_AP,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_SPEEDY_BATCHER_WRAP_I_PCLK_BATCHER_CP,
+	     "gout_busc_speedy_batcher_wrap_i_pclk_batcher_cp",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_SPEEDY_BATCHER_WRAP_IPCLKPORT_I_PCLK_BATCHER_CP,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_SPEEDY_BATCHER_WRAP_PCLK_BATCHER_SPEEDY,
+	     "gout_busc_speedy_batcher_wrap_pclk_batcher_speedy",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_SPEEDY_BATCHER_WRAP_IPCLKPORT_PCLK_BATCHER_SPEEDY,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_SPEEDY_PCLK, "gout_busc_speedy_pclk",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_SPEEDY_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_SYSREG_BUSC_PCLK, "gout_busc_sysreg_busc_pclk",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_SYSREG_BUSC_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_TREX_D_BUSC_ACLK, "gout_busc_trex_d_busc_aclk",
+	     "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_TREX_D_BUSC_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_TREX_D_BUSC_PCLK, "gout_busc_trex_d_busc_pclk",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_TREX_D_BUSC_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_TREX_P_BUSC_ACLK_BUSC,
+	     "gout_busc_trex_p_busc_aclk_busc", "mout_busc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_TREX_P_BUSC_IPCLKPORT_ACLK_BUSC, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_TREX_P_BUSC_PCLK, "gout_busc_trex_p_busc_pclk",
+	     "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_TREX_P_BUSC_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_BUSC_TREX_P_BUSC_PCLK_BUSC,
+	     "gout_busc_trex_p_busc_pclk_busc", "dout_busc_busp",
+	     CLK_CON_GAT_GOUT_BLK_BUSC_UID_TREX_P_BUSC_IPCLKPORT_PCLK_BUSC, 21,
+	     CLK_IGNORE_UNUSED, 0),
+};
+
+static const struct samsung_cmu_info busc_cmu_info __initconst = {
+	.mux_clks		= busc_mux_clks,
+	.nr_mux_clks		= ARRAY_SIZE(busc_mux_clks),
+	.div_clks		= busc_div_clks,
+	.nr_div_clks		= ARRAY_SIZE(busc_div_clks),
+	.gate_clks		= busc_gate_clks,
+	.nr_gate_clks		= ARRAY_SIZE(busc_gate_clks),
+	.nr_clk_ids		= CLKS_NR_BUSC,
+	.clk_name		= "bus",
+	.hwacg_gates		= true,
+};
+
 /* ---- CMU probe glue ------------------------------------------------------ */
 
 #define CMU_QCH_ENABLE			BIT(0)
@@ -5804,6 +6235,9 @@ static const struct of_device_id exynos8895_cmu_of_match[] = {
 	}, {
 		.compatible = "samsung,exynos8895-cmu-cpucl1",
 		.data = &cpucl1_cmu_info,
+	}, {
+		.compatible = "samsung,exynos8895-cmu-busc",
+		.data = &busc_cmu_info,
 	},
 	{ }
 };
