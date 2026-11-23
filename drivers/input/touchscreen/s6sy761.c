@@ -16,6 +16,7 @@
 #include <linux/of.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/pm_runtime.h>
+#include <linux/pm_wakeup.h>
 #include <linux/regulator/consumer.h>
 #include <linux/sec_sysfs.h>
 #include <linux/sysfs.h>
@@ -121,6 +122,12 @@
 
 /* sponge mode byte */
 #define S6SY661_MODE_FORCE_KEY		BIT(6)
+#define S6SY661_MODE_LOWPOWER_FLAG	S6SY661_MODE_FORCE_KEY
+
+#define S6SY661_WAKEUP_GESTURE_MODE	0x39
+#define S6SY661_PM_DELAY_MS		50
+#define S6SY661_PM_TRIES		5
+#define S6SY661_LPM_WAKE_MS		(3 * MSEC_PER_SEC)
 
 /* status event: type in byte 0 [5:2], id in byte 1, data in byte 2 */
 #define S6SY661_MASK_STYPE		0x3c
@@ -131,6 +138,16 @@
 
 #define S6SY661_CMD_STR_LEN		256
 #define S6SY661_CMD_PARAM_NUM		8
+
+/* the S6SY661 NACKs the transfer that wakes it from its low-power mode */
+#define S6SY761_I2C_TRIES		3
+#define s6sy761_i2c_retry(expr) ({					\
+	int __ret, __try = 0;						\
+									\
+	while ((__ret = (expr)) < 0 && ++__try < S6SY761_I2C_TRIES)	\
+		usleep_range(1000, 1100);				\
+	__ret;								\
+})
 
 enum s6sy761_regulators {
 	S6SY761_REGULATOR_VDD,
@@ -169,6 +186,8 @@ struct s6sy761_data {
 	u16 touch_functions;
 	bool pressure_key;
 	u8 lowpower_mode;
+	bool lpm;
+	bool irq_wake;
 	bool home_key_down;
 	struct drm_panel_follower follower;
 	struct work_struct power_on_work;
@@ -201,7 +220,7 @@ static int s6sy761_read_events(struct s6sy761_data *sdata, u16 n_events)
 	};
 	int ret;
 
-	ret = i2c_transfer(sdata->client->adapter, msgs, ARRAY_SIZE(msgs));
+	ret = s6sy761_i2c_retry(i2c_transfer(sdata->client->adapter, msgs, ARRAY_SIZE(msgs)));
 	if (ret < 0)
 		return ret;
 
@@ -248,17 +267,19 @@ static void s6sy761_report_release(struct s6sy761_data *sdata,
 
 /*
  * The vendor driver reports a press with the panel on as KEY_BLACK_UI_GESTURE,
- * for its own framework; KEY_HOMEPAGE is reported here instead.
+ * for its own framework; KEY_HOMEPAGE is reported here in every state.
  */
 static void s6sy661_handle_pressure(struct s6sy761_data *sdata, u8 *event)
 {
+	bool lpm = READ_ONCE(sdata->lpm);
 	bool down;
 
 	if (((event[0] & S6SY661_MASK_STYPE) >> 2) != S6SY661_STATUS_SPONGE_INFO ||
 	    event[1] != S6SY661_SPONGE_FORCE_KEY)
 		return;
 
-	down = event[2] & S6SY661_SPONGE_TOUCHED;
+	/* in the low-power mode anything but a release is a press */
+	down = lpm ? !(event[2] & S6SY661_SPONGE_RELEASED) : event[2] & S6SY661_SPONGE_TOUCHED;
 	sdata->home_key_down = down;
 	input_report_key(sdata->input, KEY_HOMEPAGE, down);
 	input_sync(sdata->input);
@@ -313,6 +334,8 @@ static void s6sy761_handle_events(struct s6sy761_data *sdata, u8 n_events)
 		switch (event_id) {
 
 		case S6SY761_EVENT_ID_COORDINATE:
+			if (sdata->variant->s6sy661 && READ_ONCE(sdata->lpm))
+				break;
 			s6sy761_handle_coordinates(sdata, event);
 			break;
 
@@ -333,10 +356,13 @@ static irqreturn_t s6sy761_irq_handler(int irq, void *dev)
 	int ret;
 	u8 n_events;
 
-	ret = i2c_smbus_read_i2c_block_data(sdata->client,
-					    S6SY761_READ_ONE_EVENT,
-					    S6SY761_EVENT_SIZE,
-					    sdata->data);
+	if (sdata->variant->s6sy661 && READ_ONCE(sdata->lpm))
+		pm_wakeup_event(&sdata->client->dev, S6SY661_LPM_WAKE_MS);
+
+	ret = s6sy761_i2c_retry(i2c_smbus_read_i2c_block_data(sdata->client,
+							      S6SY761_READ_ONE_EVENT,
+							      S6SY761_EVENT_SIZE,
+							      sdata->data));
 	if (ret < 0) {
 		dev_err(&sdata->client->dev, "failed to read events\n");
 		return IRQ_HANDLED;
@@ -348,7 +374,8 @@ static irqreturn_t s6sy761_irq_handler(int irq, void *dev)
 	n_events = sdata->data[7] & S6SY761_MASK_LEFT_EVENTS;
 	if (unlikely(n_events > S6SY761_EVENT_COUNT - 1)) {
 		if (sdata->variant->s6sy661)
-			i2c_smbus_write_byte(sdata->client, S6SY761_CLEAR_EVENT_STACK);
+			s6sy761_i2c_retry(i2c_smbus_write_byte(sdata->client,
+							       S6SY761_CLEAR_EVENT_STACK));
 		return IRQ_HANDLED;
 	}
 
@@ -373,7 +400,7 @@ static int s6sy761_input_open(struct input_dev *dev)
 	/* the sponge mode goes before SENSE_ON, as in the vendor driver */
 	if (sdata->variant->s6sy661 && sdata->pressure_key) {
 		mutex_lock(&sdata->power_lock);
-		if (sdata->powered) {
+		if (sdata->powered && !sdata->lpm) {
 			ret = s6sy661_sponge_write(sdata);
 			if (ret)
 				dev_warn(&sdata->client->dev, "failed to configure the pressure key\n");
@@ -463,12 +490,14 @@ static int s6sy661_sponge_write(struct s6sy761_data *sdata)
 	u8 data[3] = { 0, 0, sdata->lowpower_mode };
 	int ret;
 
-	ret = i2c_smbus_write_i2c_block_data(sdata->client, S6SY661_SPONGE_WRITE_PARAM,
-					     sizeof(data), data);
+	ret = s6sy761_i2c_retry(i2c_smbus_write_i2c_block_data(sdata->client,
+							       S6SY661_SPONGE_WRITE_PARAM,
+							       sizeof(data), data));
 	if (ret)
 		return ret;
 
-	return i2c_smbus_write_byte(sdata->client, S6SY661_SPONGE_NOTIFY_PACKET);
+	return s6sy761_i2c_retry(i2c_smbus_write_byte(sdata->client,
+						      S6SY661_SPONGE_NOTIFY_PACKET));
 }
 
 /*
@@ -535,6 +564,98 @@ err_vdd:
 	return ret;
 }
 
+/*
+ * The vendor driver goes on when the mode does not read back as written after
+ * the last try, and so does this. Caller holds power_lock.
+ */
+static int s6sy661_set_power_mode(struct s6sy761_data *sdata, u8 mode)
+{
+	int i, ret;
+
+	for (i = 0; i < S6SY661_PM_TRIES; i++) {
+		ret = s6sy761_i2c_retry(i2c_smbus_write_byte_data(sdata->client,
+								  S6SY761_APPLICATION_MODE,
+								  mode));
+		if (ret)
+			return ret;
+		msleep(S6SY661_PM_DELAY_MS);
+		ret = s6sy761_i2c_retry(i2c_smbus_read_byte_data(sdata->client,
+								 S6SY761_APPLICATION_MODE));
+		if (ret < 0)
+			return ret;
+		if (ret == mode)
+			return 0;
+	}
+	dev_warn(&sdata->client->dev, "power mode %u reads back as %d\n", mode, ret);
+
+	return 0;
+}
+
+/* Caller holds power_lock, the chip is powered. */
+static int s6sy661_enter_lpm(struct s6sy761_data *sdata)
+{
+	struct i2c_client *client = sdata->client;
+	int i, ret;
+
+	ret = s6sy661_sponge_write(sdata);
+	if (ret)
+		return ret;
+
+	ret = s6sy761_i2c_retry(i2c_smbus_write_byte_data(client, S6SY661_WAKEUP_GESTURE_MODE,
+							  (sdata->lowpower_mode &
+							   S6SY661_MODE_LOWPOWER_FLAG) >> 1));
+	if (ret)
+		return ret;
+
+	ret = s6sy661_set_power_mode(sdata, S6SY761_APP_LOW_POWER);
+	if (ret)
+		return ret;
+
+	if (device_may_wakeup(&client->dev) && !enable_irq_wake(client->irq))
+		sdata->irq_wake = true;
+
+	ret = s6sy761_i2c_retry(i2c_smbus_write_byte(client, S6SY761_CLEAR_EVENT_STACK));
+	if (ret)
+		goto err_wake;
+
+	for (i = 0; i < S6SY661_MAX_SLOTS; i++) {
+		input_mt_slot(sdata->input, i);
+		input_mt_report_slot_inactive(sdata->input);
+	}
+	if (sdata->home_key_down) {
+		input_report_key(sdata->input, KEY_HOMEPAGE, 0);
+		sdata->home_key_down = false;
+	}
+	s6sy761_sync(sdata);
+
+	WRITE_ONCE(sdata->lpm, true);
+	return 0;
+
+err_wake:
+	if (sdata->irq_wake) {
+		disable_irq_wake(client->irq);
+		sdata->irq_wake = false;
+	}
+	return ret;
+}
+
+/* Caller holds power_lock. */
+static int s6sy661_exit_lpm(struct s6sy761_data *sdata)
+{
+	int ret;
+
+	ret = s6sy661_set_power_mode(sdata, S6SY761_APP_NORMAL);
+	if (ret)
+		return ret;
+
+	if (sdata->irq_wake) {
+		disable_irq_wake(sdata->client->irq);
+		sdata->irq_wake = false;
+	}
+	WRITE_ONCE(sdata->lpm, false);
+	return 0;
+}
+
 /* No-op when already off. Caller holds power_lock. */
 static void s6sy661_power_off(struct s6sy761_data *sdata)
 {
@@ -555,6 +676,11 @@ static void s6sy661_power_off(struct s6sy761_data *sdata)
 		}
 		s6sy761_sync(sdata);
 	}
+	if (sdata->irq_wake) {
+		disable_irq_wake(sdata->client->irq);
+		sdata->irq_wake = false;
+	}
+	WRITE_ONCE(sdata->lpm, false);
 	/* the vendor order: vdd before avdd */
 	regulator_disable(sdata->regulators[S6SY761_REGULATOR_VDD].consumer);
 	regulator_disable(sdata->regulators[S6SY761_REGULATOR_AVDD].consumer);
@@ -569,6 +695,18 @@ static void s6sy661_power_off(struct s6sy761_data *sdata)
 static int s6sy661_start(struct s6sy761_data *sdata)
 {
 	int ret;
+
+	if (sdata->lpm) {
+		ret = s6sy661_exit_lpm(sdata);
+		if (!ret) {
+			if (sdata->pressure_key && s6sy661_sponge_write(sdata))
+				dev_warn(&sdata->client->dev, "failed to configure the pressure key\n");
+			return 0;
+		}
+		/* the chip did not leave the low-power mode: power-cycle it */
+		dev_err(&sdata->client->dev, "leaving the low-power mode failed: %d\n", ret);
+		s6sy661_power_off(sdata);
+	}
 
 	if (sdata->powered) {
 		if (sdata->pressure_key && s6sy661_sponge_write(sdata))
@@ -628,6 +766,11 @@ static int s6sy661_panel_unpreparing(struct drm_panel_follower *follower)
 
 	cancel_work_sync(&sdata->power_on_work);
 	mutex_lock(&sdata->power_lock);
+	if (sdata->powered && sdata->pressure_key && sdata->lowpower_mode &&
+	    !s6sy661_enter_lpm(sdata)) {
+		mutex_unlock(&sdata->power_lock);
+		return 0;
+	}
 	s6sy661_power_off(sdata);
 	mutex_unlock(&sdata->power_lock);
 	return 0;
@@ -868,6 +1011,12 @@ static int s6sy661_probe_finish(struct s6sy761_data *sdata)
 	struct device *dev = &sdata->client->dev;
 	struct device *sec_dev;
 	int err;
+
+	if (sdata->pressure_key) {
+		err = devm_device_init_wakeup(dev);
+		if (err)
+			return err;
+	}
 
 	if (drm_is_panel_follower(dev)) {
 		/* registered first, so that it runs after the follower is removed */
