@@ -14,7 +14,9 @@ allOf:
 
 properties:
   compatible:
-    const: samsung,s6sy761
+    enum:
+      - samsung,s6sy661
+      - samsung,s6sy761
 
   reg:
     maxItems: 1
