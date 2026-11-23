@@ -189,6 +189,7 @@ unsigned long shm_get_phys_base(void)
 {
 	return pdata.p_addr;
 }
+EXPORT_SYMBOL_GPL(shm_get_phys_base);
 
 unsigned shm_get_phys_size(void)
 {
@@ -219,6 +220,7 @@ unsigned shm_get_vss_size(void)
 {
 	return pdata.vss_size;
 }
+EXPORT_SYMBOL_GPL(shm_get_vss_size);
 
 unsigned shm_get_acpm_size(void)
 {
@@ -229,6 +231,7 @@ unsigned shm_get_cp_size(void)
 {
 	return pdata.cp_size;
 }
+EXPORT_SYMBOL_GPL(shm_get_cp_size);
 
 #ifdef CONFIG_CP_RAM_LOGGING
 unsigned long shm_get_cplog_base(void)
@@ -360,6 +363,7 @@ void __iomem *shm_get_vss_region(void)
 
 	return pdata.v_vss;
 }
+EXPORT_SYMBOL_GPL(shm_get_vss_region);
 
 void clean_vss_magic_code(void)
 {

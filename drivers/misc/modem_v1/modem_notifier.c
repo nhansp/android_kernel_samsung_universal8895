@@ -31,6 +31,7 @@ int register_modem_event_notifier(struct notifier_block *nb)
 
 	return atomic_notifier_chain_register(&modem_event_notifier, nb);
 }
+EXPORT_SYMBOL_GPL(register_modem_event_notifier);
 
 int unregister_modem_event_notifier(struct notifier_block *nb)
 {
@@ -39,6 +40,7 @@ int unregister_modem_event_notifier(struct notifier_block *nb)
 
 	return atomic_notifier_chain_unregister(&modem_event_notifier, nb);
 }
+EXPORT_SYMBOL_GPL(unregister_modem_event_notifier);
 
 void modem_notify_event(enum modem_event evt)
 {
