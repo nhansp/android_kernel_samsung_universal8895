@@ -1469,6 +1469,34 @@ static int s2mps17_init(struct device *dev, struct regmap *pmic)
 	return 0;
 }
 
+/* Undocumented trims of the vendor driver, copied as they are. */
+static void s2mps17_trim(struct device *dev, struct regmap *pmic,
+			 struct regmap *trim)
+{
+	unsigned int v = 0, t;
+
+	if (!trim) {
+		dev_warn(dev, "no trim regmap, trims skipped\n");
+		return;
+	}
+
+	/* Lower the LDO29 OCP level from 1 A to 0.9 A, unless done or OTP changed */
+	regmap_read(pmic, 0x71, &v);
+	if (!(v & 0x20) && !(v & 0x10)) {
+		regmap_update_bits(pmic, 0x71, 0x20, 0x20);
+		regmap_update_bits(trim, 0xc0, 0xc0, 0x00);
+		if (!regmap_read(trim, 0xbc, &t)) {
+			t = (u8)((u8)((u8)t >> 3) - 4) << 3;
+			regmap_update_bits(trim, 0xbc, 0xf8, t);
+		}
+	}
+
+	/* Disable the PFM PMOS-only function */
+	regmap_write(trim, 0x23, 0xcc);
+
+	dev_dbg(dev, "trims applied, 0x71 was 0x%02x\n", v);
+}
+
 static int s2mps11_pmic_probe(struct platform_device *pdev)
 {
 	struct sec_pmic_dev *iodev = dev_get_drvdata(pdev->dev.parent);
@@ -1590,6 +1618,8 @@ static int s2mps11_pmic_probe(struct platform_device *pdev)
 		ret = s2mps17_init(&pdev->dev, iodev->regmap_pmic);
 		if (ret)
 			return ret;
+		s2mps17_trim(&pdev->dev, iodev->regmap_pmic,
+			     dev_get_regmap(pdev->dev.parent, "trim"));
 	}
 
 	return 0;
