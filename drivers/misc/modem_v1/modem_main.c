@@ -31,15 +31,10 @@
 #include <linux/mutex.h>
 #include <linux/irq.h>
 #include <linux/gpio.h>
-#include <linux/proc_fs.h>
-#ifdef CONFIG_OF
-#include <linux/of_gpio.h>
-#endif
 #include <linux/delay.h>
-#include <linux/wakelock.h>
-#include <linux/mfd/syscon.h>
-#include <linux/of_reserved_mem.h>
-#include <linux/dma-contiguous.h>
+#include <linux/dma-mapping.h>
+#include <linux/of.h>
+#include <linux/of_platform.h>
 
 #ifdef CONFIG_LINK_DEVICE_SHMEM
 #include <linux/shm_ipc.h>
@@ -238,7 +233,9 @@ static int attach_devices(struct io_device *iod, enum modem_link tx_link)
 		BUG();
 	}
 
-	wake_lock_init(&iod->wakelock, WAKE_LOCK_SUSPEND, iod->name);
+	iod->ws = wakeup_source_register(NULL, iod->name);
+	if (!iod->ws)
+		return -ENOMEM;
 
 	switch (iod->id) {
 	case SIPC5_CH_ID_FMT_0 ... SIPC5_CH_ID_FMT_9:
@@ -300,169 +297,10 @@ static int parse_dt_common_pdata(struct device_node *np,
 	return 0;
 }
 
-#ifndef CONFIG_LINK_DEVICE_SHMEM
-static int __parse_dt_mandatory_gpio_pdata(struct device_node *np,
-					   struct modem_data *pdata)
-{
-	int ret = 0;
-
-	/* GPIO_CP_ON */
-	pdata->gpio_cp_on = of_get_named_gpio(np, "mif,gpio_cp_on", 0);
-	if (!gpio_is_valid(pdata->gpio_cp_on)) {
-		mif_err("cp_on: Invalied gpio pins\n");
-		return -EINVAL;
-	}
-
-	mif_err("gpio_cp_on: %d\n", pdata->gpio_cp_on);
-	ret = gpio_request(pdata->gpio_cp_on, "CP_ON");
-	if (ret)
-		mif_err("fail to request gpio %s:%d\n", "CP_ON", ret);
-	gpio_direction_output(pdata->gpio_cp_on, 0);
-
-	/* GPIO_CP_RESET */
-	pdata->gpio_cp_reset = of_get_named_gpio(np, "mif,gpio_cp_reset", 0);
-	if (!gpio_is_valid(pdata->gpio_cp_reset)) {
-		mif_err("cp_rst: Invalied gpio pins\n");
-		return -EINVAL;
-	}
-
-	mif_err("gpio_cp_reset: %d\n", pdata->gpio_cp_reset);
-	ret = gpio_request(pdata->gpio_cp_reset, "CP_RST");
-	if (ret)
-		mif_err("fail to request gpio %s:%d\n", "CP_RST", ret);
-	gpio_direction_output(pdata->gpio_cp_reset, 0);
-
-	/* GPIO_PDA_ACTIVE */
-	pdata->gpio_pda_active = of_get_named_gpio(np,
-						"mif,gpio_pda_active", 0);
-	if (!gpio_is_valid(pdata->gpio_pda_active)) {
-		mif_err("pda_active: Invalied gpio pins\n");
-		return -EINVAL;
-	}
-
-	mif_err("gpio_pda_active: %d\n", pdata->gpio_pda_active);
-	ret = gpio_request(pdata->gpio_pda_active, "PDA_ACTIVE");
-	if (ret)
-		mif_err("fail to request gpio %s:%d\n", "PDA_ACTIVE", ret);
-	gpio_direction_output(pdata->gpio_pda_active, 0);
-
-	/* GPIO_PHONE_ACTIVE */
-	pdata->gpio_phone_active = of_get_named_gpio(np,
-						"mif,gpio_phone_active", 0);
-	if (!gpio_is_valid(pdata->gpio_phone_active)) {
-		mif_err("phone_active: Invalied gpio pins\n");
-		return -EINVAL;
-	}
-
-	mif_err("gpio_phone_active: %d\n", pdata->gpio_phone_active);
-	ret = gpio_request(pdata->gpio_phone_active, "PHONE_ACTIVE");
-	if (ret)
-		mif_err("fail to request gpio %s:%d\n", "PHONE_ACTIVE", ret);
-	gpio_direction_input(pdata->gpio_phone_active);
-
-	/* GPIO_IPC_INT2CP */
-	pdata->gpio_ipc_int2cp = of_get_named_gpio(np,
-						"mif,gpio_ipc_int2cp", 0);
-	if (gpio_is_valid(pdata->gpio_ipc_int2cp)) {
-		mif_err("gpio_ipc_int2cp: %d\n", pdata->gpio_ipc_int2cp);
-		ret = gpio_request(pdata->gpio_ipc_int2cp, "IPC_INT2CP");
-		if (ret)
-			mif_err("fail to request gpio %s:%d\n",
-				"SEND_SIG", ret);
-		else
-			gpio_direction_output(pdata->gpio_ipc_int2cp, 0);
-	}
-
-	return ret;
-}
-#endif
-
-static void __parse_dt_optional_gpio_pdata(struct device_node *np,
-					   struct modem_data *pdata)
-{
-#if !defined(CONFIG_LINK_POWER_MANAGEMENT_WITH_FSM)
-	int ret;
-
-	/* GPIO_CP_WAKEUP */
-	pdata->gpio_cp_wakeup = of_get_named_gpio(np,
-						"mif,gpio_cp_wakeup", 0);
-	if (gpio_is_valid(pdata->gpio_cp_wakeup)) {
-		mif_err("gpio_cp_wakeup: %d\n", pdata->gpio_cp_wakeup);
-		ret = gpio_request(pdata->gpio_cp_wakeup, "CP_WAKEUP");
-		if (ret)
-			mif_err("fail to request gpio %s:%d\n",
-				"CP_WAKEUP", ret);
-		else
-			gpio_direction_output(pdata->gpio_cp_wakeup, 0);
-	}
-
-	/* GPIO_AP_STATUS */
-	pdata->gpio_ap_status = of_get_named_gpio(np,
-						"mif,gpio_ap_status", 0);
-	if (gpio_is_valid(pdata->gpio_ap_status)) {
-		mif_err("gpio_ap_status: %d\n", pdata->gpio_ap_status);
-		ret = gpio_request(pdata->gpio_ap_status, "AP_STATUS");
-		if (ret)
-			mif_err("fail to request gpio %s:%d\n",
-				"AP_STATUS", ret);
-		else
-			gpio_direction_output(pdata->gpio_ap_status, 0);
-	}
-
-	/* GPIO_AP_WAKEUP */
-	pdata->gpio_ap_wakeup = of_get_named_gpio(np,
-						"mif,gpio_ap_wakeup", 0);
-	if (gpio_is_valid(pdata->gpio_ap_wakeup)) {
-		mif_err("gpio_ap_wakeup: %d\n", pdata->gpio_ap_wakeup);
-		ret = gpio_request(pdata->gpio_ap_wakeup, "AP_WAKEUP");
-		if (ret)
-			mif_err("fail to request gpio %s:%d\n",
-				"AP_WAKEUP", ret);
-		else
-			gpio_direction_input(pdata->gpio_ap_wakeup);
-	}
-
-	/* GPIO_CP_STATUS */
-	pdata->gpio_cp_status = of_get_named_gpio(np,
-						"mif,gpio_cp_status", 0);
-	if (gpio_is_valid(pdata->gpio_cp_status)) {
-		mif_err("gpio_cp_status: %d\n", pdata->gpio_cp_status);
-		ret = gpio_request(pdata->gpio_cp_status, "CP_STATUS");
-		if (ret)
-			mif_err("fail to request gpio %s:%d\n",
-				"CP_STATUS", ret);
-		else
-			gpio_direction_input(pdata->gpio_cp_status);
-	}
-#endif
-}
-
+/* The shared memory link has none of the optional mif,gpio_* lines here. */
 static int parse_dt_gpio_pdata(struct device_node *np, struct modem_data *pdata)
 {
-	int err = 0;
-#if defined(CONFIG_LINK_POWER_MANAGEMENT_WITH_FSM)
-	struct device_node *pm_node;
-#endif
-
-#ifndef CONFIG_LINK_DEVICE_SHMEM
-	err = __parse_dt_mandatory_gpio_pdata(np, pdata);
-	if (err)
-		return err;
-#endif
-	__parse_dt_optional_gpio_pdata(np, pdata);
-
-#if defined(CONFIG_LINK_POWER_MANAGEMENT_WITH_FSM)
-	pm_node = of_get_child_by_name(np, PM_DT_NODE_NAME);
-	if (!pm_node) {
-		mif_err("ERR! No PM DT node\n");
-		return -ENOSYS;
-	}
-
-	err = link_pm_parse_dt_gpio_pdata(pm_node, pdata);
-	if (err)
-		return err;
-#endif
-	return err;
+	return 0;
 }
 
 static int parse_dt_mbox_pdata(struct device *dev, struct device_node *np,
@@ -641,7 +479,7 @@ error:
 }
 
 static const struct of_device_id sec_modem_match[] = {
-	{ .compatible = "sec_modem,modem_pdata", },
+	{ .compatible = "samsung,exynos8895-modem", },
 	{},
 };
 MODULE_DEVICE_TABLE(of, sec_modem_match);
@@ -659,69 +497,10 @@ enum mif_sim_mode {
 	MIF_SIM_TRIPLE,
 };
 
-static int simslot_count(struct seq_file *m, void *v)
-{
-	enum mif_sim_mode mode = (enum mif_sim_mode)m->private;
-
-	seq_printf(m, "%u\n", mode);
-	return 0;
-}
-
-static int simslot_count_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, simslot_count, PDE_DATA(inode));
-}
-
-static const struct file_operations simslot_count_fops = {
-	.open	= simslot_count_open,
-	.read	= seq_read,
-	.llseek	= seq_lseek,
-	.release = single_release,
-};
-
-#ifdef CONFIG_GPIO_DS_DETECT
-static enum mif_sim_mode get_sim_mode(struct device_node *of_node)
-{
-	enum mif_sim_mode mode = MIF_SIM_SINGLE;
-	int gpio_ds_det;
-	int retval;
-
-	gpio_ds_det = of_get_named_gpio(of_node, "mif,gpio_ds_det", 0);
-	if (!gpio_is_valid(gpio_ds_det)) {
-		mif_err("DT error: failed to get sim mode\n");
-		goto make_proc;
-	}
-
-	retval = gpio_request(gpio_ds_det, "DS_DET");
-	if (retval) {
-		mif_err("Failed to reqeust GPIO(%d)\n", retval);
-		goto make_proc;
-	} else {
-		gpio_direction_input(gpio_ds_det);
-	}
-
-	retval = gpio_get_value(gpio_ds_det);
-	if (retval)
-		mode = MIF_SIM_DUAL;
-
-	mif_info("sim_mode: %d\n", mode);
-	gpio_free(gpio_ds_det);
-
-make_proc:
-	if (!proc_create_data("simslot_count", 0, NULL, &simslot_count_fops,
-			(void *)(long)mode)) {
-		mif_err("Failed to create proc\n");
-		mode = MIF_SIM_SINGLE;
-	}
-
-	return mode;
-}
-#else
 static enum mif_sim_mode get_sim_mode(struct device_node *of_node)
 {
 	return MIF_SIM_SINGLE;
 }
-#endif
 
 static ssize_t do_cp_crash_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
@@ -751,6 +530,47 @@ static struct attribute *modem_attrs[] = {
 };
 ATTRIBUTE_GROUPS(modem);
 
+static struct platform_device *mif_get_provider(struct device *dev, const char *prop)
+{
+	struct device_node *np = of_parse_phandle(dev->of_node, prop, 0);
+	struct platform_device *p;
+
+	if (!np)
+		return ERR_PTR(-ENODEV);
+	p = of_find_device_by_node(np);
+	of_node_put(np);
+	if (!p)
+		return ERR_PTR(-EPROBE_DEFER);
+	if (!p->dev.driver || !platform_get_drvdata(p)) {
+		put_device(&p->dev);
+		return ERR_PTR(-EPROBE_DEFER);
+	}
+	return p;
+}
+
+static int mif_link_providers(struct device *dev)
+{
+	static const char * const props[] = { "samsung,mailbox", "samsung,shmem" };
+	struct platform_device *p[ARRAY_SIZE(props)];
+	int i, n, ret = 0;
+
+	for (n = 0; n < ARRAY_SIZE(props); n++) {
+		p[n] = mif_get_provider(dev, props[n]);
+		if (IS_ERR(p[n])) {
+			ret = dev_err_probe(dev, PTR_ERR(p[n]), "%s\n", props[n]);
+			break;
+		}
+	}
+	for (i = 0; !ret && i < n; i++) {
+		if (!device_link_add(dev, &p[i]->dev, DL_FLAG_AUTOREMOVE_CONSUMER))
+			ret = dev_err_probe(dev, -EINVAL, "device link to %s\n", props[i]);
+	}
+	/* The device links hold their own references. */
+	for (i = 0; i < n; i++)
+		put_device(&p[i]->dev);
+	return ret;
+}
+
 static int modem_probe(struct platform_device *pdev)
 {
 	int i;
@@ -763,6 +583,15 @@ static int modem_probe(struct platform_device *pdev)
 	struct link_device *ld;
 	enum mif_sim_mode sim_mode;
 	int err;
+
+	err = mif_link_providers(dev);
+	if (err)
+		return err;
+
+	/* The zero-copy buffer cells are DMA mapped for this device. */
+	err = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
+	if (err)
+		return err;
 
 	mif_err("%s: +++ (%s)\n",
 		pdev->name, CONFIG_OPTION_REGION);
@@ -838,13 +667,13 @@ static int modem_probe(struct platform_device *pdev)
 			list_add_tail(&iod[i]->list,
 					&modemctl->modem_state_notify_list);
 
-		attach_devices(iod[i], pdata->iodevs[i].tx_link);
+		if (attach_devices(iod[i], pdata->iodevs[i].tx_link)) {
+			mif_err("%s: iod[%d] attach fail\n", pdata->name, i);
+			goto free_iod;
+		}
 	}
 
 	platform_set_drvdata(pdev, modemctl);
-
-	/* reserved buff pool memory init */
-	of_reserved_mem_device_init(dev);
 
 #ifdef CONFIG_CP_RAM_LOGGING
 	/* Send SMC call if cp_ram_logging function is enabled */
@@ -855,10 +684,6 @@ static int modem_probe(struct platform_device *pdev)
 
 	if (sysfs_create_groups(&dev->kobj, modem_groups))
 		mif_err("failed to create modem groups node\n");
-
-	err = mif_init_argos_notifier();
-	if (err < 0)
-		mif_err("failed to initialize argos_notifier(%d)\n", err);
 
 	mif_err("%s: ---\n", pdev->name);
 	return 0;
@@ -987,7 +812,7 @@ static int modem_resume(struct device *pdev)
 }
 
 static const struct dev_pm_ops modem_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(modem_suspend, modem_resume)
+	SYSTEM_SLEEP_PM_OPS(modem_suspend, modem_resume)
 };
 
 static struct platform_driver modem_driver = {
@@ -995,12 +820,9 @@ static struct platform_driver modem_driver = {
 	.shutdown = modem_shutdown,
 	.driver = {
 		.name = "mif_sipc5",
-		.owner = THIS_MODULE,
-		.pm = &modem_pm_ops,
+		.pm = pm_sleep_ptr(&modem_pm_ops),
 		.suppress_bind_attrs = true,
-#ifdef CONFIG_OF
-		.of_match_table = of_match_ptr(sec_modem_match),
-#endif
+		.of_match_table = sec_modem_match,
 	},
 };
 

@@ -18,41 +18,32 @@
 #include <linux/platform_device.h>
 #include <linux/delay.h>
 #include <linux/of.h>
-#include <linux/of_gpio.h>
+#include <linux/gpio/consumer.h>
+#include <linux/mfd/syscon.h>
+#include <linux/regmap.h>
 #include <linux/mcu_ipc.h>
 #include <linux/shm_ipc.h>
-#include <linux/smc.h>
 #include <linux/modem_notifier.h>
+#include <soc/samsung/exynos8895-smc.h>
 #include <soc/samsung/pmu-cp.h>
 
 #include "modem_prj.h"
 #include "modem_utils.h"
 #include "link_device_memory.h"
 
-#ifdef CONFIG_EXYNOS_BUSMONITOR
-#include <linux/exynos-busmon.h>
-#endif
+/* The panel id the bootloader passes, which the vendor panel driver reported */
+static int mif_lcdtype;
 
-#if defined(CONFIG_SOC_EXYNOS8895) && defined(CONFIG_EXYNOS_DECON_FB)
-#define DEFAULT_DSP_TYPE	0;
-extern int get_lcd_info(char *arg);
-#endif
+static int __init mif_lcdtype_setup(char *arg)
+{
+	get_option(&arg, &mif_lcdtype);
+	return 0;
+}
+early_param("lcdtype", mif_lcdtype_setup);
 
 #define MIF_INIT_TIMEOUT	(15 * HZ)
 
-#ifdef CONFIG_REGULATOR_S2MPU01A
-#include <linux/mfd/samsung/s2mpu01a.h>
-static inline int change_cp_pmu_manual_reset(void)
-{
-	return change_mr_reset();
-}
-#else
 static inline int change_cp_pmu_manual_reset(void) {return 0; }
-#endif
-
-#ifdef CONFIG_UART_SEL
-extern void cp_recheck_uart_dir(void);
-#endif
 
 static struct modem_ctl *g_mc;
 
@@ -141,26 +132,28 @@ static void cp_active_handler(void *arg)
 	}
 }
 
-static int get_system_rev(struct device_node *np)
+static int get_system_rev(struct device *dev)
 {
 	int value, cnt, gpio_cnt;
-	unsigned gpio_hw_rev, hw_rev = 0;
+	unsigned int hw_rev = 0;
+	struct gpio_desc *gpio_hw_rev;
 
-	gpio_cnt = of_gpio_count(np);
+	gpio_cnt = gpiod_count(dev, NULL);
 	if (gpio_cnt < 0) {
 		mif_err("failed to get gpio_count from DT(%d)\n", gpio_cnt);
 		return gpio_cnt;
 	}
 
 	for (cnt = 0; cnt < gpio_cnt; cnt++) {
-		gpio_hw_rev = of_get_gpio(np, cnt);
-		if (!gpio_is_valid(gpio_hw_rev)) {
+		gpio_hw_rev = devm_gpiod_get_index(dev, NULL, cnt, GPIOD_IN);
+		if (IS_ERR(gpio_hw_rev)) {
 			mif_err("gpio_hw_rev%d: Invalied gpio\n", cnt);
 			return -EINVAL;
 		}
 
-		value = gpio_get_value(gpio_hw_rev);
+		value = gpiod_get_value_cansleep(gpio_hw_rev);
 		hw_rev |= (value & 0x1) << cnt;
+		devm_gpiod_put(dev, gpio_hw_rev);
 	}
 
 	return hw_rev;
@@ -202,12 +195,8 @@ static int init_mailbox_regs(struct modem_ctl *mc)
 #ifdef CONFIG_CP_RAM_LOGGING
 	unsigned int sbi_ext_backtrace_mask, sbi_ext_backtrace_pos;
 #endif
-#if defined(CONFIG_SOC_EXYNOS8895) && defined(CONFIG_EXYNOS_DECON_FB)
 	unsigned int sbi_device_type_mask, sbi_device_type_pos;
 	unsigned int value = 0;
-	int dsp_connected = 0;
-	int dsp_type = 0;
-#endif
 
 	for (i = 0; i < MAX_MBOX_NUM; i++)
 		mbox_set_value(MCU_CP, i, 0);
@@ -219,42 +208,20 @@ static int init_mailbox_regs(struct modem_ctl *mc)
 		mif_dt_read_u32(np, "sbi_ds_det_mask", sbi_ds_det_mask);
 		mif_dt_read_u32(np, "sbi_ds_det_pos", sbi_ds_det_pos);
 
-#if defined(CONFIG_SOC_EXYNOS8895) && defined(CONFIG_EXYNOS_DECON_FB)
 		mif_dt_read_u32(np, "sbi_device_type_mask", sbi_device_type_mask);
 		mif_dt_read_u32(np, "sbi_device_type_pos", sbi_device_type_pos);
 
-		dsp_connected = get_lcd_info("connected");
-		if (dsp_connected < 0) {
-			mif_err("Failed to get dsp_info(%d)\n", dsp_connected);
-			value = DEFAULT_DSP_TYPE;
-		} else {
-			/* 1: dsp_connect, 0: dsp_disconnect */
-			if (dsp_connected) {
-				dsp_type = get_lcd_info("id");
-				if (dsp_type < 0) {
-					mif_err("Failed to get dsp_type(%d)\n", dsp_type);
-					value = DEFAULT_DSP_TYPE;
-				} else {
-					/* [3:0] display type, [4] connected or not */
-					value |= ((dsp_connected & 0x1) << 4);
-					/* DSP ID1 value is located in [19:16] */
-					value |= ((dsp_type >> 16) & 0xf);
-				}
-			} else {
-				mif_err("display disconnected, set default value\n");
-				value = DEFAULT_DSP_TYPE;
-			}
-		}
+		/* [3:0] display type (lcdtype [19:16]), [4] display connected */
+		value = (mif_lcdtype >= 0) ? ((1 << 4) | ((mif_lcdtype >> 16) & 0xf)) : 0;
 
 		mbox_update_value(MCU_CP, mbx_ap_status, value,
 			sbi_device_type_mask, sbi_device_type_pos);
 
 		mif_info("dsp_type:0x%x, conn:0x%x, get_val: 0x%x\n",
-			dsp_type, dsp_connected,
+			mif_lcdtype, mif_lcdtype >= 0,
 			mbox_get_value(MCU_CP, mbx_ap_status));
-#endif
 
-		sys_rev = get_system_rev(np);
+		sys_rev = get_system_rev(&pdev->dev);
 		ds_det = get_ds_detect(np);
 		if (sys_rev < 0 || ds_det < 0) {
 			mif_info("sys_rev:%d ds_det:%d\n", sys_rev, ds_det);
@@ -321,11 +288,6 @@ static int ss310ap_on(struct modem_ctl *mc)
 	msleep(300);
 	ret = change_cp_pmu_manual_reset();
 	mif_err("change_mr_reset -> %d\n", ret);
-
-#ifdef CONFIG_UART_SEL
-	mif_err("Recheck UART direction.\n");
-	cp_recheck_uart_dir();
-#endif
 
 	mif_info("---\n");
 	return 0;
@@ -602,39 +564,24 @@ static void ss310ap_get_pdata(struct modem_ctl *mc, struct modem_data *modem)
 	mc->sbi_crash_type_pos = mbx->sbi_crash_type_pos;
 }
 
-#ifdef CONFIG_EXYNOS_BUSMONITOR
-static int ss310ap_busmon_notifier(struct notifier_block *nb,
-						unsigned long event, void *data)
-{
-	struct busmon_notifier *info = (struct busmon_notifier *)data;
-	char *init_desc = info->init_desc;
-
-	if (init_desc != NULL &&
-		(strncmp(init_desc, "CP", strlen(init_desc)) == 0 ||
-		strncmp(init_desc, "APB_CORE_CP", strlen(init_desc)) == 0 ||
-		strncmp(init_desc, "MIF_CP", strlen(init_desc)) == 0)) {
-		struct modem_ctl *mc =
-			container_of(nb, struct modem_ctl, busmon_nfb);
-
-		ss310ap_force_crash_exit(mc);
-	}
-	return 0;
-}
-#endif
-
 int ss310ap_init_modemctl_device(struct modem_ctl *mc, struct modem_data *pdata)
 {
 	struct platform_device *pdev = to_platform_device(mc->dev);
 	struct device_node *np = pdev->dev.of_node;
 	int ret = 0;
 	unsigned int irq_num;
-#ifdef CONFIG_SOC_EXYNOS8890
-	struct resource *sysram_alive;
-#endif
 	unsigned long flags = IRQF_NO_SUSPEND | IRQF_NO_THREAD;
-	unsigned int cp_rst_n ;
+	struct gpio_desc *cp_rst_n;
+	struct regmap *pmu;
 
 	mif_err("+++\n");
+
+	pmu = syscon_regmap_lookup_by_phandle(np, "samsung,pmu-syscon");
+	if (IS_ERR(pmu)) {
+		mif_err("samsung,pmu-syscon: %ld\n", PTR_ERR(pmu));
+		return PTR_ERR(pmu);
+	}
+	exynos_pmu_cp_set_regmap(pmu);
 
 	g_mc = mc;
 
@@ -645,7 +592,10 @@ int ss310ap_init_modemctl_device(struct modem_ctl *mc, struct modem_data *pdata)
 	/*
 	** Register CP_FAIL interrupt handler
 	*/
-	irq_num = platform_get_irq(pdev, 0);
+	ret = platform_get_irq(pdev, 0);
+	if (ret < 0)
+		return ret;
+	irq_num = ret;
 	mif_init_irq(&mc->irq_cp_fail, irq_num, "cp_fail", flags);
 
 	ret = mif_request_irq(&mc->irq_cp_fail, cp_fail_handler, mc);
@@ -661,7 +611,10 @@ int ss310ap_init_modemctl_device(struct modem_ctl *mc, struct modem_data *pdata)
 	/*
 	** Register CP_WDT interrupt handler
 	*/
-	irq_num = platform_get_irq(pdev, 1);
+	ret = platform_get_irq(pdev, 1);
+	if (ret < 0)
+		return ret;
+	irq_num = ret;
 	mif_init_irq(&mc->irq_cp_wdt, irq_num, "cp_wdt", flags);
 
 	ret = mif_request_irq(&mc->irq_cp_wdt, cp_wdt_handler, mc);
@@ -673,15 +626,6 @@ int ss310ap_init_modemctl_device(struct modem_ctl *mc, struct modem_data *pdata)
 	/* CP_WDT interrupt must be enabled only after CP booting */
 	mc->irq_cp_wdt.active = true;
 	mif_disable_irq(&mc->irq_cp_wdt);
-
-#ifdef CONFIG_SOC_EXYNOS8890
-	sysram_alive = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	mc->sysram_alive = devm_ioremap_resource(&pdev->dev, sysram_alive);
-	if (IS_ERR(mc->sysram_alive)) {
-		ret = PTR_ERR(mc->sysram_alive);
-		return ret;
-	}
-#endif
 
 	/*
 	** Register LTE_ACTIVE MBOX interrupt handler
@@ -699,32 +643,11 @@ int ss310ap_init_modemctl_device(struct modem_ctl *mc, struct modem_data *pdata)
 	/*
 	** Get/set CP_RST_N
 	*/
-	if (np)	{
-		cp_rst_n = of_get_named_gpio(np, "modem_ctrl,gpio_cp_rst_n", 0);
-		if (gpio_is_valid(cp_rst_n)) {
-			mif_err("cp_rst_n: %d\n", cp_rst_n);
-			ret = gpio_request(cp_rst_n, "CP_RST_N");
-			if (ret)	{
-				mif_err("fail req gpio %s:%d\n", "CP_RST_N", ret);
-				return -ENODEV;
-			}
-
-			gpio_direction_output(cp_rst_n, 1);
-		} else {
-			mif_err("cp_rst_n: Invalied gpio pins\n");
-		}
-	} else {
-		mif_err("cannot find device_tree for pmu_cu!\n");
+	cp_rst_n = devm_gpiod_get_optional(&pdev->dev, "modem_ctrl,gpio_cp_rst_n", GPIOD_OUT_HIGH);
+	if (IS_ERR(cp_rst_n)) {
+		mif_err("fail req gpio %s:%ld\n", "CP_RST_N", PTR_ERR(cp_rst_n));
 		return -ENODEV;
 	}
-
-#ifdef CONFIG_EXYNOS_BUSMONITOR
-	/*
-	 ** Register BUS Mon notifier
-	 */
-	mc->busmon_nfb.notifier_call = ss310ap_busmon_notifier;
-	busmon_notifier_chain_register(&mc->busmon_nfb);
-#endif
 
 	mif_err("---\n");
 	return 0;

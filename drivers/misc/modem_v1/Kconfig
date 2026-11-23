@@ -1,7 +1,8 @@
 menuconfig SEC_SIPC_MODEM_IF
 	bool "Samsung Mobile SIPC Modem Interface"
+	depends on ARCH_EXYNOS && OF
 	default n
-	---help---
+	help
 	  Samsung Modem Interface Driver
 
 if SEC_SIPC_MODEM_IF
@@ -12,11 +13,19 @@ config SEC_MODEM_SS310AP
 	select LINK_DEVICE_SHMEM
 	select CP_SECURE_BOOT
 	select CP_RAM_LOGGING
+	select MCU_IPC
+	select SHM_IPC
+	select MFD_SYSCON
+	select EXYNOS8895_SMC
 	default y
 
-config CP_ZEROCOPY
-	bool "Support zero memory copy"
-	default y
+config OPTION_REGION
+	string "Region of the region-specific modem io devices"
+	default "kor_single"
+	help
+	  An io device with the OPTION_REGION attribute is created only when
+	  its iod,option_region equals this string. "kor_single" selects the
+	  io devices of the SM-N950N.
 
 menu "Configuration Description"
 config BOOT_DEVICE_SPI

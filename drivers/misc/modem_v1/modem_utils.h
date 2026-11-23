@@ -46,7 +46,7 @@
 	 - sizeof(unsigned long long))
 #define MAX_TIM_LOG_SIZE \
 	(MAX_LOG_SIZE - sizeof(enum mif_log_id) \
-	 - sizeof(unsigned long long) - sizeof(struct timespec))
+	 - sizeof(unsigned long long) - sizeof(struct timespec64))
 
 enum mif_log_id {
 	MIF_IPC_RL2AP = 1,
@@ -98,7 +98,7 @@ struct mif_common_block {
 struct mif_time_block {
 	enum mif_log_id id;
 	unsigned long long time;
-	struct timespec epoch;
+	struct timespec64 epoch;
 	char buff[MAX_TIM_LOG_SIZE];
 };
 
@@ -297,7 +297,7 @@ void _mif_irq_log(enum mif_log_id,
 void _mif_com_log(enum mif_log_id,
 	struct modem_shared *, const char *, ...);
 void _mif_time_log(enum mif_log_id,
-	struct modem_shared *, struct timespec, const char *, size_t);
+	struct modem_shared *, struct timespec64, const char *, size_t);
 
 static inline struct link_device *find_linkdev(struct modem_shared *msd,
 		enum modem_link link_type)
@@ -399,7 +399,7 @@ void rawdevs_set_tx_link(struct modem_shared *msd, enum modem_link link_type);
 __be32 ipv4str_to_be32(const char *ipv4str, size_t count);
 
 void mif_add_timer(struct timer_list *timer, unsigned long expire,
-		void (*function)(unsigned long), unsigned long data);
+		void (*function)(struct timer_list *));
 
 /* debug helper functions for sipc4, sipc5 */
 void mif_print_data(const u8 *data, int len);
@@ -494,10 +494,6 @@ struct file *mif_open_file(const char *path);
 void mif_save_file(struct file *fp, const char *buff, size_t size);
 void mif_close_file(struct file *fp);
 
-int board_gpio_export(struct device *dev,
-		unsigned gpio, bool dir, const char *name);
-
-void make_gpio_floating(unsigned int gpio, bool floating);
 
 #ifdef CONFIG_ARGOS
 /* kernel team needs to provide argos header file. !!!

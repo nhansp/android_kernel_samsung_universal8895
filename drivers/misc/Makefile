@@ -79,3 +79,4 @@ obj-$(CONFIG_MISC_RP1)		+= rp1/
 obj-$(CONFIG_PKVM_SMC_FILTER)	+= pkvm-smc/
 obj-$(CONFIG_PKVM_IOMMU_TEMPLATE)  += pkvm-iommu-temp/
 obj-$(CONFIG_MCU_IPC)		+= mcu_ipc/
+obj-$(CONFIG_SEC_SIPC_MODEM_IF)	+= modem_v1/

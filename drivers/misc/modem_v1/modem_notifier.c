@@ -12,7 +12,7 @@
  *
  */
 
-#include <stdarg.h>
+#include <linux/stdarg.h>
 #include <linux/string.h>
 #include <linux/init.h>
 #include <linux/module.h>

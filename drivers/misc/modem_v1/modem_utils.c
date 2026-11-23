@@ -12,7 +12,6 @@
  *
  */
 
-#include <stdarg.h>
 #include <linux/string.h>
 #include <linux/init.h>
 #include <linux/module.h>
@@ -38,14 +37,14 @@
 #include <linux/irq.h>
 #include <linux/gpio.h>
 #include <linux/delay.h>
-#include <linux/wakelock.h>
-#include <linux/exynos-ss.h>
 #include <linux/bitops.h>
-#include <linux/smc.h>
+#include <linux/sched/clock.h>
+#include <linux/stdarg.h>
+#include <linux/timer.h>
+#include <linux/fs.h>
+#include <soc/samsung/exynos8895-smc.h>
 #include <soc/samsung/pmu-cp.h>
 #include <soc/samsung/exynos-modem-ctrl.h>
-
-#include <soc/samsung/acpm_ipc_ctrl.h>
 #include "modem_prj.h"
 #include "modem_utils.h"
 
@@ -86,11 +85,11 @@ static struct raw_notifier_head cp_crash_notifier;
 
 struct mif_buff_mng *g_mif_buff_mng;
 
-static inline void ts2utc(struct timespec *ts, struct utc_time *utc)
+static inline void ts2utc(struct timespec64 *ts, struct utc_time *utc)
 {
 	struct tm tm;
 
-	time_to_tm((ts->tv_sec - (sys_tz.tz_minuteswest * 60)), 0, &tm);
+	time64_to_tm((ts->tv_sec - (sys_tz.tz_minuteswest * 60)), 0, &tm);
 	utc->year = 1900 + (u32)tm.tm_year;
 	utc->mon = 1 + tm.tm_mon;
 	utc->day = tm.tm_mday;
@@ -102,8 +101,9 @@ static inline void ts2utc(struct timespec *ts, struct utc_time *utc)
 
 void get_utc_time(struct utc_time *utc)
 {
-	struct timespec ts;
-	getnstimeofday(&ts);
+	struct timespec64 ts;
+
+	ktime_get_real_ts64(&ts);
 	ts2utc(&ts, utc);
 }
 
@@ -219,7 +219,7 @@ void _mif_com_log(enum mif_log_id id,
 }
 
 void _mif_time_log(enum mif_log_id id, struct modem_shared *msd,
-	struct timespec epoch, const char *data, size_t len)
+	struct timespec64 epoch, const char *data, size_t len)
 {
 	struct mif_time_block *block;
 	unsigned long int flags;
@@ -235,7 +235,7 @@ void _mif_time_log(enum mif_log_id id, struct modem_shared *msd,
 
 	block->id = id;
 	block->time = get_kernel_time();
-	memcpy(&block->epoch, &epoch, sizeof(struct timespec));
+	memcpy(&block->epoch, &epoch, sizeof(struct timespec64));
 
 	if (data)
 		memcpy(block->buff, data,
@@ -580,7 +580,7 @@ __be32 ipv4str_to_be32(const char *ipv4str, size_t count)
 	char *next = ipstr;
 	int i;
 
-	strlcpy(ipstr, ipv4str, ARRAY_SIZE(ipstr));
+	strscpy(ipstr, ipv4str, ARRAY_SIZE(ipstr));
 
 	for (i = 0; i < 4; i++) {
 		char *p;
@@ -594,15 +594,13 @@ __be32 ipv4str_to_be32(const char *ipv4str, size_t count)
 }
 
 void mif_add_timer(struct timer_list *timer, unsigned long expire,
-		   void (*function)(unsigned long), unsigned long data)
+		   void (*function)(struct timer_list *))
 {
 	if (timer_pending(timer))
 		return;
 
-	init_timer(timer);
+	timer_setup(timer, function, 0);
 	timer->expires = jiffies + expire;
-	timer->function = function;
-	timer->data = data;
 	add_timer(timer);
 }
 
@@ -1065,7 +1063,7 @@ void mif_enable_irq(struct modem_irq *irq)
 	spin_lock_irqsave(&irq->lock, flags);
 
 	if (irq->active) {
-		mif_err("%s(#%d) is already active <%pf>\n",
+		mif_err("%s(#%d) is already active <%ps>\n",
 			irq->name, irq->num, CALLER);
 		goto exit;
 	}
@@ -1074,8 +1072,8 @@ void mif_enable_irq(struct modem_irq *irq)
 
 	irq->active = true;
 
-	mif_info("%s(#%d) is enabled <%pf>\n",
-		irq->name, irq->num, CALLER);
+	mif_info("%s(#%d) is enabled <%ps>\n",
+		 irq->name, irq->num, CALLER);
 
 exit:
 	spin_unlock_irqrestore(&irq->lock, flags);
@@ -1088,7 +1086,7 @@ void mif_disable_irq(struct modem_irq *irq)
 	spin_lock_irqsave(&irq->lock, flags);
 
 	if (!irq->active) {
-		mif_err("%s(#%d) is not active <%pf>\n",
+		mif_err("%s(#%d) is not active <%ps>\n",
 			irq->name, irq->num, CALLER);
 		goto exit;
 	}
@@ -1097,8 +1095,8 @@ void mif_disable_irq(struct modem_irq *irq)
 
 	irq->active = false;
 
-	mif_info("%s(#%d) is disabled <%pf>\n",
-		irq->name, irq->num, CALLER);
+	mif_info("%s(#%d) is disabled <%ps>\n",
+		 irq->name, irq->num, CALLER);
 
 exit:
 	spin_unlock_irqrestore(&irq->lock, flags);
@@ -1107,15 +1105,8 @@ exit:
 struct file *mif_open_file(const char *path)
 {
 	struct file *fp;
-	mm_segment_t old_fs;
-
-	old_fs = get_fs();
-	set_fs(get_ds());
 
 	fp = filp_open(path, O_RDWR|O_CREAT|O_APPEND, 0666);
-
-	set_fs(old_fs);
-
 	if (IS_ERR(fp))
 		return NULL;
 
@@ -1124,65 +1115,18 @@ struct file *mif_open_file(const char *path)
 
 void mif_save_file(struct file *fp, const char *buff, size_t size)
 {
-	int ret;
-	mm_segment_t old_fs;
+	ssize_t ret;
 
-	old_fs = get_fs();
-	set_fs(get_ds());
-
-	ret = fp->f_op->write(fp, buff, size, &fp->f_pos);
+	ret = kernel_write(fp, buff, size, &fp->f_pos);
 	if (ret < 0)
 		mif_err("ERR! write fail\n");
-
-	set_fs(old_fs);
 }
 
 void mif_close_file(struct file *fp)
 {
-	mm_segment_t old_fs;
-
-	old_fs = get_fs();
-	set_fs(get_ds());
-
 	filp_close(fp, NULL);
-
-	set_fs(old_fs);
 }
 
-int board_gpio_export(struct device *dev,
-		unsigned gpio, bool dir, const char *name)
-{
-	int ret = 0;
-
-	if (!gpio_is_valid(gpio)) {
-		mif_err("invalid gpio pins - %s\n", name);
-		return -EINVAL;
-	}
-
-	ret = gpio_export(gpio, dir);
-	if (ret) {
-		mif_err("%s: failed to export gpio (%d)\n", name, ret);
-		return ret;
-	}
-
-	ret = gpio_export_link(dev, name, gpio);
-	if (ret) {
-		mif_err("%s: failed to export link_gpio (%d)\n", name, ret);
-		return ret;
-	}
-
-	mif_info("%s exported\n", name);
-
-	return 0;
-}
-
-void make_gpio_floating(unsigned int gpio, bool floating)
-{
-	if (floating)
-		gpio_direction_input(gpio);
-	else
-		gpio_direction_output(gpio, 0);
-}
 
 int __ref register_cp_crash_notifier(struct notifier_block *nb)
 {
@@ -1196,9 +1140,7 @@ void __ref modemctl_notify_event(enum modemctl_event evt)
 
 void mif_set_snapshot(bool enable)
 {
-	if (!enable)
-		acpm_stop_log();
-	exynos_ss_set_enable("log_kevents", enable);
+	/* No exynos-snapshot or ACPM log to stop in this kernel */
 }
 
 struct mif_buff_mng *init_mif_buff_mng(unsigned char *buffer_start,
@@ -1410,26 +1352,6 @@ int free_mif_buff(struct mif_buff_mng *bm, void *buffer)
 	return 0;
 }
 
-static inline bool is_zerocopy_buffer(struct sk_buff *skb)
-{
-	if (g_mif_buff_mng == NULL)
-		return false;
-
-	if (((g_mif_buff_mng->buffer_start <= skb->head) &&
-			(skb->head < g_mif_buff_mng->buffer_end)))
-		return true;
-	else
-		return false;
-}
-
-bool __skb_free_head_cp_zerocopy(struct sk_buff *skb)
-{
-	if (!is_zerocopy_buffer(skb))
-		return false;
-
-	free_mif_buff(g_mif_buff_mng, skb->head);
-	return true;
-}
 
 int security_request_cp_ram_logging(void)
 {
@@ -1437,9 +1359,9 @@ int security_request_cp_ram_logging(void)
 
 	mif_err("SMC: CP_BOOT_REQ_CP_RAM_LOGGING\n");
 
-	exynos_smc(SMC_ID_CLK, SSS_CLK_ENABLE, 0, 0);
-	err = exynos_smc(SMC_ID, CP_BOOT_REQ_CP_RAM_LOGGING, 0, 0);
-	exynos_smc(SMC_ID_CLK, SSS_CLK_DISABLE, 0, 0);
+	exynos8895_smc(SMC_ID_CLK, SSS_CLK_ENABLE, 0, 0);
+	err = (int)exynos8895_smc(SMC_ID, CP_BOOT_REQ_CP_RAM_LOGGING, 0, 0);
+	exynos8895_smc(SMC_ID_CLK, SSS_CLK_DISABLE, 0, 0);
 
 	mif_err("SMC: return_value=%d\n", err);
 
