@@ -26,6 +26,9 @@
 #include <linux/soc/samsung/exynos-regs-pmu.h>
 #include <linux/usb/typec.h>
 #include <linux/usb/typec_mux.h>
+#ifdef CONFIG_ANDROID_VENDOR_HOOKS
+#include <trace/hooks/dwc3.h>
+#endif
 
 /* Exynos USB PHY registers */
 #define EXYNOS5_FSEL_9MHZ6		0x0
@@ -552,6 +555,7 @@ struct exynos5_usbdrd_phy_drvdata {
  * @vdd_dp: Exynos8895 optional 1.8V DP/PHY supply
  * @cal_probed: Exynos8895 register layout revision probed
  * @cal_port: Exynos8895 window in use: 0, 1 or -1 (unknown)
+ * @tune_armed: Exynos8895 re-tune after a dwc3 core soft reset
  */
 struct exynos5_usbdrd_phy {
 	struct device *dev;
@@ -583,6 +587,7 @@ struct exynos5_usbdrd_phy {
 	struct regulator *vdd_dp;
 	bool cal_probed;
 	int cal_port;
+	bool tune_armed;
 };
 
 static inline
@@ -2180,6 +2185,7 @@ static int exynos8895_usbdrd_phy_power_on(struct phy *phy)
 		return 0;
 	d = to_usbdrd_phy(inst);
 	exynos8895_cal_tune_dev(d);
+	WRITE_ONCE(d->tune_armed, true);
 	return 0;
 }
 
@@ -2190,6 +2196,7 @@ static int exynos8895_usbdrd_phy_exit(struct phy *phy)
 
 	if (inst->phy_cfg->id != EXYNOS5_DRDPHY_PIPE3)
 		return 0;
+	WRITE_ONCE(d->tune_armed, false);
 	exynos8895_cal_disable(d);
 	inst->phy_cfg->phy_isol(inst, true);
 	clk_bulk_disable_unprepare(d->drv_data->n_core_clks, d->core_clks);
@@ -2205,6 +2212,52 @@ static const struct phy_ops exynos8895_usbdrd_phy_ops = {
 	.power_on	= exynos8895_usbdrd_phy_power_on,
 	.owner		= THIS_MODULE,
 };
+
+#ifdef CONFIG_ANDROID_VENDOR_HOOKS
+/*
+ * dwc3 soft-resets the core on every gadget soft connect with no PHY call
+ * before RUN_STOP; the vendor driver tuned the PHY after every such reset.
+ * Runs with preemption disabled.
+ */
+static void exynos8895_vh_dwc3_soft_reset(void *data, struct device *dwc3_dev,
+					  void __iomem *dwc3_regs, struct phy **usb3_phy,
+					  enum soft_reset_phase phase)
+{
+	struct exynos5_usbdrd_phy *d = data;
+
+	if (phase != POST_SOFT_RESET || !usb3_phy ||
+	    usb3_phy[0] != d->phys[EXYNOS5_DRDPHY_PIPE3].phy)
+		return;
+	/* the soft reset of core init is followed by .power_on, which tunes */
+	if (!READ_ONCE(d->tune_armed))
+		return;
+	exynos8895_cal_tune_dev(d);
+	dev_dbg(d->dev, "re-tuned after a dwc3 soft reset\n");
+}
+
+static void exynos8895_unregister_vh(void *data)
+{
+	unregister_trace_android_vh_dwc3_core_soft_reset(exynos8895_vh_dwc3_soft_reset, data);
+	tracepoint_synchronize_unregister();
+}
+
+static int exynos8895_register_vh(struct exynos5_usbdrd_phy *d)
+{
+	int ret;
+
+	/* the struct phy are created later, the hook compares at call time */
+	ret = register_trace_android_vh_dwc3_core_soft_reset(exynos8895_vh_dwc3_soft_reset, d);
+	if (ret)
+		return dev_err_probe(d->dev, ret, "dwc3 soft-reset hook\n");
+	return devm_add_action_or_reset(d->dev, exynos8895_unregister_vh, d);
+}
+#else
+static int exynos8895_register_vh(struct exynos5_usbdrd_phy *d)
+{
+	dev_warn(d->dev, "no vendor hooks, PHY not re-tuned after soft-connect CSFTRST\n");
+	return 0;
+}
+#endif
 
 static int exynos8895_usbdrd_probe_extra(struct exynos5_usbdrd_phy *d,
 					 struct platform_device *pdev)
@@ -2230,7 +2283,7 @@ static int exynos8895_usbdrd_probe_extra(struct exynos5_usbdrd_phy *d,
 		d->vdd_dp = NULL;
 	}
 
-	return 0;
+	return exynos8895_register_vh(d);
 }
 
 static void exynos5_usbdrd_gs101_pipe3_init(struct exynos5_usbdrd_phy *phy_drd)
