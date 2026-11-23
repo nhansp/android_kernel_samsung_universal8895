@@ -205,6 +205,7 @@ struct s3c64xx_spi_port_config {
  *               length and position.
  * @tx_fifomask: SPI_STATUS.TX_FIFO_LVL mask. Shifted mask defining the field's
  *               length and position.
+ * @swap_mode: True if 16 and 32-bit FIFO words are byte swapped.
  */
 struct s3c64xx_spi_driver_data {
 	void __iomem                    *regs;
@@ -227,6 +228,7 @@ struct s3c64xx_spi_driver_data {
 	unsigned int			fifo_depth;
 	u32				rx_fifomask;
 	u32				tx_fifomask;
+	bool				swap_mode;
 };
 
 static void s3c64xx_flush_fifo(struct s3c64xx_spi_driver_data *sdd)
@@ -732,14 +734,30 @@ static int s3c64xx_spi_config(struct s3c64xx_spi_driver_data *sdd)
 	case 32:
 		val |= S3C64XX_SPI_MODE_BUS_TSZ_WORD;
 		val |= S3C64XX_SPI_MODE_CH_TSZ_WORD;
+		if (sdd->swap_mode)
+			writel(S3C64XX_SPI_SWAP_TX_EN |
+			       S3C64XX_SPI_SWAP_TX_BYTE |
+			       S3C64XX_SPI_SWAP_TX_HALF_WORD |
+			       S3C64XX_SPI_SWAP_RX_EN |
+			       S3C64XX_SPI_SWAP_RX_BYTE |
+			       S3C64XX_SPI_SWAP_RX_HALF_WORD,
+			       regs + S3C64XX_SPI_SWAP_CFG);
 		break;
 	case 16:
 		val |= S3C64XX_SPI_MODE_BUS_TSZ_HALFWORD;
 		val |= S3C64XX_SPI_MODE_CH_TSZ_HALFWORD;
+		if (sdd->swap_mode)
+			writel(S3C64XX_SPI_SWAP_TX_EN |
+			       S3C64XX_SPI_SWAP_TX_BYTE |
+			       S3C64XX_SPI_SWAP_RX_EN |
+			       S3C64XX_SPI_SWAP_RX_BYTE,
+			       regs + S3C64XX_SPI_SWAP_CFG);
 		break;
 	default:
 		val |= S3C64XX_SPI_MODE_BUS_TSZ_BYTE;
 		val |= S3C64XX_SPI_MODE_CH_TSZ_BYTE;
+		if (sdd->swap_mode)
+			writel(0, regs + S3C64XX_SPI_SWAP_CFG);
 		break;
 	}
 
@@ -1280,6 +1298,7 @@ static int s3c64xx_spi_probe(struct platform_device *pdev)
 	sdd->host = host;
 	sdd->cntrlr_info = sci;
 	sdd->pdev = pdev;
+	sdd->swap_mode = of_property_read_bool(pdev->dev.of_node, "swap-mode");
 
 	ret = s3c64xx_spi_set_port_id(pdev, sdd);
 	if (ret)
