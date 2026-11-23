@@ -72,6 +72,12 @@ properties:
       Documentation/devicetree/bindings/power/pd-samsung.yaml
     maxItems: 1
 
+  samsung,no-suspend:
+    type: boolean
+    description:
+      Do not suspend this System MMU during system sleep; its master may
+      stay active.
+
 required:
   - compatible
   - reg
