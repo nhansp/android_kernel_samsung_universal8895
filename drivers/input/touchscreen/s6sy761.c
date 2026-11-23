@@ -991,11 +991,53 @@ static ssize_t cmd_list_show(struct device *dev, struct device_attribute *attr, 
 }
 static DEVICE_ATTR_RO(cmd_list);
 
+static ssize_t pressure_enable_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct s6sy761_data *sdata = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", !!(sdata->lowpower_mode & S6SY661_MODE_FORCE_KEY));
+}
+
+static ssize_t pressure_enable_store(struct device *dev, struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct s6sy761_data *sdata = dev_get_drvdata(dev);
+	unsigned long value;
+	int ret;
+
+	if (count > 2)
+		return -EINVAL;
+
+	ret = kstrtoul(buf, 10, &value);
+	if (ret)
+		return ret;
+
+	if (!sdata->pressure_key)
+		return -EINVAL;
+
+	/* 0 and 2 turn the key off, 1 and 3 on, as in the vendor driver */
+	if (value != 0 && value != 1 && value != 2 && value != 3)
+		return -EINVAL;
+
+	mutex_lock(&sdata->power_lock);
+	if (value == 1 || value == 3)
+		sdata->lowpower_mode |= S6SY661_MODE_FORCE_KEY;
+	else
+		sdata->lowpower_mode &= ~S6SY661_MODE_FORCE_KEY;
+	if (sdata->powered)
+		ret = s6sy661_sponge_write(sdata);
+	mutex_unlock(&sdata->power_lock);
+
+	return ret ?: count;
+}
+static DEVICE_ATTR(pressure_enable, 0664, pressure_enable_show, pressure_enable_store);
+
 static struct attribute *s6sy661_cmd_attrs[] = {
 	&dev_attr_cmd.attr,
 	&dev_attr_cmd_status.attr,
 	&dev_attr_cmd_result.attr,
 	&dev_attr_cmd_list.attr,
+	&dev_attr_pressure_enable.attr,
 	NULL
 };
 ATTRIBUTE_GROUPS(s6sy661_cmd);
