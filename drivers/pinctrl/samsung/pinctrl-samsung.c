@@ -27,9 +27,13 @@
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include <linux/syscore_ops.h>
 
 #include "../core.h"
 #include "pinctrl-samsung.h"
+
+/* Controllers saved and restored from syscore ops, in probe order */
+static LIST_HEAD(samsung_pinctrl_syscore_list);
 
 /* maximum number of the memory resources */
 #define	SAMSUNG_PINCTRL_NUM_RESOURCES	2
@@ -1200,6 +1204,7 @@ samsung_pinctrl_get_soc_data(struct samsung_pinctrl_drv_data *d,
 	d->suspend = ctrl->suspend;
 	d->resume = ctrl->resume;
 	d->no_pm_save = ctrl->no_pm_save;
+	d->syscore_pm = ctrl->syscore_pm;
 	d->nr_banks = ctrl->nr_banks;
 	d->pin_banks = devm_kcalloc(&pdev->dev, d->nr_banks,
 					sizeof(*d->pin_banks), GFP_KERNEL);
@@ -1321,6 +1326,9 @@ static int samsung_pinctrl_probe(struct platform_device *pdev)
 		goto err_unregister;
 
 	platform_set_drvdata(pdev, drvdata);
+
+	if (drvdata->syscore_pm)
+		list_add_tail(&drvdata->node, &samsung_pinctrl_syscore_list);
 
 	return 0;
 
@@ -1465,7 +1473,7 @@ static int __maybe_unused samsung_pinctrl_suspend(struct device *dev)
 {
 	struct samsung_pinctrl_drv_data *drvdata = dev_get_drvdata(dev);
 
-	if (drvdata->no_pm_save)
+	if (drvdata->no_pm_save || drvdata->syscore_pm)
 		return 0;
 
 	return samsung_pinctrl_save(drvdata);
@@ -1475,11 +1483,41 @@ static int __maybe_unused samsung_pinctrl_resume(struct device *dev)
 {
 	struct samsung_pinctrl_drv_data *drvdata = dev_get_drvdata(dev);
 
-	if (drvdata->no_pm_save)
+	if (drvdata->no_pm_save || drvdata->syscore_pm)
 		return 0;
 
 	return samsung_pinctrl_restore(drvdata);
 }
+
+static int samsung_pinctrl_syscore_suspend(void)
+{
+	struct samsung_pinctrl_drv_data *drvdata;
+	int ret;
+
+	list_for_each_entry(drvdata, &samsung_pinctrl_syscore_list, node) {
+		ret = samsung_pinctrl_save(drvdata);
+		if (ret) {
+			list_for_each_entry_continue_reverse(drvdata,
+							     &samsung_pinctrl_syscore_list, node)
+				samsung_pinctrl_restore(drvdata);
+			return ret;
+		}
+	}
+	return 0;
+}
+
+static void samsung_pinctrl_syscore_resume(void)
+{
+	struct samsung_pinctrl_drv_data *drvdata;
+
+	list_for_each_entry_reverse(drvdata, &samsung_pinctrl_syscore_list, node)
+		samsung_pinctrl_restore(drvdata);
+}
+
+static struct syscore_ops samsung_pinctrl_syscore_ops = {
+	.suspend = samsung_pinctrl_syscore_suspend,
+	.resume  = samsung_pinctrl_syscore_resume,
+};
 
 static const struct of_device_id samsung_pinctrl_dt_match[] = {
 #ifdef CONFIG_PINCTRL_EXYNOS_ARM
@@ -1554,6 +1592,10 @@ static struct platform_driver samsung_pinctrl_driver = {
 
 static int __init samsung_pinctrl_drv_register(void)
 {
+	/* Registered early so that these ops suspend last and resume first */
+	if (IS_ENABLED(CONFIG_PM_SLEEP))
+		register_syscore_ops(&samsung_pinctrl_syscore_ops);
+
 	return platform_driver_register(&samsung_pinctrl_driver);
 }
 postcore_initcall(samsung_pinctrl_drv_register);

@@ -279,6 +279,9 @@ struct samsung_retention_data {
  * @no_pm_save: the registers are in a switchable power domain whose user
  *	reapplies its pin states after power-on: skip the system sleep save
  *	and restore of this controller.
+ * @syscore_pm: save and restore the banks from syscore ops, after the noirq
+ *	suspend and before the noirq resume of all devices, instead of from
+ *	the late suspend and early resume callbacks.
  *
  * External wakeup interrupts must define at least eint_wkup_init,
  * retention_data and suspend in order for proper suspend/resume to work.
@@ -295,6 +298,7 @@ struct samsung_pin_ctrl {
 	void		(*suspend)(struct samsung_pin_bank *bank);
 	void		(*resume)(struct samsung_pin_bank *bank);
 	bool		no_pm_save;
+	bool		syscore_pm;
 };
 
 /**
@@ -321,6 +325,7 @@ struct samsung_pin_ctrl {
  * @resume: platform specific resume callback, executed during pin controller
  *	device suspend, see samsung_pinctrl_resume()
  * @no_pm_save: copy of samsung_pin_ctrl.no_pm_save
+ * @syscore_pm: copy of samsung_pin_ctrl.syscore_pm
  */
 struct samsung_pinctrl_drv_data {
 	struct list_head		node;
@@ -347,6 +352,7 @@ struct samsung_pinctrl_drv_data {
 	void (*suspend)(struct samsung_pin_bank *bank);
 	void (*resume)(struct samsung_pin_bank *bank);
 	bool				no_pm_save;
+	bool				syscore_pm;
 };
 
 /**
