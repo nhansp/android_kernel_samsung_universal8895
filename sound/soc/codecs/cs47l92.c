@@ -15,6 +15,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
+#include <linux/slab.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
@@ -2028,6 +2029,34 @@ static void cs47l92_configure_micbias(struct madera *madera)
 	}
 }
 
+/* One GPIOn_CTRL_1/GPIOn_CTRL_2 word per cell, cells above 0xffff are skipped */
+static void cs47l92_configure_gpio(struct madera *madera)
+{
+	const char *prop = "cirrus,gpio-defaults";
+	u32 *val;
+	int i, n;
+
+	n = device_property_count_u32(madera->dev, prop);
+	if (n <= 0)
+		return;
+	n = min(n, 2 * MADERA_MAX_GPIOS);
+
+	val = kcalloc(n, sizeof(*val), GFP_KERNEL);
+	if (!val)
+		return;
+
+	if (!device_property_read_u32_array(madera->dev, prop, val, n)) {
+		for (i = 0; i < n; i++) {
+			if (val[i] > 0xffff)
+				continue;
+			regmap_write(madera->regmap, MADERA_GPIO1_CTRL_1 + i,
+				     val[i]);
+		}
+	}
+
+	kfree(val);
+}
+
 static int cs47l92_component_probe(struct snd_soc_component *component)
 {
 	struct cs47l92 *cs47l92 = snd_soc_component_get_drvdata(component);
@@ -2054,6 +2083,7 @@ static int cs47l92_component_probe(struct snd_soc_component *component)
 			   MADERA_AUXPDM1_TXEDGE_MASK |
 			   MADERA_AUXPDM1_MSTR_MASK, val);
 
+	cs47l92_configure_gpio(madera);
 	cs47l92_configure_micbias(madera);
 
 	ret = madera_init_outputs(component, cs47l92_mono_routes,
