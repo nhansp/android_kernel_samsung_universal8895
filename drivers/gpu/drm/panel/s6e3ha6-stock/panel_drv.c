@@ -783,14 +783,18 @@ static int panel_update_alpm(struct panel_device *panel)
 {
 	int ret = 0;
 	struct panel_properties *props = &panel->panel_data.props;
+	struct panel_bl_device *panel_bl = &panel->panel_bl;
 
-	if (props->cur_alpm_mode != props->alpm_mode) {
+	mutex_lock(&panel_bl->lock);
+	if (props->cur_alpm_mode != panel_bl_get_lpm_mode(panel)) {
 		ret = __panel_seq_set_alpm(panel);
 		if (ret) {
 			panel_err("PANEL:ERR:%s, failed to write alpm\n",
 				__func__);
+			props->cur_alpm_mode = ALPM_OFF;
 		}
 	}
+	mutex_unlock(&panel_bl->lock);
 	return ret;
 }
 
