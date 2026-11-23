@@ -50,7 +50,8 @@ properties:
       - "timers" - PWM base clock used to generate PWM signals,
       and any subset of following optional clock names:
       - "pwm-tclk0" - first external PWM clock source,
-      - "pwm-tclk1" - second external PWM clock source.
+      - "pwm-tclk1" - second external PWM clock source,
+      - "pwm-ref" - reference clock.
       Note that not all IP variants allow using all external clock sources.
       Refer to SoC documentation to learn which clock source configurations
       are available.
@@ -67,6 +68,9 @@ properties:
           - const: timers
           - const: pwm-tclk0
           - const: pwm-tclk1
+      - items:
+          - const: timers
+          - const: pwm-ref
 
   interrupts:
     description:
