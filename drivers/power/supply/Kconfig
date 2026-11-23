@@ -620,6 +620,117 @@ config CHARGER_MAX77705
 	help
 	  Say Y to enable support for the Maxim MAX77705 battery charger.
 
+config CHARGER_MAX77865
+	bool "Maxim MAX77865 battery charger driver"
+	depends on MFD_MAX77865 && THERMAL && REGULATOR
+	select REGMAP_I2C
+	select MFD_SYSCON
+	help
+	  Say Y to enable the battery charger of the Maxim MAX77865 companion
+	  PMIC (Samsung Galaxy Note 8): charger, "ac" and "usb" power supplies,
+	  the charge-control policy with the vendor thermal, full-charge and
+	  safety-timer rules, the USB OTG VBUS boost regulator and the
+	  power-off-with-charger restart into LP charging.
+
+config CHARGER_MAX77865_CHARGE_CONTROL
+	bool "Maxim MAX77865 charge control (vendor charge policy)"
+	depends on CHARGER_MAX77865
+	help
+	  Let the MAX77865 charger driver take charge control when the device
+	  tree asks for it ("samsung,charge-control"): the vendor charger init
+	  and charge policy, which switch charging on and off and set the
+	  input limit, charge current, top-off current and float voltage.
+
+	  Without this option the driver stays in monitor-only mode whatever
+	  the device tree says: it reports the charger, cable and battery
+	  state, keeps an enabled charger watchdog kicked and writes no
+	  register that starts or stops charging or changes a limit, so the
+	  configuration the bootloader left stays in charge.
+
+	  If unsure, say N.
+
+config CHARGER_MAX77865_HV_GUARD
+	bool "Maxim MAX77865 input cap above 5 V without PD policy"
+	depends on CHARGER_MAX77865_CHARGE_CONTROL && TYPEC_S2MM005=y
+	help
+	  Cap the charger input at 500 mA while the S2MM005 firmware holds a
+	  USB PD contract above 5 V of its own choice, so that the charger
+	  never draws more than USB default power from a source it did not
+	  negotiate with. Has no effect with CHARGER_MAX77865_PD, which
+	  selects the contract itself.
+
+config CHARGER_MAX77865_VBAT_OVP
+	bool "Maxim MAX77865 battery over-voltage stop"
+	depends on CHARGER_MAX77865_CHARGE_CONTROL
+	help
+	  Stop charging once the battery cell voltage reads above 4.4 V on
+	  two policy passes in a row, as the vendor battery driver does.
+	  Charging stays off and the battery health reads over-voltage
+	  until the charger is removed.
+
+config CHARGER_MAX77865_SYSOVLO
+	bool "Maxim MAX77865 system over-voltage lockout stop"
+	depends on CHARGER_MAX77865_CHARGE_CONTROL && MFD_MAX77865
+	help
+	  Stop charging on the PMIC's system over-voltage lockout (SYSOVLO)
+	  interrupt, as the vendor battery driver does. Charging stays off
+	  and the battery health reads over-voltage until the input is
+	  removed, which arms the interrupt again.
+
+config CHARGER_MAX77865_AICL
+	bool "Maxim MAX77865 automatic input current limit (AICL)"
+	depends on CHARGER_MAX77865_CHARGE_CONTROL
+	help
+	  Lower the input current limit in 100 mA steps, down to 300 mA,
+	  while the charger reports that the input voltage collapses
+	  (AICL). The lowered limit holds until the cable is removed or
+	  the wireless output voltage changes.
+
+config CHARGER_MAX77865_TTF
+	bool "Maxim MAX77865 time to full"
+	depends on CHARGER_MAX77865 && BATTERY_MAX17042
+	help
+	  Report the charge current that the MAX77865 fuel gauge uses for
+	  its time-to-full estimate, from the input class and power as the
+	  vendor battery driver picks it, and let the fuel gauge report
+	  TIME_TO_FULL_NOW.
+
+config CHARGER_MAX77865_AGE_FORECAST
+	bool "Maxim MAX77865 battery age steps"
+	depends on CHARGER_MAX77865_CHARGE_CONTROL && BATTERY_MAX17042
+	help
+	  Lower the float voltage and the full and recharge conditions in
+	  steps as the battery cycle count grows, with the vendor table of
+	  five steps from 0 to 1000 cycles. The cycle count is read from
+	  the fuel gauge.
+
+config CHARGER_MAX77865_TYPEC_RP
+	bool "Maxim MAX77865 Type-C Rp input current"
+	depends on CHARGER_MAX77865_CHARGE_CONTROL && TYPEC_S2MM005=y
+	help
+	  Draw 1.5 A or 3 A from a Type-C source that advertises it with its
+	  Rp and has no USB PD contract, instead of the input current of
+	  the BC1.2 cable type. The Rp level comes from the S2MM005 port
+	  controller.
+
+config CHARGER_MAX77865_PD
+	bool "Maxim MAX77865 USB Power Delivery contract policy"
+	depends on CHARGER_MAX77865_TYPEC_RP && TYPEC_S2MM005_PD_SELECT
+	help
+	  Select the USB PD source capability of up to 15 W through the
+	  S2MM005, and step down through the capabilities while the charger
+	  NTC is hot. Anything that stops charging falls back to the 5 V
+	  capability.
+
+config CHARGER_MAX77865_USB_SS
+	bool "Maxim MAX77865 USB 3.0 900 mA input"
+	depends on CHARGER_MAX77865_CHARGE_CONTROL && USB_DWC3
+	help
+	  Draw 900 mA from a USB 3 host that configured the gadget at
+	  SuperSpeed, as the USB 3 specification allows. The current is
+	  set by the DWC3 gadget driver and cannot be written from
+	  userspace.
+
 config CHARGER_MAX77976
 	tristate "Maxim MAX77976 battery charger driver"
 	depends on I2C
