@@ -16,3 +16,4 @@ obj-$(CONFIG_SAMSUNG_PM_CHECK)	+= s3c-pm-check.o
 
 obj-$(CONFIG_EXYNOS8895_SMC)	+= exynos8895-smc.o
 obj-$(CONFIG_EXYNOS8895_PM)	+= exynos8895-pm.o exynos8895-el3mon.o
+obj-$(CONFIG_EXYNOS8895_MCINFO)	+= exynos8895-mcinfo.o

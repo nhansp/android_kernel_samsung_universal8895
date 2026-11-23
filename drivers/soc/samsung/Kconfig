@@ -94,4 +94,13 @@ config EXYNOS8895_PM
 	  cpuidle driver, the suspend voltages of the BUCK8-11 rails, the
 	  PMU CPU and cluster power hooks for deep idle and CPU hotplug, and
 	  the EL3 monitor debug page and exception handler.
+
+config EXYNOS8895_MCINFO
+	bool "Exynos8895 DRAM MR4 temperature trip"
+	depends on ARCH_EXYNOS && OF
+	help
+	  Reports the DRAM temperature range that the four Exynos8895
+	  memory controller channels read from the MR4 mode register, in
+	  sysfs (ref_rate/ref_rate), and panics on a memory controller
+	  over-temperature interrupt, as the vendor exynos-mcinfo driver.
 endif
