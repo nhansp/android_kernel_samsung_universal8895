@@ -139,4 +139,15 @@ config EXYNOS_SECURE_LOG
 	  Prints the log messages that Samsung's EL3 monitor and its
 	  loadable firmwares write into a reserved memory region to the
 	  kernel log.
+
+config EXYNOS8895_MM_QOS
+	bool "Exynos8895 multimedia QoS requests (camera and MFC DVFS votes)"
+	depends on ARCH_EXYNOS && COMMON_CLK
+	help
+	  Stand-in for the Samsung pm_qos classes the Exynos8895 vendor
+	  camera and MFC drivers vote on. INTCAM/CAM requests set the ACPM
+	  DVFS clocks of the camera, through the bus DVFS driver when it
+	  owns them; CPU cluster min/max requests become cpufreq freq_qos
+	  requests; INT/MIF requests become floors of the bus DVFS driver;
+	  CPU-online requests are only aggregated.
 endif

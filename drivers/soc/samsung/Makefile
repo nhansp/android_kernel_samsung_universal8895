@@ -20,3 +20,4 @@ obj-$(CONFIG_EXYNOS8895_MCINFO)	+= exynos8895-mcinfo.o
 obj-$(CONFIG_SAMSUNG_SEC_CLASS)		+= samsung-sec-class.o
 obj-$(CONFIG_EXYNOS_UFS_SRPMB)		+= exynos-srpmb.o
 obj-$(CONFIG_EXYNOS_SECURE_LOG)		+= exynos-seclog.o
+obj-$(CONFIG_EXYNOS8895_MM_QOS)		+= exynos8895-mm-qos.o
