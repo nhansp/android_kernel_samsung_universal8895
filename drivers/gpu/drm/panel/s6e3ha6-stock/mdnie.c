@@ -25,7 +25,6 @@
 #include "panel_drv.h"
 #include "mdnie.h"
 #include "copr.h"
-#include "dpui.h"
 
 #ifdef MDNIE_SELF_TEST
 int g_coord_x = MIN_WCRD_X;
@@ -1190,125 +1189,6 @@ static int mdnie_register_fb(struct mdnie_info *mdnie)
 	return fb_register_client(&mdnie->fb_notif);
 }
 
-#define MDNIE_WOFS_ORG_PATH ("/efs/FactoryApp/mdnie")
-static int mdnie_get_efs(char *filename, int *value)
-{
-	mm_segment_t old_fs;
-	struct file *filp = NULL;
-	int fsize = 0, nread, rc, ret = 0;
-	u8 buf[128];
-
-	if (!filename || !value) {
-		pr_err("%s invalid parameter\n", __func__);
-		return -EINVAL;
-	}
-
-	old_fs = get_fs();
-	set_fs(KERNEL_DS);
-
-	filp = filp_open(filename, O_RDONLY, 0440);
-	if (IS_ERR(filp)) {
-		ret = PTR_ERR(filp);
-		if (ret == -ENOENT)
-			pr_err("%s file(%s) not exist\n", __func__, filename);
-		else
-			pr_info("%s file(%s) open error(ret %d)\n",
-					__func__, filename, ret);
-		set_fs(old_fs);
-		return -ENOENT;
-	}
-
-	if (filp->f_path.dentry && filp->f_path.dentry->d_inode)
-		fsize = filp->f_path.dentry->d_inode->i_size;
-
-	if (fsize == 0 || fsize > ARRAY_SIZE(buf)) {
-		pr_err("%s invalid file(%s) size %d\n",
-				__func__, filename, fsize);
-		ret = -EEXIST;
-		goto exit;
-	}
-
-	memset(buf, 0, sizeof(buf));
-	nread = vfs_read(filp, (char __user *)buf, fsize, &filp->f_pos);
-	if (nread != fsize) {
-		pr_err("%s failed to read (ret %d)\n", __func__, nread);
-		ret = -EIO;
-		goto exit;
-	}
-
-	rc = sscanf(buf, "%d %d %d", &value[0], &value[1], &value[2]);
-	if (rc != 3) {
-		pr_err("%s failed to kstrtoint %d\n", __func__, rc);
-		ret = -EINVAL;
-		goto exit;
-	}
-
-	pr_info("%s %s(size %d) : %d %d %d\n",
-			__func__, filename, fsize, value[0], value[1], value[2]);
-
-exit:
-	filp_close(filp, current->files);
-	set_fs(old_fs);
-
-	return ret;
-}
-
-static int dpui_notifier_callback(struct notifier_block *self,
-				 unsigned long event, void *data)
-{
-	struct mdnie_info *mdnie;
-	struct panel_device *panel;
-	struct panel_info *panel_data;
-	char tbuf[MAX_DPUI_VAL_LEN];
-	u8 coordinate[PANEL_COORD_LEN] = { 0, };
-	int def_wrgb_ofs_org[3] = { 0, };
-	int size;
-
-	mdnie = container_of(self, struct mdnie_info, dpui_notif);
-	panel = container_of(mdnie, struct panel_device, mdnie);
-	panel_data = &panel->panel_data;
-
-	mutex_lock(&mdnie->lock);
-
-	resource_copy_by_name(panel_data, coordinate, "coordinate");
-	size = snprintf(tbuf, MAX_DPUI_VAL_LEN, "%d",
-			(coordinate[0] << 8) | coordinate[1]);
-	set_dpui_field(DPUI_KEY_WCRD_X, tbuf, size);
-	size = snprintf(tbuf, MAX_DPUI_VAL_LEN, "%d",
-			(coordinate[2] << 8) | coordinate[3]);
-	set_dpui_field(DPUI_KEY_WCRD_Y, tbuf, size);
-
-	size = snprintf(tbuf, MAX_DPUI_VAL_LEN, "%d",
-			mdnie->props.def_wrgb_ofs[0]);
-	set_dpui_field(DPUI_KEY_WOFS_R, tbuf, size);
-	size = snprintf(tbuf, MAX_DPUI_VAL_LEN, "%d",
-			mdnie->props.def_wrgb_ofs[1]);
-	set_dpui_field(DPUI_KEY_WOFS_G, tbuf, size);
-	size = snprintf(tbuf, MAX_DPUI_VAL_LEN, "%d",
-			mdnie->props.def_wrgb_ofs[2]);
-	set_dpui_field(DPUI_KEY_WOFS_B, tbuf, size);
-
-	mdnie_get_efs(MDNIE_WOFS_ORG_PATH, def_wrgb_ofs_org);
-
-	size = snprintf(tbuf, MAX_DPUI_VAL_LEN, "%d", def_wrgb_ofs_org[0]);
-	set_dpui_field(DPUI_KEY_WOFS_R_ORG, tbuf, size);
-	size = snprintf(tbuf, MAX_DPUI_VAL_LEN, "%d", def_wrgb_ofs_org[1]);
-	set_dpui_field(DPUI_KEY_WOFS_G_ORG, tbuf, size);
-	size = snprintf(tbuf, MAX_DPUI_VAL_LEN, "%d", def_wrgb_ofs_org[2]);
-	set_dpui_field(DPUI_KEY_WOFS_B_ORG, tbuf, size);
-
-	mutex_unlock(&mdnie->lock);
-
-	return 0;
-}
-
-static int mdnie_register_dpui(struct mdnie_info *mdnie)
-{
-	memset(&mdnie->dpui_notif, 0, sizeof(mdnie->dpui_notif));
-	mdnie->dpui_notif.notifier_call = dpui_notifier_callback;
-	return dpui_logging_register(&mdnie->dpui_notif, DPUI_TYPE_PANEL);
-}
-
 int mdnie_probe(struct panel_device *panel, struct mdnie_tune *mdnie_tune)
 {
 	struct mdnie_info *mdnie = &panel->mdnie;
@@ -1413,7 +1293,6 @@ int mdnie_probe(struct panel_device *panel, struct mdnie_tune *mdnie_tune)
 	}
 
 	mdnie_register_fb(mdnie);
-	mdnie_register_dpui(mdnie);
 	mutex_unlock(&mdnie->lock);
 	mdnie_enable(mdnie);
 	dev_info(mdnie->dev, "registered successfully\n");

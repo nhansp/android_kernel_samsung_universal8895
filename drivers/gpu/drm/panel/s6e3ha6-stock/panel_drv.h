@@ -236,7 +236,6 @@ struct panel_device {
 	struct workqueue_struct *disp_det_workqueue;
 	struct work_struct disp_det_work;
 	struct notifier_block fb_notif;
-	struct notifier_block panel_dpui_notif;
 	struct panel_info panel_data;
 
 	struct act_clock_dev act_clk_dev;

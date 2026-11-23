@@ -1299,19 +1299,6 @@ int getidx_mdnie_scr_white_maptbl(struct pkt_update_info *pktui)
 }
 
 
-static unsigned int g_rddpm = 0xff;
-static unsigned int g_rddsm = 0xff;
-
-unsigned int get_panel_bigdata(void)
-{
-	unsigned int val = 0;
-
-	val = (g_rddsm << 8) | g_rddpm;
-
-	return val;
-}
-
-
 static void show_rddpm(struct dumpinfo *info)
 {
 	int ret;
@@ -1339,7 +1326,6 @@ static void show_rddpm(struct dumpinfo *info)
 	panel_info("* Normal Mode   : %s\n", rddpm[0] & 0x08 ? "OK (GD)" : "SLEEP (NG)");
 	panel_info("* Display ON    : %s\n", rddpm[0] & 0x04 ? "ON (GD)" : "OFF (NG)");
 	panel_info("=================================================\n");
-	g_rddpm = (unsigned int)rddpm[0];
 }
 
 static void show_rddsm(struct dumpinfo *info)
@@ -1364,7 +1350,6 @@ static void show_rddsm(struct dumpinfo *info)
 			rddsm[0], (rddsm[0] == 0x80) ? "GOOD" : "NG");
 	panel_info("* TE Mode : %s\n", rddsm[0] & 0x80 ? "ON(GD)" : "OFF(NG)");
 	panel_info("=================================================\n");
-	g_rddsm = (unsigned int)rddsm[0];
 }
 
 static void show_err(struct dumpinfo *info)
@@ -1469,22 +1454,17 @@ static void show_err_fg(struct dumpinfo *info)
 
 	if (err_fg[0] & 0x04) {
 		panel_info("* VLOUT3 Error\n");
-		inc_dpui_u32_field(DPUI_KEY_PNVLO3E, 1);
 	}
 
 	if (err_fg[0] & 0x08) {
 		panel_info("* ELVDD Error\n");
-		inc_dpui_u32_field(DPUI_KEY_PNELVDE, 1);
 	}
 
 	if (err_fg[0] & 0x40) {
 		panel_info("* VLIN1 Error\n");
-		inc_dpui_u32_field(DPUI_KEY_PNVLI1E, 1);
 	}
 
 	panel_info("==================================================\n");
-
-	inc_dpui_u32_field(DPUI_KEY_PNESDE, (err_fg[0] & 0x4D) ? 1 : 0);
 }
 
 static void show_dsi_err(struct dumpinfo *info)
@@ -1510,8 +1490,6 @@ static void show_dsi_err(struct dumpinfo *info)
 	if (dsi_err[0])
 		panel_info("* DSI Error Count : %d\n", dsi_err[0]);
 	panel_info("====================================================\n");
-
-	inc_dpui_u32_field(DPUI_KEY_PNDSIE, dsi_err[0]);
 }
 
 static void show_self_diag(struct dumpinfo *info)
@@ -1532,6 +1510,4 @@ static void show_self_diag(struct dumpinfo *info)
 	if ((self_diag[0] & 0x80) == 0)
 		panel_info("* OTP Reg Loading Error\n");
 	panel_info("=====================================================\n");
-
-	inc_dpui_u32_field(DPUI_KEY_PNSDRE, (self_diag[0] & 0x80) ? 0 : 1);
 }

@@ -31,7 +31,6 @@
 #include "../dpu/decon.h"
 #include "panel.h"
 #include "panel_drv.h"
-#include "dpui.h"
 #include "mdnie.h"
 #include "spi.h"
 #include "active_clock.h"
@@ -1792,66 +1791,6 @@ static int panel_fb_notifier(struct notifier_block *self,
 	return 0;
 }
 
-static int panel_dpui_notifier_callback(struct notifier_block *self,
-				 unsigned long event, void *data)
-{
-	struct panel_info *panel_data;
-	struct panel_device *panel;
-	struct common_panel_info *info;
-	int panel_id;
-	struct dpui_info *dpui = data;
-	char tbuf[MAX_DPUI_VAL_LEN];
-	u8 panel_datetime[7] = { 0, };
-	u8 panel_coord[4] = { 0, };
-	u8 panel_chip_id[5] = { 0, };
-	int size;
-
-	if (dpui == NULL) {
-		panel_err("%s: dpui is null\n", __func__);
-		return 0;
-	}
-
-	panel = container_of(self, struct panel_device, panel_dpui_notif);
-	panel_data = &panel->panel_data;
-	panel_id = panel_data->id[0] << 16 | panel_data->id[1] << 8 | panel_data->id[2];
-
-	info = find_panel(panel, panel_id);
-	if (unlikely(!info)) {
-		panel_err("%s, panel not found\n", __func__);
-		return -ENODEV;
-	}
-
-	resource_copy_by_name(panel_data, panel_datetime, "date");
-	size = snprintf(tbuf, MAX_DPUI_VAL_LEN, "%04d%02d%02d %02d%02d%02d",
-			((panel_datetime[0] & 0xF0) >> 4) + 2011, panel_datetime[0] & 0xF, panel_datetime[1] & 0x1F,
-			panel_datetime[2] & 0x1F, panel_datetime[3] & 0x3F, panel_datetime[4] & 0x3F);
-	set_dpui_field(DPUI_KEY_MAID_DATE, tbuf, size);
-
-	size = snprintf(tbuf, MAX_DPUI_VAL_LEN, "%d", panel_data->id[0]);
-	set_dpui_field(DPUI_KEY_LCDID1, tbuf, size);
-	size = snprintf(tbuf, MAX_DPUI_VAL_LEN, "%d", panel_data->id[1]);
-	set_dpui_field(DPUI_KEY_LCDID2, tbuf, size);
-	size = snprintf(tbuf, MAX_DPUI_VAL_LEN, "%d", panel_data->id[2]);
-	set_dpui_field(DPUI_KEY_LCDID3, tbuf, size);
-	size = snprintf(tbuf, MAX_DPUI_VAL_LEN, "%s_%s", info->vendor, info->model);
-	set_dpui_field(DPUI_KEY_DISP_MODEL, tbuf, size);
-
-	resource_copy_by_name(panel_data, panel_chip_id, "chip_id");
-	size = snprintf(tbuf, MAX_DPUI_VAL_LEN, "0x%02X%02X%02X%02X%02X",
-			panel_chip_id[0], panel_chip_id[1], panel_chip_id[2],
-			panel_chip_id[3], panel_chip_id[4]);
-	set_dpui_field(DPUI_KEY_CHIPID, tbuf, size);
-
-	resource_copy_by_name(panel_data, panel_coord, "coordinate");
-	size = snprintf(tbuf, MAX_DPUI_VAL_LEN, "%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X",
-		panel_datetime[0], panel_datetime[1], panel_datetime[2], panel_datetime[3],
-		panel_datetime[4], panel_datetime[5], panel_datetime[6],
-		panel_coord[0], panel_coord[1], panel_coord[2], panel_coord[3]);
-	set_dpui_field(DPUI_KEY_CELLID, tbuf, size);
-
-	return 0;
-}
-
 static int panel_drv_probe(struct platform_device *pdev)
 {
 	int ret = 0;
@@ -1902,12 +1841,6 @@ static int panel_drv_probe(struct platform_device *pdev)
 	ret = fb_register_client(&panel->fb_notif);
 	if (ret) {
 		panel_err("ERR:PANEL:%s:failed to register fb notifier callback\n", __func__);
-		goto probe_err;
-	}
-	panel->panel_dpui_notif.notifier_call = panel_dpui_notifier_callback;
-	ret = dpui_logging_register(&panel->panel_dpui_notif, DPUI_TYPE_PANEL);
-	if (ret) {
-		panel_err("ERR:PANEL:%s:failed to register dpui notifier callback\n", __func__);
 		goto probe_err;
 	}
 	panel_register_isr(panel);
