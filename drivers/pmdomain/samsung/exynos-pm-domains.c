@@ -11,7 +11,9 @@
 
 #include <linux/io.h>
 #include <linux/err.h>
+#include <linux/mfd/syscon.h>
 #include <linux/platform_device.h>
+#include <linux/regmap.h>
 #include <linux/slab.h>
 #include <linux/pm_domain.h>
 #include <linux/delay.h>
@@ -34,6 +36,9 @@ struct exynos_pd_extra {
 	unsigned int nr_pre_on;
 	const struct exynos_pd_write *post_off;	/* reg 1, after power-off */
 	unsigned int nr_post_off;
+	u32 sysreg[2];				/* saved before off, restored after on */
+	unsigned int nr_sysreg;
+	bool sysreg_required;			/* not only DRCG_EN: samsung,sysreg required */
 };
 
 struct exynos_pm_domain_config {
@@ -52,6 +57,9 @@ struct exynos_pm_domain {
 	u32 local_pwr_cfg;
 	const struct exynos_pd_extra *extra;
 	void __iomem *seq_base;
+	struct regmap *sysreg;
+	u32 saved[2];
+	bool saved_valid;
 };
 
 static void exynos_pd_seq(void __iomem *base, const struct exynos_pd_write *w,
@@ -73,17 +81,44 @@ static void exynos_pd_seq(void __iomem *base, const struct exynos_pd_write *w,
 static void exynos_pd_before(struct exynos_pm_domain *pd, bool power_on)
 {
 	const struct exynos_pd_extra *x = pd->extra;
+	unsigned int i;
 
-	if (x && power_on && pd->seq_base)
-		exynos_pd_seq(pd->seq_base, x->pre_on, x->nr_pre_on);
+	if (!x)
+		return;
+
+	if (power_on) {
+		if (pd->seq_base)
+			exynos_pd_seq(pd->seq_base, x->pre_on, x->nr_pre_on);
+		return;
+	}
+
+	if (pd->sysreg) {
+		for (i = 0; i < x->nr_sysreg; i++)
+			regmap_read(pd->sysreg, x->sysreg[i], &pd->saved[i]);
+		pd->saved_valid = true;
+	}
 }
 
 static void exynos_pd_after(struct exynos_pm_domain *pd, bool power_on)
 {
 	const struct exynos_pd_extra *x = pd->extra;
+	unsigned int i;
 
-	if (x && !power_on && pd->seq_base)
-		exynos_pd_seq(pd->seq_base, x->post_off, x->nr_post_off);
+	if (!x)
+		return;
+
+	if (!power_on) {
+		if (pd->seq_base)
+			exynos_pd_seq(pd->seq_base, x->post_off, x->nr_post_off);
+		return;
+	}
+
+	/* restore only what a power-off saved */
+	if (pd->sysreg && pd->saved_valid) {
+		for (i = 0; i < x->nr_sysreg; i++)
+			regmap_write(pd->sysreg, x->sysreg[i], pd->saved[i]);
+		pd->saved_valid = false;
+	}
 }
 
 /*
@@ -177,6 +212,8 @@ static const struct exynos_pd_write exynos8895_g3d_post_off[] = {
 	{ 0x0148, U32_MAX, 0x10000001 },	/* PLL_CON2_PLL_G3D */
 };
 
+#define EXYNOS8895_SYSREG_DRCG_EN	0x0200
+
 static const struct exynos_pd_extra exynos8895_pd_extra[] = {
 	{	/* g3d */
 		.conf		= 0x164840e0,
@@ -184,6 +221,27 @@ static const struct exynos_pd_extra exynos8895_pd_extra[] = {
 		.nr_pre_on	= ARRAY_SIZE(exynos8895_g3d_pre_on),
 		.post_off	= exynos8895_g3d_post_off,
 		.nr_post_off	= ARRAY_SIZE(exynos8895_g3d_post_off),
+	},
+	{	/* cam */
+		.conf = 0x16484020, .sysreg = { EXYNOS8895_SYSREG_DRCG_EN }, .nr_sysreg = 1,
+	},
+	{	/* g2d */
+		.conf = 0x164840c0, .sysreg = { EXYNOS8895_SYSREG_DRCG_EN }, .nr_sysreg = 1,
+	},
+	{	/* isphq */
+		.conf = 0x16484100, .sysreg = { EXYNOS8895_SYSREG_DRCG_EN }, .nr_sysreg = 1,
+	},
+	{	/* isplp */
+		.conf = 0x16484120, .sysreg = { EXYNOS8895_SYSREG_DRCG_EN }, .nr_sysreg = 1,
+	},
+	{	/* mfc */
+		.conf = 0x16484160, .sysreg = { EXYNOS8895_SYSREG_DRCG_EN }, .nr_sysreg = 1,
+	},
+	{	/* dcam */
+		.conf = 0x16485220, .sysreg = { EXYNOS8895_SYSREG_DRCG_EN }, .nr_sysreg = 1,
+	},
+	{	/* srdz */
+		.conf = 0x16485420, .sysreg = { EXYNOS8895_SYSREG_DRCG_EN }, .nr_sysreg = 1,
 	},
 };
 
@@ -233,6 +291,16 @@ static int exynos_pd_get_extra(struct device *dev, struct exynos_pm_domain *pd,
 			x = &cfg->extra[i];
 	if (!x)
 		return 0;
+
+	if (x->nr_sysreg) {
+		if (x->sysreg_required)
+			pd->sysreg = syscon_regmap_lookup_by_phandle(np, "samsung,sysreg");
+		else
+			pd->sysreg = syscon_regmap_lookup_by_phandle_optional(np, "samsung,sysreg");
+		if (IS_ERR(pd->sysreg))
+			return dev_err_probe(dev, PTR_ERR(pd->sysreg),
+					     "samsung,sysreg\n");
+	}
 
 	if (x->nr_pre_on || x->nr_post_off) {
 		/* not requested: the block's clock driver owns this range */
