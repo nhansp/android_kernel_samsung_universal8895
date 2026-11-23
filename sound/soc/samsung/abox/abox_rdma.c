@@ -1428,7 +1428,7 @@ static void abox_rdma_remove(struct snd_soc_component *component)
 		struct abox_compr_data *compr_data = &data->compr_data;
 
 		iommu_unmap(data->abox_data->iommu_domain,
-				IOVA_RDMA_BUFFER(data->id),
+				IOVA_COMPR_BUFFER(data->id),
 				round_up(compr_data->dma_size, PAGE_SIZE));
 		if (compr_data->dma_area) {
 			dma_free_coherent(&data->abox_data->mem_dev->dev,
