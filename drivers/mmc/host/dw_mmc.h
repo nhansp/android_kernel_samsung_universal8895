@@ -18,6 +18,7 @@
 #include <linux/hrtimer.h>
 #include <linux/interrupt.h>
 #include <linux/workqueue.h>
+#include <soc/samsung/exynos8895-bus-qos.h>
 
 enum dw_mci_state {
 	STATE_IDLE = 0,
@@ -128,6 +129,10 @@ struct dw_mci_dma_slave {
  * @cmd11_timer: Timer for SD3.0 voltage switch over scheme.
  * @cto_timer: Timer for broken command transfer over scheme.
  * @dto_timer: Timer for broken data transfer over scheme.
+ * @pm_qos_int: INT bus frequency floor held while a request is in flight.
+ * @qos_work: Delayed work that drops @pm_qos_int once the host is idle.
+ * @pm_workqueue: Workqueue running @qos_work.
+ * @qos_cntrl: Whether the host uses @pm_qos_int.
  *
  * Locking
  * =======
@@ -242,6 +247,11 @@ struct dw_mci {
 	struct fault_attr	fail_data_crc;
 	struct hrtimer		fault_timer;
 #endif
+
+	struct exynos_bus_qos_request	pm_qos_int;
+	struct delayed_work		qos_work;
+	struct workqueue_struct		*pm_workqueue;
+	bool				qos_cntrl;
 };
 
 /* DMA ops for Internal/External DMAC interface */
@@ -277,6 +287,9 @@ struct dw_mci_board {
 	struct reset_control *rstc;
 	struct dw_mci_dma_ops *dma_ops;
 	struct dma_pdata *data;
+
+	/* INT bus frequency floor in kHz while a request is in flight */
+	u32 qos_int_level;
 };
 
 /* Support for longer data read timeout */
