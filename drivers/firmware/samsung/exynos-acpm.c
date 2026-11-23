@@ -14,6 +14,7 @@
 #include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/device.h>
+#include <linux/firmware.h>
 #include <linux/firmware/samsung/exynos-acpm-protocol.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
@@ -30,7 +31,9 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/seq_file.h>
+#include <linux/sizes.h>
 #include <linux/slab.h>
+#include <linux/string.h>
 #include <linux/types.h>
 #include <linux/workqueue.h>
 
@@ -52,12 +55,69 @@
 #define ACPM_CHAN_TYPE_QUEUE		1
 #define ACPM_CHAN_TYPE_BUFFER		2
 
+/* Dynamic plugin attach/detach command word */
+#define ACPM_PROTOCOL_ID		GENMASK(28, 26)
+#define ACPM_PROTOCOL_DP_A		BIT(25)
+#define ACPM_PROTOCOL_DP_D		BIT(24)
+
+#define ACPM_MAX_PLUGINS		16
+#define ACPM_PLUGIN_NAME_LEN		50
+#define ACPM_FVMAP_SIZE			SZ_8K
+#define ACPM_FVMAP_MAX_DOMAINS		16
+
+/**
+ * struct acpm_plugin_shmem - firmware plugin descriptor in SRAM.
+ * @id:			plugin ID.
+ * @base_addr:		entry point of the plugin image (bit 0: Thumb).
+ * @acpm_ops:		unused.
+ * @plugin_ops:		unused.
+ * @extern_func_mask:	unused.
+ * @timer_period:	unused.
+ * @timer_multiplier:	unused.
+ * @is_attached:	the plugin is attached.
+ * @pad0:		padding.
+ * @size:		size of the plugin image.
+ * @stay_attached:	the plugin must be attached by the AP.
+ * @pad1:		padding.
+ * @fw_name:		SRAM offset of the image's firmware file name.
+ */
+struct acpm_plugin_shmem {
+	u32 id;
+	u32 base_addr;
+	u32 acpm_ops;
+	u32 plugin_ops;
+	u32 extern_func_mask;
+	u32 timer_period;
+	u32 timer_multiplier;
+	u8 is_attached;
+	u8 pad0[3];
+	u32 size;
+	u8 stay_attached;
+	u8 pad1[3];
+	u32 fw_name;
+};
+
+static_assert(sizeof(struct acpm_plugin_shmem) == 44);
+
+/*
+ * DVFS plugin fvmap header, one per domain. O_MEMBERS: u16 offsets of PLL
+ * headers, whose first word is the PLL address. O_RATEVOLT: {rate, volt}
+ * pairs. All offsets are relative to the start of the map.
+ */
+#define ACPM_FVMAP_HDR_SIZE		24
+#define ACPM_FVMAP_HDR_NUM_LV		1
+#define ACPM_FVMAP_HDR_NUM_PLL		3
+#define ACPM_FVMAP_HDR_O_MEMBERS	18
+#define ACPM_FVMAP_HDR_O_RATEVOLT	20
+
 /**
  * struct acpm_shmem - shared memory configuration information.
- * @reserved:	unused fields.
+ * @reserved:	offset of the plugin table and number of plugins.
  * @chans:	offset to array of struct acpm_chan_shmem.
  * @reserved1:	unused fields.
  * @num_chans:	number of channels.
+ *
+ * The plugin table is only used on SoCs whose match data asks for it.
  */
 struct acpm_shmem {
 	u32 reserved[2];
@@ -214,6 +274,10 @@ struct acpm_chan {
  * @num_chans:	number of channels available for this controller.
  * @match:	per-SoC data and transport policy.
  * @nh:		notifier chain for unsolicited firmware messages.
+ * @sram_size:	size of the SRAM window.
+ * @fvmap_off:	SRAM offset of the DVFS plugin's fvmap, 0 if none.
+ * @fvmap_domains: number of fvmap headers read.
+ * @fvmap_pll_pa: PLL address of member 0 per DVFS domain, 0 if none.
  */
 struct acpm_info {
 	struct acpm_shmem __iomem *shmem;
@@ -224,6 +288,10 @@ struct acpm_info {
 	u32 num_chans;
 	const struct acpm_match_data *match;
 	struct blocking_notifier_head nh;
+	resource_size_t sram_size;
+	u32 fvmap_off;
+	u32 fvmap_domains;
+	u32 fvmap_pll_pa[ACPM_FVMAP_MAX_DOMAINS];
 };
 
 /**
@@ -241,6 +309,11 @@ struct acpm_info {
  *			that answers no request.
  * @notify_chan:	channel whose unsolicited messages are firmware
  *			notifications, -1 for none.
+ * @plugin_chan:	channel of the dynamic plugin commands (attach/detach at
+ *			probe), -1 for none.
+ * @fvmap_names:	names of the DVFS domains whose fvmap is logged at probe,
+ *			indexed by domain; NULL entries are read but not logged.
+ * @fvmap_domains:	number of DVFS domains in the fvmap.
  */
 struct acpm_match_data {
 	loff_t initdata_base;
@@ -250,6 +323,9 @@ struct acpm_match_data {
 	u32 poll_timeout_us;
 	bool irq_rx;
 	int notify_chan;
+	int plugin_chan;
+	const char * const *fvmap_names;
+	u32 fvmap_domains;
 };
 
 #define client_to_acpm_chan(c) container_of(c, struct acpm_chan, cl)
@@ -886,6 +962,262 @@ static int acpm_channels_init(struct acpm_info *acpm)
 }
 
 /**
+ * acpm_plugin_cmd() - send one dynamic plugin command (attach or detach).
+ * @acpm:	driver data.
+ * @id:		plugin id.
+ * @op:		ACPM_PROTOCOL_DP_A or ACPM_PROTOCOL_DP_D.
+ *
+ * On a polling channel the answer must carry the plugin's id back. On an
+ * interrupt-mode channel the command is not waited for.
+ */
+static void acpm_plugin_cmd(struct acpm_info *acpm, u32 id, u32 op)
+{
+	struct acpm_chan *achan = &acpm->chans[acpm->match->plugin_chan];
+	u32 cmd[4] = { op | FIELD_PREP(ACPM_PROTOCOL_ID, id), 0, 0, 0 };
+	struct acpm_xfer xfer = {
+		.txd = cmd,
+		.txlen = sizeof(cmd),
+		.acpm_chan_id = acpm->match->plugin_chan,
+	};
+	const char *what = op == ACPM_PROTOCOL_DP_A ? "DP_A" : "DP_D";
+	int ret;
+
+	if (achan->poll_completion) {
+		xfer.rxd = cmd;
+		xfer.rxlen = sizeof(cmd);
+	}
+
+	ret = acpm_do_xfer(&acpm->handle, &xfer);
+	if (!ret && !achan->poll_completion) {
+		dev_dbg(acpm->dev, "plugin %u %s sent (irq channel)\n", id, what);
+		return;
+	}
+	if (!ret && FIELD_GET(ACPM_PROTOCOL_ID, cmd[0]) != id)
+		ret = -EBADMSG;
+	if (ret) {
+		dev_err(acpm->dev, "plugin %u %s failed (%d)\n", id, what, ret);
+		return;
+	}
+
+	dev_dbg(acpm->dev, "plugin %u %s ok\n", id, what);
+}
+
+/**
+ * acpm_fvmap_read() - read the DVFS plugin's frequency/voltage map.
+ * @acpm:	driver data.
+ * @off:	SRAM offset of the map: plugin base (bit 0 cleared) + plugin size.
+ *
+ * Keeps, per DVFS domain, the address of the first PLL member, and logs the
+ * levels and PLL addresses of the domains named in the match data. The map
+ * is only read.
+ */
+static void acpm_fvmap_read(struct acpm_info *acpm, u32 off)
+{
+	void __iomem *map = acpm->sram_base + off;
+	u32 avail = min_t(u32, ACPM_FVMAP_SIZE, acpm->sram_size - off);
+	u32 i, j, lv, npll, o_rv, o_mem, poff, rate, volt, pa;
+	const char *name;
+	void __iomem *hdr;
+
+	if (off >= acpm->sram_size ||
+	    acpm->match->fvmap_domains > ACPM_FVMAP_MAX_DOMAINS ||
+	    acpm->match->fvmap_domains * ACPM_FVMAP_HDR_SIZE > avail) {
+		dev_err(acpm->dev, "fvmap at 0x%x out of SRAM\n", off);
+		return;
+	}
+
+	acpm->fvmap_off = off;
+	acpm->fvmap_domains = acpm->match->fvmap_domains;
+
+	for (i = 0; i < acpm->fvmap_domains; i++) {
+		name = acpm->match->fvmap_names ? acpm->match->fvmap_names[i] : NULL;
+		hdr = map + ACPM_FVMAP_HDR_SIZE * i;
+		lv = readb(hdr + ACPM_FVMAP_HDR_NUM_LV);
+		npll = readb(hdr + ACPM_FVMAP_HDR_NUM_PLL);
+		o_rv = readw(hdr + ACPM_FVMAP_HDR_O_RATEVOLT);
+		o_mem = readw(hdr + ACPM_FVMAP_HDR_O_MEMBERS);
+
+		if (name)
+			dev_dbg(acpm->dev, "fvmap %s lv=%u npll=%u\n",
+				name, lv, npll);
+
+		if (o_rv + 8 * lv <= avail) {
+			for (j = 0; name && j < lv; j++) {
+				rate = readl(map + o_rv + 8 * j);
+				volt = readl(map + o_rv + 8 * j + 4);
+				dev_dbg(acpm->dev, "fvmap %s L%u %u kHz %u uV\n",
+					name, j, rate, volt);
+			}
+		} else if (name) {
+			dev_err(acpm->dev, "fvmap %s levels out of range\n", name);
+		}
+
+		if (o_mem + 2 * npll > avail) {
+			if (name && npll)
+				dev_err(acpm->dev, "fvmap %s members out of range\n", name);
+			continue;
+		}
+		for (j = 0; j < npll; j++) {
+			poff = readw(map + o_mem + 2 * j);
+			if (poff + 4 > avail)
+				continue;
+			pa = readl(map + poff);
+			if (!j)
+				acpm->fvmap_pll_pa[i] = pa;
+			if (name)
+				dev_dbg(acpm->dev, "fvmap %s pll%u addr=0x%08x\n",
+					name, j, pa);
+		}
+	}
+}
+
+/**
+ * acpm_get_fvmap_pll_pa() - PLL address the DVFS plugin uses for a domain.
+ * @handle:	ACPM handle.
+ * @idx:	DVFS domain index.
+ * @pa:		where the physical address is stored.
+ *
+ * Return: 0 on success, -ENODATA if no DVFS plugin map was read or the domain
+ * has no PLL member.
+ */
+int acpm_get_fvmap_pll_pa(struct acpm_handle *handle, unsigned int idx, u32 *pa)
+{
+	struct acpm_info *acpm = handle_to_acpm_info(handle);
+
+	if (!acpm->fvmap_off || idx >= acpm->fvmap_domains ||
+	    !acpm->fvmap_pll_pa[idx])
+		return -ENODATA;
+
+	*pa = acpm->fvmap_pll_pa[idx];
+	return 0;
+}
+EXPORT_SYMBOL_GPL(acpm_get_fvmap_pll_pa);
+
+/**
+ * acpm_plugin_load() - copy a dynamic plugin's image into APM SRAM.
+ * @acpm:	driver data.
+ * @id:		plugin id.
+ * @base:	the plugin's base_addr (its entry point; bit 0 is the Thumb bit).
+ * @size:	the plugin's size.
+ * @name:	its fw_name, read from SRAM.
+ *
+ * The image is not part of the APM firmware that the bootloader loads; the
+ * kernel provides it and copies it to base_addr before the attach. Only SRAM
+ * bounds the copy, as in the vendor driver; a copy longer than the plugin's
+ * size is logged, since the fvmap starts at base + size.
+ *
+ * Return: 0, or -errno and then no DP_A may be sent: the APM would run
+ * whatever the region holds and stop answering every channel.
+ */
+static int acpm_plugin_load(struct acpm_info *acpm, u32 id, u32 base, u32 size,
+			    const char *name)
+{
+	const struct firmware *fw;
+	u32 off = base & ~1U;
+	int ret;
+
+	ret = firmware_request_nowarn(&fw, name, acpm->dev);
+	if (ret) {
+		dev_err(acpm->dev, "plugin %u image %s not found (%d): DP_A not sent\n",
+			id, name, ret);
+		return ret;
+	}
+
+	if (!fw->size || fw->size % 4 || off >= acpm->sram_size ||
+	    fw->size > acpm->sram_size - off) {
+		dev_err(acpm->dev, "plugin %u image %s (%zu bytes) does not fit SRAM at 0x%x: DP_A not sent\n",
+			id, name, fw->size, off);
+		ret = -EFBIG;
+		goto out;
+	}
+	if (fw->size > size)
+		dev_err(acpm->dev, "plugin %u image %s (%zu bytes) exceeds its size 0x%x\n",
+			id, name, fw->size, size);
+
+	__iowrite32_copy(acpm->sram_base + off, fw->data, fw->size / 4);
+	dev_dbg(acpm->dev, "plugin %u image %s loaded: %zu bytes at 0x%x\n",
+		id, name, fw->size, off);
+out:
+	release_firmware(fw);
+	return ret;
+}
+
+/**
+ * acpm_plugins_init() - attach and detach the firmware plugins.
+ * @acpm:	driver data.
+ *
+ * Runs before the clocks device is registered, so that no DVFS request
+ * precedes the attach of the DVFS plugin. In table order: a plugin that is
+ * detached and must stay attached has its image loaded and gets DP_A (a
+ * missing fw_name or base_addr ends the loop); one that is attached and must
+ * not stay gets DP_D. The plugin whose fw_name contains "dvfs" has its fvmap
+ * read.
+ *
+ * Return: 0, or -EINVAL if the plugin table is not inside SRAM (then the
+ * caller registers no DVFS clocks).
+ */
+static int acpm_plugins_init(struct acpm_info *acpm)
+{
+	struct acpm_shmem __iomem *shmem = acpm->shmem;
+	struct acpm_plugin_shmem __iomem *pl;
+	char name[ACPM_PLUGIN_NAME_LEN];
+	u32 off, n, i, j, id, base, size, fw, np;
+	u8 att, stay;
+
+	off = readl(&shmem->reserved[0]);
+	n = readl(&shmem->reserved[1]);
+	dev_dbg(acpm->dev, "initdata@0x%llx chans=%u plugins=%u\n",
+		(unsigned long long)acpm->match->initdata_base, acpm->num_chans, n);
+
+	if (n > ACPM_MAX_PLUGINS || off >= acpm->sram_size ||
+	    n * sizeof(*pl) > acpm->sram_size - off) {
+		dev_err(acpm->dev, "plugin table 0x%x x %u out of SRAM\n", off, n);
+		return -EINVAL;
+	}
+
+	for (i = 0; i < n; i++) {
+		pl = acpm->sram_base + off + i * sizeof(*pl);
+		id = readl(&pl->id);
+		base = readl(&pl->base_addr);
+		size = readl(&pl->size);
+		att = readb(&pl->is_attached);
+		stay = readb(&pl->stay_attached);
+		fw = readl(&pl->fw_name);
+
+		name[0] = '\0';
+		if (fw && fw < acpm->sram_size) {
+			np = min_t(u32, sizeof(name) - 1, acpm->sram_size - fw);
+			for (j = 0; j < np; j++) {
+				name[j] = readb(acpm->sram_base + fw + j);
+				if (!name[j])
+					break;
+			}
+			name[j < np ? j : np] = '\0';
+		}
+
+		dev_dbg(acpm->dev, "plugin[%u] id=%u base=0x%x size=0x%x attached=%u stay=%u fw=%s\n",
+			i, id, base, size, att, stay, name);
+
+		if (!att && stay) {
+			if (!fw || !base) {
+				dev_err(acpm->dev, "plugin %u DP_A skipped: fw_name/base_addr missing\n",
+					id);
+				break;
+			}
+			if (!acpm_plugin_load(acpm, id, base, size, name))
+				acpm_plugin_cmd(acpm, id, ACPM_PROTOCOL_DP_A);
+		} else if (att && !stay) {
+			acpm_plugin_cmd(acpm, id, ACPM_PROTOCOL_DP_D);
+		}
+
+		if (strstr(name, "dvfs") && base)
+			acpm_fvmap_read(acpm, (base & ~1U) + size);
+	}
+
+	return 0;
+}
+
+/**
  * acpm_chan_stats_show() - debugfs acpm/chan_stats.
  * @sf:		seq_file; sf->private is the ACPM device.
  * @unused:	unused.
@@ -979,6 +1311,7 @@ static int acpm_probe(struct platform_device *pdev)
 				     "Failed to get shared memory.\n");
 
 	size = resource_size(&res);
+	acpm->sram_size = size;
 	acpm->sram_base = devm_ioremap(dev, res.start, size);
 	if (!acpm->sram_base)
 		return dev_err_probe(dev, -ENOMEM,
@@ -1003,6 +1336,11 @@ static int acpm_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, acpm);
 
 	acpm_debugfs_init(acpm);
+
+	if (match_data->plugin_chan >= 0 &&
+	    (match_data->plugin_chan >= acpm->num_chans ||
+	     acpm_plugins_init(acpm)))
+		return devm_of_platform_populate(dev);
 
 	acpm_clk_pdev = platform_device_register_data(dev,
 						match_data->acpm_clk_dev_name,
@@ -1170,6 +1508,7 @@ static const struct acpm_match_data acpm_gs101 = {
 	.poll_timeout_us = ACPM_POLL_TIMEOUT_US,
 	.irq_rx = false,
 	.notify_chan = -1,
+	.plugin_chan = -1,
 };
 
 static const struct of_device_id acpm_match[] = {

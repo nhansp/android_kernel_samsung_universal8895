@@ -57,6 +57,7 @@ struct acpm_handle *devm_acpm_get_by_node(struct device *dev,
 					  struct device_node *np);
 int devm_acpm_register_notifier(struct device *dev, struct acpm_handle *handle,
 				struct notifier_block *nb);
+int acpm_get_fvmap_pll_pa(struct acpm_handle *handle, unsigned int idx, u32 *pa);
 #else
 
 static inline struct acpm_handle *devm_acpm_get_by_node(struct device *dev,
@@ -70,6 +71,12 @@ static inline int devm_acpm_register_notifier(struct device *dev,
 					      struct notifier_block *nb)
 {
 	return -ENODEV;
+}
+
+static inline int acpm_get_fvmap_pll_pa(struct acpm_handle *handle,
+					unsigned int idx, u32 *pa)
+{
+	return -ENODATA;
 }
 #endif
 
