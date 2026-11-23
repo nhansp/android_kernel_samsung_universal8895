@@ -27,6 +27,14 @@ properties:
   avdd-supply: true
   vdd-supply: true
 
+  samsung,sponge-model:
+    $ref: /schemas/types.yaml#/definitions/string
+    description:
+      Only for samsung,s6sy661. Model name that the "sponge" library of the
+      touch firmware reports in its first four characters, e.g. "N950". The
+      under-display pressure home key the library implements is used only
+      when the two match.
+
 unevaluatedProperties: false
 
 required:
