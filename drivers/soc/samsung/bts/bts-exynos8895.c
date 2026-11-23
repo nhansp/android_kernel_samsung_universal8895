@@ -768,6 +768,9 @@ static void find_qmax(unsigned int freq, unsigned int *read_mo,
 	spin_unlock_irqrestore(&qmax_lock, flags);
 }
 
+/* the MIF target, the PM notifier and init write the same snode/SCI registers */
+static DEFINE_MUTEX(bts_mif_lock);
+
 static void exynos_bts_mif_update(unsigned int freq)
 {
 	int i;
@@ -775,6 +778,7 @@ static void exynos_bts_mif_update(unsigned int freq)
 	unsigned int write_mo;
 	unsigned int tq;
 
+	guard(mutex)(&bts_mif_lock);
 	find_qmax(freq, &read_mo, &write_mo);
 	for (i = 0; i < ARRAY_SIZE(trex_snode); i++)
 		if (trex_snode[i].read != read_mo ||
