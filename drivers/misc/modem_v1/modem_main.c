@@ -646,6 +646,8 @@ static int modem_probe(struct platform_device *pdev)
 	/* create io deivces and connect to modemctl device */
 	size = sizeof(struct io_device *) * pdata->num_iodevs;
 	iod = kzalloc(size, GFP_KERNEL);
+	if (!iod)
+		goto free_mc;
 	for (i = 0; i < pdata->num_iodevs; i++) {
 		if (sim_mode < MIF_SIM_DUAL &&
 			pdata->iodevs[i].attrs & IODEV_ATTR(ATTR_DUALSIM))
