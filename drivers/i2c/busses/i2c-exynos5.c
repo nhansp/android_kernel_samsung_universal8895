@@ -71,6 +71,7 @@
 #define HSI2C_TXFIFO_EN				(1u << 1)
 #define HSI2C_RXFIFO_TRIGGER_LEVEL(x)		((x) << 4)
 #define HSI2C_TXFIFO_TRIGGER_LEVEL(x)		((x) << 16)
+#define HSI2C_EXYNOS8895_TX_TRIGGER		8
 
 /* I2C_TRAILING_CTL Register bits */
 #define HSI2C_TRAILING_COUNT			(0xf)
@@ -491,6 +492,18 @@ static void exynos5_i2c_reset(struct exynos5_i2c *i2c)
 	exynos5_i2c_init(i2c);
 }
 
+/* The TX FIFO depth of the Exynos8895 USI HSI2C instances is not documented. */
+static void exynos8895_i2c_fill_tx(struct exynos5_i2c *i2c)
+{
+	while (i2c->msg_ptr < i2c->msg->len &&
+	       !(readl(i2c->regs + HSI2C_FIFO_STATUS) & HSI2C_TX_FIFO_FULL))
+		writel(i2c->msg->buf[i2c->msg_ptr++], i2c->regs + HSI2C_TX_DATA);
+
+	if (i2c->msg_ptr == i2c->msg->len)
+		writel(readl(i2c->regs + HSI2C_INT_ENABLE) & ~HSI2C_INT_TX_ALMOSTEMPTY_EN,
+		       i2c->regs + HSI2C_INT_ENABLE);
+}
+
 /*
  * exynos5_i2c_irq: top level IRQ servicing routine
  *
@@ -582,6 +595,10 @@ static irqreturn_t exynos5_i2c_irq(int irqno, void *dev_id)
 			i2c->msg->buf[i2c->msg_ptr++] = byte;
 			len--;
 		}
+		i2c->state = 0;
+	} else if ((int_status & HSI2C_INT_TX_ALMOSTEMPTY) &&
+		   i2c->variant->hw == I2C_TYPE_EXYNOS8895) {
+		exynos8895_i2c_fill_tx(i2c);
 		i2c->state = 0;
 	} else if (int_status & HSI2C_INT_TX_ALMOSTEMPTY) {
 		fifo_status = readl(i2c->regs + HSI2C_FIFO_STATUS);
@@ -737,8 +754,11 @@ static void exynos5_i2c_message_start(struct exynos5_i2c *i2c, int stop)
 	} else {
 		i2c_ctl |= HSI2C_TXCHON;
 
-		trig_lvl = (i2c->msg->len > i2c->variant->fifo_depth) ?
-			(i2c->variant->fifo_depth * 1 / 4) : i2c->msg->len;
+		if (i2c->variant->hw == I2C_TYPE_EXYNOS8895)
+			trig_lvl = HSI2C_EXYNOS8895_TX_TRIGGER;
+		else
+			trig_lvl = (i2c->msg->len > i2c->variant->fifo_depth) ?
+				(i2c->variant->fifo_depth * 1 / 4) : i2c->msg->len;
 		fifo_ctl |= HSI2C_TXFIFO_TRIGGER_LEVEL(trig_lvl);
 
 		int_en |= HSI2C_INT_TX_ALMOSTEMPTY_EN;
