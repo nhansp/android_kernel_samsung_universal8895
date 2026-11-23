@@ -27,6 +27,7 @@
 #include <linux/string_choices.h>
 #include <linux/regmap.h>
 #include <linux/err.h>
+#include <linux/soc/samsung/exynos-pinctrl-pm.h>
 #include <linux/soc/samsung/exynos-pmu.h>
 #include <linux/soc/samsung/exynos-regs-pmu.h>
 
@@ -535,6 +536,11 @@ static int exynos_wkup_irq_set_wake(struct irq_data *irqd, unsigned int on)
 		eint_wake_mask_values[0] &= ~bit;
 
 	return 0;
+}
+
+u32 exynos_pinctrl_get_eint_wake_mask(void)
+{
+	return READ_ONCE(eint_wake_mask_values[0]);
 }
 
 static void
