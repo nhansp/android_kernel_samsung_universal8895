@@ -55,6 +55,12 @@ properties:
       - const: biu
       - const: ciu
 
+  qos-int-level:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      Minimum frequency of the internal (INT) bus, in kHz, requested while
+      a request is in flight and released 5 ms after the last one completes.
+
   samsung,dw-mshc-ciu-div:
     $ref: /schemas/types.yaml#/definitions/uint32
     minimum: 0
