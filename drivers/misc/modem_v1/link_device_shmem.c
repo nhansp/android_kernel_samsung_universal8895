@@ -32,6 +32,7 @@
 #include <linux/exynos-pci-ctrl.h>
 #include <soc/samsung/exynos8895-smc.h>
 #include <soc/samsung/pmu-cp.h>
+#include <soc/samsung/exynos8895-bus-qos.h>
 
 /* For kernels built without the Exynos PCIe host driver */
 int __weak exynos_pcie_l1ss_ctrl(int enable, int id)
@@ -2621,15 +2622,15 @@ static void shmem_irq_handler(void *data)
 #endif /* CONFIG_LINK_DEVICE_NAPI */
 }
 
-/* There is no PM QoS class for these requests in this kernel: only record them. */
+/* There is no PM QoS class for a CPU cluster minimum frequency: only record it. */
 struct mif_qos_shadow {
 	s32 khz;
 };
 
-static struct mif_qos_shadow pm_qos_req_mif;
+static struct exynos_bus_qos_request pm_qos_req_mif;
 static struct mif_qos_shadow pm_qos_req_cl0;
 static struct mif_qos_shadow pm_qos_req_cl1;
-static struct mif_qos_shadow pm_qos_req_int;
+static struct exynos_bus_qos_request pm_qos_req_int;
 
 static inline void mif_qos_update(struct mif_qos_shadow *req, s32 khz)
 {
@@ -2686,10 +2687,10 @@ static void shmem_qos_work_mif(struct work_struct *work)
 	if (mif_val > 0 && mif_val <= mld->mif_table.num_of_table) {
 		mif_err("Lock MIF[%d] : %u\n", mif_val,
 				mld->mif_table.freq[mif_val - 1]);
-		mif_qos_update(&pm_qos_req_mif, mld->mif_table.freq[mif_val - 1]);
+		exynos_bus_qos_update_request(&pm_qos_req_mif, mld->mif_table.freq[mif_val - 1]);
 	} else {
 		mif_err("Unlock MIF(req_val : %d)\n", qos_val);
-		mif_qos_update(&pm_qos_req_mif, 0);
+		exynos_bus_qos_update_request(&pm_qos_req_mif, 0);
 	}
 
 	/* Save current mif_val */
@@ -2710,10 +2711,10 @@ static void shmem_qos_work_int(struct work_struct *work)
 	if (int_val > 0 && int_val <= mld->int_table.num_of_table) {
 		mif_err("Lock INT[%d] : %u\n", int_val,
 				mld->int_table.freq[int_val - 1]);
-		mif_qos_update(&pm_qos_req_int, mld->int_table.freq[int_val - 1]);
+		exynos_bus_qos_update_request(&pm_qos_req_int, mld->int_table.freq[int_val - 1]);
 	} else {
 		mif_err("Unlock INT(req_val : %d)\n", qos_val);
-		mif_qos_update(&pm_qos_req_int, 0);
+		exynos_bus_qos_update_request(&pm_qos_req_int, 0);
 	}
 }
 
@@ -2793,7 +2794,7 @@ void shmem_unlock_mif_freq(struct mem_link_device *mld)
 	if (mld) {
 		mif_err("Currnet MIF value: %d)\n", mld->current_mif_val);
 		mif_err("Unlock MIF\n");
-		mif_qos_update(&pm_qos_req_mif, 0);
+		exynos_bus_qos_update_request(&pm_qos_req_mif, 0);
 	}
 }
 
@@ -2808,7 +2809,8 @@ void shmem_restore_mif_freq(struct mem_link_device *mld)
 		if (mif_val > 0 && mif_val <= mld->mif_table.num_of_table) {
 			mif_err("Lock MIF[%d] : %u\n", mif_val,
 					mld->mif_table.freq[mif_val - 1]);
-			mif_qos_update(&pm_qos_req_mif, mld->mif_table.freq[mif_val - 1]);
+			exynos_bus_qos_update_request(&pm_qos_req_mif,
+						      mld->mif_table.freq[mif_val - 1]);
 		}
 	}
 }
@@ -3683,8 +3685,8 @@ struct link_device *shmem_create_link_device(struct platform_device *pdev)
 
 	mif_qos_update(&pm_qos_req_cl0, 0);
 	mif_qos_update(&pm_qos_req_cl1, 0);
-	mif_qos_update(&pm_qos_req_mif, 0);
-	mif_qos_update(&pm_qos_req_int, 0);
+	exynos_bus_qos_add_request(&pm_qos_req_mif, EXYNOS_BUS_QOS_MIF, 0);
+	exynos_bus_qos_add_request(&pm_qos_req_int, EXYNOS_BUS_QOS_INT, 0);
 
 	INIT_WORK(&mld->pm_qos_work_cpu, shmem_qos_work_cpu);
 	INIT_WORK(&mld->pm_qos_work_mif, shmem_qos_work_mif);
@@ -3818,6 +3820,10 @@ struct link_device *shmem_create_link_device(struct platform_device *pdev)
 	return ld;
 
 error:
+	if (exynos_bus_qos_request_active(&pm_qos_req_mif))
+		exynos_bus_qos_remove_request(&pm_qos_req_mif);
+	if (exynos_bus_qos_request_active(&pm_qos_req_int))
+		exynos_bus_qos_remove_request(&pm_qos_req_int);
 	wakeup_source_unregister(mld->cp_ws);
 #ifdef CONFIG_LINK_DEVICE_NAPI
 	if (mld->dummy_net) {
