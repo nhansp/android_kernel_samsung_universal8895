@@ -1540,6 +1540,42 @@ static int is_connected_input_ep(struct snd_soc_dapm_widget *widget,
 }
 
 /**
+ * snd_soc_dapm_connected_output_ep - count complete paths to output endpoints
+ * @widget: the widget to start the walk from.
+ * @list: optional list the widgets on the complete paths are added to.
+ *
+ * Unlike snd_soc_dapm_dai_get_connected_widgets(), the walk may start at any
+ * widget. The caller holds the DAPM mutex and invalidates the cached
+ * endpoint counts of the widgets it wants walked again.
+ *
+ * Return: the number of complete paths.
+ */
+int snd_soc_dapm_connected_output_ep(struct snd_soc_dapm_widget *widget,
+				     struct list_head *list)
+{
+	return is_connected_output_ep(widget, list, NULL);
+}
+EXPORT_SYMBOL_GPL(snd_soc_dapm_connected_output_ep);
+
+/**
+ * snd_soc_dapm_connected_input_ep - count complete paths to input endpoints
+ * @widget: the widget to start the walk from.
+ * @list: optional list the widgets on the complete paths are added to.
+ *
+ * Unlike snd_soc_dapm_dai_get_connected_widgets(), the walk may start at any
+ * widget. The caller holds the DAPM mutex and invalidates the cached
+ * endpoint counts of the widgets it wants walked again.
+ *
+ * Return: the number of complete paths.
+ */
+int snd_soc_dapm_connected_input_ep(struct snd_soc_dapm_widget *widget,
+				    struct list_head *list)
+{
+	return is_connected_input_ep(widget, list, NULL);
+}
+EXPORT_SYMBOL_GPL(snd_soc_dapm_connected_input_ep);
+
+/**
  * snd_soc_dapm_dai_get_connected_widgets - query audio path and it's widgets.
  * @dai: the soc DAI.
  * @stream: stream direction.
