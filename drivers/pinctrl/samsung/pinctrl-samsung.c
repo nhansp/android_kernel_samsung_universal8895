@@ -1332,18 +1332,14 @@ err_put_banks:
 }
 
 /*
- * samsung_pinctrl_suspend - save pinctrl state for suspend
+ * samsung_pinctrl_save - save pinctrl state for suspend
  *
  * Save data for all banks handled by this device.
  */
-static int __maybe_unused samsung_pinctrl_suspend(struct device *dev)
+static int samsung_pinctrl_save(struct samsung_pinctrl_drv_data *drvdata)
 {
-	struct samsung_pinctrl_drv_data *drvdata = dev_get_drvdata(dev);
 	struct samsung_pin_bank *bank;
 	int i;
-
-	if (drvdata->no_pm_save)
-		return 0;
 
 	i = clk_enable(drvdata->pclk);
 	if (i) {
@@ -1396,22 +1392,18 @@ static int __maybe_unused samsung_pinctrl_suspend(struct device *dev)
 }
 
 /*
- * samsung_pinctrl_resume - restore pinctrl state from suspend
+ * samsung_pinctrl_restore - restore pinctrl state from suspend
  *
  * Restore one of the banks that was saved during suspend.
  *
  * We don't bother doing anything complicated to avoid glitching lines since
  * we're called before pad retention is turned off.
  */
-static int __maybe_unused samsung_pinctrl_resume(struct device *dev)
+static int samsung_pinctrl_restore(struct samsung_pinctrl_drv_data *drvdata)
 {
-	struct samsung_pinctrl_drv_data *drvdata = dev_get_drvdata(dev);
 	struct samsung_pin_bank *bank;
 	int ret;
 	int i;
-
-	if (drvdata->no_pm_save)
-		return 0;
 
 	/*
 	 * enable clock before the callback, as we don't want to have to deal
@@ -1467,6 +1459,26 @@ static int __maybe_unused samsung_pinctrl_resume(struct device *dev)
 		drvdata->retention_ctrl->disable(drvdata);
 
 	return 0;
+}
+
+static int __maybe_unused samsung_pinctrl_suspend(struct device *dev)
+{
+	struct samsung_pinctrl_drv_data *drvdata = dev_get_drvdata(dev);
+
+	if (drvdata->no_pm_save)
+		return 0;
+
+	return samsung_pinctrl_save(drvdata);
+}
+
+static int __maybe_unused samsung_pinctrl_resume(struct device *dev)
+{
+	struct samsung_pinctrl_drv_data *drvdata = dev_get_drvdata(dev);
+
+	if (drvdata->no_pm_save)
+		return 0;
+
+	return samsung_pinctrl_restore(drvdata);
 }
 
 static const struct of_device_id samsung_pinctrl_dt_match[] = {
