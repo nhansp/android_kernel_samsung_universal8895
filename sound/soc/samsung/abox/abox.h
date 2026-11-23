@@ -603,6 +603,8 @@ struct abox_data {
 	struct work_struct boot_done_work;
 	struct work_struct fw_retry_work;
 	unsigned long fw_retry_jiffies;
+	unsigned long fw_flags;
+#define ABOX_FW_REQUEST_PENDING	0
 	struct wakeup_source *ws;
 	unsigned long long audio_mode_time;
 	enum audio_mode audio_mode;

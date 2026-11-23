@@ -4692,31 +4692,85 @@ static void abox_request_iva_firmware(struct abox_data *data)
 	dev_info(dev, "IVA firmware loaded\n");
 }
 
-/*
- * Request the firmware in the vendor order (SRAM, DRAM, then the extra and
- * IVA images) until both mandatory images are in; until then
- * abox_download_firmware() returns -EAGAIN.
- */
-static void abox_load_firmware(struct abox_data *data)
+static void abox_complete_dram_firmware_request(const struct firmware *fw,
+		void *context)
 {
-	struct device *dev = &data->pdev->dev;
+	struct platform_device *pdev = context;
+	struct device *dev = &pdev->dev;
+	struct abox_data *data = platform_get_drvdata(pdev);
 
-	if (!data->firmware_sram) {
-		if (firmware_request_nowarn(&data->firmware_sram,
-				"calliope_sram.bin", dev))
-			return;
-		dev_info(dev, "SRAM firmware loaded\n");
+	if (!data) {			/* unbound while the request was pending */
+		release_firmware(fw);
+		return;
 	}
 
-	if (!data->firmware_dram) {
-		if (firmware_request_nowarn(&data->firmware_dram,
-				"calliope_dram.bin", dev))
-			return;
-		dev_info(dev, "DRAM firmware loaded\n");
-
-		abox_request_extra_firmware(data);
-		abox_request_iva_firmware(data);
+	if (!fw) {
+		dev_err(dev, "Failed to request firmware\n");
+		clear_bit(ABOX_FW_REQUEST_PENDING, &data->fw_flags);
+		return;
 	}
+
+	data->firmware_dram = fw;
+
+	dev_info(dev, "DRAM firmware loaded\n");
+
+	abox_request_extra_firmware(data);
+	abox_request_iva_firmware(data);
+	clear_bit(ABOX_FW_REQUEST_PENDING, &data->fw_flags);
+
+	/* the vendor driver booted the firmware here if ABOX was powered */
+	data->fw_retry_jiffies = jiffies;
+	schedule_work(&data->fw_retry_work);
+}
+
+static void abox_complete_sram_firmware_request(const struct firmware *fw,
+		void *context)
+{
+	struct platform_device *pdev = context;
+	struct device *dev = &pdev->dev;
+	struct abox_data *data = platform_get_drvdata(pdev);
+
+	if (!data) {
+		release_firmware(fw);
+		return;
+	}
+
+	if (!fw) {
+		dev_err(dev, "Failed to request firmware\n");
+		clear_bit(ABOX_FW_REQUEST_PENDING, &data->fw_flags);
+		return;
+	}
+
+	data->firmware_sram = fw;
+
+	dev_info(dev, "SRAM firmware loaded\n");
+
+	if (request_firmware_nowait(THIS_MODULE, FW_ACTION_UEVENT,
+			"calliope_dram.bin", dev, GFP_KERNEL, pdev,
+			abox_complete_dram_firmware_request))
+		clear_bit(ABOX_FW_REQUEST_PENDING, &data->fw_flags);
+}
+
+/*
+ * Asynchronous, as in the vendor driver, so that with the user helper
+ * fallback the request waits for ueventd instead of blocking the caller.
+ */
+static void abox_request_firmware(struct abox_data *data)
+{
+	struct platform_device *pdev = data->pdev;
+
+	if ((data->firmware_sram && data->firmware_dram) ||
+	    test_and_set_bit(ABOX_FW_REQUEST_PENDING, &data->fw_flags))
+		return;
+
+	if (data->firmware_sram ?
+	    request_firmware_nowait(THIS_MODULE, FW_ACTION_UEVENT,
+			"calliope_dram.bin", &pdev->dev, GFP_KERNEL, pdev,
+			abox_complete_dram_firmware_request) :
+	    request_firmware_nowait(THIS_MODULE, FW_ACTION_UEVENT,
+			"calliope_sram.bin", &pdev->dev, GFP_KERNEL, pdev,
+			abox_complete_sram_firmware_request))
+		clear_bit(ABOX_FW_REQUEST_PENDING, &data->fw_flags);
 }
 
 /* Returns -EAGAIN while a mandatory firmware image is missing */
@@ -4754,8 +4808,7 @@ static int abox_enable(struct device *dev)
 
 	dev_info(dev, "%s\n", __func__);
 
-	if (!data->firmware_sram || !data->firmware_dram)
-		abox_load_firmware(data);
+	abox_request_firmware(data);
 
 	abox_gic_enable_irq(&data->pdev_gic->dev);
 
@@ -4832,8 +4885,7 @@ static void abox_fw_retry_work_func(struct work_struct *work)
 		return;
 
 	if (data->calliope_state == CALLIOPE_DISABLED && !data->enabled) {
-		if (!data->firmware_sram || !data->firmware_dram)
-			abox_load_firmware(data);
+		abox_request_firmware(data);
 		if (data->firmware_sram && data->firmware_dram) {
 			dev_info(dev, "%s: booting Calliope\n", __func__);
 			abox_boot_calliope(dev);
@@ -5397,6 +5449,8 @@ static int samsung_abox_probe(struct platform_device *pdev)
 	if (IS_ERR(data->regmap))
 		return PTR_ERR(data->regmap);
 	regcache_cache_only(data->regmap, true);
+
+	abox_request_firmware(data);
 
 	ret = devm_pm_runtime_enable(dev);
 	if (ret < 0)
