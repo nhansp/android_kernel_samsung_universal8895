@@ -206,10 +206,12 @@ static int exynos_usi_configure(struct exynos_usi *usi)
 	if (ret)
 		return ret;
 
-	if (usi->data->ver == USI_VER1)
-		ret = clk_bulk_prepare_enable(usi->data->num_clks,
-					      usi->clks);
-	else if (usi->data->ver == USI_VER2)
+	/*
+	 * USIv1 only has SW_CONF, which lives in the sysreg and is written
+	 * through the syscon regmap, so its clocks are left to the protocol
+	 * drivers.
+	 */
+	if (usi->data->ver == USI_VER2)
 		ret = exynos_usi_enable(usi);
 
 	return ret;
@@ -221,10 +223,8 @@ static void exynos_usi_unconfigure(void *data)
 	u32 val;
 	int ret;
 
-	if (usi->data->ver == USI_VER1) {
-		clk_bulk_disable_unprepare(usi->data->num_clks, usi->clks);
+	if (usi->data->ver == USI_VER1)
 		return;
-	}
 
 	ret = clk_bulk_prepare_enable(usi->data->num_clks, usi->clks);
 	if (ret)
