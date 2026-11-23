@@ -203,7 +203,7 @@ static void s6sy761_handle_events(struct s6sy761_data *sdata, u8 n_events)
 		u8 event_id = event[0] & S6SY761_MASK_EID;
 
 		if (!event[0])
-			return;
+			continue;
 
 		switch (event_id) {
 
