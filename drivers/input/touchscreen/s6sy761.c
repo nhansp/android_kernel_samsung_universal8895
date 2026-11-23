@@ -7,6 +7,7 @@
 #include <linux/unaligned.h>
 #include <linux/delay.h>
 #include <linux/i2c.h>
+#include <linux/input/max77865-haptic.h>
 #include <linux/input/mt.h>
 #include <linux/input/touchscreen.h>
 #include <linux/interrupt.h>
@@ -295,6 +296,8 @@ static void s6sy661_handle_pressure(struct s6sy761_data *sdata, u8 *event)
 	sdata->home_key_down = down;
 	input_report_key(sdata->input, KEY_HOMEPAGE, down);
 	input_sync(sdata->input);
+
+	max77865_haptic_homekey(down);
 }
 
 /*
