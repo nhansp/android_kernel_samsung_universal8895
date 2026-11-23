@@ -344,6 +344,9 @@ static int mcu_ipc_probe(struct platform_device *pdev)
 		return PTR_ERR(mcu_dat[id].ioaddr);
 	}
 
+	spin_lock_init(&mcu_dat[id].lock);
+	spin_lock_init(&mcu_dat[id].reg_lock);
+
 	/* Request IRQ */
 	mcu_ipc_irq = platform_get_irq(pdev, 0);
 	if (mcu_ipc_irq < 0)
@@ -361,9 +364,6 @@ static int mcu_ipc_probe(struct platform_device *pdev)
 	err = mcu_ipc_set_affinity(id, dev, mcu_ipc_irq);
 	if (err)
 		dev_err(dev, "Can't set IRQ affinity with(%d)\n", err);
-
-	spin_lock_init(&mcu_dat[id].lock);
-	spin_lock_init(&mcu_dat[id].reg_lock);
 
 	/* The modem driver defers its probe until this is set. */
 	platform_set_drvdata(pdev, &mcu_dat[id]);
