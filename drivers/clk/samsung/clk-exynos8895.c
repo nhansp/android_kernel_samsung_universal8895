@@ -6,6 +6,7 @@
  * Common Clock Framework support for Exynos8895 SoC.
  */
 
+#include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/mod_devicetable.h>
 #include <linux/io.h>
@@ -31,6 +32,7 @@
 #define CLKS_NR_CPUCL1	(CLK_GOUT_CPUCL1_SYSREG_CPUCL1_PCLK + 1)
 #define CLKS_NR_DPU0	(CLK_GOUT_DPU0_XIU_P0_DPU_ACLK + 1)
 #define CLKS_NR_DPU1	(CLK_GOUT_DPU1_SYSREG_DPU1_PCLK + 1)
+#define CLKS_NR_MFC	(CLK_GOUT_MFC_SYSREG_MFC_PCLK + 1)
 
 /*
  * The gates of the always-on CMUs stay under hardware auto-gating, as the
@@ -3584,6 +3586,229 @@ static const struct samsung_cmu_info dpu1_cmu_info __initconst = {
 	.clk_name		= "busp",
 };
 
+/* ---- CMU_MFC ------------------------------------------------------------- */
+
+/* Register Offset definitions for CMU_MFC (0x13c00000) */
+#define PLL_CON0_MUX_CLKCMU_MFC_BUS_USER					0x0100
+#define MFC_CMU_CONTROLLER_OPTION						0x0800
+#define CLK_CON_DIV_DIV_CLK_MFC_BUSP						0x1800
+#define CLK_CON_GAT_CLK_BLK_MFC_UID_MFC_CMU_MFC_IPCLKPORT_PCLK			0x2000
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_AS_P_MFCP_IPCLKPORT_PCLKM			0x2010
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_AS_P_MFCP_IPCLKPORT_PCLKS			0x2014
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_AXI2APB_MFC_IPCLKPORT_ACLK			0x2018
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_BTM_MFCD0_IPCLKPORT_I_ACLK			0x201c
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_BTM_MFCD0_IPCLKPORT_I_PCLK			0x2020
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_BTM_MFCD1_IPCLKPORT_I_ACLK			0x2024
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_BTM_MFCD1_IPCLKPORT_I_PCLK			0x2028
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_LHM_AXI_P_MFC_IPCLKPORT_I_CLK		0x202c
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_LHS_AXI_D0_MFC_IPCLKPORT_I_CLK		0x2030
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_LHS_AXI_D1_MFC_IPCLKPORT_I_CLK		0x2034
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_MFC_IPCLKPORT_CLK				0x2038
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_PMU_MFC_IPCLKPORT_PCLK			0x203c
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_BCM_MFCD0_IPCLKPORT_ACLK			0x2040
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_BCM_MFCD0_IPCLKPORT_PCLK			0x2044
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_BCM_MFCD1_IPCLKPORT_ACLK			0x2048
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_BCM_MFCD1_IPCLKPORT_PCLK			0x204c
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_RSTNSYNC_CLK_MFC_BUSD_IPCLKPORT_CLK	0x2050
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_RSTNSYNC_CLK_MFC_BUSP_IPCLKPORT_CLK	0x2054
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_SMMU_MFCD0_IPCLKPORT_ACLK			0x2058
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_SMMU_MFCD0_IPCLKPORT_PCLK_NONSECURE	0x205c
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_SMMU_MFCD0_IPCLKPORT_PCLK_SECURE		0x2060
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_SMMU_MFCD1_IPCLKPORT_ACLK			0x2064
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_SMMU_MFCD1_IPCLKPORT_PCLK_NONSECURE	0x2068
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_SMMU_MFCD1_IPCLKPORT_PCLK_SECURE		0x206c
+#define CLK_CON_GAT_GOUT_BLK_MFC_UID_SYSREG_MFC_IPCLKPORT_PCLK			0x2070
+#define QCH_CON_BTM_MFCD0_QCH							0x3000
+#define QCH_CON_BTM_MFCD1_QCH							0x3004
+#define QCH_CON_LHM_AXI_P_MFC_QCH						0x3010
+#define QCH_CON_LHS_AXI_D0_MFC_QCH						0x3014
+#define QCH_CON_LHS_AXI_D1_MFC_QCH						0x3018
+#define QCH_CON_MFC_CMU_MFC_QCH							0x301c
+#define QCH_CON_MFC_QCH								0x3020
+#define QCH_CON_PMU_MFC_QCH							0x3024
+#define QCH_CON_BCM_MFCD0_QCH							0x3028
+#define QCH_CON_BCM_MFCD1_QCH							0x302c
+#define QCH_CON_SMMU_MFCD0_QCH							0x3030
+#define QCH_CON_SMMU_MFCD1_QCH							0x3034
+#define QCH_CON_SYSREG_MFC_QCH							0x3038
+
+static const unsigned long mfc_clk_regs[] __initconst = {
+	PLL_CON0_MUX_CLKCMU_MFC_BUS_USER,
+	CLK_CON_DIV_DIV_CLK_MFC_BUSP,
+	CLK_CON_GAT_CLK_BLK_MFC_UID_MFC_CMU_MFC_IPCLKPORT_PCLK,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_AS_P_MFCP_IPCLKPORT_PCLKM,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_AS_P_MFCP_IPCLKPORT_PCLKS,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_AXI2APB_MFC_IPCLKPORT_ACLK,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_BTM_MFCD0_IPCLKPORT_I_ACLK,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_BTM_MFCD0_IPCLKPORT_I_PCLK,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_BTM_MFCD1_IPCLKPORT_I_ACLK,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_BTM_MFCD1_IPCLKPORT_I_PCLK,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_LHM_AXI_P_MFC_IPCLKPORT_I_CLK,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_LHS_AXI_D0_MFC_IPCLKPORT_I_CLK,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_LHS_AXI_D1_MFC_IPCLKPORT_I_CLK,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_MFC_IPCLKPORT_CLK,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_PMU_MFC_IPCLKPORT_PCLK,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_BCM_MFCD0_IPCLKPORT_ACLK,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_BCM_MFCD0_IPCLKPORT_PCLK,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_BCM_MFCD1_IPCLKPORT_ACLK,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_BCM_MFCD1_IPCLKPORT_PCLK,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_RSTNSYNC_CLK_MFC_BUSD_IPCLKPORT_CLK,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_RSTNSYNC_CLK_MFC_BUSP_IPCLKPORT_CLK,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_SMMU_MFCD0_IPCLKPORT_ACLK,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_SMMU_MFCD0_IPCLKPORT_PCLK_NONSECURE,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_SMMU_MFCD0_IPCLKPORT_PCLK_SECURE,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_SMMU_MFCD1_IPCLKPORT_ACLK,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_SMMU_MFCD1_IPCLKPORT_PCLK_NONSECURE,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_SMMU_MFCD1_IPCLKPORT_PCLK_SECURE,
+	CLK_CON_GAT_GOUT_BLK_MFC_UID_SYSREG_MFC_IPCLKPORT_PCLK,
+	QCH_CON_SYSREG_MFC_QCH,
+	QCH_CON_SMMU_MFCD1_QCH,
+	QCH_CON_SMMU_MFCD0_QCH,
+	QCH_CON_BCM_MFCD1_QCH,
+	QCH_CON_BCM_MFCD0_QCH,
+	QCH_CON_PMU_MFC_QCH,
+	QCH_CON_MFC_QCH,
+	QCH_CON_MFC_CMU_MFC_QCH,
+	QCH_CON_LHS_AXI_D1_MFC_QCH,
+	QCH_CON_LHS_AXI_D0_MFC_QCH,
+	QCH_CON_LHM_AXI_P_MFC_QCH,
+	QCH_CON_BTM_MFCD1_QCH,
+	QCH_CON_BTM_MFCD0_QCH,
+	MFC_CMU_CONTROLLER_OPTION,
+};
+
+/* List of parent clocks for Muxes in CMU_MFC */
+PNAME(mout_mfc_bus_user_p)		= { "oscclk", "dout_cmu_mfc_bus" };
+
+static const struct samsung_mux_clock mfc_mux_clks[] __initconst = {
+	MUX(CLK_MOUT_MFC_BUS_USER, "mout_mfc_bus_user", mout_mfc_bus_user_p,
+	    PLL_CON0_MUX_CLKCMU_MFC_BUS_USER, 4, 1),
+};
+
+static const struct samsung_div_clock mfc_div_clks[] __initconst = {
+	DIV(CLK_DOUT_MFC_BUSP, "dout_mfc_busp", "mout_mfc_bus_user",
+	    CLK_CON_DIV_DIV_CLK_MFC_BUSP, 0, 3),
+};
+
+static const struct samsung_gate_clock mfc_gate_clks[] __initconst = {
+	GATE(CLK_GOUT_MFC_CMU_MFC_PCLK, "gout_mfc_cmu_mfc_pclk",
+	     "dout_mfc_busp",
+	     CLK_CON_GAT_CLK_BLK_MFC_UID_MFC_CMU_MFC_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_AS_P_MFCP_PCLKM, "gout_mfc_as_p_mfcp_pclkm",
+	     "mout_mfc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_AS_P_MFCP_IPCLKPORT_PCLKM, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_AS_P_MFCP_PCLKS, "gout_mfc_as_p_mfcp_pclks",
+	     "dout_mfc_busp",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_AS_P_MFCP_IPCLKPORT_PCLKS, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_AXI2APB_MFC_ACLK, "gout_mfc_axi2apb_mfc_aclk",
+	     "dout_mfc_busp",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_AXI2APB_MFC_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_BTM_MFCD0_I_ACLK, "gout_mfc_btm_mfcd0_i_aclk",
+	     "mout_mfc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_BTM_MFCD0_IPCLKPORT_I_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_BTM_MFCD0_I_PCLK, "gout_mfc_btm_mfcd0_i_pclk",
+	     "dout_mfc_busp",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_BTM_MFCD0_IPCLKPORT_I_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_BTM_MFCD1_I_ACLK, "gout_mfc_btm_mfcd1_i_aclk",
+	     "mout_mfc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_BTM_MFCD1_IPCLKPORT_I_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_BTM_MFCD1_I_PCLK, "gout_mfc_btm_mfcd1_i_pclk",
+	     "dout_mfc_busp",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_BTM_MFCD1_IPCLKPORT_I_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_LHM_AXI_P_MFC_I_CLK, "gout_mfc_lhm_axi_p_mfc_i_clk",
+	     "dout_mfc_busp",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_LHM_AXI_P_MFC_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_LHS_AXI_D0_MFC_I_CLK, "gout_mfc_lhs_axi_d0_mfc_i_clk",
+	     "mout_mfc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_LHS_AXI_D0_MFC_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_LHS_AXI_D1_MFC_I_CLK, "gout_mfc_lhs_axi_d1_mfc_i_clk",
+	     "mout_mfc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_LHS_AXI_D1_MFC_IPCLKPORT_I_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_CLK, "gout_mfc_clk", "mout_mfc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_MFC_IPCLKPORT_CLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_PMU_MFC_PCLK, "gout_mfc_pmu_mfc_pclk",
+	     "dout_mfc_busp",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_PMU_MFC_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_BCM_MFCD0_ACLK, "gout_mfc_bcm_mfcd0_aclk",
+	     "mout_mfc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_BCM_MFCD0_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_BCM_MFCD0_PCLK, "gout_mfc_bcm_mfcd0_pclk",
+	     "dout_mfc_busp",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_BCM_MFCD0_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_BCM_MFCD1_ACLK, "gout_mfc_bcm_mfcd1_aclk",
+	     "mout_mfc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_BCM_MFCD1_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_BCM_MFCD1_PCLK, "gout_mfc_bcm_mfcd1_pclk",
+	     "dout_mfc_busp",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_BCM_MFCD1_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_RSTNSYNC_CLK_MFC_BUSD_CLK,
+	     "gout_mfc_rstnsync_clk_mfc_busd_clk", "mout_mfc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_RSTNSYNC_CLK_MFC_BUSD_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_RSTNSYNC_CLK_MFC_BUSP_CLK,
+	     "gout_mfc_rstnsync_clk_mfc_busp_clk", "dout_mfc_busp",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_RSTNSYNC_CLK_MFC_BUSP_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_SMMU_MFCD0_ACLK, "gout_mfc_smmu_mfcd0_aclk",
+	     "mout_mfc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_SMMU_MFCD0_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_SMMU_MFCD0_PCLK_NONSECURE,
+	     "gout_mfc_smmu_mfcd0_pclk_nonsecure", "dout_mfc_busp",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_SMMU_MFCD0_IPCLKPORT_PCLK_NONSECURE,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_SMMU_MFCD0_PCLK_SECURE,
+	     "gout_mfc_smmu_mfcd0_pclk_secure", "dout_mfc_busp",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_SMMU_MFCD0_IPCLKPORT_PCLK_SECURE, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_SMMU_MFCD1_ACLK, "gout_mfc_smmu_mfcd1_aclk",
+	     "mout_mfc_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_SMMU_MFCD1_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_SMMU_MFCD1_PCLK_NONSECURE,
+	     "gout_mfc_smmu_mfcd1_pclk_nonsecure", "dout_mfc_busp",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_SMMU_MFCD1_IPCLKPORT_PCLK_NONSECURE,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_SMMU_MFCD1_PCLK_SECURE,
+	     "gout_mfc_smmu_mfcd1_pclk_secure", "dout_mfc_busp",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_SMMU_MFCD1_IPCLKPORT_PCLK_SECURE, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC_SYSREG_MFC_PCLK, "gout_mfc_sysreg_mfc_pclk",
+	     "dout_mfc_busp",
+	     CLK_CON_GAT_GOUT_BLK_MFC_UID_SYSREG_MFC_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+};
+
+static const struct samsung_cmu_info mfc_cmu_info __initconst = {
+	.mux_clks		= mfc_mux_clks,
+	.nr_mux_clks		= ARRAY_SIZE(mfc_mux_clks),
+	.div_clks		= mfc_div_clks,
+	.nr_div_clks		= ARRAY_SIZE(mfc_div_clks),
+	.gate_clks		= mfc_gate_clks,
+	.nr_gate_clks		= ARRAY_SIZE(mfc_gate_clks),
+	.nr_clk_ids		= CLKS_NR_MFC,
+	.clk_regs		= mfc_clk_regs,
+	.nr_clk_regs		= ARRAY_SIZE(mfc_clk_regs),
+	.clk_name		= "bus",
+};
+
 /* ---- CMU probe glue ------------------------------------------------------ */
 
 #define CMU_QCH_ENABLE			BIT(0)
@@ -3674,10 +3899,63 @@ static struct platform_driver exynos8895_cmu_driver __refdata = {
 	.probe = exynos8895_cmu_probe,
 };
 
+/*
+ * The vendor kernel sets the BUSP divider of these CMUs once at boot, to a
+ * fixed ratio of their bus clock, which DVFS scales.
+ */
+struct exynos8895_busp_ratio {
+	const char *compat;
+	unsigned int id, div;
+};
+
+static const struct exynos8895_busp_ratio exynos8895_busp[] __initconst = {
+	{ "samsung,exynos8895-cmu-mfc", CLK_DOUT_MFC_BUSP, 4 },
+};
+
+static void __init exynos8895_cmu_set_busp(struct platform_device *pdev)
+{
+	struct device_node *np = pdev->dev.of_node;
+	struct of_phandle_args spec = { .np = np, .args_count = 1 };
+	unsigned long prate;
+	struct clk *clk;
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < ARRAY_SIZE(exynos8895_busp); i++) {
+		if (!of_device_is_compatible(np, exynos8895_busp[i].compat))
+			continue;
+
+		spec.args[0] = exynos8895_busp[i].id;
+		clk = of_clk_get_from_provider(&spec);
+		if (IS_ERR(clk))
+			return;
+
+		/* Round up: divider_get_val() then picks exactly div - 1 */
+		prate = clk_get_rate(clk_get_parent(clk));
+		if (prate) {
+			ret = clk_set_rate(clk,
+					   DIV_ROUND_UP(prate, exynos8895_busp[i].div));
+			if (ret)
+				dev_warn(&pdev->dev, "BUSP 1/%u: %d\n",
+					 exynos8895_busp[i].div, ret);
+		}
+		clk_put(clk);
+		return;
+	}
+}
+
 /* CMUs in power domains keep their gates in the mode the boot loader left */
 static int __init exynos8895_cmu_pd_probe(struct platform_device *pdev)
 {
-	return exynos_arm64_register_cmu_pm(pdev, false);
+	int ret;
+
+	ret = exynos_arm64_register_cmu_pm(pdev, false);
+	if (ret)
+		return ret;
+
+	exynos8895_cmu_set_busp(pdev);
+
+	return 0;
 }
 
 /*
@@ -3706,6 +3984,9 @@ static const struct of_device_id exynos8895_cmu_pd_of_match[] = {
 	}, {
 		.compatible = "samsung,exynos8895-cmu-dpu1",
 		.data = &dpu1_cmu_info,
+	}, {
+		.compatible = "samsung,exynos8895-cmu-mfc",
+		.data = &mfc_cmu_info,
 	},
 	{ }
 };
