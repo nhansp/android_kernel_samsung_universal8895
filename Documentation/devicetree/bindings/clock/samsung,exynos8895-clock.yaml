@@ -34,6 +34,7 @@ properties:
       - samsung,exynos8895-cmu-cam
       - samsung,exynos8895-cmu-cpucl0
       - samsung,exynos8895-cmu-cpucl1
+      - samsung,exynos8895-cmu-dcam
       - samsung,exynos8895-cmu-dpu0
       - samsung,exynos8895-cmu-dpu1
       - samsung,exynos8895-cmu-fsys0
@@ -155,6 +156,26 @@ allOf:
             - const: oscclk
             - const: switch
             - const: hpm
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: samsung,exynos8895-cmu-dcam
+
+    then:
+      properties:
+        clocks:
+          items:
+            - description: External reference clock (26 MHz)
+            - description: CMU_DCAM BUS clock (from CMU_TOP)
+            - description: CMU_DCAM IMGD clock (from CMU_TOP)
+
+        clock-names:
+          items:
+            - const: oscclk
+            - const: bus
+            - const: imgd
 
   - if:
       properties:
