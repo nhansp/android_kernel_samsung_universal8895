@@ -25,6 +25,7 @@ enum exynos_mipi_phy_id {
 	EXYNOS_MIPI_PHY_ID_CSIS1,
 	EXYNOS_MIPI_PHY_ID_DSIM1,
 	EXYNOS_MIPI_PHY_ID_CSIS2,
+	EXYNOS_MIPI_PHY_ID_CSIS3,
 	EXYNOS_MIPI_PHYS_NUM
 };
 
@@ -40,6 +41,7 @@ struct mipi_phy_device_desc {
 	int num_phys;
 	int num_regmaps;
 	const char *regmap_names[EXYNOS_MIPI_REGMAPS_NUM];
+	bool reset_after_enable;
 	struct exynos_mipi_phy_desc {
 		enum exynos_mipi_phy_id	coupled_phy_id;
 		u32 enable_val;
@@ -262,9 +264,81 @@ static const struct mipi_phy_device_desc exynos7870_mipi_phy = {
 	},
 };
 
+#define EXYNOS8895_MIPI_PHY_ISO_BYPASS		BIT(0)
+#define EXYNOS8895_MIPI_PHY_CSIS0_ISO		0x70c
+#define EXYNOS8895_MIPI_PHY_M1S2S2_ISO		0x730
+#define EXYNOS8895_SYSREG_CAM_MIPI_DPHY_RESET	0x1050
+
+/*
+ * The DSIM drives its own D-PHY reset, so DSIM0 has no reset bit here. The
+ * CSIS D-PHYs are released from reset after their isolation is lifted.
+ */
+static const struct mipi_phy_device_desc exynos8895_mipi_phy = {
+	.num_regmaps = 3,
+	.regmap_names = {
+		[EXYNOS_MIPI_REGMAP_PMU] = "samsung,pmu-syscon",
+		[EXYNOS_MIPI_REGMAP_CAM0] = "samsung,cam0-sysreg",
+	},
+	.num_phys = 6,
+	.reset_after_enable = true,
+	.phys = {
+		[EXYNOS_MIPI_PHY_ID_CSIS0] = {
+			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_DSIM1,
+			.enable_val = EXYNOS8895_MIPI_PHY_ISO_BYPASS,
+			.enable_reg = EXYNOS8895_MIPI_PHY_CSIS0_ISO,
+			.enable_map = EXYNOS_MIPI_REGMAP_PMU,
+			.resetn_val = BIT(0),
+			.resetn_reg = EXYNOS8895_SYSREG_CAM_MIPI_DPHY_RESET,
+			.resetn_map = EXYNOS_MIPI_REGMAP_CAM0,
+		},
+		[EXYNOS_MIPI_PHY_ID_DSIM0] = {
+			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_CSIS2,
+			.enable_val = EXYNOS4_PHY_ENABLE,
+			.enable_reg = EXYNOS4_MIPI_PHY_CONTROL(0),
+			.enable_map = EXYNOS_MIPI_REGMAP_PMU,
+			.resetn_val = 0,
+			.resetn_reg = 0,
+			.resetn_map = EXYNOS_MIPI_REGMAP_PMU,
+		},
+		[EXYNOS_MIPI_PHY_ID_CSIS1] = {
+			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_CSIS3,
+			.enable_val = EXYNOS8895_MIPI_PHY_ISO_BYPASS,
+			.enable_reg = EXYNOS8895_MIPI_PHY_M1S2S2_ISO,
+			.enable_map = EXYNOS_MIPI_REGMAP_PMU,
+			.resetn_val = BIT(2),
+			.resetn_reg = EXYNOS8895_SYSREG_CAM_MIPI_DPHY_RESET,
+			.resetn_map = EXYNOS_MIPI_REGMAP_CAM0,
+		},
+		[EXYNOS_MIPI_PHY_ID_DSIM1] = {
+			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_NONE,
+			.enable_map = EXYNOS_MIPI_REGMAP_PMU,
+			.resetn_map = EXYNOS_MIPI_REGMAP_PMU,
+		},
+		[EXYNOS_MIPI_PHY_ID_CSIS2] = {
+			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_DSIM0,
+			.enable_val = EXYNOS4_PHY_ENABLE,
+			.enable_reg = EXYNOS4_MIPI_PHY_CONTROL(0),
+			.enable_map = EXYNOS_MIPI_REGMAP_PMU,
+			.resetn_val = BIT(1),
+			.resetn_reg = EXYNOS8895_SYSREG_CAM_MIPI_DPHY_RESET,
+			.resetn_map = EXYNOS_MIPI_REGMAP_CAM0,
+		},
+		[EXYNOS_MIPI_PHY_ID_CSIS3] = {
+			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_CSIS1,
+			.enable_val = EXYNOS8895_MIPI_PHY_ISO_BYPASS,
+			.enable_reg = EXYNOS8895_MIPI_PHY_M1S2S2_ISO,
+			.enable_map = EXYNOS_MIPI_REGMAP_PMU,
+			.resetn_val = BIT(3),
+			.resetn_reg = EXYNOS8895_SYSREG_CAM_MIPI_DPHY_RESET,
+			.resetn_map = EXYNOS_MIPI_REGMAP_CAM0,
+		},
+	},
+};
+
 struct exynos_mipi_video_phy {
 	struct regmap *regmaps[EXYNOS_MIPI_REGMAPS_NUM];
 	int num_phys;
+	bool reset_after_enable;
 	struct video_phy_desc {
 		struct phy *phy;
 		unsigned int index;
@@ -280,6 +354,26 @@ static int __set_phy_state(const struct exynos_mipi_phy_desc *data,
 	struct regmap *resetn_map = state->regmaps[data->resetn_map];
 
 	spin_lock(&state->slock);
+
+	if (state->reset_after_enable) {
+		if (on) {
+			regmap_update_bits(enable_map, data->enable_reg,
+					   data->enable_val, data->enable_val);
+			regmap_update_bits(resetn_map, data->resetn_reg,
+					   data->resetn_val, 0);
+			regmap_update_bits(resetn_map, data->resetn_reg,
+					   data->resetn_val, data->resetn_val);
+		} else {
+			regmap_update_bits(resetn_map, data->resetn_reg,
+					   data->resetn_val, 0);
+			if (data->coupled_phy_id >= 0 &&
+			    state->phys[data->coupled_phy_id].phy->power_count == 0)
+				regmap_update_bits(enable_map, data->enable_reg,
+						   data->enable_val, 0);
+		}
+		spin_unlock(&state->slock);
+		return 0;
+	}
 
 	/* disable in PMU sysreg */
 	if (!on && data->coupled_phy_id >= 0 &&
@@ -360,12 +454,15 @@ static int exynos_mipi_video_phy_probe(struct platform_device *pdev)
 	if (!IS_ERR(state->regmaps[i]))
 		i++;
 	for (; i < phy_dev->num_regmaps; i++) {
+		if (!phy_dev->regmap_names[i])
+			continue;
 		state->regmaps[i] = syscon_regmap_lookup_by_phandle(np,
 						phy_dev->regmap_names[i]);
 		if (IS_ERR(state->regmaps[i]))
 			return PTR_ERR(state->regmaps[i]);
 	}
 	state->num_phys = phy_dev->num_phys;
+	state->reset_after_enable = phy_dev->reset_after_enable;
 	spin_lock_init(&state->slock);
 
 	dev_set_drvdata(dev, state);
@@ -403,6 +500,9 @@ static const struct of_device_id exynos_mipi_video_phy_of_match[] = {
 	}, {
 		.compatible = "samsung,exynos7870-mipi-video-phy",
 		.data = &exynos7870_mipi_phy,
+	}, {
+		.compatible = "samsung,exynos8895-mipi-video-phy",
+		.data = &exynos8895_mipi_phy,
 	},
 	{ /* sentinel */ },
 };
