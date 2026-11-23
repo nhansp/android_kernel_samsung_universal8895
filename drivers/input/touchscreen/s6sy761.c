@@ -112,6 +112,23 @@
 #define S6SY661_TT_PALM			5
 #define S6SY661_TT_WET			6
 
+/* the "sponge" firmware library: pressure home key */
+#define S6SY661_SPONGE_GET_INFO		0x90
+#define S6SY661_SPONGE_WRITE_PARAM	0x91
+#define S6SY661_SPONGE_NOTIFY_PACKET	0x93
+#define S6SY661_SPONGE_INFO_SIZE	10
+#define S6SY661_SPONGE_MODEL_LEN	4
+
+/* sponge mode byte */
+#define S6SY661_MODE_FORCE_KEY		BIT(6)
+
+/* status event: type in byte 0 [5:2], id in byte 1, data in byte 2 */
+#define S6SY661_MASK_STYPE		0x3c
+#define S6SY661_STATUS_SPONGE_INFO	6
+#define S6SY661_SPONGE_FORCE_KEY	0x00
+#define S6SY661_SPONGE_TOUCHED		BIT(6)
+#define S6SY661_SPONGE_RELEASED		BIT(7)
+
 #define S6SY661_CMD_STR_LEN		256
 #define S6SY661_CMD_PARAM_NUM		8
 
@@ -150,6 +167,9 @@ struct s6sy761_data {
 	struct mutex power_lock;
 	bool powered;
 	u16 touch_functions;
+	bool pressure_key;
+	u8 lowpower_mode;
+	bool home_key_down;
 	struct drm_panel_follower follower;
 	struct work_struct power_on_work;
 	struct mutex cmd_lock;		/* cmd_running, cmd_state, cmd_result */
@@ -226,6 +246,24 @@ static void s6sy761_report_release(struct s6sy761_data *sdata,
 	s6sy761_sync(sdata);
 }
 
+/*
+ * The vendor driver reports a press with the panel on as KEY_BLACK_UI_GESTURE,
+ * for its own framework; KEY_HOMEPAGE is reported here instead.
+ */
+static void s6sy661_handle_pressure(struct s6sy761_data *sdata, u8 *event)
+{
+	bool down;
+
+	if (((event[0] & S6SY661_MASK_STYPE) >> 2) != S6SY661_STATUS_SPONGE_INFO ||
+	    event[1] != S6SY661_SPONGE_FORCE_KEY)
+		return;
+
+	down = event[2] & S6SY661_SPONGE_TOUCHED;
+	sdata->home_key_down = down;
+	input_report_key(sdata->input, KEY_HOMEPAGE, down);
+	input_sync(sdata->input);
+}
+
 static void s6sy761_handle_coordinates(struct s6sy761_data *sdata, u8 *event)
 {
 	u8 tid;
@@ -259,6 +297,8 @@ static void s6sy761_handle_coordinates(struct s6sy761_data *sdata, u8 *event)
 	}
 }
 
+static int s6sy661_sponge_write(struct s6sy761_data *sdata);
+
 static void s6sy761_handle_events(struct s6sy761_data *sdata, u8 n_events)
 {
 	int i;
@@ -277,6 +317,8 @@ static void s6sy761_handle_events(struct s6sy761_data *sdata, u8 n_events)
 			break;
 
 		case S6SY761_EVENT_ID_STATUS:
+			if (sdata->pressure_key)
+				s6sy661_handle_pressure(sdata, event);
 			break;
 
 		default:
@@ -326,6 +368,18 @@ static irqreturn_t s6sy761_irq_handler(int irq, void *dev)
 static int s6sy761_input_open(struct input_dev *dev)
 {
 	struct s6sy761_data *sdata = input_get_drvdata(dev);
+	int ret;
+
+	/* the sponge mode goes before SENSE_ON, as in the vendor driver */
+	if (sdata->variant->s6sy661 && sdata->pressure_key) {
+		mutex_lock(&sdata->power_lock);
+		if (sdata->powered) {
+			ret = s6sy661_sponge_write(sdata);
+			if (ret)
+				dev_warn(&sdata->client->dev, "failed to configure the pressure key\n");
+		}
+		mutex_unlock(&sdata->power_lock);
+	}
 
 	return i2c_smbus_write_byte(sdata->client, S6SY761_SENSE_ON);
 }
@@ -403,6 +457,20 @@ static int s6sy761_power_on(struct s6sy761_data *sdata)
 	return 0;
 }
 
+/* Caller holds power_lock, or is probe. */
+static int s6sy661_sponge_write(struct s6sy761_data *sdata)
+{
+	u8 data[3] = { 0, 0, sdata->lowpower_mode };
+	int ret;
+
+	ret = i2c_smbus_write_i2c_block_data(sdata->client, S6SY661_SPONGE_WRITE_PARAM,
+					     sizeof(data), data);
+	if (ret)
+		return ret;
+
+	return i2c_smbus_write_byte(sdata->client, S6SY661_SPONGE_NOTIFY_PACKET);
+}
+
 /*
  * The vendor sequence. Only probe skips the 70 ms, when both rails were already
  * on. A ready wait that times out is not fatal: BOOT_STATUS decides.
@@ -454,6 +522,9 @@ static int s6sy661_power_on(struct s6sy761_data *sdata, bool probe)
 	if (ret)
 		goto err_avdd;
 
+	if (sdata->pressure_key && s6sy661_sponge_write(sdata))
+		dev_warn(&sdata->client->dev, "failed to configure the pressure key\n");
+
 	sdata->powered = true;
 	return 0;
 
@@ -478,6 +549,10 @@ static void s6sy661_power_off(struct s6sy761_data *sdata)
 			input_mt_slot(sdata->input, i);
 			input_mt_report_slot_inactive(sdata->input);
 		}
+		if (sdata->home_key_down) {
+			input_report_key(sdata->input, KEY_HOMEPAGE, 0);
+			sdata->home_key_down = false;
+		}
 		s6sy761_sync(sdata);
 	}
 	/* the vendor order: vdd before avdd */
@@ -495,8 +570,11 @@ static int s6sy661_start(struct s6sy761_data *sdata)
 {
 	int ret;
 
-	if (sdata->powered)
+	if (sdata->powered) {
+		if (sdata->pressure_key && s6sy661_sponge_write(sdata))
+			dev_warn(&sdata->client->dev, "failed to configure the pressure key\n");
 		return 0;
+	}
 
 	pinctrl_pm_select_default_state(&sdata->client->dev);
 	ret = s6sy661_power_on(sdata, false);
@@ -565,6 +643,30 @@ static void s6sy661_cancel_power_on_work(void *data)
 	struct s6sy761_data *sdata = data;
 
 	cancel_work_sync(&sdata->power_on_work);
+}
+
+/* The chip is powered. */
+static void s6sy661_pressure_init(struct s6sy761_data *sdata)
+{
+	struct device *dev = &sdata->client->dev;
+	u8 info[S6SY661_SPONGE_INFO_SIZE];
+	const char *model;
+	int ret;
+
+	if (device_property_read_string(dev, "samsung,sponge-model", &model))
+		return;
+
+	ret = i2c_smbus_read_i2c_block_data(sdata->client, S6SY661_SPONGE_GET_INFO,
+					    sizeof(info), info);
+	if (ret != sizeof(info) || strncmp(info, model, S6SY661_SPONGE_MODEL_LEN)) {
+		dev_info(dev, "no sponge library for %s, pressure key off\n", model);
+		return;
+	}
+
+	sdata->lowpower_mode = S6SY661_MODE_FORCE_KEY;
+	sdata->pressure_key = true;
+	if (s6sy661_sponge_write(sdata))
+		dev_warn(dev, "failed to configure the pressure key\n");
 }
 
 static int s6sy761_hw_init(struct s6sy761_data *sdata,
@@ -849,6 +951,9 @@ static int s6sy761_probe(struct i2c_client *client)
 	if (err)
 		return err;
 
+	if (sdata->variant->s6sy661)
+		s6sy661_pressure_init(sdata);
+
 	sdata->input = devm_input_allocate_device(&client->dev);
 	if (!sdata->input)
 		return -ENOMEM;
@@ -865,6 +970,9 @@ static int s6sy761_probe(struct i2c_client *client)
 	input_set_abs_params(sdata->input, ABS_MT_TOUCH_MAJOR, 0, 255, 0, 0);
 	input_set_abs_params(sdata->input, ABS_MT_TOUCH_MINOR, 0, 255, 0, 0);
 	input_set_abs_params(sdata->input, ABS_MT_PRESSURE, 0, 255, 0, 0);
+
+	if (sdata->pressure_key)
+		input_set_capability(sdata->input, EV_KEY, KEY_HOMEPAGE);
 
 	touchscreen_parse_properties(sdata->input, true, &sdata->prop);
 
