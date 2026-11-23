@@ -406,9 +406,6 @@ void shm_release_regions(void)
 	if (pdata.v_vss)
 		vunmap(pdata.v_vss);
 
-	if (pdata.v_zmb)
-		vunmap(pdata.v_zmb);
-
 #ifdef CONFIG_CP_RAM_LOGGING
 	if (pdata.v_cplog)
 		vunmap(pdata.v_cplog);
