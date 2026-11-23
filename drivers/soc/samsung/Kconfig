@@ -150,4 +150,13 @@ config EXYNOS8895_MM_QOS
 	  owns them; CPU cluster min/max requests become cpufreq freq_qos
 	  requests; INT/MIF requests become floors of the bus DVFS driver;
 	  CPU-online requests are only aggregated.
+
+config EXYNOS8895_SECMEM
+	bool "Exynos8895 s5p-smem device for the iris trustlet"
+	depends on ION_LEGACY_EXYNOS
+	help
+	  The /dev/s5p-smem node of the Samsung vendor kernels, with the
+	  one secmem ioctl the iris trustlet client uses,
+	  SECMEM_IOC_GET_FD_PHYS_ADDR: the physical address of the legacy
+	  ION buffer behind a dma-buf fd.
 endif
