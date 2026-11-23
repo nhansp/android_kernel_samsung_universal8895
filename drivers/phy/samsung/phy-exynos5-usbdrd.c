@@ -556,6 +556,7 @@ struct exynos5_usbdrd_phy_drvdata {
  * @cal_probed: Exynos8895 register layout revision probed
  * @cal_port: Exynos8895 window in use: 0, 1 or -1 (unknown)
  * @tune_armed: Exynos8895 re-tune after a dwc3 core soft reset
+ * @host_mode: Exynos8895 controller in host mode
  */
 struct exynos5_usbdrd_phy {
 	struct device *dev;
@@ -588,6 +589,7 @@ struct exynos5_usbdrd_phy {
 	bool cal_probed;
 	int cal_port;
 	bool tune_armed;
+	bool host_mode;
 };
 
 static inline
@@ -2105,6 +2107,108 @@ static void exynos8895_cal_tune_dev(struct exynos5_usbdrd_phy *d)
 		exynos8895_ss_disable_port0(d);
 }
 
+static void exynos8895_cal_tune_host(struct exynos5_usbdrd_phy *d)
+{
+	void __iomem *b0 = d->cal_base[0];
+	void __iomem *bs = exynos8895_port_base(d);
+	u32 v;
+
+	v = readl(b0 + EXYNOS5_DRD_LINKSYSTEM);
+	v &= ~LINKSYSTEM_FLADJ;
+	v |= FIELD_PREP(LINKSYSTEM_FLADJ, 0x20) | LINKSYSTEM_XHCI_VERSION_CONTROL;
+	writel(v, b0 + EXYNOS5_DRD_LINKSYSTEM);
+
+	v = readl(b0 + EXYNOS5_DRD_PHYPARAM0);
+	v &= ~(PHYPARAM0_TXVREFTUNE | PHYPARAM0_TXRISETUNE | PHYPARAM0_TXRESTUNE |
+	       PHYPARAM0_TXPREEMPPULSETUNE | PHYPARAM0_TXPREEMPAMPTUNE | PHYPARAM0_TXHSXVTUNE |
+	       PHYPARAM0_TXFSLSTUNE | PHYPARAM0_SQRXTUNE | PHYPARAM0_OTGTUNE |
+	       PHYPARAM0_COMPDISTUNE);
+	v |= FIELD_PREP(PHYPARAM0_TXVREFTUNE, EXYNOS8895_HS_TXVREF_HOST) |
+	     FIELD_PREP(PHYPARAM0_TXRISETUNE, EXYNOS8895_HS_TXRISE) |
+	     FIELD_PREP(PHYPARAM0_TXRESTUNE, EXYNOS8895_HS_TXRES) |
+	     FIELD_PREP(PHYPARAM0_TXPREEMPAMPTUNE, EXYNOS8895_HS_TXPREEMPAMP_HOST) |
+	     FIELD_PREP(PHYPARAM0_TXHSXVTUNE, EXYNOS8895_HS_TXHSXV) |
+	     FIELD_PREP(PHYPARAM0_TXFSLSTUNE, EXYNOS8895_HS_TXFSLS) |
+	     FIELD_PREP(PHYPARAM0_SQRXTUNE, EXYNOS8895_HS_SQRX_HOST) |
+	     FIELD_PREP(PHYPARAM0_OTGTUNE, EXYNOS8895_HS_OTG) |
+	     FIELD_PREP(PHYPARAM0_COMPDISTUNE, EXYNOS8895_HS_COMPDIS_HOST);
+	writel(v, b0 + EXYNOS5_DRD_PHYPARAM0);
+
+	v = readl(bs + EXYNOS7870_DRD_PHYPARAM2);
+	v &= ~(PHYPARAM2_TX_VBOOST_LVL | PHYPARAM2_LOS_BIAS);
+	v |= FIELD_PREP(PHYPARAM2_TX_VBOOST_LVL, EXYNOS8895_SS_TX_VBOOST_HOST) |
+	     FIELD_PREP(PHYPARAM2_LOS_BIAS, EXYNOS8895_SS_LOS_BIAS);
+	writel(v, bs + EXYNOS7870_DRD_PHYPARAM2);
+	v = readl(bs + EXYNOS7870_DRD_PHYPCSVAL);
+	v &= ~PHYPCSVAL_PCS_RX_LOS_MASK;
+	v |= FIELD_PREP(PHYPCSVAL_PCS_RX_LOS_MASK, EXYNOS8895_SS_LOS_MASK);
+	writel(v, bs + EXYNOS7870_DRD_PHYPCSVAL);
+
+	exynos8895_cr_write(d, EXYNOS5_DRD_PHYSS_LANE0_TX_DEBUG,
+			    LANE0_TX_DEBUG_RXDET_MEAS_TIME_25M_26M);
+	exynos8895_cr_write(d, EXYNOS8895_CR_TX_OVRD_DRV_LO,
+			    TX_OVRD_DRV_LO_EN |
+			    FIELD_PREP(TX_OVRD_DRV_LO_PREEMPH, EXYNOS8895_SS_DEEMPH_3P5DB) |
+			    FIELD_PREP(TX_OVRD_DRV_LO_AMPLITUDE, EXYNOS8895_SS_SWING_FULL));
+	exynos8895_cr_write(d, EXYNOS5_DRD_PHYSS_LOSLEVEL_OVRD_IN,
+			    LOSLEVEL_OVRD_IN_LOS_BIAS_5420 | LOSLEVEL_OVRD_IN_EN |
+			    LOSLEVEL_OVRD_IN_LOS_LEVEL_DEFAULT);
+	exynos8895_cr_write(d, EXYNOS5_DRD_PHYSS_TX_VBOOSTLEVEL_OVRD_IN,
+			    EXYNOS8895_SS_TX_VBOOST_HOST << 13);
+	if (d->cal_port == 1)
+		exynos8895_ss_disable_port0(d);
+}
+
+static void exynos8895_cal_host_mode(struct exynos5_usbdrd_phy *d)
+{
+	void __iomem *b0 = d->cal_base[0];
+	u32 v;
+
+	v = readl(b0 + EXYNOS5_DRD_PHYUTMI);
+	v |= PHYUTMI_DMPULLDOWN | PHYUTMI_DPPULLDOWN;
+	v &= ~(PHYUTMI_VBUSVLDEXTSEL | PHYUTMI_VBUSVLDEXT);
+	writel(v, b0 + EXYNOS5_DRD_PHYUTMI);
+}
+
+/* restore what the register init left for device mode; the tune is not redone */
+static void exynos8895_cal_device_mode(struct exynos5_usbdrd_phy *d)
+{
+	void __iomem *b0 = d->cal_base[0];
+	u32 v;
+
+	v = readl(b0 + EXYNOS5_DRD_PHYUTMI);
+	v &= ~(PHYUTMI_DMPULLDOWN | PHYUTMI_DPPULLDOWN);
+	v |= PHYUTMI_VBUSVLDEXTSEL | PHYUTMI_VBUSVLDEXT;
+	writel(v, b0 + EXYNOS5_DRD_PHYUTMI);
+}
+
+/*
+ * dwc3 sets host mode once xHCI is up, where the vendor driver re-tuned the
+ * PHY for host mode, and device mode after its core soft reset.
+ */
+static int exynos8895_usbdrd_phy_set_mode(struct phy *phy, enum phy_mode mode, int submode)
+{
+	struct phy_usb_instance *inst = phy_get_drvdata(phy);
+	struct exynos5_usbdrd_phy *d = to_usbdrd_phy(inst);
+
+	if (inst->phy_cfg->id != EXYNOS5_DRDPHY_PIPE3)
+		return 0;
+	if (mode != PHY_MODE_USB_HOST && mode != PHY_MODE_USB_DEVICE)
+		return 0;
+
+	if (mode == PHY_MODE_USB_HOST) {
+		WRITE_ONCE(d->host_mode, true);
+		exynos8895_cal_tune_host(d);
+		exynos8895_cal_host_mode(d);
+	} else {
+		WRITE_ONCE(d->host_mode, false);
+		exynos8895_cal_device_mode(d);
+	}
+	dev_dbg(d->dev, "%s mode\n", mode == PHY_MODE_USB_HOST ? "host" : "device");
+
+	return 0;
+}
+
 static void exynos8895_cal_disable(struct exynos5_usbdrd_phy *d)
 {
 	void __iomem *b0 = d->cal_base[0];
@@ -2210,6 +2314,7 @@ static const struct phy_ops exynos8895_usbdrd_phy_ops = {
 	.init		= exynos8895_usbdrd_phy_init,
 	.exit		= exynos8895_usbdrd_phy_exit,
 	.power_on	= exynos8895_usbdrd_phy_power_on,
+	.set_mode	= exynos8895_usbdrd_phy_set_mode,
 	.owner		= THIS_MODULE,
 };
 
