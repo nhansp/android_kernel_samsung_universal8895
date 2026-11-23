@@ -85,7 +85,7 @@ static void mailbox_handle_irq(struct irq_desc *desc)
 
 	while (stat) {
 		unsigned long hwirq = __fls(stat);
-		generic_handle_irq(irq_find_mapping(irq_domain, gc->irq_base + hwirq));
+		generic_handle_domain_irq(irq_domain, hwirq);
 		stat &= ~(1 << hwirq);
 	}
 
@@ -104,11 +104,11 @@ static int mailbox_resume(struct device *dev)
 
 static const struct of_device_id samsung_mailbox_of_match[] = {
 	{
-		.compatible = "samsung,mailbox-asoc",
+		.compatible = "samsung,exynos8895-vts-mailbox",
 	},
 	{},
 };
-MODULE_DEVICE_TABLE(of, exynos_mailbox_of_match);
+MODULE_DEVICE_TABLE(of, samsung_mailbox_of_match);
 
 SIMPLE_DEV_PM_OPS(samsung_mailbox_pm, mailbox_suspend, mailbox_resume);
 
@@ -134,33 +134,6 @@ static void mailbox_irq_disable(struct irq_data *data)
 	return;
 }
 
-static void __iomem *devm_request_and_ioremap(struct platform_device *pdev, const char *name)
-{
-	struct device *dev = &pdev->dev;
-	struct resource *res;
-	void __iomem *result;
-
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, name);
-	if (IS_ERR_OR_NULL(res)) {
-		dev_err(dev, "Failed to get %s\n", name);
-		return ERR_PTR(-EINVAL);
-	}
-
-	res = devm_request_mem_region(dev, res->start, resource_size(res), name);
-	if (IS_ERR_OR_NULL(res)) {
-		dev_err(dev, "Failed to request %s\n", name);
-		return ERR_PTR(-EFAULT);
-	}
-
-	result = devm_ioremap(dev, res->start, resource_size(res));
-	if (IS_ERR_OR_NULL(result)) {
-		dev_err(dev, "Failed to map %s\n", name);
-		return ERR_PTR(-EFAULT);
-	}
-
-	return result;
-}
-
 static int samsung_mailbox_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -170,34 +143,33 @@ static int samsung_mailbox_probe(struct platform_device *pdev)
 	int result;
 
 	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
-	if (IS_ERR_OR_NULL(data)) {
+	if (!data) {
 		dev_err(dev, "Failed to allocate memory\n");
 		return -ENOMEM;
 	}
 	platform_set_drvdata(pdev, data);
 
-	data->sfr_base = devm_request_and_ioremap(pdev, "sfr");
-	if (IS_ERR(data->sfr_base)) {
+	data->sfr_base = devm_platform_ioremap_resource_byname(pdev, "sfr");
+	if (IS_ERR(data->sfr_base))
 		return PTR_ERR(data->sfr_base);
-	}
 
 	result = platform_get_irq(pdev, 0);
-	if (IS_ERR_VALUE(result)) {
+	if (result < 0) {
 		dev_err(dev, "Failed to get irq resource\n");
 		return result;
 	}
 	data->irq = result;
 
-	data->irq_domain = irq_domain_add_linear(np, MAILBOX_INT1_SIZE,
-			&irq_generic_chip_ops, NULL);
-	if (IS_ERR_OR_NULL(data->irq_domain)) {
+	data->irq_domain = irq_domain_create_linear(of_fwnode_handle(np),
+			MAILBOX_INT1_SIZE, &irq_generic_chip_ops, NULL);
+	if (!data->irq_domain) {
 		dev_err(dev, "Failed to add irq domain\n");
 		return -ENOMEM;
 	}
 
 	result = irq_alloc_domain_generic_chips(data->irq_domain, MAILBOX_INT1_SIZE,
 			1, "mailbox_irq_chip", handle_level_irq, 0, 0, IRQ_GC_INIT_MASK_CACHE);
-	if (IS_ERR_VALUE(result)) {
+	if (result < 0) {
 		dev_err(dev, "Failed to allocation generic irq chips\n");
 		return result;
 	}
@@ -222,7 +194,7 @@ static int samsung_mailbox_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int samsung_mailbox_remove(struct platform_device *pdev)
+static void samsung_mailbox_remove(struct platform_device *pdev)
 {
 	struct mailbox_data *mailbox_data = platform_get_drvdata(pdev);
 
@@ -231,8 +203,6 @@ static int samsung_mailbox_remove(struct platform_device *pdev)
 	irq_remove_generic_chip(irq_get_domain_generic_chip(mailbox_data->irq_domain, 0),
 			IRQ_MSK(MAILBOX_INT1_SIZE), 0, 0);
 	irq_domain_remove(mailbox_data->irq_domain);
-
-	return 0;
 }
 
 static struct platform_driver samsung_mailbox_driver = {
