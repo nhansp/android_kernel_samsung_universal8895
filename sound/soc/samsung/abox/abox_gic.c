@@ -1,45 +1,29 @@
-/* sound/soc/samsung/abox/abox_gic.c
- *
- * ALSA SoC - Samsung ABOX driver
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * sound/soc/samsung/abox/abox_gic.c - Samsung ABOX GIC driver
  *
  * Copyright (c) 2016 Samsung Electronics Co. Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 /* #define DEBUG */
-#include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
-#include <linux/pm_runtime.h>
-#include <linux/smc.h>
 #include <linux/irqchip/arm-gic.h>
-#include <linux/delay.h>
+#include <soc/samsung/exynos8895-smc.h>
 
 #include "abox_util.h"
 #include "abox_gic.h"
 
-#define GIC_IS_SECURE_FREE
-
 void abox_gic_generate_interrupt(struct platform_device *pdev, int hw_irq)
 {
-#ifdef GIC_IS_SECURE_FREE
 	struct abox_gic_data *data = platform_get_drvdata(pdev);
-#endif
+
 	dev_dbg(&pdev->dev, "%s(%d)\n", __func__, hw_irq);
-#ifdef GIC_IS_SECURE_FREE
+	/* the vendor kernel was built with GIC_IS_SECURE_FREE */
 	writel((0x1 << 16) | (hw_irq & 0xF),
 			data->gicd_base + GIC_DIST_SOFTINT);
-#else
-	dev_dbg(&pdev->dev, "exynos_smc() is called\n");
-	exynos_smc(SMC_CMD_REG,
-			SMC_REG_ID_SFR_W(0x13EF1000 + GIC_DIST_SOFTINT),
-			(0x1 << 16) | (hw_irq & 0xF), 0);
-#endif
 }
 EXPORT_SYMBOL(abox_gic_generate_interrupt);
 
@@ -104,26 +88,26 @@ void abox_gic_init_gic(struct platform_device *pdev)
 {
 	struct abox_gic_data *data = platform_get_drvdata(pdev);
 	unsigned long arg;
-	int i, result;
+	int i;
 
 	dev_info(&pdev->dev, "%s\n", __func__);
 
 	arg = SMC_REG_ID_SFR_W(data->gicc_base_phys + GIC_CPU_PRIMASK);
-	result = exynos_smc(SMC_CMD_REG, arg, 0x000000FF, 0);
+	exynos8895_smc(SMC_CMD_REG, arg, 0x000000FF, 0);
 
 	arg = SMC_REG_ID_SFR_W(data->gicd_base_phys + GIC_DIST_CTRL);
-	result = exynos_smc(SMC_CMD_REG, arg, 0x3, 0);
+	exynos8895_smc(SMC_CMD_REG, arg, 0x3, 0);
 	if (is_secure_gic()) {
 		for (i = 0; i < 1; i++) {
 			arg = SMC_REG_ID_SFR_W(data->gicd_base_phys +
 					GIC_DIST_IGROUP + (i * 4));
-			result = exynos_smc(SMC_CMD_REG, arg, 0xFFFFFFFF, 0);
+			exynos8895_smc(SMC_CMD_REG, arg, 0xFFFFFFFF, 0);
 		}
 	}
 	for (i = 0; i < 40; i++) {
 		arg = SMC_REG_ID_SFR_W(data->gicd_base_phys +
 				GIC_DIST_PRI + (i * 4));
-		result = exynos_smc(SMC_CMD_REG, arg, 0x10101010, 0);
+		exynos8895_smc(SMC_CMD_REG, arg, 0x10101010, 0);
 	}
 
 	writel(0x3, data->gicc_base + GIC_CPU_CTRL);
@@ -161,6 +145,7 @@ static int samsung_abox_gic_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct abox_gic_data *data;
+	struct resource *res;
 	int result;
 
 	dev_info(dev, "%s\n", __func__);
@@ -170,47 +155,47 @@ static int samsung_abox_gic_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, data);
 
-	data->gicd_base = devm_request_and_map_byname(pdev, "gicd",
-			&data->gicd_base_phys, NULL);
+	data->gicd_base = devm_platform_ioremap_resource_byname(pdev, "gicd");
 	if (IS_ERR(data->gicd_base))
 		return PTR_ERR(data->gicd_base);
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "gicd");
+	data->gicd_base_phys = res->start;	/* SMC argument */
 
-	data->gicc_base = devm_request_and_map_byname(pdev, "gicc",
-			&data->gicc_base_phys, NULL);
+	data->gicc_base = devm_platform_ioremap_resource_byname(pdev, "gicc");
 	if (IS_ERR(data->gicc_base))
 		return PTR_ERR(data->gicc_base);
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "gicc");
+	data->gicc_base_phys = res->start;	/* SMC argument */
 
 	data->irq = platform_get_irq(pdev, 0);
-	if (IS_ERR_VALUE(data->irq)) {
-		dev_err(dev, "Failed to get irq\n");
+	if (data->irq < 0)
 		return data->irq;
-	}
 
+	/*
+	 * The trigger type comes from DT. The GIC CPU interface is in the ABOX
+	 * power domain, so the line stays off until abox_enable() enables it.
+	 */
+	data->disabled = true;
 	result = devm_request_irq(dev, data->irq, abox_gic_irq_handler,
-		IRQF_TRIGGER_RISING, pdev->name, pdev);
-	if (IS_ERR_VALUE(result)) {
+		IRQF_NO_AUTOEN, pdev->name, pdev);
+	if (result < 0) {
 		dev_err(dev, "Failed to request irq\n");
 		return result;
 	}
 
-#ifndef CONFIG_PM
-	abox_gic_resume(dev);
-#endif
 	dev_info(dev, "%s: probe complete\n", __func__);
 
 	return 0;
 }
 
-static int samsung_abox_gic_remove(struct platform_device *pdev)
+static void samsung_abox_gic_remove(struct platform_device *pdev)
 {
 	dev_info(&pdev->dev, "%s\n", __func__);
-
-	return 0;
 }
 
 static const struct of_device_id samsung_abox_gic_of_match[] = {
 	{
-		.compatible = "samsung,abox_gic",
+		.compatible = "samsung,exynos8895-abox-gic",
 	},
 	{},
 };
@@ -221,8 +206,7 @@ static struct platform_driver samsung_abox_gic_driver = {
 	.remove = samsung_abox_gic_remove,
 	.driver = {
 		.name = "samsung-abox-gic",
-		.owner = THIS_MODULE,
-		.of_match_table = of_match_ptr(samsung_abox_gic_of_match),
+		.of_match_table = samsung_abox_gic_of_match,
 	},
 };
 

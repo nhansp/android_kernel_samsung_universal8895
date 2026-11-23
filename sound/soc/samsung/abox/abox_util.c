@@ -1,148 +1,45 @@
-#include <linux/platform_device.h>
-#include <linux/clk.h>
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * sound/soc/samsung/abox/abox_util.c - Samsung ABOX utility
+ *
+ * Copyright (c) 2016 Samsung Electronics Co. Ltd.
+ */
+
+#include <linux/errno.h>
 #include <linux/io.h>
+#include <linux/printk.h>
 
 #include "abox_util.h"
 
-void __iomem *devm_not_request_and_map(struct platform_device *pdev,
-		const char *name, unsigned int num,
-		phys_addr_t *phys_addr, size_t *size)
+#define ABOX_CHIPID_BASE	0x10000000
+#define ABOX_CHIPID_SIZE	0x14
+#define ABOX_CHIPID_WORD_0	0x0
+#define ABOX_CHIPID_WORD_10	0x10
+#define ABOX_CHIPID_8895	0xE8895000
+
+static bool abox_secure_gic;
+
+int abox_probe_secure_gic(void)
 {
-	struct resource *res;
-	void __iomem *result;
+	void __iomem *base;
+	u32 w0, w10;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, num);
-	if (IS_ERR_OR_NULL(res)) {
-		dev_err(&pdev->dev, "Failed to get %s\n", name);
-		return ERR_PTR(-EINVAL);
-	}
-	if (phys_addr)
-		*phys_addr = res->start;
-	if (size)
-		*size = resource_size(res);
+	/* The chipid driver holds the region request, so map it plainly */
+	base = ioremap(ABOX_CHIPID_BASE, ABOX_CHIPID_SIZE);
+	if (!base)
+		return -ENOMEM;
 
-	result = devm_ioremap(&pdev->dev, res->start, resource_size(res));
-	if (IS_ERR_OR_NULL(result)) {
-		dev_err(&pdev->dev, "Failed to map %s\n", name);
-		return ERR_PTR(-EFAULT);
-	}
+	w0 = readl(base + ABOX_CHIPID_WORD_0);
+	w10 = readl(base + ABOX_CHIPID_WORD_10);
+	iounmap(base);
 
-	return result;
-}
+	pr_debug("%s: %08x, %08x\n", __func__, w0, w10);
+	abox_secure_gic = (w0 == ABOX_CHIPID_8895) && (w10 == 0x0);
 
-void __iomem *devm_request_and_map(struct platform_device *pdev,
-		const char *name, unsigned int num,
-		phys_addr_t *phys_addr, size_t *size)
-{
-	struct resource *res;
-	void __iomem *result;
-
-	res = platform_get_resource(pdev, IORESOURCE_MEM, num);
-	if (IS_ERR_OR_NULL(res)) {
-		dev_err(&pdev->dev, "Failed to get %s\n", name);
-		return ERR_PTR(-EINVAL);
-	}
-	if (phys_addr)
-		*phys_addr = res->start;
-	if (size)
-		*size = resource_size(res);
-
-	res = devm_request_mem_region(&pdev->dev, res->start,
-			resource_size(res), name);
-	if (IS_ERR_OR_NULL(res)) {
-		dev_err(&pdev->dev, "Failed to request %s\n", name);
-		return ERR_PTR(-EFAULT);
-	}
-
-	result = devm_ioremap(&pdev->dev, res->start, resource_size(res));
-	if (IS_ERR_OR_NULL(result)) {
-		dev_err(&pdev->dev, "Failed to map %s\n", name);
-		return ERR_PTR(-EFAULT);
-	}
-
-	return result;
-}
-
-void __iomem *devm_request_and_map_byname(struct platform_device *pdev,
-		const char *name, phys_addr_t *phys_addr, size_t *size)
-{
-	struct resource *res;
-	void __iomem *result;
-
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, name);
-	if (IS_ERR_OR_NULL(res)) {
-		dev_err(&pdev->dev, "Failed to get %s\n", name);
-		return ERR_PTR(-EINVAL);
-	}
-	if (phys_addr)
-		*phys_addr = res->start;
-	if (size)
-		*size = resource_size(res);
-
-	res = devm_request_mem_region(&pdev->dev, res->start,
-			resource_size(res), name);
-	if (IS_ERR_OR_NULL(res)) {
-		dev_err(&pdev->dev, "Failed to request %s\n", name);
-		return ERR_PTR(-EFAULT);
-	}
-
-	result = devm_ioremap(&pdev->dev, res->start, resource_size(res));
-	if (IS_ERR_OR_NULL(result)) {
-		dev_err(&pdev->dev, "Failed to map %s\n", name);
-		return ERR_PTR(-EFAULT);
-	}
-
-	return result;
-}
-
-struct clk *devm_clk_get_and_prepare(struct platform_device *pdev,
-		const char *name)
-{
-	struct device *dev = &pdev->dev;
-	struct clk *clk;
-	int result;
-
-	clk = devm_clk_get(dev, name);
-	if (IS_ERR(clk)) {
-		dev_err(dev, "Failed to get clock %s\n", name);
-		goto error;
-	}
-
-	result = clk_prepare(clk);
-	if (IS_ERR_VALUE(result)) {
-		dev_err(dev, "Failed to prepare clock %s\n", name);
-		goto error;
-	}
-
-error:
-	return clk;
-}
-
-u32 readl_phys(phys_addr_t addr)
-{
-	u32 result;
-	void __iomem *virt = ioremap(addr, 0x4);
-
-	result = readl(virt);
-	pr_debug("%pa = %08x\n", &addr, result);
-	iounmap(virt);
-
-	return result;
-}
-
-void writel_phys(unsigned int val, phys_addr_t addr)
-{
-	void __iomem *virt = ioremap(addr, 0x4);
-
-	writel(val, virt);
-	pr_debug("%pa <= %08x\n", &addr, val);
-	iounmap(virt);
+	return 0;
 }
 
 bool is_secure_gic(void)
 {
-	pr_debug("%s: %08x, %08x\n", __func__,
-			readl_phys(0x10000000), readl_phys(0x10000010));
-	return (readl_phys(0x10000000) == 0xE8895000) &&
-			(readl_phys(0x10000010) == 0x0);
+	return abox_secure_gic;
 }
