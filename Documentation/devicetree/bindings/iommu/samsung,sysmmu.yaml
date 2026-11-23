@@ -78,6 +78,25 @@ properties:
       Do not suspend this System MMU during system sleep; its master may
       stay active.
 
+  samsung,qos:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    maximum: 15
+    description:
+      System MMU v7 only. Bus QoS value that replaces the QoS of the
+      requests of the master.
+
+  samsung,tlb-property:
+    $ref: /schemas/types.yaml#/definitions/uint32-matrix
+    items:
+      items:
+        - description: way type, burst length, target and prefetch
+        - description: AXI ID and ID mask of a private ID-matching way
+    description:
+      System MMU v7 only. TLB way configuration, one entry per private way
+      (ID-matching ways take the first way indexes, then address-matching
+      ways) and at most one entry for the public ways. The values are
+      defined in include/dt-bindings/iommu/exynos-sysmmu.h.
+
 required:
   - compatible
   - reg
