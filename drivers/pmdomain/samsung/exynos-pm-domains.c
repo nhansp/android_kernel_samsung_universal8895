@@ -33,6 +33,29 @@ struct exynos_pm_domain {
 	u32 local_pwr_cfg;
 };
 
+/*
+ * A timed-out power-off leaves the request pending in the PMU while genpd keeps
+ * the domain on; a later system power-down then stalls on it. Request the
+ * domain on again so that the hardware matches genpd.
+ */
+static void exynos_pd_off_rollback(struct generic_pm_domain *domain,
+				   void __iomem *base, u32 cfg)
+{
+	unsigned int t;
+
+	writel_relaxed(cfg, base);
+	for (t = 0; (readl_relaxed(base + 0x4) & cfg) != cfg; t++) {
+		if (t >= 10) {
+			pr_err("Power domain %s stuck: CONFIGURATION 0x%x STATUS 0x%x\n",
+			       domain->name, readl_relaxed(base) & cfg,
+			       readl_relaxed(base + 0x4) & cfg);
+			return;
+		}
+		usleep_range(80, 100);
+	}
+	pr_err("Power domain %s left on\n", domain->name);
+}
+
 static int exynos_pd_power(struct generic_pm_domain *domain, bool power_on)
 {
 	struct exynos_pm_domain *pd;
@@ -52,7 +75,10 @@ static int exynos_pd_power(struct generic_pm_domain *domain, bool power_on)
 	while ((readl_relaxed(base + 0x4) & pd->local_pwr_cfg) != pwr) {
 		if (!timeout) {
 			op = (power_on) ? "enable" : "disable";
-			pr_err("Power domain %s %s failed\n", domain->name, op);
+			pr_err("Power domain %s %s failed (STATUS 0x%x)\n", domain->name, op,
+			       readl_relaxed(base + 0x4) & pd->local_pwr_cfg);
+			if (!power_on)
+				exynos_pd_off_rollback(domain, base, pd->local_pwr_cfg);
 			return -ETIMEDOUT;
 		}
 		timeout--;
