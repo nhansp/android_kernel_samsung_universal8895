@@ -187,6 +187,13 @@ struct thermal_zone_params {
 	s32 integral_cutoff;
 
 	/*
+	 * Upper limit of the integral term in mW. 0: no limit other than
+	 * the maximum allocatable power. When set, the integral term is
+	 * also kept above -sustainable_power.
+	 */
+	s32 integral_max;
+
+	/*
 	 * @slope:	slope of a linear temperature adjustment curve.
 	 * 		Used by thermal zone drivers.
 	 */
