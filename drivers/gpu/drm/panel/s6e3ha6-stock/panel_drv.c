@@ -893,7 +893,7 @@ static int panel_set_dsu(struct panel_device *panel, struct dsu_info *dsu)
 	panel_info("dsu_mode : xres : %d, yres : %d\n", xres, yres);
 
 	actual_mode = dsu->mode - DSU_MODE_1;
-	if (actual_mode >= dt_dsu_info->dsu_number) {
+	if (actual_mode < 0 || actual_mode >= dt_dsu_info->dsu_number) {
 		panel_err("PANEL:ERR:%s:Wrong actual mode : %d , number : %d\n",
 			__func__, actual_mode, dt_dsu_info->dsu_number);
 		actual_mode = 0;
@@ -1095,7 +1095,12 @@ int panel_drv_init(struct panel_device *panel, struct device *dev,
 
 	/* ddi_info of the vendor device tree */
 	lcd_info->ldi_name = "s6e3ha6";
+	lcd_info->xres = 1440;
+	lcd_info->yres = 2960;
 	lcd_info->dsc_enabled = 1;
+	lcd_info->dsc_cnt = 2;
+	lcd_info->dsc_slice_num = 2;
+	lcd_info->dsc_slice_h = 40;
 
 	for (i = 0; i < ARRAY_SIZE(panel_great_names); i++)
 		lut_info->names[i] = panel_great_names[i];
