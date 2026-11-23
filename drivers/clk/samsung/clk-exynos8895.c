@@ -26,6 +26,7 @@
 #define CLKS_NR_PERIC1	(CLK_GOUT_PERIC1_XIU_P_PERIC1_ACLK + 1)
 #define CLKS_NR_PERIS	(CLK_GOUT_PERIS_XIU_P_PERIS_ACLK + 1)
 #define CLKS_NR_APM	(CLK_GOUT_APM_WDT_APM_PCLK + 1)
+#define CLKS_NR_CPUCL0	(CLK_GOUT_CPUCL0_SYSREG_CPUCL0_PCLK + 1)
 
 /*
  * The gates of the always-on CMUs stay under hardware auto-gating, as the
@@ -2689,6 +2690,139 @@ static const struct samsung_cmu_info apm_cmu_info __initconst = {
 	.clk_name		= "bus",
 };
 
+/* ---- CMU_CPUCL0 ---------------------------------------------------------- */
+
+/* Register Offset definitions for CMU_CPUCL0 (0x16800000) */
+#define PLL_LOCKTIME_PLL_CPUCL0							0x0000
+#define PLL_CON0_MUX_CLKCMU_CPUCL0_SWITCH_USER					0x0100
+#define PLL_CON0_PLL_CPUCL0							0x0120
+#define CLK_CON_MUX_MUX_CLK_CPUCL0_PLL						0x1000
+#define CLK_CON_DIV_DIV_CLK_CLUSTER0_ACLK					0x1800
+#define CLK_CON_DIV_DIV_CLK_CLUSTER0_ATCLK					0x1804
+#define CLK_CON_DIV_DIV_CLK_CPUCL0_CMUREF					0x1808
+#define CLK_CON_DIV_DIV_CLK_CPUCL0_CPU						0x180c
+#define CLK_CON_DIV_DIV_CLK_CPUCL0_PCLK						0x1810
+#define CLK_CON_DIV_DIV_CLK_CPUCL0_PCLKDBG					0x1814
+#define CLK_CON_GAT_CLK_BLK_CPUCL0_UID_CPUCL0_CMU_CPUCL0_IPCLKPORT_PCLK		0x2000
+#define CLK_CON_GAT_CLK_BLK_CPUCL0_UID_DROOP_DETECTOR_CPUCL0_GRP0_IPCLKPORT_CK_IN	0x2004
+#define CLK_CON_GAT_CLK_BLK_CPUCL0_UID_DROOP_DETECTOR_CPUCL0_GRP1_IPCLKPORT_CK_IN	0x2008
+#define CLK_CON_GAT_CLK_BLK_CPUCL0_UID_HPM_CPUCL0_IPCLKPORT_HPM_TARGETCLK_C	0x200c
+#define CLK_CON_GAT_GATE_CLK_CPUCL0_CPU						0x2020
+#define CLK_CON_GAT_GOUT_BLK_CPUCL0_UID_AXI2APB_CPUCL0_IPCLKPORT_ACLK		0x2024
+#define CLK_CON_GAT_GOUT_BLK_CPUCL0_UID_BUSIF_DROOPDETECTOR_CPUCL0_IPCLKPORT_PCLK	0x2028
+#define CLK_CON_GAT_GOUT_BLK_CPUCL0_UID_BUSIF_HPMCPUCL0_IPCLKPORT_PCLK		0x202c
+#define CLK_CON_GAT_GOUT_BLK_CPUCL0_UID_LHM_AXI_P_CPUCL0_IPCLKPORT_I_CLK	0x2034
+#define CLK_CON_GAT_GOUT_BLK_CPUCL0_UID_PMU_CPUCL0_IPCLKPORT_PCLK		0x2038
+#define CLK_CON_GAT_GOUT_BLK_CPUCL0_UID_RSTNSYNC_CLK_CPUCL0_PCLK_IPCLKPORT_CLK	0x203c
+#define CLK_CON_GAT_GOUT_BLK_CPUCL0_UID_SYSREG_CPUCL0_IPCLKPORT_PCLK		0x2040
+
+/* List of parent clocks for Muxes in CMU_CPUCL0 */
+/* PLL_CON0 bit 4 selects between OSCCLK and the PLL output */
+PNAME(mout_pll_cpucl0_p)		= { "oscclk", "fout_cpucl0_pll" };
+PNAME(mout_cpucl0_switch_user_p)	= { "oscclk", "dout_cmu_cpucl0_switch" };
+PNAME(mout_cpucl0_pll_p)		= { "mout_pll_cpucl0", "mout_cpucl0_switch_user" };
+
+static const struct samsung_pll_clock cpucl0_pll_clks[] __initconst = {
+	PLL(pll_1051x, CLK_FOUT_CPUCL0_PLL, "fout_cpucl0_pll", "oscclk",
+	    PLL_LOCKTIME_PLL_CPUCL0, PLL_CON0_PLL_CPUCL0, NULL),
+};
+
+static const struct samsung_mux_clock cpucl0_mux_clks[] __initconst = {
+	MUX_F(CLK_MOUT_PLL_CPUCL0, "mout_pll_cpucl0", mout_pll_cpucl0_p,
+	      PLL_CON0_PLL_CPUCL0, 4, 1, CLK_GET_RATE_NOCACHE,
+	      CLK_MUX_READ_ONLY),
+	MUX_F(CLK_MOUT_CPUCL0_SWITCH_USER, "mout_cpucl0_switch_user",
+	      mout_cpucl0_switch_user_p, PLL_CON0_MUX_CLKCMU_CPUCL0_SWITCH_USER,
+	      4, 1, CLK_GET_RATE_NOCACHE, CLK_MUX_READ_ONLY),
+	MUX_F(CLK_MOUT_CPUCL0_PLL, "mout_cpucl0_pll", mout_cpucl0_pll_p,
+	      CLK_CON_MUX_MUX_CLK_CPUCL0_PLL, 0, 1, CLK_GET_RATE_NOCACHE,
+	      CLK_MUX_READ_ONLY),
+};
+
+static const struct samsung_div_clock cpucl0_div_clks[] __initconst = {
+	DIV_F(CLK_DOUT_CPUCL0_CLUSTER0_ACLK, "dout_cpucl0_cluster0_aclk",
+	      "gout_cpucl0_cpu", CLK_CON_DIV_DIV_CLK_CLUSTER0_ACLK, 0, 4,
+	      CLK_GET_RATE_NOCACHE, CLK_DIVIDER_READ_ONLY),
+	DIV_F(CLK_DOUT_CPUCL0_CLUSTER0_ATCLK, "dout_cpucl0_cluster0_atclk",
+	      "gout_cpucl0_cpu", CLK_CON_DIV_DIV_CLK_CLUSTER0_ATCLK, 0, 4,
+	      CLK_GET_RATE_NOCACHE, CLK_DIVIDER_READ_ONLY),
+	DIV_F(CLK_DOUT_CPUCL0_CMUREF, "dout_cpucl0_cmuref", "dout_cpucl0_cpu",
+	      CLK_CON_DIV_DIV_CLK_CPUCL0_CMUREF, 0, 3, CLK_GET_RATE_NOCACHE,
+	      CLK_DIVIDER_READ_ONLY),
+	DIV_F(CLK_DOUT_CPUCL0_CPU, "dout_cpucl0_cpu", "mout_cpucl0_pll",
+	      CLK_CON_DIV_DIV_CLK_CPUCL0_CPU, 0, 12, CLK_GET_RATE_NOCACHE,
+	      CLK_DIVIDER_READ_ONLY),
+	DIV_F(CLK_DOUT_CPUCL0_PCLK, "dout_cpucl0_pclk", "dout_cpucl0_cpu",
+	      CLK_CON_DIV_DIV_CLK_CPUCL0_PCLK, 0, 4, CLK_GET_RATE_NOCACHE,
+	      CLK_DIVIDER_READ_ONLY),
+	DIV_F(CLK_DOUT_CPUCL0_PCLKDBG, "dout_cpucl0_pclkdbg", "gout_cpucl0_cpu",
+	      CLK_CON_DIV_DIV_CLK_CPUCL0_PCLKDBG, 0, 4, CLK_GET_RATE_NOCACHE,
+	      CLK_DIVIDER_READ_ONLY),
+};
+
+static const struct samsung_gate_clock cpucl0_gate_clks[] __initconst = {
+	GATE(CLK_GOUT_CPUCL0_CMU_CPUCL0_PCLK, "gout_cpucl0_cmu_cpucl0_pclk",
+	     "dout_cpucl0_pclk",
+	     CLK_CON_GAT_CLK_BLK_CPUCL0_UID_CPUCL0_CMU_CPUCL0_IPCLKPORT_PCLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_CPUCL0_DROOP_DETECTOR_CPUCL0_GRP0_CK_IN,
+	     "gout_cpucl0_droop_detector_cpucl0_grp0_ck_in",
+	     "gout_droopdetector",
+	     CLK_CON_GAT_CLK_BLK_CPUCL0_UID_DROOP_DETECTOR_CPUCL0_GRP0_IPCLKPORT_CK_IN,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_CPUCL0_DROOP_DETECTOR_CPUCL0_GRP1_CK_IN,
+	     "gout_cpucl0_droop_detector_cpucl0_grp1_ck_in",
+	     "gout_droopdetector",
+	     CLK_CON_GAT_CLK_BLK_CPUCL0_UID_DROOP_DETECTOR_CPUCL0_GRP1_IPCLKPORT_CK_IN,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_CPUCL0_HPM_CPUCL0_HPM_TARGETCLK_C,
+	     "gout_cpucl0_hpm_cpucl0_hpm_targetclk_c", "dout_cmu_hpm",
+	     CLK_CON_GAT_CLK_BLK_CPUCL0_UID_HPM_CPUCL0_IPCLKPORT_HPM_TARGETCLK_C,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_CPUCL0_CPU, "gout_cpucl0_cpu", "dout_cpucl0_cpu",
+	     CLK_CON_GAT_GATE_CLK_CPUCL0_CPU, 21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_CPUCL0_AXI2APB_CPUCL0_ACLK,
+	     "gout_cpucl0_axi2apb_cpucl0_aclk", "dout_cpucl0_pclk",
+	     CLK_CON_GAT_GOUT_BLK_CPUCL0_UID_AXI2APB_CPUCL0_IPCLKPORT_ACLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_CPUCL0_BUSIF_DROOPDETECTOR_CPUCL0_PCLK,
+	     "gout_cpucl0_busif_droopdetector_cpucl0_pclk", "dout_cpucl0_pclk",
+	     CLK_CON_GAT_GOUT_BLK_CPUCL0_UID_BUSIF_DROOPDETECTOR_CPUCL0_IPCLKPORT_PCLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_CPUCL0_BUSIF_HPMCPUCL0_PCLK,
+	     "gout_cpucl0_busif_hpmcpucl0_pclk", "dout_cpucl0_pclk",
+	     CLK_CON_GAT_GOUT_BLK_CPUCL0_UID_BUSIF_HPMCPUCL0_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_CPUCL0_LHM_AXI_P_CPUCL0_I_CLK,
+	     "gout_cpucl0_lhm_axi_p_cpucl0_i_clk", "dout_cpucl0_pclk",
+	     CLK_CON_GAT_GOUT_BLK_CPUCL0_UID_LHM_AXI_P_CPUCL0_IPCLKPORT_I_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_CPUCL0_PMU_CPUCL0_PCLK, "gout_cpucl0_pmu_cpucl0_pclk",
+	     "dout_cpucl0_pclk",
+	     CLK_CON_GAT_GOUT_BLK_CPUCL0_UID_PMU_CPUCL0_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_CPUCL0_RSTNSYNC_CLK_CPUCL0_PCLK_CLK,
+	     "gout_cpucl0_rstnsync_clk_cpucl0_pclk_clk", "dout_cpucl0_pclk",
+	     CLK_CON_GAT_GOUT_BLK_CPUCL0_UID_RSTNSYNC_CLK_CPUCL0_PCLK_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_CPUCL0_SYSREG_CPUCL0_PCLK,
+	     "gout_cpucl0_sysreg_cpucl0_pclk", "dout_cpucl0_pclk",
+	     CLK_CON_GAT_GOUT_BLK_CPUCL0_UID_SYSREG_CPUCL0_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+};
+
+static const struct samsung_cmu_info cpucl0_cmu_info __initconst = {
+	.pll_clks		= cpucl0_pll_clks,
+	.nr_pll_clks		= ARRAY_SIZE(cpucl0_pll_clks),
+	.mux_clks		= cpucl0_mux_clks,
+	.nr_mux_clks		= ARRAY_SIZE(cpucl0_mux_clks),
+	.div_clks		= cpucl0_div_clks,
+	.nr_div_clks		= ARRAY_SIZE(cpucl0_div_clks),
+	.gate_clks		= cpucl0_gate_clks,
+	.nr_gate_clks		= ARRAY_SIZE(cpucl0_gate_clks),
+	.nr_clk_ids		= CLKS_NR_CPUCL0,
+};
+
 /* ---- CMU probe glue ------------------------------------------------------ */
 
 #define CMU_QCH_ENABLE			BIT(0)
@@ -2760,6 +2894,9 @@ static const struct of_device_id exynos8895_cmu_of_match[] = {
 	}, {
 		.compatible = "samsung,exynos8895-cmu-apm",
 		.data = &apm_cmu_info,
+	}, {
+		.compatible = "samsung,exynos8895-cmu-cpucl0",
+		.data = &cpucl0_cmu_info,
 	},
 	{ }
 };
