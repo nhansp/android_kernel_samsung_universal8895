@@ -19,9 +19,28 @@
 #include <linux/of_address.h>
 #include <linux/pm_runtime.h>
 
+/* One write of a power sequence: a full mask is a plain write, else RMW */
+struct exynos_pd_write {
+	u32 off, mask, val;
+};
+
+/*
+ * Steps of a domain's power sequence besides CONFIGURATION and STATUS, selected
+ * by the physical address of the CONFIGURATION register (reg 0).
+ */
+struct exynos_pd_extra {
+	phys_addr_t conf;
+	const struct exynos_pd_write *pre_on;	/* reg 1, before power-on */
+	unsigned int nr_pre_on;
+	const struct exynos_pd_write *post_off;	/* reg 1, after power-off */
+	unsigned int nr_post_off;
+};
+
 struct exynos_pm_domain_config {
 	/* Value for LOCAL_PWR_CFG and STATUS fields for each domain */
 	u32 local_pwr_cfg;
+	const struct exynos_pd_extra *extra;
+	unsigned int nr_extra;
 };
 
 /*
@@ -31,7 +50,41 @@ struct exynos_pm_domain {
 	void __iomem *base;
 	struct generic_pm_domain pd;
 	u32 local_pwr_cfg;
+	const struct exynos_pd_extra *extra;
+	void __iomem *seq_base;
 };
+
+static void exynos_pd_seq(void __iomem *base, const struct exynos_pd_write *w,
+			  unsigned int n)
+{
+	unsigned int i;
+	u32 v;
+
+	for (i = 0; i < n; i++, w++) {
+		if (w->mask == U32_MAX) {
+			writel_relaxed(w->val, base + w->off);
+		} else {
+			v = readl_relaxed(base + w->off);
+			writel_relaxed((v & ~w->mask) | w->val, base + w->off);
+		}
+	}
+}
+
+static void exynos_pd_before(struct exynos_pm_domain *pd, bool power_on)
+{
+	const struct exynos_pd_extra *x = pd->extra;
+
+	if (x && power_on && pd->seq_base)
+		exynos_pd_seq(pd->seq_base, x->pre_on, x->nr_pre_on);
+}
+
+static void exynos_pd_after(struct exynos_pm_domain *pd, bool power_on)
+{
+	const struct exynos_pd_extra *x = pd->extra;
+
+	if (x && !power_on && pd->seq_base)
+		exynos_pd_seq(pd->seq_base, x->post_off, x->nr_post_off);
+}
 
 /*
  * A timed-out power-off leaves the request pending in the PMU while genpd keeps
@@ -66,6 +119,8 @@ static int exynos_pd_power(struct generic_pm_domain *domain, bool power_on)
 	pd = container_of(domain, struct exynos_pm_domain, pd);
 	base = pd->base;
 
+	exynos_pd_before(pd, power_on);
+
 	pwr = power_on ? pd->local_pwr_cfg : 0;
 	writel_relaxed(pwr, base);
 
@@ -85,6 +140,8 @@ static int exynos_pd_power(struct generic_pm_domain *domain, bool power_on)
 		cpu_relax();
 		usleep_range(80, 100);
 	}
+
+	exynos_pd_after(pd, power_on);
 
 	return 0;
 }
@@ -107,8 +164,33 @@ static const struct exynos_pm_domain_config exynos5433_cfg = {
 	.local_pwr_cfg		= 0xf,
 };
 
+/* G3D: the CMU_G3D PLL and mux words around power-on and power-off (reg 1) */
+static const struct exynos_pd_write exynos8895_g3d_pre_on[] = {
+	{ 0x0148, U32_MAX, 0x30000003 },	/* PLL_CON2_PLL_G3D */
+	{ 0x0140, BIT(4), BIT(4) },		/* PLL_CON0_PLL_G3D */
+	{ 0x0100, BIT(4), BIT(4) },		/* PLL_CON0_MUX_CLKCMU_EMBEDDED_G3D_USER */
+};
+
+static const struct exynos_pd_write exynos8895_g3d_post_off[] = {
+	{ 0x0100, BIT(4), 0 },			/* PLL_CON0_MUX_CLKCMU_EMBEDDED_G3D_USER */
+	{ 0x0140, BIT(4), 0 },			/* PLL_CON0_PLL_G3D */
+	{ 0x0148, U32_MAX, 0x10000001 },	/* PLL_CON2_PLL_G3D */
+};
+
+static const struct exynos_pd_extra exynos8895_pd_extra[] = {
+	{	/* g3d */
+		.conf		= 0x164840e0,
+		.pre_on		= exynos8895_g3d_pre_on,
+		.nr_pre_on	= ARRAY_SIZE(exynos8895_g3d_pre_on),
+		.post_off	= exynos8895_g3d_post_off,
+		.nr_post_off	= ARRAY_SIZE(exynos8895_g3d_post_off),
+	},
+};
+
 static const struct exynos_pm_domain_config exynos8895_cfg = {
 	.local_pwr_cfg		= 0xf,
+	.extra			= exynos8895_pd_extra,
+	.nr_extra		= ARRAY_SIZE(exynos8895_pd_extra),
 };
 
 static const struct of_device_id exynos_pm_domain_of_match[] = {
@@ -133,6 +215,35 @@ static const char *exynos_get_domain_name(struct device *dev,
 	if (of_property_read_string(node, "label", &name) < 0)
 		name = kbasename(node->full_name);
 	return devm_kstrdup_const(dev, name, GFP_KERNEL);
+}
+
+static int exynos_pd_get_extra(struct device *dev, struct exynos_pm_domain *pd,
+			       const struct exynos_pm_domain_config *cfg)
+{
+	struct device_node *np = dev->of_node;
+	const struct exynos_pd_extra *x = NULL;
+	struct resource res;
+	unsigned int i;
+
+	if (!cfg->nr_extra || of_address_to_resource(np, 0, &res))
+		return 0;
+
+	for (i = 0; i < cfg->nr_extra; i++)
+		if (cfg->extra[i].conf == res.start)
+			x = &cfg->extra[i];
+	if (!x)
+		return 0;
+
+	if (x->nr_pre_on || x->nr_post_off) {
+		/* not requested: the block's clock driver owns this range */
+		pd->seq_base = of_iomap(np, 1);
+		if (!pd->seq_base)
+			return dev_err_probe(dev, -ENODEV,
+					     "power sequence needs reg 1\n");
+	}
+
+	pd->extra = x;
+	return 0;
 }
 
 static int exynos_pd_probe(struct platform_device *pdev)
@@ -160,6 +271,10 @@ static int exynos_pd_probe(struct platform_device *pdev)
 	pd->pd.power_off = exynos_pd_power_off;
 	pd->pd.power_on = exynos_pd_power_on;
 	pd->local_pwr_cfg = pm_domain_cfg->local_pwr_cfg;
+
+	ret = exynos_pd_get_extra(dev, pd, pm_domain_cfg);
+	if (ret)
+		return ret;
 
 	/*
 	 * Some Samsung platforms with bootloaders turning on the splash-screen
