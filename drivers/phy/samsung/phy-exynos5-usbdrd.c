@@ -435,6 +435,8 @@ struct exynos5_usbdrd_phy_drvdata {
 	u32 pmu_offset_usbdrd0_phy;
 	u32 pmu_offset_usbdrd0_phy_ss;
 	u32 pmu_offset_usbdrd1_phy;
+	int (*probe_extra)(struct exynos5_usbdrd_phy *phy_drd,
+			   struct platform_device *pdev);
 };
 
 /**
@@ -2331,6 +2333,12 @@ static int exynos5_usbdrd_phy_probe(struct platform_device *pdev)
 	ret = exynos5_usbdrd_phy_clk_handle(phy_drd);
 	if (ret)
 		return ret;
+
+	if (drv_data->probe_extra) {
+		ret = drv_data->probe_extra(phy_drd, pdev);
+		if (ret)
+			return ret;
+	}
 
 	reg_pmu = syscon_regmap_lookup_by_phandle(dev->of_node,
 						   "samsung,pmu-syscon");
