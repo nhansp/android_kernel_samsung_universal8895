@@ -1201,6 +1201,7 @@ void bts_update_bw(enum bts_bw_type type, struct bts_bw bw)
 
 	mutex_unlock(&media_mutex);
 }
+EXPORT_SYMBOL_GPL(bts_update_bw);
 
 #if IS_ENABLED(CONFIG_EXYNOS8895_BTS)
 static int __init exynos_bts_program_init(void)
