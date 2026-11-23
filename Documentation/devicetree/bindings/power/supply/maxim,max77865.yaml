@@ -1,0 +1,94 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/maxim,max77865.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Maxim MAX77865 charger
+
+maintainers:
+  - nhansp <nhan.094.vn@gmail.com>
+
+description: |
+  Charger page (I2C address 0x69) of the Maxim MAX77865 companion PMIC. Its
+  interrupt is the charger source (0) of the maxim,max77865 top-level node.
+  Without samsung,charge-control the driver only monitors (it writes no
+  charger configuration register); with it, the driver programs the charger
+  and runs the charge policy.
+
+allOf:
+  - $ref: power-supply.yaml#
+
+properties:
+  compatible:
+    const: maxim,max77865-charger
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  samsung,battery-ntc:
+    $ref: /schemas/types.yaml#/definitions/string
+    description: Type of the thermal zone of the battery NTC thermistor.
+
+  samsung,pmu:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      The Exynos PMU system controller, for the power-off-with-charger restart
+      into LP charging (INFORM2 and SWRESET writes).
+
+  maxim,pmic:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: The maxim,max77865 top-level node (MAINCTRL1 write).
+
+  jig-gpios:
+    maxItems: 1
+    description: JIG cable detect input; selects the fuel-gauge power source.
+
+  samsung,charge-control:
+    type: boolean
+    description: Program the charger and run the charge policy.
+
+  usb-otg-vbus:
+    type: object
+    $ref: /schemas/regulator/regulator.yaml#
+    unevaluatedProperties: false
+    description: The USB OTG VBUS boost output (5.02 V).
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - samsung,battery-ntc
+  - samsung,pmu
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        charger@69 {
+            compatible = "maxim,max77865-charger";
+            reg = <0x69>;
+            interrupt-parent = <&pmic_max77865>;
+            interrupts = <0>;
+            samsung,battery-ntc = "battery-ntc";
+            samsung,pmu = <&pmu_system_controller>;
+            maxim,pmic = <&pmic_max77865>;
+            jig-gpios = <&gpi1 4 GPIO_ACTIVE_LOW>;
+            samsung,charge-control;
+
+            usb-otg-vbus {
+                regulator-name = "usb_otg_vbus";
+                regulator-min-microvolt = <5020000>;
+                regulator-max-microvolt = <5020000>;
+            };
+        };
+    };
