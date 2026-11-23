@@ -4839,6 +4839,13 @@ int dwc3_gadget_suspend(struct dwc3 *dwc)
 	unsigned long flags;
 	int ret;
 
+	/*
+	 * No pull-up and no connection: the gadget driver got its disconnect
+	 * when the session ended, do not send it another one.
+	 */
+	if (!dwc->pullups_connected && !dwc->connected)
+		return 0;
+
 	ret = dwc3_gadget_soft_disconnect(dwc);
 	/*
 	 * Attempt to reset the controller's state. Likely no
