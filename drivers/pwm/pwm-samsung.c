@@ -76,6 +76,7 @@ struct samsung_pwm_channel {
  * @base_clk:		base clock used to drive the timers
  * @tclk0:		external clock 0 (can be ERR_PTR if not present)
  * @tclk1:		external clock 1 (can be ERR_PTR if not present)
+ * @ref_clk:		timer input clock if not @base_clk (NULL if not present)
  * @channel:		per channel driver data
  */
 struct samsung_pwm_chip {
@@ -87,6 +88,7 @@ struct samsung_pwm_chip {
 	struct clk *base_clk;
 	struct clk *tclk0;
 	struct clk *tclk1;
+	struct clk *ref_clk;
 	struct samsung_pwm_channel channel[SAMSUNG_PWM_NUM];
 };
 
@@ -169,7 +171,10 @@ static unsigned long pwm_samsung_get_tin_rate(struct samsung_pwm_chip *our_chip,
 	unsigned long rate;
 	u32 reg;
 
-	rate = clk_get_rate(our_chip->base_clk);
+	if (our_chip->ref_clk)
+		rate = clk_get_rate(our_chip->ref_clk);
+	else
+		rate = clk_get_rate(our_chip->base_clk);
 
 	reg = readl(our_chip->base + REG_TCFG0);
 	if (chan >= 2)
@@ -574,6 +579,21 @@ static int pwm_samsung_probe(struct platform_device *pdev)
 	if (IS_ERR(our_chip->base_clk))
 		return dev_err_probe(dev, PTR_ERR(our_chip->base_clk),
 				     "failed to get timer base clk\n");
+
+	our_chip->ref_clk = devm_clk_get_optional(&pdev->dev, "pwm-ref");
+	if (IS_ERR(our_chip->ref_clk))
+		return dev_err_probe(dev, PTR_ERR(our_chip->ref_clk),
+				     "failed to get pwm-ref clk\n");
+
+	if (our_chip->ref_clk) {
+		u32 reg_tcfg0;
+
+		reg_tcfg0 = readl(our_chip->base + REG_TCFG0);
+		reg_tcfg0 &= ~(TCFG0_PRESCALER_MASK |
+			       TCFG0_PRESCALER_MASK << TCFG0_PRESCALER1_SHIFT);
+		writel(reg_tcfg0, our_chip->base + REG_TCFG0);
+		writel(0, our_chip->base + REG_TCFG1);
+	}
 
 	for (chan = 0; chan < SAMSUNG_PWM_NUM; ++chan)
 		if (our_chip->variant.output_mask & BIT(chan))
