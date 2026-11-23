@@ -19,6 +19,8 @@
 #include <linux/slab.h>
 #include <linux/shm_ipc.h>
 #include <linux/of_reserved_mem.h>
+#include <linux/of_address.h>
+#include <linux/vmalloc.h>
 
 #ifdef CONFIG_CP_RAM_LOGGING
 #include <linux/uaccess.h>
@@ -29,7 +31,7 @@
 #define MEMSHARE_DEV_NAME "memshare"
 #endif
 
-struct shm_plat_data {
+static struct shm_plat_data {
 	unsigned long p_addr;
 	unsigned p_acpm_addr;
 	void __iomem *v_boot;
@@ -192,16 +194,6 @@ unsigned shm_get_phys_size(void)
 	return pdata.t_size;
 }
 
-unsigned long shm_get_sysram_base(void)
-{
-	return pdata.p_sysram_addr;
-}
-
-unsigned shm_get_sysram_size(void)
-{
-	return pdata.t_sysram_size;
-}
-
 unsigned shm_get_boot_size(void)
 {
 	return pdata.ipc_off;
@@ -314,7 +306,7 @@ void __iomem *shm_request_region(unsigned long sh_addr, unsigned size)
 	if (size > (num_pages << PAGE_SHIFT))
 		num_pages++;
 
-	pages = kmalloc(sizeof(struct page *) * num_pages, GFP_ATOMIC);
+	pages = kmalloc_array(num_pages, sizeof(*pages), GFP_ATOMIC);
 	if (!pages) {
 		pr_err("%s: pages allocation fail!\n", __func__);
 		return NULL;
@@ -384,10 +376,6 @@ void clean_vss_magic_code(void)
 
 void __iomem *shm_get_acpm_region(void)
 {
-	if (!pdata.v_acpm)
-		pdata.v_acpm = shm_request_region(pdata.p_acpm_addr,
-				pdata.acpm_size);
-
 	return pdata.v_acpm;
 }
 
@@ -418,9 +406,6 @@ void shm_release_regions(void)
 	if (pdata.v_vss)
 		vunmap(pdata.v_vss);
 
-	if (pdata.v_acpm)
-		vunmap(pdata.v_acpm);
-
 	if (pdata.v_zmb)
 		vunmap(pdata.v_zmb);
 
@@ -436,6 +421,10 @@ static void shm_free_reserved_mem(unsigned long addr, unsigned size)
 	int i;
 	struct page *page;
 
+	if (!memblock_is_map_memory(addr)) {
+		pr_err("cplog region 0x%lx is no-map: not released\n", addr);
+		return;
+	}
 	pr_err("Release cplog reserved memory\n");
 	for (i = 0; i < (size >> PAGE_SHIFT); i++) {
 		page = phys_to_page(addr);
@@ -443,49 +432,6 @@ static void shm_free_reserved_mem(unsigned long addr, unsigned size)
 		free_reserved_page(page);
 	}
 }
-#endif
-
-#ifdef CONFIG_OF_RESERVED_MEM
-static int __init modem_if_reserved_mem_setup(struct reserved_mem *remem)
-{
-   pdata.p_addr = remem->base;
-   pdata.t_size = remem->size;
-
-   pr_err("%s: memory reserved: paddr=%lu, t_size=%u\n",
-        __func__, pdata.p_addr, pdata.t_size);
-
-   return 0;
-}
-RESERVEDMEM_OF_DECLARE(modem_if, "exynos,modem_if", modem_if_reserved_mem_setup);
-
-#ifdef CONFIG_CP_RAM_LOGGING
-static int __init modem_if_reserved_cplog_setup(struct reserved_mem *remem)
-{
-   pdata.p_cplog_addr = remem->base;
-   pdata.cplog_size = remem->size;
-
-   pr_err("%s: cplog memory reserved: paddr=%lu, t_size=%u\n",
-        __func__, pdata.p_cplog_addr, pdata.cplog_size);
-
-   return 0;
-}
-RESERVEDMEM_OF_DECLARE(cp_ram_logging, "exynos,cp_ram_logging",
-		modem_if_reserved_cplog_setup);
-#endif
-
-#if !defined (CONFIG_SOC_EXYNOS7570)
-static int __init deliver_cp_reserved_mem_setup(struct reserved_mem *remem)
-{
-   pdata.p_sysram_addr = remem->base;
-   pdata.t_sysram_size = remem->size;
-
-   pr_err("%s: memory reserved: paddr=%u, t_size=%u\n",
-        __func__, (u32)remem->base, (u32)remem->size);
-
-   return 0;
-}
-RESERVEDMEM_OF_DECLARE(deliver_cp, "exynos,deliver_cp", deliver_cp_reserved_mem_setup);
-#endif
 #endif
 
 #ifdef CONFIG_CP_RAM_LOGGING
@@ -504,9 +450,37 @@ static int shm_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	int ret;
-	struct device_node *np_acpm = of_find_node_by_name(NULL, "acpm_ipc");
+	struct resource r;
+	struct device_node *np_acpm;
 
 	dev_err(dev, "%s: shmem driver init\n", __func__);
+
+	ret = of_reserved_mem_region_to_resource_byname(dev->of_node, "modem_if", &r);
+	if (ret)
+		return dev_err_probe(dev, ret, "memory-region modem_if\n");
+	pdata.p_addr = r.start;
+	pdata.t_size = resource_size(&r);
+#ifdef CONFIG_CP_RAM_LOGGING
+	ret = of_reserved_mem_region_to_resource_byname(dev->of_node, "cp_ram_logging", &r);
+	if (ret)
+		return dev_err_probe(dev, ret, "memory-region cp_ram_logging\n");
+	pdata.p_cplog_addr = r.start;
+	pdata.cplog_size = resource_size(&r);
+#endif
+
+	/* The SRAM driver owns this resource: map it, do not request it. */
+	np_acpm = of_parse_phandle(dev->of_node, "samsung,acpm-dump", 0);
+	if (!np_acpm)
+		return dev_err_probe(dev, -ENODEV, "samsung,acpm-dump\n");
+	ret = of_address_to_resource(np_acpm, 0, &r);
+	of_node_put(np_acpm);
+	if (ret)
+		return dev_err_probe(dev, ret, "samsung,acpm-dump resource\n");
+	pdata.p_acpm_addr = r.start;
+	pdata.acpm_size = resource_size(&r);
+	pdata.v_acpm = devm_ioremap(dev, r.start, resource_size(&r));
+	if (!pdata.v_acpm)
+		return -ENOMEM;
 
 	if (dev->of_node) {
 		ret = of_property_read_u32(dev->of_node, "shmem,ipc_offset",
@@ -547,17 +521,6 @@ static int shm_probe(struct platform_device *pdev)
 		if (ret)
 			dev_err(dev, "failed to get property, vss_size\n");
 
-
-		ret = of_property_read_u32(np_acpm, "dump-base",
-				&pdata.p_acpm_addr);
-		if (ret)
-			dev_err(dev, "failed to get property, acpm_base\n");
-
-		ret = of_property_read_u32(np_acpm, "dump-size",
-				&pdata.acpm_size);
-		if (ret)
-			dev_err(dev, "failed to get property, acpm_size\n");
-
 	} else {
 		/* To do: In case of non-DT */
 	}
@@ -586,22 +549,20 @@ static int shm_probe(struct platform_device *pdev)
 		shm_free_reserved_mem(pdata.p_cplog_addr, pdata.cplog_size);
 	}
 #endif
+	/* The modem driver defers its probe until this is set. */
+	platform_set_drvdata(pdev, &pdata);
 	return 0;
 }
 
-static int shm_remove(struct platform_device *pdev)
+static void shm_remove(struct platform_device *pdev)
 {
 #ifdef CONFIG_CP_RAM_LOGGING
 	destroy_memshare_device();
 #endif
-	return 0;
 }
 
 static const struct of_device_id exynos_shm_dt_match[] = {
-		{ .compatible = "samsung,exynos7580-shm_ipc", },
-		{ .compatible = "samsung,exynos8890-shm_ipc", },
-		{ .compatible = "samsung,exynos7870-shm_ipc", },
-		{ .compatible = "samsung,exynos-shm_ipc", },
+		{ .compatible = "samsung,exynos8895-shm-ipc", },
 		{},
 };
 MODULE_DEVICE_TABLE(of, exynos_shm_dt_match);
@@ -611,8 +572,7 @@ static struct platform_driver shmem_driver = {
 	.remove		= shm_remove,
 	.driver		= {
 		.name = "shm_ipc",
-		.owner = THIS_MODULE,
-		.of_match_table = of_match_ptr(exynos_shm_dt_match),
+		.of_match_table = exynos_shm_dt_match,
 		.suppress_bind_attrs = true,
 	},
 };
