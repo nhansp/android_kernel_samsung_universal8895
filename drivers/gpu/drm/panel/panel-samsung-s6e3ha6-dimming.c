@@ -770,15 +770,23 @@ int init_dimming_info(struct dimming_info *dim_info, struct dimming_init_info *s
 	dim_info->dim_lut = src->dim_lut;
 
 	/* allocation of struct dimming_lut lut and members */
-	for (ilum = 0; ilum < dim_info->nr_luminance; ilum++)
+	for (ilum = 0; ilum < dim_info->nr_luminance; ilum++) {
 		dim_info->dim_lut[ilum].tpout = kzalloc(sizeof(struct dimming_tp_output) *
 							dim_info->nr_tp, GFP_KERNEL);
+		if (unlikely(!dim_info->dim_lut[ilum].tpout)) {
+			pr_err("%s, failed to alloc tpout of %d\n", __func__, ilum);
+			dim_info->nr_luminance = ilum;
+			free_dimming_info(dim_info);
+			return -ENOMEM;
+		}
+	}
 
 	dim_info->target_luminance = src->target_luminance;
 	dim_info->target_g_curve_degree = gamma_value_to_degree(src->target_gamma);
 	if (unlikely(dim_info->target_g_curve_degree == GAMMA_NONE)) {
 		pr_err("%s, invalid target gamma degree %d\n",
 			__func__, dim_info->target_g_curve_degree);
+		free_dimming_info(dim_info);
 		return -EINVAL;
 	}
 
