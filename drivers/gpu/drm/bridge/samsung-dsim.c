@@ -31,6 +31,7 @@
 #include <drm/display/drm_dsc.h>
 #include <drm/drm_panel.h>
 #include <drm/drm_print.h>
+#include <drm/exynos8895_hiber.h>
 
 /* returns true iff both arguments logically differs */
 #define NEQV(a, b) (!(a) ^ !(b))
@@ -2008,6 +2009,14 @@ static void samsung_dsim_disable_irq(struct samsung_dsim *dsi)
 #define DSIM8895_LPMUX_VAL		0x1201
 /* SYSREG_DPU1 BUS_COMPONENT_DRCG_EN */
 #define DSIM8895_SYSREG_DRCG_EN		0x200
+/* ESCMODE and DPHY_STATUS ULPS bits */
+#define DSIM8895_ESCMODE_REG		0x2c
+#define DSIM8895_TX_ULPS_DATA		BIT(3)
+#define DSIM8895_TX_ULPS_DATA_EXIT	BIT(2)
+#define DSIM8895_TX_ULPS_CLK		BIT(1)
+#define DSIM8895_TX_ULPS_CLK_EXIT	BIT(0)
+#define DSIM8895_DPHY_ULPS_CLK		BIT(9)
+#define DSIM8895_DPHY_ULPS_DATA_MASK	(0xf << 4)
 
 static void dsim8895_write(struct samsung_dsim *dsi, u32 ofs, u32 val)
 {
@@ -2239,11 +2248,14 @@ static void samsung_dsim_stop_exynos8895(struct samsung_dsim *dsi)
 
 	dsim8895_write(dsi, 0x50, 0xffffffff);
 	dsim8895_mask(dsi, 0x54, DSIM8895_INTMSK_RUN, DSIM8895_INTMSK_RUN);
+	/* after a ULPS enter the clock lane is in ULPS, never in LP */
 	dsim8895_mask(dsi, 0x20, 0, DSIM8895_TX_REQUEST_HSCLK);
-	while (DSIM8895_CLK_LANE_STATUS(dsim8895_read(dsi, DSIM8895_LINK_STATUS2)) && --cnt)
-		udelay(10);
-	if (!cnt)
-		dev_err(dsi->dev, "clock lane did not return to LP\n");
+	if (!(dsi->state & DSIM_STATE_ULPS)) {
+		while (DSIM8895_CLK_LANE_STATUS(dsim8895_read(dsi, DSIM8895_LINK_STATUS2)) && --cnt)
+			udelay(10);
+		if (!cnt)
+			dev_err(dsi->dev, "clock lane did not return to LP\n");
+	}
 	dsim8895_mask(dsi, 0x4c, 0, DSIM8895_LANES_EN_MASK);
 	udelay(400);
 	dsim8895_mask(dsi, 0x20, 0, DSIM8895_LANE_ESCCLK_EN_MASK);
@@ -2291,6 +2303,251 @@ static int samsung_dsim_8895_send(struct samsung_dsim *dsi, u32 hdr,
 	}
 
 	return 0;
+}
+
+static int samsung_dsim_init(struct samsung_dsim *dsi);
+
+/* lanes: the data lane bits */
+static u32 dsim8895_is_ulps(struct samsung_dsim *dsi, u32 lanes)
+{
+	u32 val = dsim8895_read(dsi, 0x1c);
+
+	if (((val & DSIM8895_DPHY_ULPS_DATA_MASK) >> 4) == lanes &&
+	    (val & DSIM8895_DPHY_ULPS_CLK))
+		return 1;
+	return 0;
+}
+
+static int dsim8895_wait_enter_ulps(struct samsung_dsim *dsi, u32 lanes)
+{
+	u32 cnt = 1000;
+
+	while (!dsim8895_is_ulps(dsi, lanes) && --cnt)
+		udelay(10);
+	if (!cnt) {
+		dev_err(dsi->dev, "lanes did not enter ULPS\n");
+		return -EBUSY;
+	}
+	return 0;
+}
+
+static int dsim8895_wait_exit_ulps(struct samsung_dsim *dsi)
+{
+	u32 cnt = 1000;
+
+	while (((dsim8895_read(dsi, 0x1c) & DSIM8895_DPHY_ULPS_DATA_MASK) ||
+		(dsim8895_read(dsi, 0x1c) & DSIM8895_DPHY_ULPS_CLK)) && --cnt)
+		udelay(10);
+	if (!cnt) {
+		dev_err(dsi->dev, "lanes did not leave ULPS\n");
+		return -EBUSY;
+	}
+	return 0;
+}
+
+static void dsim8895_enter_ulps_req(struct samsung_dsim *dsi, u32 enter)
+{
+	dsim8895_mask(dsi, DSIM8895_ESCMODE_REG, enter ? ~0 : 0,
+		      DSIM8895_TX_ULPS_CLK | DSIM8895_TX_ULPS_DATA);
+}
+
+static void dsim8895_exit_ulps_req(struct samsung_dsim *dsi, u32 exit)
+{
+	dsim8895_mask(dsi, DSIM8895_ESCMODE_REG, exit ? ~0 : 0,
+		      DSIM8895_TX_ULPS_CLK_EXIT | DSIM8895_TX_ULPS_DATA_EXIT);
+}
+
+static int dsim8895_set_hs_clock_off(struct samsung_dsim *dsi)
+{
+	u32 cnt = 1000;
+
+	dsim8895_mask(dsi, 0x20, 0, DSIM8895_TX_REQUEST_HSCLK);
+	while (DSIM8895_CLK_LANE_STATUS(dsim8895_read(dsi, DSIM8895_LINK_STATUS2)) && --cnt)
+		udelay(10);
+	if (!cnt) {
+		dev_err(dsi->dev, "clock lane did not return to LP\n");
+		return -EBUSY;
+	}
+	return 0;
+}
+
+/* the exit of a Samsung DDI starts with an enter request */
+static int dsim8895_set_smddi_ulps(struct samsung_dsim *dsi, u32 lanes, u32 en)
+{
+	int ret = 0;
+
+	if (en) {
+		dsim8895_enter_ulps_req(dsi, 1);
+		ret = dsim8895_wait_enter_ulps(dsi, lanes);
+		if (ret)
+			return ret;
+		dsim8895_enter_ulps_req(dsi, 0);
+	} else {
+		dsim8895_enter_ulps_req(dsi, 1);
+		ret = dsim8895_wait_enter_ulps(dsi, lanes);
+		if (ret)
+			return ret;
+		dsim8895_exit_ulps_req(dsi, 1);
+		ret = dsim8895_wait_exit_ulps(dsi);
+		if (ret)
+			return ret;
+		/* at least 1 ms Twakeup for the MARK1 state */
+		udelay(1000);
+		dsim8895_exit_ulps_req(dsi, 0);
+		dsim8895_enter_ulps_req(dsi, 0);
+	}
+	return ret;
+}
+
+static int dsim8895_set_ulps(struct samsung_dsim *dsi, u32 lanes, u32 en)
+{
+	int ret = 0;
+
+	if (en) {
+		dsim8895_enter_ulps_req(dsi, 1);
+		ret = dsim8895_wait_enter_ulps(dsi, lanes);
+	} else {
+		dsim8895_exit_ulps_req(dsi, 1);
+		ret = dsim8895_wait_exit_ulps(dsi);
+		if (ret)
+			return ret;
+		/* at least 1 ms Twakeup for the MARK1 state */
+		udelay(1000);
+		dsim8895_exit_ulps_req(dsi, 0);
+		dsim8895_enter_ulps_req(dsi, 0);
+	}
+	return ret;
+}
+
+/* The ULPS handshake depends on the panel's DDI; a Magna DDI has no ULPS. */
+static int dsim8895_set_ulps_by_ddi(struct samsung_dsim *dsi, u32 en)
+{
+	u32 lanes = BIT(dsi->lanes) - 1;
+
+	switch (dsi->ddi_type) {
+	case 0:	/* Samsung */
+		return dsim8895_set_smddi_ulps(dsi, lanes, en);
+	case 1:	/* Magna */
+		dev_err(dsi->dev, "this DDI does not support ULPS\n");
+		return -EINVAL;
+	default:
+		return dsim8895_set_ulps(dsi, lanes, en);
+	}
+}
+
+static int dsim8895_exit_ulps_and_start(struct samsung_dsim *dsi)
+{
+	int ret;
+
+	ret = dsim8895_set_ulps_by_ddi(dsi, 0);
+	dsim8895_start(dsi);
+	return ret;
+}
+
+static int dsim8895_stop_and_enter_ulps(struct samsung_dsim *dsi)
+{
+	int ret = 0;
+
+	ret = dsim8895_set_hs_clock_off(dsi);
+	if (ret)
+		dev_err(dsi->dev, "the clock lane did not switch to LP mode\n");
+	dsim8895_set_ulps_by_ddi(dsi, 1);
+	dsim8895_mask(dsi, 0x4c, 0, DSIM8895_LANES_EN_MASK);
+	udelay(400);
+	dsim8895_mask(dsi, 0x20, 0, DSIM8895_LANE_ESCCLK_EN_MASK);
+	dsim8895_mask(dsi, 0x20, 0, DSIM8895_WORDCLK_EN);
+	dsim8895_write(dsi, DSIM8895_PLL_CTRL1, 0);
+	dsim8895_write(dsi, DSIM8895_PLL_CTRL1 + 4, 0);
+	dsim8895_mask(dsi, 0x20, 0xff, DSIM8895_ESCCLK_EN | 0xff);
+	dsim8895_mask(dsi, 0xa0, 0, DSIM_PLL_EN);
+	dsim8895_sw_reset(dsi);
+	return ret;
+}
+
+/*
+ * Display hibernation: the link goes to ULPS and the runtime PM put powers
+ * the DSIM off. Panel transfers block hibernation, so no packet is in flight.
+ */
+int samsung_dsim_enter_ulps(struct samsung_dsim *dsi)
+{
+	int ret = 0;
+
+	if (!dsi->driver_data->has_8895_link)
+		return -ENODEV;
+	mutex_lock(&dsi->cmd_lock);
+	if (!(dsi->state & DSIM_STATE_ENABLED) ||
+	    !(dsi->state & DSIM_STATE_INITIALIZED) ||
+	    (dsi->state & DSIM_STATE_ULPS)) {
+		ret = -EBUSY;
+		goto out;
+	}
+	dsi->state |= DSIM_STATE_ULPS;
+	mutex_unlock(&dsi->cmd_lock);
+
+	dsim8895_mask(dsi, 0x54, DSIM8895_INTMSK_RUN, DSIM8895_INTMSK_RUN);
+	ret = dsim8895_stop_and_enter_ulps(dsi);
+	if (ret)
+		dev_err(dsi->dev, "ULPS enter with the clock lane not in LP\n");
+
+	pm_runtime_put_sync(dsi->dev);
+	return 0;
+
+out:
+	mutex_unlock(&dsi->cmd_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(samsung_dsim_enter_ulps);
+
+/*
+ * Display hibernation exit, with the DECON already resumed: power the DSIM
+ * on, initialise the link and leave ULPS.
+ */
+int samsung_dsim_exit_ulps(struct samsung_dsim *dsi)
+{
+	int ret;
+
+	if (!dsi->driver_data->has_8895_link)
+		return -ENODEV;
+	if (!(dsi->state & DSIM_STATE_ULPS))
+		return -EBUSY;
+
+	ret = pm_runtime_get_sync(dsi->dev);
+	if (ret < 0)
+		return ret;
+
+	ret = samsung_dsim_init(dsi);
+	if (ret)
+		dev_err(dsi->dev, "failed to re-init the link: %d\n", ret);
+
+	ret = dsim8895_exit_ulps_and_start(dsi);
+	if (ret)
+		dev_err(dsi->dev, "failed to exit ULPS\n");
+
+	dsi->state &= ~DSIM_STATE_ULPS;
+	/* failures are reported, but the link is used anyway, as the vendor driver does */
+	return 0;
+}
+EXPORT_SYMBOL_GPL(samsung_dsim_exit_ulps);
+
+static int samsung_dsim_ulps_enter_cb(void *data)
+{
+	return samsung_dsim_enter_ulps(data);
+}
+
+static int samsung_dsim_ulps_exit_cb(void *data)
+{
+	return samsung_dsim_exit_ulps(data);
+}
+
+/* one DSIM0 on this SoC, registered once at probe */
+static struct exynos8895_dsim_hooks dsim8895_hiber_hooks;
+
+static void samsung_dsim_register_hiber_hooks(struct samsung_dsim *dsi)
+{
+	dsim8895_hiber_hooks.enter_ulps = samsung_dsim_ulps_enter_cb;
+	dsim8895_hiber_hooks.exit_ulps = samsung_dsim_ulps_exit_cb;
+	dsim8895_hiber_hooks.data = dsi;
+	exynos8895_decon_set_dsim_hooks(&dsim8895_hiber_hooks);
 }
 
 /*
@@ -2952,6 +3209,8 @@ static int samsung_dsim_parse_dt_exynos8895(struct samsung_dsim *dsi)
 
 	of_property_read_u32(np, "samsung,cmd-underrun-lp-ref", &dsi->cmd_underrun_lp_ref);
 
+	of_property_read_u32(np, "type_of_ddi", &dsi->ddi_type);
+
 	mutex_init(&dsi->cmd_lock);
 	init_completion(&dsi->ph_empty);
 	init_completion(&dsi->rx_done);
@@ -3049,6 +3308,9 @@ int samsung_dsim_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, dsi);
+
+	if (dsi->driver_data->has_8895_link)
+		samsung_dsim_register_hiber_hooks(dsi);
 
 	if (dsi->driver_data->handover_hold)
 		samsung_dsim_handover_exynos8895(dsi);

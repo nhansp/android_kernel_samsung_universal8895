@@ -26,6 +26,8 @@ struct samsung_dsim_fixed_link;
 #define DSIM_STATE_INITIALIZED		BIT(1)
 #define DSIM_STATE_CMD_LPM		BIT(2)
 #define DSIM_STATE_VIDOUT_AVAILABLE	BIT(3)
+/* has_8895_link only: the link is in ULPS for display hibernation */
+#define DSIM_STATE_ULPS			BIT(4)
 
 enum samsung_dsim_type {
 	DSIM_TYPE_EXYNOS3250,
@@ -139,6 +141,7 @@ struct samsung_dsim {
 	struct regmap *dpu1_sysreg;
 	const struct drm_dsc_config *dsc;
 	u32 cmd_underrun_lp_ref;
+	u32 ddi_type;			/* panel DDI, for the ULPS handshake */
 	bool handover;
 	struct mutex cmd_lock;		/* one packet in flight */
 	struct completion ph_empty;	/* INTSRC SFR_PH_FIFO_EMPTY */
@@ -157,5 +160,9 @@ struct samsung_dsim {
 extern int samsung_dsim_probe(struct platform_device *pdev);
 extern void samsung_dsim_remove(struct platform_device *pdev);
 extern const struct dev_pm_ops samsung_dsim_pm_ops;
+
+/* has_8895_link only: ULPS enter/exit for display hibernation (process context) */
+extern int samsung_dsim_enter_ulps(struct samsung_dsim *dsi);
+extern int samsung_dsim_exit_ulps(struct samsung_dsim *dsi);
 
 #endif /* __SAMSUNG_DSIM__ */
