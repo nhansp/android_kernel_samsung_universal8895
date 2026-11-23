@@ -27,6 +27,7 @@ properties:
       - samsung,exynos5420-tmu-ext-triminfo
       - samsung,exynos5433-tmu
       - samsung,exynos7-tmu
+      - samsung,exynos8895-tmu
 
   clocks:
     minItems: 1
@@ -44,6 +45,7 @@ properties:
        - most of SoC: 4
        - samsung,exynos5433-tmu: 8
        - samsung,exynos7-tmu: 8
+       - samsung,exynos8895-tmu: 8
     maxItems: 1
 
   reg:
@@ -63,6 +65,23 @@ properties:
 
   '#thermal-sensor-cells':
     const: 0
+
+  samsung,tmu-sensors:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 1
+    maximum: 0xff
+    description:
+      Bit mask of the remote temperature sensors of the TMU block that belong
+      to this instance (Exynos8895 has up to eight per block, and two
+      instances can share a block with different sensors).
+
+  samsung,tmu-sensing-mode:
+    $ref: /schemas/types.yaml#/definitions/string
+    enum: [max, balance]
+    description:
+      How the sensors of the mask give one temperature. "max" is the highest
+      reading; "balance" also takes the highest, after subtracting 20 degrees
+      Celsius from every sensor but sensor 0.
 
   vtmu-supply:
     description: The regulator node supplying voltage to TMU.
@@ -119,6 +138,28 @@ allOf:
         reg:
           minItems: 1
           maxItems: 1
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: samsung,exynos8895-tmu
+    then:
+      properties:
+        clocks:
+          maxItems: 1
+        clock-names:
+          items:
+            - const: tmu_apbif
+        reg:
+          maxItems: 1
+      required:
+        - samsung,tmu-sensors
+        - samsung,tmu-sensing-mode
+    else:
+      properties:
+        samsung,tmu-sensors: false
+        samsung,tmu-sensing-mode: false
 
   - if:
       properties:
