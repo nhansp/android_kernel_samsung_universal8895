@@ -1,19 +1,14 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  * Platform data for MAX98506
  *
  * Copyright 2013-2015 Maxim Integrated Products
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- *
  */
 
 #ifndef __SOUND_MAX98506_PDATA_H__
 #define __SOUND_MAX98506_PDATA_H__
 
-#include <sound/maxim_dsm.h>
+#include <linux/types.h>
 
 #define MAX98506_I2C_ADDR	0x62
 #define MAX98506_I2C_ADDR_S (MAX98506_I2C_ADDR >> 1)
@@ -50,12 +45,6 @@ enum one_stop_mode {
 	MAX98506_OSM_MAX,
 };
 
-#ifdef CONFIG_SND_SOC_MAXIM_DSM_CAL
-extern struct class *g_class;
-#else
-struct class *g_class;
-#endif /* CONFIG_SND_SOC_MAXIM_DSM_CAL */
-
 struct max98506_volume_step_info {
 	int length;
 	int vol_step;
@@ -69,20 +58,13 @@ struct max98506_pc_active {
 	u32 playback_active:1;
 };
 
-#ifdef CONFIG_SND_SOC_MAXIM_DSM
-#define MAX98506_PINFO_SZ	PARAM_OFFSET_MAX
-#else
 #define MAX98506_PINFO_SZ	6
-#endif /* CONFIG_SND_SOC_MAXIM_DSM */
 
 struct max98506_pdata {
 	int sysclk;
 	u32 spk_gain;
 	u32 vmon_slot;
 	bool i2c_pull_up;
-#ifdef USE_MAX98506_IRQ
-	int irq;
-#endif /* USE_MAX98506_IRQ */
 	uint32_t pinfo[MAX98506_PINFO_SZ];
 	const uint32_t *reg_arr;
 	uint32_t reg_arr_len;
