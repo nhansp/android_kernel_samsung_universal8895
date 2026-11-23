@@ -17,6 +17,8 @@
 #include <linux/pinctrl/consumer.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
+#include <linux/sec_sysfs.h>
+#include <linux/sysfs.h>
 #include <linux/workqueue.h>
 #include <drm/drm_panel.h>
 
@@ -110,6 +112,9 @@
 #define S6SY661_TT_PALM			5
 #define S6SY661_TT_WET			6
 
+#define S6SY661_CMD_STR_LEN		256
+#define S6SY661_CMD_PARAM_NUM		8
+
 enum s6sy761_regulators {
 	S6SY761_REGULATOR_VDD,
 	S6SY761_REGULATOR_AVDD,
@@ -144,8 +149,14 @@ struct s6sy761_data {
 	/* S6SY661 only */
 	struct mutex power_lock;
 	bool powered;
+	u16 touch_functions;
 	struct drm_panel_follower follower;
 	struct work_struct power_on_work;
+	struct mutex cmd_lock;		/* cmd_running, cmd_state, cmd_result */
+	bool cmd_running;
+	const char *cmd_state;
+	char cmd[S6SY661_CMD_STR_LEN];
+	char cmd_result[S6SY661_CMD_STR_LEN + 16];
 };
 
 /*
@@ -439,7 +450,7 @@ static int s6sy661_power_on(struct s6sy761_data *sdata, bool probe)
 	}
 
 	ret = i2c_smbus_write_word_data(sdata->client, S6SY761_TOUCH_FUNCTION,
-					S6SY661_FUNC_DEFAULT);
+					sdata->touch_functions);
 	if (ret)
 		goto err_avdd;
 
@@ -615,10 +626,145 @@ static void s6sy761_power_off(void *data)
 						sdata->regulators);
 }
 
+static int s6sy661_cmd_glove_mode(struct s6sy761_data *sdata, int mode)
+{
+	int ret = 0;
+
+	if (mode != 0 && mode != 1)
+		return -EINVAL;
+
+	mutex_lock(&sdata->power_lock);
+	/* stored first, so that the next power-on applies it */
+	if (mode)
+		sdata->touch_functions |= S6SY761_MASK_GLOVE | S6SY661_FUNC_DEFAULT;
+	else
+		sdata->touch_functions = (sdata->touch_functions & ~S6SY761_MASK_GLOVE) |
+					 S6SY661_FUNC_DEFAULT;
+	if (!sdata->powered)
+		ret = -EIO;
+	else
+		ret = i2c_smbus_write_word_data(sdata->client, S6SY761_TOUCH_FUNCTION,
+						sdata->touch_functions);
+	mutex_unlock(&sdata->power_lock);
+
+	return ret;
+}
+
+static ssize_t cmd_store(struct device *dev, struct device_attribute *attr,
+			 const char *buf, size_t count)
+{
+	struct s6sy761_data *sdata = dev_get_drvdata(dev);
+	int param[S6SY661_CMD_PARAM_NUM] = { };
+	char params[S6SY661_CMD_STR_LEN];
+	char *name, *cur, *tok;
+	const char *result, *state;
+	size_t len = count;
+	int nparam = 0;
+	int ret;
+
+	if (count >= S6SY661_CMD_STR_LEN || strlen(buf) >= S6SY661_CMD_STR_LEN)
+		return -EINVAL;
+
+	mutex_lock(&sdata->cmd_lock);
+	if (sdata->cmd_running) {
+		mutex_unlock(&sdata->cmd_lock);
+		return -EBUSY;
+	}
+	sdata->cmd_running = true;
+	sdata->cmd_state = "RUNNING";
+	mutex_unlock(&sdata->cmd_lock);
+
+	if (len && buf[len - 1] == '\n')
+		len--;
+	memcpy(sdata->cmd, buf, len);
+	sdata->cmd[len] = '\0';
+
+	strscpy(params, sdata->cmd, sizeof(params));
+	cur = params;
+	name = strsep(&cur, ",");
+	while (cur && nparam < S6SY661_CMD_PARAM_NUM) {
+		tok = strsep(&cur, ",");
+		if (kstrtoint(tok, 10, &param[nparam++]) < 0) {
+			/* the vendor driver leaves the command running, blocking all others */
+			result = "NG";
+			state = "FAIL";
+			goto out;
+		}
+	}
+
+	if (!strcmp(name, "glove_mode")) {
+		ret = s6sy661_cmd_glove_mode(sdata, param[0]);
+	} else {
+		result = "NA";
+		state = "NOT_APPLICABLE";
+		goto out;
+	}
+	result = ret ? "NG" : "OK";
+	state = ret ? "FAIL" : "OK";
+
+out:
+	mutex_lock(&sdata->cmd_lock);
+	snprintf(sdata->cmd_result, sizeof(sdata->cmd_result), "%s:%s", sdata->cmd, result);
+	sdata->cmd_state = state;
+	sdata->cmd_running = false;
+	mutex_unlock(&sdata->cmd_lock);
+
+	return count;
+}
+static DEVICE_ATTR(cmd, 0220, NULL, cmd_store);
+
+static ssize_t cmd_status_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct s6sy761_data *sdata = dev_get_drvdata(dev);
+	ssize_t ret;
+
+	mutex_lock(&sdata->cmd_lock);
+	ret = sysfs_emit(buf, "%s\n", sdata->cmd_state);
+	mutex_unlock(&sdata->cmd_lock);
+
+	return ret;
+}
+static DEVICE_ATTR_RO(cmd_status);
+
+static ssize_t cmd_result_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct s6sy761_data *sdata = dev_get_drvdata(dev);
+	ssize_t ret;
+
+	mutex_lock(&sdata->cmd_lock);
+	ret = sysfs_emit(buf, "%s\n", sdata->cmd_result);
+	sdata->cmd_state = "WAITING";
+	mutex_unlock(&sdata->cmd_lock);
+
+	return ret;
+}
+static DEVICE_ATTR_RO(cmd_result);
+
+static ssize_t cmd_list_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "++factory command list++\nglove_mode\n\n");
+}
+static DEVICE_ATTR_RO(cmd_list);
+
+static struct attribute *s6sy661_cmd_attrs[] = {
+	&dev_attr_cmd.attr,
+	&dev_attr_cmd_status.attr,
+	&dev_attr_cmd_result.attr,
+	&dev_attr_cmd_list.attr,
+	NULL
+};
+ATTRIBUTE_GROUPS(s6sy661_cmd);
+
+static void s6sy661_sec_device_destroy(void *data)
+{
+	sec_device_destroy(data);
+}
+
 /* No runtime PM: the vendor driver never uses the sleep mode of the S6SY661. */
 static int s6sy661_probe_finish(struct s6sy761_data *sdata)
 {
 	struct device *dev = &sdata->client->dev;
+	struct device *sec_dev;
 	int err;
 
 	if (drm_is_panel_follower(dev)) {
@@ -634,7 +780,15 @@ static int s6sy661_probe_finish(struct s6sy761_data *sdata)
 			return err;
 	}
 
-	return 0;
+	sec_dev = sec_device_create_with_groups(sdata, s6sy661_cmd_groups, "tsp");
+	if (IS_ERR(sec_dev)) {
+		/* -ENODEV: no sec class in this kernel */
+		if (PTR_ERR(sec_dev) != -ENODEV)
+			dev_warn(dev, "no sec/tsp node: %ld\n", PTR_ERR(sec_dev));
+		return 0;
+	}
+
+	return devm_add_action_or_reset(dev, s6sy661_sec_device_destroy, sec_dev);
 }
 
 static int s6sy761_probe(struct i2c_client *client)
@@ -660,6 +814,9 @@ static int s6sy761_probe(struct i2c_client *client)
 
 	if (sdata->variant->s6sy661) {
 		mutex_init(&sdata->power_lock);
+		mutex_init(&sdata->cmd_lock);
+		sdata->cmd_state = "WAITING";
+		sdata->touch_functions = S6SY661_FUNC_DEFAULT;
 		INIT_WORK(&sdata->power_on_work, s6sy661_power_on_work);
 
 		/* the power follows the panel: wait for it to be registered */
