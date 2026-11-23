@@ -393,10 +393,13 @@ struct devfreq_table_interactive_level {
  *		both @highspeed_load and the level's max_load, 0 for none
  * @highspeed_load: load (percent) above which the jump is made
  * @highspeed_delay: polls the jump condition must hold before the jump
+ * @capacity_headroom_khz: extra clock to add on top of the table's level
  * @down_requirement: for the governor's internal use: polls left below
  *		min_load
  * @delay_count: for the governor's internal use: polls the jump condition
  *		has held
+ * @base_level: for the governor's internal use: the table's level while
+ *		the headroom raised the clock above it, -1 otherwise
  */
 struct devfreq_table_interactive_data {
 	const struct devfreq_table_interactive_level *levels;
@@ -404,10 +407,12 @@ struct devfreq_table_interactive_data {
 	unsigned long highspeed_hz;
 	unsigned int highspeed_load;
 	unsigned int highspeed_delay;
+	unsigned int capacity_headroom_khz;
 
 	/* For the governor's internal use. Don't need to set them */
 	unsigned int down_requirement;
 	unsigned int delay_count;
+	int base_level;
 };
 
 #if !defined(CONFIG_PM_DEVFREQ)

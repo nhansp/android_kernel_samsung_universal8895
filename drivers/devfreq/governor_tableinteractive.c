@@ -46,7 +46,7 @@ static int devfreq_table_interactive_func(struct devfreq *df, unsigned long *fre
 {
 	struct devfreq_table_interactive_data *d = df->data;
 	unsigned long min_freq, max_freq;
-	unsigned int cur, lo, hi, hs;
+	unsigned int cur, lo, hi, hs, headroom;
 	int util, err;
 	struct devfreq_dev_status *stat;
 
@@ -67,7 +67,11 @@ static int devfreq_table_interactive_func(struct devfreq *df, unsigned long *fre
 	/* load in percent, -1 without a measurement */
 	util = stat->total_time ? div64_u64(100ULL * stat->busy_time, stat->total_time) : -1;
 
-	cur = tbl_level_floor(d, stat->current_frequency);
+	/* the load was measured at the raised clock, but the table steps from its own level */
+	if (d->base_level >= 0)
+		cur = d->base_level;
+	else
+		cur = tbl_level_floor(d, stat->current_frequency);
 	if (cur > hi)
 		cur = hi;
 	if (cur < lo)
@@ -102,6 +106,20 @@ static int devfreq_table_interactive_func(struct devfreq *df, unsigned long *fre
 	}
 
 	*freq = d->levels[cur].freq_hz;
+	WRITE_ONCE(d->base_level, -1);
+
+	headroom = READ_ONCE(d->capacity_headroom_khz);
+	if (headroom) {
+		unsigned long want = d->levels[cur].freq_hz + headroom * 1000UL;
+		unsigned int l = tbl_level_ceil(d, want);
+
+		if (l > hi)
+			l = hi;
+		if (l > cur) {
+			*freq = d->levels[l].freq_hz;
+			WRITE_ONCE(d->base_level, cur);
+		}
+	}
 	return 0;
 }
 
@@ -116,6 +134,7 @@ static int devfreq_table_interactive_handler(struct devfreq *df,
 			return -EINVAL;
 		d->down_requirement = 1;
 		d->delay_count = 0;
+		d->base_level = -1;
 		devfreq_monitor_start(df);
 		break;
 
