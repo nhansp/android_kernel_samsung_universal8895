@@ -243,6 +243,7 @@ struct exynos_ufs {
 	u32 iocc_offset;
 	u32 iocc_mask;
 	u32 iocc_val;
+	unsigned long ufspr_security;
 
 	u32 opts;
 #define EXYNOS_UFS_OPT_HAS_APB_CLK_CTRL		BIT(0)
