@@ -1023,11 +1023,12 @@ static int exynos_ufs_setup_clocks(struct ufs_hba *hba, bool on,
 	if (!ufs)
 		return 0;
 
-	if (on && status == PRE_CHANGE) {
+	/* The vendor HCI registers are only accessible while core_clk runs. */
+	if (on && status == POST_CHANGE) {
 		if (ufs->opts & EXYNOS_UFS_OPT_BROKEN_AUTO_CLK_CTRL)
 			exynos_ufs_disable_auto_ctrl_hcc(ufs);
 		exynos_ufs_ungate_clks(ufs);
-	} else if (!on && status == POST_CHANGE) {
+	} else if (!on && status == PRE_CHANGE) {
 		exynos_ufs_gate_clks(ufs);
 		if (ufs->opts & EXYNOS_UFS_OPT_BROKEN_AUTO_CLK_CTRL)
 			exynos_ufs_enable_auto_ctrl_hcc(ufs);
@@ -1046,7 +1047,7 @@ static int exynos_ufs_pre_link(struct ufs_hba *hba)
 	exynos_ufs_config_intr(ufs, DFES_DEF_L4_ERRS, UNIPRO_L4);
 	exynos_ufs_set_unipro_pclk_div(ufs);
 
-	exynos_ufs_setup_clocks(hba, true, PRE_CHANGE);
+	exynos_ufs_setup_clocks(hba, true, POST_CHANGE);
 
 	/* unipro */
 	exynos_ufs_config_unipro(ufs);
