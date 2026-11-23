@@ -192,6 +192,12 @@ enum s2mps17_rtc_reg {
 #define WTSR_ENABLE_SHIFT	6
 #define WTSR_ENABLE_MASK	(1 << WTSR_ENABLE_SHIFT)
 
+#define S2MPS17_RTC_FREEZE_MASK		BIT(2)
+/* CAPSEL[7:4] all set marks an initialised RTC */
+#define S2MPS17_RTC_CAPSEL_INIT		0xf0
+/* WTSR and SMPL enabled, WTSR timer 3, SMPL timer 0 */
+#define S2MPS17_RTC_WTSR_SMPL_INIT	0xc3
+
 #define S2MPG10_WTSR_COLDTIMER	GENMASK(6, 5)
 #define S2MPG10_WTSR_COLDRST	BIT(4)
 #define S2MPG10_WTSR_WTSRT	GENMASK(3, 1)
