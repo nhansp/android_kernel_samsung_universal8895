@@ -2844,6 +2844,7 @@ struct dentry *start_removing_path(const char *name, struct path *path)
 	putname(filename);
 	return res;
 }
+EXPORT_SYMBOL_GPL(start_removing_path);
 
 struct dentry *start_removing_user_path_at(int dfd,
 					   const char __user *name,
