@@ -250,6 +250,7 @@ struct exynos_ufs {
 #define EXYNOS_UFS_OPT_UFSPR_SECURE		BIT(6)
 #define EXYNOS_UFS_OPT_TIMER_TICK_SELECT	BIT(7)
 #define EXYNOS_UFS_OPT_UNIPRO_PCLK		BIT(8)
+#define EXYNOS_UFS_OPT_SKIP_SYNC_PATTERN_MASK	BIT(9)
 };
 
 #define for_each_ufs_rx_lane(ufs, i) \
