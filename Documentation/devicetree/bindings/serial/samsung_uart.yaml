@@ -91,6 +91,23 @@ properties:
     $ref: /schemas/types.yaml#/definitions/uint32
     enum: [16, 64, 256]
 
+  samsung,rts-gpio-control:
+    type: boolean
+    description:
+      Hold nRTS and TXD high as GPIO outputs over system suspend, so that the
+      peer stops sending and sees an idle line while the UART is off. Uses
+      the pinctrl states "tx_dat" (TXD data preset high while still muxed to
+      the UART), "rts" (nRTS and TXD as GPIO outputs) and "default".
+
+  samsung,rts-trig-level:
+    description:
+      RTS trigger level field of UMCON, used with hardware flow control. On a
+      256-byte FIFO nRTS is deasserted when the Rx FIFO holds 255 bytes for
+      level 0 and 256 - 32 * level bytes otherwise. Defaults to 0.
+    $ref: /schemas/types.yaml#/definitions/uint32
+    minimum: 0
+    maximum: 7
+
 required:
   - compatible
   - clocks
