@@ -1485,6 +1485,8 @@ int sipc5_init_io_device(struct io_device *iod)
 		if (ret) {
 			mif_info("%s: ERR! register_netdev fail\n", iod->name);
 			free_netdev(iod->ndev);
+			iod->ndev = NULL;
+			return ret;
 		}
 
 		mif_debug("iod 0x%pK\n", iod);
