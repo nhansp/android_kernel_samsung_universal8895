@@ -22,19 +22,27 @@
 #include "modem_prj.h"
 #include "modem_utils.h"
 
-static struct raw_notifier_head modem_event_notifier;
+static ATOMIC_NOTIFIER_HEAD(modem_event_notifier);
 
 int register_modem_event_notifier(struct notifier_block *nb)
 {
 	if (!nb)
 		return -ENOENT;
 
-	return raw_notifier_chain_register(&modem_event_notifier, nb);
+	return atomic_notifier_chain_register(&modem_event_notifier, nb);
+}
+
+int unregister_modem_event_notifier(struct notifier_block *nb)
+{
+	if (!nb)
+		return -ENOENT;
+
+	return atomic_notifier_chain_unregister(&modem_event_notifier, nb);
 }
 
 void modem_notify_event(enum modem_event evt)
 {
 	mif_err("event notify (%d) ++\n", evt);
-	raw_notifier_call_chain(&modem_event_notifier, evt, NULL);
+	atomic_notifier_call_chain(&modem_event_notifier, evt, NULL);
 	mif_err("event notify (%d) --\n", evt);
 }
