@@ -3187,6 +3187,7 @@ static void abox_change_cpu_gear(struct device *dev, struct abox_data *data)
 	struct abox_qos_request *request;
 	size_t len = ARRAY_SIZE(data->ca7_gear_requests);
 	unsigned int gear = UINT_MAX;
+	bool increasing;
 	int result;
 
 	dev_dbg(dev, "%s\n", __func__);
@@ -3200,7 +3201,17 @@ static void abox_change_cpu_gear(struct device *dev, struct abox_data *data)
 				request->id, request->value, gear);
 	}
 
+	increasing = (gear < data->clk_ca7_gear);
 	data->clk_ca7_gear = gear;
+
+	/* raise the INT floor before the CPU clock goes up */
+	if (increasing) {
+		if (gear <= ARRAY_SIZE(data->pm_qos_int))
+			exynos_bus_qos_update_request(&data->qos_int,
+						      data->pm_qos_int[gear - 1]);
+		else
+			exynos_bus_qos_update_request(&data->qos_int, 0);
+	}
 
 	if (gear >= CPU_GEAR_LOWER_LIMIT) {
 		result = clk_set_parent(data->clk_pll, data->clk_osc);
@@ -3238,6 +3249,15 @@ static void abox_change_cpu_gear(struct device *dev, struct abox_data *data)
 		}
 	}
 	dev_info(dev, "cpu clock: %ukHz\n", data->ca7_khz);
+
+	/* and lower it only after the CPU clock went down */
+	if (!increasing) {
+		if (gear <= ARRAY_SIZE(data->pm_qos_int))
+			exynos_bus_qos_update_request(&data->qos_int,
+						      data->pm_qos_int[gear - 1]);
+		else
+			exynos_bus_qos_update_request(&data->qos_int, 0);
+	}
 
 	abox_notify_cpu_gear(data, data->ca7_khz * 1000);
 }
@@ -3308,6 +3328,16 @@ static void abox_clear_cpu_gear_requests(struct device *dev,
 	}
 }
 
+static void abox_change_mif_freq_work_func(struct work_struct *work)
+{
+	struct abox_data *data = container_of(work, struct abox_data,
+					      change_mif_freq_work);
+
+	dev_info(&data->pdev->dev, "%s(%u)\n", __func__, data->mif_freq);
+
+	exynos_bus_qos_update_request(&data->qos_mif, data->mif_freq);
+}
+
 static void abox_request_mif_freq(struct device *dev, unsigned int mif_freq)
 {
 	struct abox_data *data = dev_get_drvdata(dev);
@@ -3315,6 +3345,7 @@ static void abox_request_mif_freq(struct device *dev, unsigned int mif_freq)
 	dev_info(dev, "%s(%u)\n", __func__, mif_freq);
 
 	data->mif_freq = mif_freq;
+	schedule_work(&data->change_mif_freq_work);
 }
 
 int abox_request_lit_freq(struct device *dev, struct abox_data *data,
@@ -4950,6 +4981,16 @@ static void abox_unregister_ws(void *ws)
 	wakeup_source_unregister(ws);
 }
 
+/* devm action: registered before the IRQ handler and runtime PM, runs after */
+static void abox_remove_bus_qos(void *arg)
+{
+	struct abox_data *data = arg;
+
+	cancel_work_sync(&data->change_mif_freq_work);
+	exynos_bus_qos_remove_request(&data->qos_int);
+	exynos_bus_qos_remove_request(&data->qos_mif);
+}
+
 /* devm action: registered before anything can load firmware, runs last */
 static void abox_release_firmware(void *arg)
 {
@@ -5137,6 +5178,7 @@ static int samsung_abox_probe(struct platform_device *pdev)
 			abox_register_component_work_func);
 	INIT_WORK(&data->boot_done_work, abox_boot_done_work_func);
 	INIT_WORK(&data->l2c_work, abox_l2c_work_func);
+	INIT_WORK(&data->change_mif_freq_work, abox_change_mif_freq_work_func);
 	INIT_LIST_HEAD(&data->irq_actions);
 
 	data->pinctrl = devm_pinctrl_get(dev);
@@ -5297,6 +5339,12 @@ static int samsung_abox_probe(struct platform_device *pdev)
 	abox_cpu_power(data, false);
 	abox_probe_secure_gic();
 
+	exynos_bus_qos_add_request(&data->qos_int, EXYNOS_BUS_QOS_INT, 0);
+	exynos_bus_qos_add_request(&data->qos_mif, EXYNOS_BUS_QOS_MIF, 0);
+	ret = devm_add_action_or_reset(dev, abox_remove_bus_qos, data);
+	if (ret < 0)
+		return ret;
+
 	abox_gic_register_irq_handler(data->pdev_gic, abox_irq_handler, pdev);
 
 	data->regmap = devm_regmap_init_mmio(dev, data->sfr_base,
@@ -5352,7 +5400,7 @@ static void samsung_abox_remove(struct platform_device *pdev)
 #else
 	(void)data;
 #endif
-	/* the component, children, runtime PM, memory and IOMMU are devm */
+	/* the component, children, runtime PM, bus QoS, memory and IOMMU are devm */
 }
 
 static void samsung_abox_shutdown(struct platform_device *pdev)

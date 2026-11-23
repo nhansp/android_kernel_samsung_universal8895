@@ -17,6 +17,7 @@
 #include <linux/workqueue.h>
 #include <sound/compress_driver.h>
 #include <sound/samsung/abox.h>
+#include <soc/samsung/exynos8895-bus-qos.h>
 
 #define ABOX_MASK(name) (GENMASK(ABOX_##name##_H, ABOX_##name##_L))
 #define ABOX_MASK_ARG(name, x) (GENMASK(ABOX_##name##_H(x), ABOX_##name##_L(x)))
@@ -594,6 +595,9 @@ struct abox_data {
 	struct work_struct l2c_work;
 	struct notifier_block modem_nb;
 	int pm_qos_int[5];
+	struct exynos_bus_qos_request qos_int;
+	struct exynos_bus_qos_request qos_mif;
+	struct work_struct change_mif_freq_work;
 	void *vss_base;			/* CPU view of the VSS carve-out */
 	size_t vss_size;
 	struct work_struct boot_done_work;
