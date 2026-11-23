@@ -3208,6 +3208,13 @@ static char *napi_state_string[8] = {
 	"NAPI_STATE_HASHED",
 };
 
+static const char *napi_state_str(unsigned long state)
+{
+	if (state < ARRAY_SIZE(napi_state_string) && napi_state_string[state])
+		return napi_state_string[state];
+	return "?";
+}
+
 static ssize_t rx_napi_list_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -3227,7 +3234,7 @@ static ssize_t rx_napi_list_show(struct device *dev,
 	list_for_each_entry(n, &netdev->napi_list, dev_list)
 		count += sprintf(&buf[count],
 				"state:%s(%ld), weight:%d, poll:0x%pK\n",
-				napi_state_string[n->state], n->state,
+				napi_state_str(n->state), n->state,
 				n->weight, (void *)n->poll);
 
 	for (i = 0; i < sl->num_channels; i++) {
@@ -3240,7 +3247,7 @@ static ssize_t rx_napi_list_show(struct device *dev,
 			list_for_each_entry(n, &netdev->napi_list, dev_list)
 				count += sprintf(&buf[count],
 					"state:%s(%ld), weight:%d, poll:0x%pK\n",
-					napi_state_string[n->state], n->state,
+					napi_state_str(n->state), n->state,
 					n->weight, (void *)n->poll);
 		}
 	}
