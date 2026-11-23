@@ -6,6 +6,7 @@
 #include <linux/array_size.h>
 #include <linux/build_bug.h>
 #include <linux/dev_printk.h>
+#include <linux/device.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/mfd/samsung/core.h>
@@ -13,6 +14,7 @@
 #include <linux/mfd/samsung/s2mpg10.h>
 #include <linux/mfd/samsung/s2mps11.h>
 #include <linux/mfd/samsung/s2mps14.h>
+#include <linux/mfd/samsung/s2mps17.h>
 #include <linux/mfd/samsung/s2mpu02.h>
 #include <linux/mfd/samsung/s2mpu05.h>
 #include <linux/mfd/samsung/s5m8767.h>
@@ -180,6 +182,54 @@ static const struct regmap_irq s5m8767_irqs[] = {
 	REGMAP_IRQ_REG(S5M8767_IRQ_WTSR, 2, S5M8767_IRQ_WTSR_MASK),
 };
 
+static const struct regmap_irq s2mps17_irqs[] = {
+	REGMAP_IRQ_REG(S2MPS17_IRQ_PWRONR, 0, BIT(1)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_PWRONF, 0, BIT(0)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_JIGONBF, 0, BIT(2)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_JIGONBR, 0, BIT(3)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_ACOKBF, 0, BIT(4)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_ACOKBR, 0, BIT(5)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_PWRON1S, 0, BIT(6)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_MRB, 0, BIT(7)),
+
+	REGMAP_IRQ_REG(S2MPS17_IRQ_RTC60S, 1, BIT(0)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_RTCA1, 1, BIT(1)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_RTCA0, 1, BIT(2)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_SMPL, 1, BIT(3)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_RTC1S, 1, BIT(4)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_WTSR, 1, BIT(5)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_WRSTB, 1, BIT(7)),
+
+	REGMAP_IRQ_REG(S2MPS17_IRQ_120C, 2, BIT(0)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_140C, 2, BIT(1)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_TSD, 2, BIT(2)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_ADCDONE, 2, BIT(7)),
+
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OC0, 3, BIT(0)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OC1, 3, BIT(1)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OC2, 3, BIT(2)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OC3, 3, BIT(3)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OC4, 3, BIT(4)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OC5, 3, BIT(5)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OC6, 3, BIT(6)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OC7, 3, BIT(7)),
+
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OCPB1, 4, BIT(0)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OCPB2, 4, BIT(1)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OCPB3, 4, BIT(2)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OCPB4, 4, BIT(3)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OCPB5, 4, BIT(4)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OCPB6, 4, BIT(5)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OCPB7, 4, BIT(6)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OCPB8, 4, BIT(7)),
+
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OCPB9, 5, BIT(0)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OCPB10, 5, BIT(1)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OCPB11, 5, BIT(2)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OCPB12, 5, BIT(3)),
+	REGMAP_IRQ_REG(S2MPS17_IRQ_OCPBB, 5, BIT(4)),
+};
+
 /* All S2MPG10 interrupt sources are read-only and don't require clearing */
 static const struct regmap_irq_chip s2mpg10_irq_chip = {
 	.name = "s2mpg10",
@@ -189,6 +239,26 @@ static const struct regmap_irq_chip s2mpg10_irq_chip = {
 	.status_base = S2MPG10_PMIC_INT1,
 	.mask_base = S2MPG10_PMIC_INT1M,
 };
+
+/* INT1..INT6 are cleared on read */
+static const struct regmap_irq_chip s2mps17_irq_chip = {
+	.name = "s2mps17",
+	.irqs = s2mps17_irqs,
+	.num_irqs = ARRAY_SIZE(s2mps17_irqs),
+	.num_regs = S2MPS17_NUM_IRQ_PMIC_REGS,
+	.status_base = S2MPS17_PMIC_REG_INT1,
+	.mask_base = S2MPS17_PMIC_REG_INT1M,
+};
+
+/* The vendor driver reads the TOP interrupt source before INT1..INT6. */
+static int s2mps17_irq_pre(void *irq_drv_data)
+{
+	unsigned int src;
+
+	regmap_read(irq_drv_data, S2MPS17_TOP_INTSRC, &src);
+
+	return 0;
+}
 
 static const struct regmap_irq_chip s2mps11_irq_chip = {
 	.name = "s2mps11",
@@ -256,6 +326,9 @@ static const struct regmap_irq_chip s5m8767_irq_chip = {
 int sec_irq_init(struct sec_pmic_dev *sec_pmic)
 {
 	const struct regmap_irq_chip *sec_irq_chip;
+	struct regmap_irq_chip *chip;
+	struct regmap *common;
+	unsigned int i;
 	int ret;
 
 	switch (sec_pmic->device_type) {
@@ -282,6 +355,20 @@ int sec_irq_init(struct sec_pmic_dev *sec_pmic)
 	case S2MPS15X:
 		sec_irq_chip = &s2mps15_irq_chip;
 		break;
+	case S2MPS17X:
+		/* The pre-irq hook needs this device's TOP regmap. */
+		common = dev_get_regmap(sec_pmic->dev, "common");
+		if (!common)
+			return dev_err_probe(sec_pmic->dev, -ENODEV,
+					     "no common regmap\n");
+		chip = devm_kmemdup(sec_pmic->dev, &s2mps17_irq_chip,
+				    sizeof(*chip), GFP_KERNEL);
+		if (!chip)
+			return -ENOMEM;
+		chip->handle_pre_irq = s2mps17_irq_pre;
+		chip->irq_drv_data = common;
+		sec_irq_chip = chip;
+		break;
 	case S2MPU02:
 		sec_irq_chip = &s2mpu02_irq_chip;
 		break;
@@ -298,6 +385,20 @@ int sec_irq_init(struct sec_pmic_dev *sec_pmic)
 		dev_warn(sec_pmic->dev,
 			 "No interrupt specified, no interrupts\n");
 		return 0;
+	}
+
+	/*
+	 * regmap-irq only masks the bits that have an interrupt; mask the
+	 * remaining ones too, the bootloader may have left them unmasked.
+	 */
+	if (sec_pmic->device_type == S2MPS17X) {
+		for (i = 0; i < S2MPS17_NUM_IRQ_PMIC_REGS; i++) {
+			ret = regmap_write(sec_pmic->regmap_pmic,
+					   S2MPS17_PMIC_REG_INT1M + i, 0xff);
+			if (ret)
+				return dev_err_probe(sec_pmic->dev, ret,
+						     "failed to mask INT%uM\n", i + 1);
+		}
 	}
 
 	ret = devm_regmap_add_irq_chip(sec_pmic->dev, sec_pmic->regmap_pmic,
