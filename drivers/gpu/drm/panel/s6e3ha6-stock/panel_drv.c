@@ -1018,6 +1018,15 @@ long panel_drv_ioctl(struct panel_device *panel, unsigned int cmd, void *arg)
 	return (long)ret;
 }
 
+/*
+ * PANEL_IOC_EVT_FRAME_DONE from the frame-done interrupt: copr_update_start()
+ * does not sleep, so it is called without io_lock.
+ */
+void panel_drv_frame_done(struct panel_device *panel)
+{
+	copr_update_start(&panel->copr, 3);
+}
+
 /* panel-lookup of the vendor device tree: panel names, (id, mask, index) */
 static const char * const panel_great_names[] = {
 	"s6e3ha6_great_a2_s3", "s6e3ha6_great_a3_sa",

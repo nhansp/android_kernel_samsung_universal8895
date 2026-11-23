@@ -249,5 +249,6 @@ struct panel_device {
 int panel_drv_init(struct panel_device *panel, struct device *dev,
 		   bool init_at_boot, bool connected);
 long panel_drv_ioctl(struct panel_device *panel, unsigned int cmd, void *arg);
+void panel_drv_frame_done(struct panel_device *panel);
 void panel_dsi_init(struct panel_device *panel, struct mipi_dsi_device *dsi);
 #endif //__PANEL_DRV_H__
