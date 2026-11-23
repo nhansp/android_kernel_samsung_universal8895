@@ -276,6 +276,9 @@ struct samsung_retention_data {
  *	device suspend, see samsung_pinctrl_suspend()
  * @resume: platform specific resume callback, executed during pin controller
  *	device suspend, see samsung_pinctrl_resume()
+ * @no_pm_save: the registers are in a switchable power domain whose user
+ *	reapplies its pin states after power-on: skip the system sleep save
+ *	and restore of this controller.
  *
  * External wakeup interrupts must define at least eint_wkup_init,
  * retention_data and suspend in order for proper suspend/resume to work.
@@ -291,6 +294,7 @@ struct samsung_pin_ctrl {
 	void		(*pud_value_init)(struct samsung_pinctrl_drv_data *drvdata);
 	void		(*suspend)(struct samsung_pin_bank *bank);
 	void		(*resume)(struct samsung_pin_bank *bank);
+	bool		no_pm_save;
 };
 
 /**
@@ -316,6 +320,7 @@ struct samsung_pin_ctrl {
  *	device suspend, see samsung_pinctrl_suspend()
  * @resume: platform specific resume callback, executed during pin controller
  *	device suspend, see samsung_pinctrl_resume()
+ * @no_pm_save: copy of samsung_pin_ctrl.no_pm_save
  */
 struct samsung_pinctrl_drv_data {
 	struct list_head		node;
@@ -341,6 +346,7 @@ struct samsung_pinctrl_drv_data {
 
 	void (*suspend)(struct samsung_pin_bank *bank);
 	void (*resume)(struct samsung_pin_bank *bank);
+	bool				no_pm_save;
 };
 
 /**

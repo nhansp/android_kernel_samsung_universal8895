@@ -1199,6 +1199,7 @@ samsung_pinctrl_get_soc_data(struct samsung_pinctrl_drv_data *d,
 
 	d->suspend = ctrl->suspend;
 	d->resume = ctrl->resume;
+	d->no_pm_save = ctrl->no_pm_save;
 	d->nr_banks = ctrl->nr_banks;
 	d->pin_banks = devm_kcalloc(&pdev->dev, d->nr_banks,
 					sizeof(*d->pin_banks), GFP_KERNEL);
@@ -1341,6 +1342,9 @@ static int __maybe_unused samsung_pinctrl_suspend(struct device *dev)
 	struct samsung_pin_bank *bank;
 	int i;
 
+	if (drvdata->no_pm_save)
+		return 0;
+
 	i = clk_enable(drvdata->pclk);
 	if (i) {
 		dev_err(drvdata->dev,
@@ -1405,6 +1409,9 @@ static int __maybe_unused samsung_pinctrl_resume(struct device *dev)
 	struct samsung_pin_bank *bank;
 	int ret;
 	int i;
+
+	if (drvdata->no_pm_save)
+		return 0;
 
 	/*
 	 * enable clock before the callback, as we don't want to have to deal
