@@ -39,6 +39,7 @@ static int exynos_dsi_host_attach(struct samsung_dsim *dsim,
 	struct exynos_dsi *dsi = dsim->priv;
 	struct drm_encoder *encoder = &dsi->encoder;
 	struct drm_device *drm = encoder->dev;
+	struct exynos_drm_crtc *crtc;
 
 	drm_bridge_attach(encoder, &dsim->bridge,
 			  list_first_entry_or_null(&encoder->bridge_chain,
@@ -50,8 +51,9 @@ static int exynos_dsi_host_attach(struct samsung_dsim *dsim,
 	dsim->lanes = device->lanes;
 	dsim->format = device->format;
 	dsim->mode_flags = device->mode_flags;
-	exynos_drm_crtc_get_by_type(drm, EXYNOS_DISPLAY_TYPE_LCD)->i80_mode =
-			!(dsim->mode_flags & MIPI_DSI_MODE_VIDEO);
+	crtc = exynos_drm_crtc_get_by_type(drm, EXYNOS_DISPLAY_TYPE_LCD);
+	crtc->i80_mode = !(dsim->mode_flags & MIPI_DSI_MODE_VIDEO);
+	crtc->dsc = device->dsc;
 
 	mutex_unlock(&drm->mode_config.mutex);
 

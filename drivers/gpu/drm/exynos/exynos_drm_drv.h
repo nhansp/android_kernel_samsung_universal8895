@@ -25,6 +25,7 @@
 
 struct drm_crtc_state;
 struct drm_display_mode;
+struct drm_dsc_config;
 
 #define to_exynos_crtc(x)	container_of(x, struct exynos_drm_crtc, base)
 #define to_exynos_plane(x)	container_of(x, struct exynos_drm_plane, base)
@@ -165,6 +166,7 @@ struct exynos_drm_clk {
  * @ops: pointer to callbacks for exynos drm specific functionality
  * @ctx: A pointer to the crtc's implementation specific context
  * @pipe_clk: A pointer to the crtc's pipeline clock.
+ * @dsc: DSC configuration of the attached DSI panel, if it uses DSC.
  */
 struct exynos_drm_crtc {
 	struct drm_crtc			base;
@@ -173,6 +175,7 @@ struct exynos_drm_crtc {
 	void				*ctx;
 	struct exynos_drm_clk		*pipe_clk;
 	bool				i80_mode : 1;
+	const struct drm_dsc_config	*dsc;
 };
 
 static inline void exynos_drm_pipe_clk_enable(struct exynos_drm_crtc *crtc,
