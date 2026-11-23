@@ -446,6 +446,8 @@ SOC_SINGLE_TLV("Noise Gate Threshold Volume", MADERA_NOISE_GATE_CONTROL,
 	       MADERA_NGATE_THR_SHIFT, 7, 1, madera_ng_tlv),
 SOC_ENUM("Noise Gate Hold", madera_ng_hold),
 
+MADERA_RATE_ENUM("Output Rate 1", madera_output_ext_rate),
+
 SOC_ENUM_EXT("DFC1RX Width", madera_dfc_width[0],
 	     snd_soc_get_enum_double, madera_dfc_put),
 SOC_ENUM_EXT("DFC1RX Type", madera_dfc_type[0],

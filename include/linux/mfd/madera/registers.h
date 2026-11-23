@@ -2100,6 +2100,8 @@
 #define MADERA_OUT1R_ENA_SHIFT				     0
 
 /* (0x0408)  Output_Rate_1 */
+#define MADERA_OUT_RATE_MASK				0xF800
+#define MADERA_OUT_RATE_SHIFT				    11
 #define MADERA_CP_DAC_MODE_MASK				0x0040
 #define MADERA_CP_DAC_MODE_SHIFT			     6
 #define MADERA_OUT_EXT_CLK_DIV_MASK			0x0030
