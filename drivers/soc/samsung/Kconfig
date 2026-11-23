@@ -120,4 +120,14 @@ config SAMSUNG_SEC_CLASS
 	  whose device nodes (tsp, led, ...) the Samsung device HALs use.
 	  Provides sec_device_create_with_groups() and sec_device_destroy()
 	  for the drivers that create those nodes.
+
+config EXYNOS_UFS_SRPMB
+	bool "Exynos secure RPMB proxy for the Trustonic TEE"
+	depends on SCSI_UFSHCD && ARCH_EXYNOS
+	select EXYNOS8895_SMC
+	help
+	  Forwards the RPMB requests of the Exynos8895 secure world, which
+	  the Trustonic TEE uses for its secure storage, to the RPMB
+	  well-known logical unit of the UFS device. The vendor kernels
+	  call this CONFIG_UFS_SRPMB.
 endif
