@@ -180,7 +180,8 @@ create_memshare_device_exit:
 
 static void destroy_memshare_device(void)
 {
-	misc_deregister(&pdata.mdev);
+	if (pdata.data_ready)
+		misc_deregister(&pdata.mdev);
 }
 #endif
 
