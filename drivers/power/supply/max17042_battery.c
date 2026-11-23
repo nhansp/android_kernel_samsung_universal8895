@@ -23,6 +23,7 @@
 #include <linux/power/max17042_battery.h>
 #include <linux/of.h>
 #include <linux/regmap.h>
+#include <linux/mfd/max77865-private.h>
 
 /* Status register bits */
 #define STATUS_POR_BIT         (1 << 1)
@@ -61,6 +62,12 @@ struct max17042_chip {
 	struct work_struct work;
 	int    init_complete;
 	int    irq;
+	/* MAX77865: temperature written by the host */
+	bool   host_temp;
+	bool   low_temp_wa;
+	const char *tz_name;
+	struct power_supply_desc psy_desc;
+	struct delayed_work temp_work;
 };
 
 static enum power_supply_property max17042_battery_props[] = {
@@ -115,6 +122,21 @@ static int max17042_get_status(struct max17042_chip *chip, int *status)
 	int ret, charge_full, charge_now;
 	int avg_current;
 	u32 data;
+
+	/*
+	 * MAX77865: while supplied, report the charger's status, which includes its
+	 * thermal, over-voltage and timer stops. The charger does not read this one.
+	 */
+	if (chip->host_temp && power_supply_am_i_supplied(chip->battery) > 0) {
+		union power_supply_propval v;
+
+		ret = power_supply_get_property_from_supplier(chip->battery,
+							      POWER_SUPPLY_PROP_STATUS, &v);
+		if (ret == 0) {
+			*status = v.intval;
+			return 0;
+		}
+	}
 
 	ret = power_supply_am_i_supplied(chip->battery);
 	if (ret < 0) {
@@ -905,6 +927,49 @@ static void max17042_init_worker(struct work_struct *work)
 	chip->init_complete = 1;
 }
 
+/*
+ * MAX77865: the battery NTC temperature goes to TEMP every 10 s, as the vendor
+ * charger driver wrote it; a failed reading keeps the last value.
+ */
+static void max17042_temp_worker(struct work_struct *work)
+{
+	struct max17042_chip *chip = container_of(to_delayed_work(work),
+						  struct max17042_chip, temp_work);
+	struct regmap *map = chip->regmap;
+	struct thermal_zone_device *tz;
+	int t, d;
+	u32 q, val;
+
+	tz = thermal_zone_get_zone_by_name(chip->tz_name);
+	if (!IS_ERR(tz) && !max77865_ntc_avg(tz, &t)) {
+		d = t / 100;	/* 0.1 degC */
+		/*
+		 * two's complement 1/256 degC, rounded away from zero so that
+		 * max17042_get_temperature() reads d back exactly
+		 */
+		q = DIV_ROUND_UP(abs(d) * 256, 10);
+		regmap_write(map, MAX17042_TEMP, (u16)(d < 0 ? -(s32)q : (s32)q));
+
+		/* the vendor FilterCFG values below 0 and above 3.0 degC */
+		if (d < 0 && !chip->low_temp_wa) {
+			chip->low_temp_wa = true;
+			regmap_write(map, MAX17042_FilterCFG, 0xce97);
+		} else if (d > 30 && chip->low_temp_wa) {
+			chip->low_temp_wa = false;
+			regmap_write(map, MAX17042_FilterCFG, 0xce94);
+		}
+
+		/* keep QRTable20 and QRTable30 at the vendor values */
+		if (!regmap_read(map, MAX17047_QRTbl20, &val) && val != 0x0f82)
+			regmap_write(map, MAX17047_QRTbl20, 0x0f82);
+		if (!regmap_read(map, MAX17047_QRTbl30, &val) && val != 0x0b04)
+			regmap_write(map, MAX17047_QRTbl30, 0x0b04);
+	}
+
+	/* the polling period of the NTC zone */
+	queue_delayed_work(system_freezable_wq, &chip->temp_work, 10 * HZ);
+}
+
 #ifdef CONFIG_OF
 static struct max17042_platform_data *
 max17042_get_of_pdata(struct max17042_chip *chip)
@@ -1058,6 +1123,16 @@ static int max17042_probe(struct i2c_client *client, struct device *dev, int irq
 		return -EINVAL;
 	}
 
+	chip->host_temp = of_device_is_compatible(dev->of_node, "maxim,max77865-battery");
+	if (chip->host_temp) {
+		ret = of_property_read_string(dev->of_node, "samsung,battery-ntc",
+					      &chip->tz_name);
+		if (ret)
+			return dev_err_probe(dev, ret, "no samsung,battery-ntc\n");
+		/* CONFIG.TEX: the host writes the temperature */
+		regmap_update_bits(chip->regmap, MAX17042_CONFIG, BIT(8), BIT(8));
+	}
+
 	chip->pdata = max17042_get_pdata(chip);
 	if (!chip->pdata) {
 		dev_err(dev, "no platform data provided\n");
@@ -1086,6 +1161,13 @@ static int max17042_probe(struct i2c_client *client, struct device *dev, int irq
 		regmap_write(chip->regmap, MAX17042_CGAIN, 0x0000);
 		regmap_write(chip->regmap, MAX17042_MiscCFG, 0x0003);
 		regmap_write(chip->regmap, MAX17042_LearnCFG, 0x0007);
+	}
+
+	/* MAX77865: vendor blobs read battery/temp and battery/voltage_now */
+	if (chip->host_temp) {
+		chip->psy_desc = *max17042_desc;
+		chip->psy_desc.name = "battery";
+		max17042_desc = &chip->psy_desc;
 	}
 
 	chip->battery = devm_power_supply_register(dev, max17042_desc,
@@ -1129,6 +1211,14 @@ static int max17042_probe(struct i2c_client *client, struct device *dev, int irq
 		schedule_work(&chip->work);
 	} else {
 		chip->init_complete = 1;
+	}
+
+	if (chip->host_temp) {
+		ret = devm_delayed_work_autocancel(dev, &chip->temp_work,
+						   max17042_temp_worker);
+		if (ret)
+			return ret;
+		queue_delayed_work(system_freezable_wq, &chip->temp_work, 0);
 	}
 
 	return 0;
@@ -1238,6 +1328,8 @@ static const struct of_device_id max17042_dt_match[] __used = {
 		.data = (void *) MAXIM_DEVICE_TYPE_MAX17047 },
 	{ .compatible = "maxim,max77849-battery",
 		.data = (void *) MAXIM_DEVICE_TYPE_MAX17047 },
+	{ .compatible = "maxim,max77865-battery",
+		.data = (void *) MAXIM_DEVICE_TYPE_MAX17047 },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, max17042_dt_match);
@@ -1249,6 +1341,7 @@ static const struct i2c_device_id max17042_id[] = {
 	{ "max17050", MAXIM_DEVICE_TYPE_MAX17050 },
 	{ "max17055", MAXIM_DEVICE_TYPE_MAX17055 },
 	{ "max77849-battery", MAXIM_DEVICE_TYPE_MAX17047 },
+	{ "max77865-battery", MAXIM_DEVICE_TYPE_MAX17047 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, max17042_id);
