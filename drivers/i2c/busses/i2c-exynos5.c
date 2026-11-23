@@ -992,6 +992,20 @@ static int exynos5_i2c_suspend_noirq(struct device *dev)
 	struct exynos5_i2c *i2c = dev_get_drvdata(dev);
 
 	i2c_mark_adapter_suspended(&i2c->adap);
+
+	/*
+	 * Out of reset, an idle Exynos8895 controller keeps its clock
+	 * requested under hardware auto clock gating. Hold it in reset.
+	 */
+	if (i2c->variant->hw == I2C_TYPE_EXYNOS8895 &&
+	    !clk_enable(i2c->pclk)) {
+		if (!clk_enable(i2c->clk)) {
+			writel(HSI2C_SW_RST, i2c->regs + HSI2C_CTL);
+			clk_disable(i2c->clk);
+		}
+		clk_disable(i2c->pclk);
+	}
+
 	clk_unprepare(i2c->clk);
 	clk_unprepare(i2c->pclk);
 
@@ -1010,6 +1024,9 @@ static int exynos5_i2c_resume_noirq(struct device *dev)
 	ret = clk_prepare_enable(i2c->clk);
 	if (ret)
 		goto err_pclk;
+
+	if (i2c->variant->hw == I2C_TYPE_EXYNOS8895)
+		writel(readl(i2c->regs + HSI2C_CTL) & ~HSI2C_SW_RST, i2c->regs + HSI2C_CTL);
 
 	ret = exynos5_hsi2c_clock_setup(i2c);
 	if (ret)
