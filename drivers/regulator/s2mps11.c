@@ -20,6 +20,7 @@
 #include <linux/mfd/samsung/s2mps13.h>
 #include <linux/mfd/samsung/s2mps14.h>
 #include <linux/mfd/samsung/s2mps15.h>
+#include <linux/mfd/samsung/s2mps17.h>
 #include <linux/mfd/samsung/s2mpu02.h>
 #include <linux/mfd/samsung/s2mpu05.h>
 
@@ -46,6 +47,9 @@ struct s2mps11_info {
 	 * sleep control.
 	 */
 	struct gpio_desc **ext_control_gpiod;
+
+	/* S2MPS17: operating mode written by enable() */
+	unsigned int opmode[S2MPS_REGULATOR_MAX];
 };
 
 static int get_ramp_delay(int ramp_delay)
@@ -1202,6 +1206,237 @@ static const struct regulator_desc s2mpu05_regulators[] = {
 	regulator_desc_s2mpu05_buck45(5),
 };
 
+/*
+ * S2MPS17 outputs are on while their operating mode, CTRL[7:6], is non-zero:
+ * 1 = on while PWREN is high, 2 = on while PWREN_MIF is high, 3 = on.
+ * enable() writes the mode last set, so that a mode survives disable.
+ */
+static unsigned int s2mps17_of_map_mode(unsigned int val)
+{
+	switch (val) {
+	case 1:
+		return REGULATOR_MODE_STANDBY;
+	case 2:
+		return REGULATOR_MODE_IDLE;
+	default:
+		return REGULATOR_MODE_NORMAL;
+	}
+}
+
+static int s2mps17_set_mode(struct regulator_dev *rdev, unsigned int mode)
+{
+	struct s2mps11_info *s2mps11 = rdev_get_drvdata(rdev);
+	unsigned int field, val;
+	int ret;
+
+	switch (mode) {
+	case REGULATOR_MODE_STANDBY:
+		field = 0x1;
+		break;
+	case REGULATOR_MODE_IDLE:
+		field = 0x2;
+		break;
+	default:
+		field = 0x3;
+		break;
+	}
+	val = field << S2MPS17_ENABLE_SHIFT;
+
+	ret = regmap_update_bits(rdev->regmap, rdev->desc->enable_reg,
+				 rdev->desc->enable_mask, val);
+	if (ret)
+		return ret;
+
+	s2mps11->opmode[rdev_get_id(rdev)] = val;
+
+	return 0;
+}
+
+static int s2mps17_enable(struct regulator_dev *rdev)
+{
+	struct s2mps11_info *s2mps11 = rdev_get_drvdata(rdev);
+
+	return regmap_update_bits(rdev->regmap, rdev->desc->enable_reg,
+				  rdev->desc->enable_mask,
+				  s2mps11->opmode[rdev_get_id(rdev)]);
+}
+
+/* As the vendor driver, only wait when the voltage rises. */
+static int s2mps17_set_voltage_time_sel(struct regulator_dev *rdev,
+					unsigned int old_selector,
+					unsigned int new_selector)
+{
+	unsigned int ramp_delay = rdev->constraints->ramp_delay ?:
+				  rdev->desc->ramp_delay;
+	int old_uV, new_uV;
+
+	if (!ramp_delay)
+		return -EINVAL;
+	if (old_selector >= new_selector)
+		return 0;
+
+	old_uV = rdev->desc->ops->list_voltage(rdev, old_selector);
+	new_uV = rdev->desc->ops->list_voltage(rdev, new_selector);
+
+	return DIV_ROUND_UP(new_uV - old_uV, ramp_delay);
+}
+
+static int s2mps17_set_ramp_delay(struct regulator_dev *rdev, int ramp_delay)
+{
+	unsigned int shift, cnt = 0, x = ramp_delay / 1000 / 6;
+
+	while (x >>= 1)
+		cnt++;
+
+	switch (rdev_get_id(rdev)) {
+	case S2MPS17_BUCK2:
+	case S2MPS17_BUCK4:
+	case S2MPS17_BUCK5:
+	case S2MPS17_BUCK10:
+	case S2MPS17_BUCK12:
+		shift = 6;
+		break;
+	case S2MPS17_BUCK1:
+	case S2MPS17_BUCK3:
+	case S2MPS17_BUCK6:
+		shift = 4;
+		break;
+	case S2MPS17_BUCK7:
+	case S2MPS17_BUCK11:
+		shift = 2;
+		break;
+	case S2MPS17_BUCK8:
+	case S2MPS17_BUCK9:
+		shift = 0;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return regmap_update_bits(rdev->regmap, S2MPS17_PMIC_REG_BUCKRAMP,
+				  0x3 << shift, cnt << shift);
+}
+
+static const struct regulator_ops s2mps17_ldo_ops = {
+	.list_voltage		= regulator_list_voltage_linear,
+	.map_voltage		= regulator_map_voltage_linear,
+	.is_enabled		= regulator_is_enabled_regmap,
+	.enable			= s2mps17_enable,
+	.disable		= regulator_disable_regmap,
+	.get_voltage_sel	= regulator_get_voltage_sel_regmap,
+	.set_voltage_sel	= regulator_set_voltage_sel_regmap,
+	.set_voltage_time_sel	= s2mps17_set_voltage_time_sel,
+	.set_mode		= s2mps17_set_mode,
+};
+
+static const struct regulator_ops s2mps17_buck_ops = {
+	.list_voltage		= regulator_list_voltage_linear,
+	.map_voltage		= regulator_map_voltage_linear,
+	.is_enabled		= regulator_is_enabled_regmap,
+	.enable			= s2mps17_enable,
+	.disable		= regulator_disable_regmap,
+	.get_voltage_sel	= regulator_get_voltage_sel_regmap,
+	.set_voltage_sel	= regulator_set_voltage_sel_regmap,
+	.set_voltage_time_sel	= s2mps17_set_voltage_time_sel,
+	.set_mode		= s2mps17_set_mode,
+	.set_ramp_delay		= s2mps17_set_ramp_delay,
+};
+
+/*
+ * BUCK6 is switched by the G3D power-down pin (see s2mps17_init()); without
+ * enable ops the core considers it always on.
+ */
+static const struct regulator_ops s2mps17_buck6_ops = {
+	.list_voltage		= regulator_list_voltage_linear,
+	.map_voltage		= regulator_map_voltage_linear,
+	.get_voltage_sel	= regulator_get_voltage_sel_regmap,
+	.set_voltage_sel	= regulator_set_voltage_sel_regmap,
+	.set_voltage_time_sel	= s2mps17_set_voltage_time_sel,
+	.set_mode		= s2mps17_set_mode,
+	.set_ramp_delay		= s2mps17_set_ramp_delay,
+};
+
+#define regulator_desc_s2mps17_ldo(num, reg, min, step) {	\
+	.name		= "LDO"#num,				\
+	.id		= S2MPS17_LDO##num,			\
+	.ops		= &s2mps17_ldo_ops,			\
+	.type		= REGULATOR_VOLTAGE,			\
+	.owner		= THIS_MODULE,				\
+	.min_uV		= S2MPS17_LDO_MIN##min,			\
+	.uV_step	= S2MPS17_LDO_STEP##step,		\
+	.n_voltages	= S2MPS17_LDO_N_VOLTAGES,		\
+	.vsel_reg	= S2MPS17_PMIC_REG_##reg,		\
+	.vsel_mask	= S2MPS17_LDO_VSEL_MASK,		\
+	.enable_reg	= S2MPS17_PMIC_REG_##reg,		\
+	.enable_mask	= S2MPS17_ENABLE_MASK,			\
+	.enable_time	= S2MPS17_ENABLE_TIME_LDO,		\
+	.ramp_delay	= S2MPS17_RAMP_DELAY,			\
+	.of_map_mode	= s2mps17_of_map_mode,			\
+}
+
+#define regulator_desc_s2mps17_buck(num, ops_, vsel, min, step) {	\
+	.name		= "BUCK"#num,				\
+	.id		= S2MPS17_BUCK##num,			\
+	.ops		= ops_,					\
+	.type		= REGULATOR_VOLTAGE,			\
+	.owner		= THIS_MODULE,				\
+	.min_uV		= S2MPS17_BUCK_MIN##min,		\
+	.uV_step	= S2MPS17_BUCK_STEP##step,		\
+	.n_voltages	= S2MPS17_BUCK_N_VOLTAGES,		\
+	.vsel_reg	= S2MPS17_PMIC_REG_##vsel,		\
+	.vsel_mask	= S2MPS17_BUCK_VSEL_MASK,		\
+	.enable_reg	= S2MPS17_PMIC_REG_B##num##CTRL,	\
+	.enable_mask	= S2MPS17_ENABLE_MASK,			\
+	.enable_time	= S2MPS17_ENABLE_TIME_BUCK##num,	\
+	.ramp_delay	= S2MPS17_RAMP_DELAY,			\
+	.of_map_mode	= s2mps17_of_map_mode,			\
+}
+
+/* The buck-boost output is not registered: no board uses it. */
+static const struct regulator_desc s2mps17_regulators[] = {
+	regulator_desc_s2mps17_ldo(1, L1CTRL, 2, 1),
+	regulator_desc_s2mps17_ldo(2, L2CTRL, 3, 2),
+	regulator_desc_s2mps17_ldo(3, L3CTRL, 1, 2),
+	regulator_desc_s2mps17_ldo(4, L4CTRL, 2, 1),
+	regulator_desc_s2mps17_ldo(5, L5CTRL, 1, 2),
+	regulator_desc_s2mps17_ldo(6, L6CTRL, 3, 2),
+	regulator_desc_s2mps17_ldo(7, L7CTRL, 4, 2),
+	regulator_desc_s2mps17_ldo(8, L8CTRL, 4, 2),
+	regulator_desc_s2mps17_ldo(9, L9CTRL1, 4, 2),
+	regulator_desc_s2mps17_ldo(10, L10CTRL, 2, 1),
+	regulator_desc_s2mps17_ldo(11, L11CTRL, 2, 1),
+	regulator_desc_s2mps17_ldo(12, L12CTRL, 2, 1),
+	regulator_desc_s2mps17_ldo(13, L13CTRL, 1, 1),
+	regulator_desc_s2mps17_ldo(20, L20CTRL, 1, 1),
+	regulator_desc_s2mps17_ldo(29, L29CTRL, 3, 2),
+	regulator_desc_s2mps17_ldo(30, L30CTRL, 3, 2),
+	regulator_desc_s2mps17_ldo(31, L31CTRL, 3, 2),
+	regulator_desc_s2mps17_ldo(32, L32CTRL, 1, 2),
+	regulator_desc_s2mps17_ldo(33, L33CTRL, 1, 1),
+	regulator_desc_s2mps17_ldo(34, L34CTRL, 1, 2),
+	regulator_desc_s2mps17_ldo(35, L35CTRL, 3, 2),
+	regulator_desc_s2mps17_ldo(36, L36CTRL, 3, 2),
+	regulator_desc_s2mps17_ldo(37, L37CTRL, 3, 2),
+	regulator_desc_s2mps17_ldo(38, L38CTRL, 1, 2),
+	regulator_desc_s2mps17_ldo(39, L39CTRL, 1, 2),
+	regulator_desc_s2mps17_ldo(40, L40CTRL, 1, 1),
+	regulator_desc_s2mps17_ldo(41, L41CTRL, 3, 2),
+	regulator_desc_s2mps17_ldo(42, L42CTRL, 1, 2),
+	regulator_desc_s2mps17_ldo(43, L43CTRL, 1, 1),
+	regulator_desc_s2mps17_buck(1, &s2mps17_buck_ops, B1OUT, 1, 1),
+	regulator_desc_s2mps17_buck(2, &s2mps17_buck_ops, B2OUT, 1, 1),
+	regulator_desc_s2mps17_buck(3, &s2mps17_buck_ops, B3OUT, 1, 1),
+	regulator_desc_s2mps17_buck(4, &s2mps17_buck_ops, B4OUT, 1, 1),
+	regulator_desc_s2mps17_buck(5, &s2mps17_buck_ops, B5OUT, 1, 1),
+	regulator_desc_s2mps17_buck(6, &s2mps17_buck6_ops, B6OUT1, 1, 1),
+	regulator_desc_s2mps17_buck(7, &s2mps17_buck_ops, B7OUT, 1, 1),
+	regulator_desc_s2mps17_buck(8, &s2mps17_buck_ops, B8OUT, 1, 1),
+	regulator_desc_s2mps17_buck(9, &s2mps17_buck_ops, B9OUT, 1, 1),
+	regulator_desc_s2mps17_buck(10, &s2mps17_buck_ops, B10OUT, 1, 1),
+	regulator_desc_s2mps17_buck(11, &s2mps17_buck_ops, B11OUT, 2, 3),
+	regulator_desc_s2mps17_buck(12, &s2mps17_buck_ops, B12OUT1, 1, 1),
+};
+
 static int s2mps11_pmic_probe(struct platform_device *pdev)
 {
 	struct sec_pmic_dev *iodev = dev_get_drvdata(pdev->dev.parent);
@@ -1238,6 +1473,11 @@ static int s2mps11_pmic_probe(struct platform_device *pdev)
 		regulators = s2mps15_regulators;
 		BUILD_BUG_ON(S2MPS_REGULATOR_MAX < ARRAY_SIZE(s2mps15_regulators));
 		break;
+	case S2MPS17X:
+		rdev_num = ARRAY_SIZE(s2mps17_regulators);
+		regulators = s2mps17_regulators;
+		BUILD_BUG_ON(S2MPS_REGULATOR_MAX < ARRAY_SIZE(s2mps17_regulators));
+		break;
 	case S2MPU02:
 		rdev_num = ARRAY_SIZE(s2mpu02_regulators);
 		regulators = s2mpu02_regulators;
@@ -1264,8 +1504,14 @@ static int s2mps11_pmic_probe(struct platform_device *pdev)
 	if (!rdata)
 		return -ENOMEM;
 
-	for (i = 0; i < rdev_num; i++)
+	for (i = 0; i < rdev_num; i++) {
 		rdata[i].name = regulators[i].name;
+		/* The DT parser needs the desc to map regulator-initial-mode. */
+		if (s2mps11->dev_type == S2MPS17X) {
+			rdata[i].desc = &regulators[i];
+			s2mps11->opmode[regulators[i].id] = regulators[i].enable_mask;
+		}
+	}
 
 	ret = s2mps11_pmic_dt_parse(pdev, rdata, s2mps11, rdev_num);
 	if (ret)
@@ -1316,6 +1562,7 @@ static const struct platform_device_id s2mps11_pmic_id[] = {
 	{ "s2mps13-regulator", S2MPS13X},
 	{ "s2mps14-regulator", S2MPS14X},
 	{ "s2mps15-regulator", S2MPS15X},
+	{ "s2mps17-regulator", S2MPS17X},
 	{ "s2mpu02-regulator", S2MPU02},
 	{ "s2mpu05-regulator", S2MPU05},
 	{ },
