@@ -322,6 +322,15 @@ extern const unsigned int madera_mixer_values[MADERA_NUM_MIXER_INPUTS];
 #define MADERA_DFC_TYPE_ENUM_SIZE	5
 #define MADERA_DFC_WIDTH_ENUM_SIZE	5
 
+/* Cells of "cirrus,micbiasN": mV, ext_cap, discharge[4], soft_start, bypass */
+#define MADERA_MICBIAS_CELL_MV		0
+#define MADERA_MICBIAS_CELL_EXT_CAP	1
+#define MADERA_MICBIAS_CELL_DISCH	2
+#define MADERA_MICBIAS_CELL_SOFT_START \
+		(MADERA_MICBIAS_CELL_DISCH + MADERA_MAX_CHILD_MICBIAS)
+#define MADERA_MICBIAS_CELL_BYPASS	(MADERA_MICBIAS_CELL_SOFT_START + 1)
+#define MADERA_MICBIAS_NUM_CELLS	(MADERA_MICBIAS_CELL_BYPASS + 1)
+
 extern const struct snd_soc_dai_ops madera_dai_ops;
 extern const struct snd_soc_dai_ops madera_simple_dai_ops;
 
