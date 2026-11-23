@@ -21,13 +21,21 @@
 #include <linux/string_choices.h>
 #include <linux/workqueue.h>
 #include <linux/regulator/consumer.h>
+#include <linux/hrtimer.h>
+#include <linux/ktime.h>
+#include <linux/property.h>
 #include <linux/mfd/max77693.h>
 #include <linux/mfd/max77693-common.h>
 #include <linux/mfd/max77693-private.h>
 #include <linux/mfd/max77705-private.h>
 #include <linux/mfd/max77843-private.h>
+#include <linux/mfd/max77865-private.h>
 
 #define MAX_MAGNITUDE_SHIFT	16
+
+#define MAX77865_MCONFIG_DIVIDER_128	BIT(1)
+#define MAX77865_MCONFIG_MOTOR_EN	BIT(6)
+#define MAX77865_MCONFIG_MOTOR_LRA	BIT(7)
 
 enum max77693_haptic_motor_type {
 	MAX77693_HAPTIC_ERM = 0,
@@ -63,8 +71,83 @@ struct max77693_haptic {
 	enum max77693_haptic_motor_type type;
 	enum max77693_haptic_pulse_mode mode;
 
+	/* MAX77865 */
+	u32 max_duty_ns;
+	u32 max_timeout_ms;
+	unsigned int duty_ns;
+	unsigned int intensity;
+	struct hrtimer timer;
+	struct device *tout_dev;
+
 	struct work_struct work;
 };
+
+static int max77865_haptic_init_reg(struct max77693_haptic *haptic)
+{
+	struct regmap *map = haptic->regmap_haptic;
+	int ret;
+
+	usleep_range(6000, 6100);
+
+	ret = regmap_update_bits(map, MAX77865_PMIC_REG_MAINCTRL1,
+				 MAX77865_MAINCTRL1_BIASEN,
+				 MAX77865_MAINCTRL1_BIASEN);
+	if (ret)
+		return ret;
+
+	ret = regmap_update_bits(map, MAX77865_PMIC_REG_MCONFIG,
+				 MAX77865_MCONFIG_MOTOR_EN, 0);
+	if (ret)
+		return ret;
+
+	ret = regmap_update_bits(map, MAX77865_PMIC_REG_MCONFIG,
+				 MAX77865_MCONFIG_MOTOR_LRA,
+				 MAX77865_MCONFIG_MOTOR_LRA);
+	if (ret)
+		return ret;
+
+	ret = regmap_update_bits(map, MAX77865_PMIC_REG_MCONFIG,
+				 MAX77865_MCONFIG_DIVIDER_128,
+				 MAX77865_MCONFIG_DIVIDER_128);
+	if (ret)
+		return ret;
+
+	return 0;
+}
+
+static int max77865_haptic_boost(struct max77693_haptic *haptic, bool on)
+{
+	struct regmap *map = haptic->regmap_haptic;
+
+	if (on) {
+		regmap_update_bits(map, MAX77865_PMIC_REG_BOOSTCONTROL1,
+				   MAX77865_BOOSTCONTROL1_BSTOUT, 0x00);
+		return regmap_update_bits(map, MAX77865_PMIC_REG_BOOSTCONTROL2,
+					  MAX77865_BOOSTCONTROL2_FORCE_EN,
+					  MAX77865_BOOSTCONTROL2_FORCE_EN);
+	}
+
+	return regmap_update_bits(map, MAX77865_PMIC_REG_BOOSTCONTROL2,
+				  MAX77865_BOOSTCONTROL2_FORCE_EN, 0x00);
+}
+
+/* +-10000 drives the full duty or its mirror image, 0 the neutral half period */
+static unsigned int max77865_haptic_duty(struct max77693_haptic *haptic, int intensity)
+{
+	struct pwm_args pargs;
+	unsigned int p, d;
+
+	pwm_get_args(haptic->pwm_dev, &pargs);
+	p = pargs.period;
+	d = haptic->max_duty_ns;
+
+	if (intensity == 10000)
+		return d;
+	if (intensity == 0)
+		return p / 2;
+
+	return p / 2 + (int)(d - p / 2) * intensity / 10000;
+}
 
 static int max77693_haptic_set_duty_cycle(struct max77693_haptic *haptic)
 {
@@ -72,7 +155,10 @@ static int max77693_haptic_set_duty_cycle(struct max77693_haptic *haptic)
 	int error;
 
 	pwm_init_state(haptic->pwm_dev, &state);
-	state.duty_cycle = (state.period + haptic->pwm_duty) / 2;
+	if (haptic->dev_type == TYPE_MAX77865)
+		state.duty_cycle = haptic->duty_ns;
+	else
+		state.duty_cycle = (state.period + haptic->pwm_duty) / 2;
 
 	error = pwm_apply_might_sleep(haptic->pwm_dev, &state);
 	if (error) {
@@ -111,6 +197,11 @@ static int max77693_haptic_configure(struct max77693_haptic *haptic,
 	int error;
 
 	switch (haptic->dev_type) {
+	case TYPE_MAX77865:
+		return regmap_update_bits(haptic->regmap_haptic,
+					  MAX77865_PMIC_REG_MCONFIG,
+					  MAX77865_MCONFIG_MOTOR_EN,
+					  enable ? MAX77865_MCONFIG_MOTOR_EN : 0);
 	case TYPE_MAX77693:
 		value = ((haptic->type << MAX77693_CONFIG2_MODE) |
 			(enable << MAX77693_CONFIG2_MEN) |
@@ -174,7 +265,10 @@ static void max77693_haptic_enable(struct max77693_haptic *haptic)
 		return;
 
 	pwm_init_state(haptic->pwm_dev, &state);
-	state.duty_cycle = (state.period + haptic->pwm_duty) / 2;
+	if (haptic->dev_type == TYPE_MAX77865)
+		state.duty_cycle = haptic->duty_ns;
+	else
+		state.duty_cycle = (state.period + haptic->pwm_duty) / 2;
 	state.enabled = true;
 
 	error = pwm_apply_might_sleep(haptic->pwm_dev, &state);
@@ -252,13 +346,19 @@ static int max77693_haptic_play_effect(struct input_dev *dev, void *data,
 
 	/*
 	 * The magnitude comes from force-feedback interface.
-	 * The formula to convert magnitude to pwm_duty as follows:
+	 * For MAX77865, map 0..0xffff to 0..10000 intensity.
+	 * Otherwise convert magnitude to pwm_duty as:
 	 * - pwm_duty = (magnitude * pwm_period) / MAX_MAGNITUDE(0xFFFF)
 	 */
-	pwm_get_args(haptic->pwm_dev, &pargs);
-	period_mag_multi = (u64)pargs.period * haptic->magnitude;
-	haptic->pwm_duty = (unsigned int)(period_mag_multi >>
-						MAX_MAGNITUDE_SHIFT);
+	if (haptic->dev_type == TYPE_MAX77865) {
+		haptic->duty_ns = max77865_haptic_duty(haptic,
+						       (int)(haptic->magnitude * 10000 / 0xffff));
+	} else {
+		pwm_get_args(haptic->pwm_dev, &pargs);
+		period_mag_multi = (u64)pargs.period * haptic->magnitude;
+		haptic->pwm_duty = (unsigned int)(period_mag_multi >>
+							MAX_MAGNITUDE_SHIFT);
+	}
 
 	schedule_work(&haptic->work);
 
@@ -300,6 +400,120 @@ static void max77693_haptic_close(struct input_dev *dev)
 	max77843_haptic_bias(haptic, false);
 }
 
+static enum hrtimer_restart max77865_tout_timer(struct hrtimer *timer)
+{
+	struct max77693_haptic *haptic =
+		container_of(timer, struct max77693_haptic, timer);
+
+	haptic->magnitude = 0;
+	schedule_work(&haptic->work);
+	return HRTIMER_NORESTART;
+}
+
+/* timed_output "enable": vibrate for the given milliseconds */
+static ssize_t enable_store(struct device *dev,
+			    struct device_attribute *attr,
+			    const char *buf, size_t count)
+{
+	struct max77693_haptic *haptic = dev_get_drvdata(dev);
+	int ms, error;
+
+	error = kstrtoint(buf, 0, &ms);
+	if (error)
+		return -EINVAL;
+
+	hrtimer_cancel(&haptic->timer);
+	ms = min_t(int, ms, (int)haptic->max_timeout_ms);
+
+	if (ms > 0) {
+		haptic->magnitude = 1;
+		schedule_work(&haptic->work);
+		hrtimer_start(&haptic->timer, ms_to_ktime(ms), HRTIMER_MODE_REL);
+	} else {
+		haptic->magnitude = 0;
+		schedule_work(&haptic->work);
+	}
+
+	return count;
+}
+
+static ssize_t enable_show(struct device *dev,
+			   struct device_attribute *attr,
+			   char *buf)
+{
+	struct max77693_haptic *haptic = dev_get_drvdata(dev);
+	int rem_ms = 0;
+
+	if (hrtimer_active(&haptic->timer))
+		rem_ms = ktime_to_ms(hrtimer_get_remaining(&haptic->timer));
+
+	return sysfs_emit(buf, "%d\n", rem_ms);
+}
+static DEVICE_ATTR(enable, 0664, enable_show, enable_store);
+
+static ssize_t intensity_store(struct device *dev,
+			       struct device_attribute *attr,
+			       const char *buf, size_t count)
+{
+	struct max77693_haptic *haptic = dev_get_drvdata(dev);
+	int i, error;
+
+	error = kstrtoint(buf, 0, &i);
+	if (error)
+		return -EINVAL;
+
+	if (i < 0 || i > 10000)
+		return -EINVAL;
+
+	haptic->intensity = i;
+	haptic->duty_ns = max77865_haptic_duty(haptic, i);
+
+	if (haptic->enabled)
+		schedule_work(&haptic->work);
+
+	return count;
+}
+
+static ssize_t intensity_show(struct device *dev,
+			      struct device_attribute *attr,
+			      char *buf)
+{
+	struct max77693_haptic *haptic = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "intensity: %u\n", haptic->intensity);
+}
+static DEVICE_ATTR(intensity, 0664, intensity_show, intensity_store);
+
+static struct attribute *max77865_tout_attrs[] = {
+	&dev_attr_enable.attr,
+	&dev_attr_intensity.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(max77865_tout);
+
+static struct class timed_output_class = {
+	.name = "timed_output",
+};
+
+static bool tout_class_registered;
+
+static void max77865_tout_unregister(void *data)
+{
+	struct device *dev = data;
+
+	device_unregister(dev);
+}
+
+static void max77865_haptic_cleanup_action(void *data)
+{
+	struct max77693_haptic *haptic = data;
+
+	hrtimer_cancel(&haptic->timer);
+	cancel_work_sync(&haptic->work);
+	max77693_haptic_disable(haptic);
+	max77865_haptic_boost(haptic, false);
+}
+
 static int max77693_haptic_probe(struct platform_device *pdev)
 {
 	struct max77693_dev *max77693 = dev_get_drvdata(pdev->dev.parent);
@@ -324,12 +538,29 @@ static int max77693_haptic_probe(struct platform_device *pdev)
 		break;
 	case TYPE_MAX77705:
 	case TYPE_MAX77843:
+	case TYPE_MAX77865:
 		haptic->regmap_haptic = max77693->regmap;
 		break;
 	default:
 		dev_err(&pdev->dev, "unsupported device type: %u\n",
 			haptic->dev_type);
 		return -EINVAL;
+	}
+
+	if (haptic->dev_type == TYPE_MAX77865) {
+		error = device_property_read_u32(&pdev->dev, "maxim,max-duty-ns",
+						 &haptic->max_duty_ns);
+		if (error)
+			return dev_err_probe(&pdev->dev, error, "missing maxim,max-duty-ns\n");
+
+		error = device_property_read_u32(&pdev->dev, "maxim,max-timeout-ms",
+						 &haptic->max_timeout_ms);
+		if (error)
+			return dev_err_probe(&pdev->dev, error, "missing maxim,max-timeout-ms\n");
+
+		/* the vendor driver's defaults */
+		haptic->intensity = 8000;
+		haptic->duty_ns = haptic->max_duty_ns;
 	}
 
 	INIT_WORK(&haptic->work, max77693_haptic_play_work);
@@ -377,6 +608,45 @@ static int max77693_haptic_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, haptic);
 
+	if (haptic->dev_type == TYPE_MAX77865) {
+		hrtimer_setup(&haptic->timer, max77865_tout_timer, CLOCK_MONOTONIC,
+			      HRTIMER_MODE_REL);
+
+		error = max77865_haptic_init_reg(haptic);
+		if (error)
+			return dev_err_probe(&pdev->dev, error,
+					     "failed to init haptic registers\n");
+
+		error = devm_add_action_or_reset(&pdev->dev,
+						 max77865_haptic_cleanup_action,
+						 haptic);
+		if (error)
+			return error;
+
+		if (!tout_class_registered) {
+			error = class_register(&timed_output_class);
+			if (error)
+				return dev_err_probe(&pdev->dev, error,
+						     "failed to register timed_output class\n");
+			tout_class_registered = true;
+		}
+
+		haptic->tout_dev = device_create_with_groups(&timed_output_class,
+							     NULL, MKDEV(0, 0),
+							     haptic,
+							     max77865_tout_groups,
+							     "vibrator");
+		if (IS_ERR(haptic->tout_dev))
+			return dev_err_probe(&pdev->dev, PTR_ERR(haptic->tout_dev),
+					     "failed to create vibrator tout device\n");
+
+		error = devm_add_action_or_reset(&pdev->dev,
+						 max77865_tout_unregister,
+						 haptic->tout_dev);
+		if (error)
+			return error;
+	}
+
 	return 0;
 }
 
@@ -384,6 +654,15 @@ static int max77693_haptic_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct max77693_haptic *haptic = platform_get_drvdata(pdev);
+
+	if (haptic->dev_type == TYPE_MAX77865) {
+		hrtimer_cancel(&haptic->timer);
+		cancel_work_sync(&haptic->work);
+		haptic->magnitude = 0;
+		max77693_haptic_disable(haptic);
+		max77865_haptic_boost(haptic, false);
+		return 0;
+	}
 
 	if (haptic->enabled) {
 		max77693_haptic_disable(haptic);
@@ -398,12 +677,30 @@ static int max77693_haptic_resume(struct device *dev)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct max77693_haptic *haptic = platform_get_drvdata(pdev);
 
+	if (haptic->dev_type == TYPE_MAX77865) {
+		max77865_haptic_init_reg(haptic);
+		max77865_haptic_boost(haptic, true);
+		return 0;
+	}
+
 	if (haptic->suspend_state) {
 		max77693_haptic_enable(haptic);
 		haptic->suspend_state = false;
 	}
 
 	return 0;
+}
+
+static void max77693_haptic_shutdown(struct platform_device *pdev)
+{
+	struct max77693_haptic *haptic = platform_get_drvdata(pdev);
+
+	if (haptic->dev_type == TYPE_MAX77865) {
+		hrtimer_cancel(&haptic->timer);
+		cancel_work_sync(&haptic->work);
+		max77693_haptic_disable(haptic);
+		max77865_haptic_boost(haptic, false);
+	}
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(max77693_haptic_pm_ops,
@@ -414,6 +711,7 @@ static const struct platform_device_id max77693_haptic_id[] = {
 	{ "max77693-haptic", },
 	{ "max77705-haptic", },
 	{ "max77843-haptic", },
+	{ "max77865-haptic", },
 	{},
 };
 MODULE_DEVICE_TABLE(platform, max77693_haptic_id);
@@ -422,6 +720,7 @@ static const struct of_device_id of_max77693_haptic_dt_match[] = {
 	{ .compatible = "maxim,max77693-haptic", },
 	{ .compatible = "maxim,max77705-haptic", },
 	{ .compatible = "maxim,max77843-haptic", },
+	{ .compatible = "maxim,max77865-haptic", },
 	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, of_max77693_haptic_dt_match);
@@ -433,11 +732,12 @@ static struct platform_driver max77693_haptic_driver = {
 		.of_match_table = of_max77693_haptic_dt_match,
 	},
 	.probe		= max77693_haptic_probe,
+	.shutdown	= max77693_haptic_shutdown,
 	.id_table	= max77693_haptic_id,
 };
 module_platform_driver(max77693_haptic_driver);
 
 MODULE_AUTHOR("Jaewon Kim <jaewon02.kim@samsung.com>");
 MODULE_AUTHOR("Krzysztof Kozlowski <krzk@kernel.org>");
-MODULE_DESCRIPTION("MAXIM 77693/77705/77843 Haptic driver");
+MODULE_DESCRIPTION("MAXIM 77693/77705/77843/77865 Haptic driver");
 MODULE_LICENSE("GPL");
