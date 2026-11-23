@@ -230,7 +230,7 @@ static int attach_devices(struct io_device *iod, enum modem_link tx_link)
 	 */
 	if (!get_current_link(iod)) {
 		mif_err("%s->link == NULL\n", iod->name);
-		BUG();
+		return -ENODEV;
 	}
 
 	iod->ws = wakeup_source_register(NULL, iod->name);

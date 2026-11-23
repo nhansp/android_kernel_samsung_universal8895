@@ -513,7 +513,8 @@ static inline bool zerocopy_adaptor_empty(struct zerocopy_adaptor *zdptr)
 
 static inline bool rb_empty(struct sbd_ring_buffer *rb)
 {
-	BUG_ON(!rb);
+	if (WARN_ON_ONCE(!rb))
+		return true;
 
 	if (rb->zdptr)
 		return zerocopy_adaptor_empty(rb->zdptr);
@@ -528,7 +529,8 @@ static inline unsigned int zerocopy_adaptor_space(struct zerocopy_adaptor *zdptr
 
 static inline unsigned int rb_space(struct sbd_ring_buffer *rb)
 {
-	BUG_ON(!rb);
+	if (WARN_ON_ONCE(!rb))
+		return 0;
 
 	if (rb->zdptr)
 		return zerocopy_adaptor_space(rb->zdptr);
@@ -543,7 +545,8 @@ static inline unsigned int zerocopy_adaptor_usage(struct zerocopy_adaptor *zdptr
 
 static inline unsigned int rb_usage(struct sbd_ring_buffer *rb)
 {
-	BUG_ON(!rb);
+	if (WARN_ON_ONCE(!rb))
+		return 0;
 
 	if (rb->zdptr)
 		return zerocopy_adaptor_usage(rb->zdptr);
@@ -558,7 +561,8 @@ static inline unsigned int zerocopy_adaptor_full(struct zerocopy_adaptor *zdptr)
 
 static inline unsigned int rb_full(struct sbd_ring_buffer *rb)
 {
-	BUG_ON(!rb);
+	if (WARN_ON_ONCE(!rb))
+		return 1;
 
 	if (rb->zdptr)
 		return zerocopy_adaptor_full(rb->zdptr);
