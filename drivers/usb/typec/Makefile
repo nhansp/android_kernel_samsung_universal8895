@@ -13,3 +13,4 @@ obj-$(CONFIG_TYPEC_RT1719)	+= rt1719.o
 obj-$(CONFIG_TYPEC_WUSB3801)	+= wusb3801.o
 obj-$(CONFIG_TYPEC)		+= mux/
 obj-$(CONFIG_TYPEC_MAX77865_MUIC)	+= max77865-muic.o
+obj-$(CONFIG_TYPEC_S2MM005)		+= s2mm005.o

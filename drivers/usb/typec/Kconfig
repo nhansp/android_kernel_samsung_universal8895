@@ -123,6 +123,35 @@ config TYPEC_MAX77865_MUIC
 
 	  It can only be built in, as it reads the pmic_info= boot parameter.
 
+config TYPEC_S2MM005
+	tristate "Samsung S2MM005 Type-C port controller driver"
+	depends on I2C && OF && TYPEC && USB_ROLE_SWITCH && TYPEC_MAX77865_MUIC
+	help
+	  Say Y or M here if your system has a Samsung S2MM005 USB Type-C and
+	  Power Delivery port controller. Its firmware runs both protocols;
+	  the driver reports the port state to the Type-C class, the USB role
+	  switch and the MAX77865 MUIC.
+
+	  If you choose to build this driver as a dynamically linked module, the
+	  module will be called s2mm005.ko.
+
+config TYPEC_S2MM005_OTG_VBUS
+	bool "Source VBUS in the USB host role"
+	depends on TYPEC_S2MM005
+	help
+	  Let the S2MM005 driver switch on the connector's VBUS supply when
+	  the phone takes the USB host role, so that bus-powered devices
+	  work. Say N if the phone must never source VBUS.
+
+config TYPEC_S2MM005_PD_SELECT
+	bool "Let the charger select USB PD source voltages"
+	depends on TYPEC_S2MM005
+	help
+	  Let the charger driver request USB Power Delivery source
+	  capabilities above 5 V through the S2MM005, and start the power
+	  negotiation with alternate mode. Say N unless the charger driver
+	  is meant to charge at high voltage.
+
 source "drivers/usb/typec/mux/Kconfig"
 
 source "drivers/usb/typec/altmodes/Kconfig"
