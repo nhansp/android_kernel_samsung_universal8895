@@ -33,6 +33,7 @@ properties:
       - samsung,exynos7-usbdrd-phy
       - samsung,exynos7870-usbdrd-phy
       - samsung,exynos850-usbdrd-phy
+      - samsung,exynos8895-usbdrd-phy
       - samsung,exynos990-usbdrd-phy
 
   clocks:
@@ -84,6 +85,12 @@ properties:
     description:
       Phandle to PMU system controller interface.
 
+  samsung,phy-port-gpios:
+    maxItems: 1
+    description:
+      Type-C plug orientation input. Asserted selects the second PHY register
+      window for SuperSpeed.
+
   vbus-supply:
     description:
       VBUS power source.
@@ -109,6 +116,9 @@ properties:
 
   vddh-usbdp-supply:
     description: VDDh power supply for the USB DP phy.
+
+  vdd18-dp-supply:
+    description: 1.8V DisplayPort/PHY power supply, switched with USB.
 
 required:
   - compatible
@@ -210,6 +220,34 @@ allOf:
 
         reg-names:
           maxItems: 1
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: samsung,exynos8895-usbdrd-phy
+    then:
+      allOf:
+        - $ref: /schemas/usb/usb-switch.yaml#
+        - $ref: /schemas/usb/usb-switch-ports.yaml#
+
+      properties:
+        clocks:
+          minItems: 2
+          maxItems: 2
+
+        clock-names:
+          items:
+            - const: phy
+            - const: ref
+
+        reg:
+          items:
+            - description: PHY registers, first port window
+            - description: PHY registers, second port window
+            - description: PHY reference clock select register
+
+        reg-names: false
 
   - if:
       properties:
