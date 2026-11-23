@@ -1,12 +1,8 @@
-/* sound/soc/samsung/abox/abox_dbg.h
- *
- * ALSA SoC - Samsung Abox Debug driver
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * sound/soc/samsung/abox/abox_dbg.h - Samsung ABOX debug driver
  *
  * Copyright (c) 2016 Samsung Electronics Co. Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef __SND_SOC_ABOX_DEBUG_H
@@ -89,5 +85,12 @@ extern void abox_dbg_dump_gpr_mem(struct device *dev, struct abox_data *data,
  * @param[in]	ok		true for okay, false on otherwise
  */
 extern void abox_dbg_report_status(struct device *dev, bool ok);
+
+/**
+ * Get error count
+ * @param[in]	dev		pointer to abox device
+ * @return	error count
+ */
+extern int abox_dbg_get_error_count(struct device *dev);
 
 #endif /* __SND_SOC_ABOX_DEBUG_H */

@@ -1,32 +1,25 @@
-/* sound/soc/samsung/abox/abox_log.c
- *
- * ALSA SoC Audio Layer - Samsung Abox Log driver
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * sound/soc/samsung/abox/abox_log.c - Samsung ABOX log driver
  *
  * Copyright (c) 2016 Samsung Electronics Co. Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 /* #define DEBUG */
 #include <linux/debugfs.h>
+#include <linux/io.h>
 #include <linux/mutex.h>
+#include <linux/poll.h>
+#include <linux/sizes.h>
+#include <linux/slab.h>
+#include <linux/uaccess.h>
 #include <linux/vmalloc.h>
 #include <sound/samsung/abox.h>
 
-#include "abox_util.h"
 #include "abox.h"
 #include "abox_dbg.h"
 #include "abox_log.h"
 
-#undef VERBOSE_LOG
-
-#undef TEST
-#ifdef TEST
-#define SIZE_OF_BUFFER (SZ_128)
-#else
 #define SIZE_OF_BUFFER (SZ_2M)
-#endif
 
 #define S_IRWUG (S_IRUSR|S_IRGRP|S_IWUSR|S_IWGRP)
 
@@ -42,14 +35,12 @@ struct abox_log_buffer_info {
 	struct list_head list;
 	struct device *dev;
 	int id;
-	bool file_created;
 	struct mutex lock;
 	struct ABOX_LOG_BUFFER *log_buffer;
 	struct abox_log_kernel_buffer kernel_buffer;
 };
 
 static LIST_HEAD(abox_log_list_head);
-static u32 abox_log_auto_save;
 
 static void abox_log_memcpy(struct device *dev,
 	struct abox_log_kernel_buffer *kernel_buffer,
@@ -60,74 +51,16 @@ static void abox_log_memcpy(struct device *dev,
 	dev_dbg(dev, "%s(%zu)\n", __func__, size);
 
 	if (left_size < size) {
-#ifdef VERBOSE_LOG
-		dev_dbg(dev, "0: %s\n", src);
-#endif
-		memcpy(kernel_buffer->buffer + kernel_buffer->index,
-				src, left_size);
+		memcpy_fromio(kernel_buffer->buffer + kernel_buffer->index,
+				(const void __iomem *)src, left_size);
 		src += left_size;
 		size -= left_size;
 		kernel_buffer->index = 0;
 		kernel_buffer->wrap = true;
 	}
-#ifdef VERBOSE_LOG
-	dev_dbg(dev, "1: %s\n", src);
-#endif
-	memcpy(kernel_buffer->buffer + kernel_buffer->index, src, size);
+	memcpy_fromio(kernel_buffer->buffer + kernel_buffer->index,
+			(const void __iomem *)src, size);
 	kernel_buffer->index += size;
-}
-
-static void abox_log_file_name(struct device *dev,
-		struct abox_log_buffer_info *info, char *name, size_t size)
-{
-	snprintf(name, size, "/data/calliope-%02d.log", info->id);
-}
-
-static void abox_log_file_save(struct device *dev,
-		struct abox_log_buffer_info *info)
-{
-	struct ABOX_LOG_BUFFER *log_buffer = info->log_buffer;
-	unsigned int index_writer = log_buffer->index_writer;
-	char name[32];
-	struct file *filp;
-	mm_segment_t old_fs;
-
-	dev_dbg(dev, "%s(%d)\n", __func__, info->id);
-
-	abox_log_file_name(dev, info, name, sizeof(name));
-
-	old_fs = get_fs();
-	set_fs(KERNEL_DS);
-	if (likely(info->file_created)) {
-		filp = filp_open(name, O_RDWR | O_APPEND | O_CREAT, S_IRWUG);
-		dev_dbg(dev, "appended\n");
-	} else {
-		filp = filp_open(name, O_RDWR | O_TRUNC | O_CREAT, S_IRWUG);
-		info->file_created = true;
-		dev_dbg(dev, "created\n");
-	}
-	if (IS_ERR(filp)) {
-		dev_warn(dev, "%s: saving log fail\n", __func__);
-		goto out;
-	}
-
-
-	if (log_buffer->index_reader > index_writer) {
-		vfs_write(filp, log_buffer->buffer + log_buffer->index_reader,
-				log_buffer->size - log_buffer->index_reader,
-				&filp->f_pos);
-		vfs_write(filp, log_buffer->buffer, index_writer, &filp->f_pos);
-	} else {
-		vfs_write(filp, log_buffer->buffer + log_buffer->index_reader,
-				index_writer - log_buffer->index_reader,
-				&filp->f_pos);
-	}
-
-	vfs_fsync(filp, 0);
-	filp_close(filp, NULL);
-out:
-	set_fs(old_fs);
-
 }
 
 static void abox_log_flush(struct device *dev,
@@ -146,9 +79,6 @@ static void abox_log_flush(struct device *dev,
 
 	mutex_lock(&info->lock);
 
-	if (abox_log_auto_save)
-		abox_log_file_save(dev, info);
-
 	if (log_buffer->index_reader > index_writer) {
 		abox_log_memcpy(info->dev, kernel_buffer,
 				log_buffer->buffer + log_buffer->index_reader,
@@ -163,11 +93,6 @@ static void abox_log_flush(struct device *dev,
 
 	kernel_buffer->updated = true;
 	wake_up_interruptible(&kernel_buffer->wq);
-
-#ifdef TEST
-	dev_dbg(dev, "shared_buffer: %s\n", log_buffer->buffer);
-	dev_dbg(dev, "kernel_buffer: %s\n", info->kernel_buffer.buffer);
-#endif
 }
 
 void abox_log_flush_all(struct device *dev)
@@ -259,10 +184,6 @@ static ssize_t abox_log_file_read(struct file *file, char __user *buf,
 			}
 			mutex_lock(&info->lock);
 		}
-#ifdef VERBOSE_LOG
-		dev_dbg(info->dev, "loop %zu, %zu, %zd, %zu\n", size, end,
-				abox_log_file_index, count);
-#endif
 	} while (size == 0);
 
 	dev_dbg(info->dev, "start=%zd, end=%zd size=%zd\n",
@@ -283,7 +204,7 @@ static ssize_t abox_log_file_read(struct file *file, char __user *buf,
 	return size;
 }
 
-static unsigned int abox_log_file_poll(struct file *file, poll_table *wait)
+static __poll_t abox_log_file_poll(struct file *file, poll_table *wait)
 {
 	struct abox_log_buffer_info *info = file->private_data;
 	struct abox_log_kernel_buffer *kernel_buffer = &info->kernel_buffer;
@@ -291,7 +212,7 @@ static unsigned int abox_log_file_poll(struct file *file, poll_table *wait)
 	dev_dbg(info->dev, "%s\n", __func__);
 
 	poll_wait(file, &kernel_buffer->wq, wait);
-	return POLLIN | POLLRDNORM;
+	return EPOLLIN | EPOLLRDNORM;
 }
 
 static const struct file_operations abox_log_fops = {
@@ -304,7 +225,7 @@ static const struct file_operations abox_log_fops = {
 
 static struct abox_log_buffer_info abox_log_buffer_info_new;
 
-void abox_log_register_buffer_work_func(struct work_struct *work)
+static void abox_log_register_buffer_work_func(struct work_struct *work)
 {
 	struct device *dev;
 	int id;
@@ -322,10 +243,15 @@ void abox_log_register_buffer_work_func(struct work_struct *work)
 	dev_info(dev, "%s(%d)\n", __func__, id);
 
 	info = vmalloc(sizeof(*info));
+	if (!info)
+		return;
+	info->kernel_buffer.buffer = vzalloc(SIZE_OF_BUFFER);
+	if (!info->kernel_buffer.buffer) {
+		vfree(info);
+		return;
+	}
 	mutex_init(&info->lock);
 	info->id = id;
-	info->file_created = false;
-	info->kernel_buffer.buffer = vzalloc(SIZE_OF_BUFFER);
 	info->kernel_buffer.index = 0;
 	info->kernel_buffer.wrap = false;
 	init_waitqueue_head(&info->kernel_buffer.wq);
@@ -369,53 +295,3 @@ int abox_log_register_buffer(struct device *dev, int id,
 	return 0;
 }
 EXPORT_SYMBOL(abox_log_register_buffer);
-
-#ifdef TEST
-struct ABOX_LOG_BUFFER *abox_log_test_buffer;
-static void abox_log_test_work_func(struct work_struct *work);
-DECLARE_DELAYED_WORK(abox_log_test_work, abox_log_test_work_func);
-static void abox_log_test_work_func(struct work_struct *work)
-{
-	static unsigned int i;
-	struct ABOX_LOG_BUFFER *test = abox_log_test_buffer;
-	char buffer[32];
-	char *index = buffer;
-	int size, left_size;
-
-	pr_debug("%s: %d\n", __func__, i);
-
-	size = snprintf(buffer, sizeof(buffer), "%d ", i++);
-
-	if (test->index_writer + size > test->size) {
-		left_size = test->size - test->index_writer;
-		memcpy(&test->buffer[test->index_writer], index, left_size);
-		test->index_writer = 0;
-		index += left_size;
-	}
-	left_size = size - (index - buffer);
-	memcpy(&test->buffer[test->index_writer], index, left_size);
-	test->index_writer += left_size;
-
-	abox_log_flush_all(NULL);
-
-	schedule_delayed_work(&abox_log_test_work, msecs_to_jiffies(1000));
-}
-#endif
-
-static int __init samsung_abox_log_late_initcall(void)
-{
-	pr_info("%s\n", __func__);
-
-	debugfs_create_u32("log_auto_save", S_IRWUG, abox_dbg_get_root_dir(),
-			&abox_log_auto_save);
-
-#ifdef TEST
-	abox_log_test_buffer = vzalloc(SZ_128);
-	abox_log_test_buffer->size = SZ_64;
-	abox_log_register_buffer(NULL, 0, abox_log_test_buffer);
-	schedule_delayed_work(&abox_log_test_work, msecs_to_jiffies(1000));
-#endif
-
-	return 0;
-}
-late_initcall(samsung_abox_log_late_initcall);

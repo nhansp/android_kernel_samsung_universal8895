@@ -35,8 +35,8 @@ struct abox_ctl_eq_switch {
 static int abox_ctl_info(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_info *uinfo)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
-	struct device *dev = codec->dev;
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct device *dev = component->dev;
 	struct abox_ctl_eq_switch *params = (void *)kcontrol->private_value;
 
 	dev_dbg(dev, "%s: %s\n", __func__, kcontrol->id.name);
@@ -51,9 +51,8 @@ static int abox_ctl_info(struct snd_kcontrol *kcontrol,
 static int abox_ctl_get(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
-	struct device *dev = codec->dev;
 	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct device *dev = component->dev;
 	struct abox_ctl_eq_switch *params = (void *)kcontrol->private_value;
 	int i;
 	int ret = 0;
@@ -66,8 +65,8 @@ static int abox_ctl_get(struct snd_kcontrol *kcontrol,
 
 		reg = (unsigned int)(params->base + PARAM_OFFSET +
 				(i * sizeof(u32)));
-		ret = snd_soc_component_read(component,	reg, &val);
-		if (IS_ERR_VALUE(ret)) {
+		ret = regmap_read(component->regmap, reg, &val);
+		if (ret < 0) {
 			dev_err(dev, "reading fail at 0x%08X\n", reg);
 			break;
 		}
@@ -82,9 +81,8 @@ static int abox_ctl_get(struct snd_kcontrol *kcontrol,
 static int abox_ctl_put(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
-	struct device *dev = codec->dev;
 	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct device *dev = component->dev;
 	struct abox_ctl_eq_switch *params = (void *)kcontrol->private_value;
 	int i;
 
@@ -180,20 +178,13 @@ static const struct regmap_config abox_effect_regmap_config = {
 	.cache_type		= REGCACHE_FLAT,
 };
 
-static struct regmap *abox_effect_get_regmap(struct device *dev)
-{
-	struct abox_effect_data *data = dev_get_drvdata(dev);
-
-	return data->regmap;
-}
-
-static const struct snd_soc_codec_driver abox_effect = {
+static const struct snd_soc_component_driver abox_effect = {
+	.name			= "samsung-abox-effect",
 	.controls		= abox_effect_controls,
 	.num_controls		= ARRAY_SIZE(abox_effect_controls),
-	.get_regmap		= abox_effect_get_regmap,
-	.idle_bias_off		= true,
-	.suspend_bias_off	= true,
-	.ignore_pmdown_time	= true,
+	.idle_bias_on		= 0,
+	.suspend_bias_off	= 1,
+	.use_pmdown_time	= 0,
 };
 
 static int abox_effect_runtime_suspend(struct device *dev)
@@ -228,36 +219,29 @@ const struct dev_pm_ops samsung_abox_effect_pm = {
 static int samsung_abox_effect_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct device_node *np = dev->of_node;
-	struct device_node *np_tmp;
 	struct abox_effect_data *data;
+	struct resource *res;
 
 	dev_dbg(dev, "%s\n", __func__);
 
+	if (!dev->parent || !dev_get_drvdata(dev->parent))
+		return -EPROBE_DEFER;
+
 	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
-	if (data == NULL)
+	if (!data)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, data);
 
-	np_tmp = of_parse_phandle(np, "abox", 0);
-	if (!np_tmp) {
-		dev_err(dev, "Failed to get abox device node\n");
-		return -EPROBE_DEFER;
-	}
-	data->pdev_abox = of_find_device_by_node(np_tmp);
-	if (!data->pdev_abox) {
-		dev_err(dev, "Failed to get abox platform device\n");
-		return -EPROBE_DEFER;
-	}
-
+	data->pdev_abox = to_platform_device(dev->parent);
 	data->pdev = pdev;
 
-	data->base = devm_not_request_and_map(pdev, "reg", 0, NULL, NULL);
-	if (IS_ERR(data->base)) {
-		dev_err(dev, "base address request failed: %ld\n",
-				PTR_ERR(data->base));
-		return PTR_ERR(data->base);
-	}
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res)
+		return -EINVAL;
+
+	data->base = devm_ioremap(dev, res->start, resource_size(res));
+	if (!data->base)
+		return -ENOMEM;
 
 	data->regmap = devm_regmap_init_mmio(dev, data->base,
 			&abox_effect_regmap_config);
@@ -271,24 +255,17 @@ static int samsung_abox_effect_probe(struct platform_device *pdev)
 	pm_runtime_set_autosuspend_delay(dev, 1000);
 	pm_runtime_use_autosuspend(dev);
 
-	return snd_soc_register_codec(&pdev->dev, &abox_effect, NULL, 0);
+	return devm_snd_soc_register_component(dev, &abox_effect, NULL, 0);
 }
 
-static int samsung_abox_effect_remove(struct platform_device *pdev)
+static void samsung_abox_effect_remove(struct platform_device *pdev)
 {
-	struct device *dev = &pdev->dev;
-
-	dev_dbg(dev, "%s\n", __func__);
-
-	pm_runtime_disable(dev);
-	snd_soc_unregister_codec(&pdev->dev);
-
-	return 0;
+	pm_runtime_disable(&pdev->dev);
 }
 
 static const struct of_device_id samsung_abox_effect_match[] = {
 	{
-		.compatible = "samsung,abox-effect",
+		.compatible = "samsung,exynos8895-abox-effect",
 	},
 	{},
 };

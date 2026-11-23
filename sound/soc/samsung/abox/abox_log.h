@@ -1,12 +1,8 @@
-/* sound/soc/samsung/abox/abox_log.h
- *
- * ALSA SoC - Samsung Abox Log driver
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * sound/soc/samsung/abox/abox_log.h - Samsung ABOX log driver
  *
  * Copyright (c) 2016 Samsung Electronics Co. Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef __SND_SOC_ABOX_LOG_H
