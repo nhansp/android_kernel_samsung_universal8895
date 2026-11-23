@@ -127,3 +127,4 @@ obj-$(CONFIG_BATTERY_UG3105)	+= ug3105_battery.o
 obj-$(CONFIG_CHARGER_QCOM_SMB2)	+= qcom_smbx.o
 obj-$(CONFIG_FUEL_GAUGE_MM8013)	+= mm8013.o
 obj-$(CONFIG_WIRELESS_CHARGER_IDT_MFC)	+= idt_mfc_wpc.o
+obj-$(CONFIG_CHARGER_MAX77865_AFC)	+= max77865_muic_hv.o

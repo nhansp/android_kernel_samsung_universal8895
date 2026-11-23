@@ -759,6 +759,24 @@ config WIRELESS_CHARGER_IDT_MFC_HV
 	  withdraws it or the battery is full. Needs the 5 V charging
 	  policy.
 
+config CHARGER_MAX77865_AFC
+	bool "Maxim MAX77865 Adaptive Fast Charging (AFC)"
+	depends on CHARGER_MAX77865_CHARGE_CONTROL && AUXILIARY_BUS && TYPEC_MAX77865_MUIC && TYPEC_S2MM005=y
+	help
+	  Detect Samsung AFC adapters through the MAX77865 MUIC and switch
+	  them to 9 V while the MAX77865 charge policy allows it. The
+	  adapter stays at 5 V after detection until the charger asks for
+	  9 V, and goes back to 5 V when charging stops.
+
+config CHARGER_MAX77865_QC
+	bool "Maxim MAX77865 Quick Charge 2.0 (QC 2.0)"
+	depends on CHARGER_MAX77865_AFC
+	help
+	  Switch Quick Charge 2.0 adapters to 9 V as well. Without this
+	  option a QC adapter is detected but stays at 5 V, charging with
+	  the input current of an adapter that is being prepared for a
+	  higher voltage.
+
 config CHARGER_MAX77976
 	tristate "Maxim MAX77976 battery charger driver"
 	depends on I2C
