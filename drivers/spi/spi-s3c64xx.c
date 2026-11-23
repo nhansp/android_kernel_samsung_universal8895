@@ -157,6 +157,8 @@ struct s3c64xx_spi_dma_data {
  * @use_32bit_io: True if the SoC allows only 32-bit register accesses.
  * @cs_inact_suspend: True if suspend must leave the chip select in manual mode,
  *	inactive.
+ * @pio_poll: True if PIO transfers wait for the RX FIFO level by polling the status
+ *	register instead of the FIFO-ready interrupt.
  *
  * The Samsung s3c64xx SPI controller are used on various Samsung SoC's but
  * differ in some aspects such as the size of the fifo and spi bus clock
@@ -178,6 +180,7 @@ struct s3c64xx_spi_port_config {
 	bool	has_loopback;
 	bool	use_32bit_io;
 	bool	cs_inact_suspend;
+	bool	pio_poll;
 };
 
 /**
@@ -868,7 +871,8 @@ static int s3c64xx_spi_transfer_one(struct spi_controller *host,
 
 	do {
 		/* transfer size is greater than 32, change to IRQ mode */
-		if (!use_dma && xfer->len > S3C64XX_SPI_POLLING_SIZE)
+		if (!use_dma && !sdd->port_conf->pio_poll &&
+		    xfer->len > S3C64XX_SPI_POLLING_SIZE)
 			use_irq = true;
 
 		if (use_irq) {
@@ -1620,6 +1624,7 @@ static const struct s3c64xx_spi_port_config exynos8895_spi_port_config = {
 	.has_loopback	= true,
 	.quirks		= S3C64XX_SPI_QUIRK_CS_AUTO,
 	.cs_inact_suspend = true,
+	.pio_poll	= true,
 };
 
 static const struct s3c64xx_spi_port_config exynosautov9_spi_port_config = {
