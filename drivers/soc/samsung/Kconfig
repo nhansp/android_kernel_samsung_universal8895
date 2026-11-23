@@ -75,4 +75,12 @@ config SAMSUNG_PM_CHECK_CHUNKSIZE
 config EXYNOS_REGULATOR_COUPLER
 	bool "Exynos SoC Regulator Coupler" if COMPILE_TEST
 	depends on ARCH_EXYNOS || COMPILE_TEST
+
+config EXYNOS8895_SMC
+	bool
+	help
+	  exynos8895_smc(): plain secure monitor calls to the Samsung EL3
+	  monitor of the Exynos8895, for the vendor calls that are not SMCCC
+	  services (secure RPMB, secure log, modem power control, ABOX).
+	  Selected by its users.
 endif
