@@ -34,6 +34,7 @@
 #include <linux/math.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/serial.h>
 #include <linux/serial_core.h>
@@ -160,6 +161,12 @@ struct s3c24xx_uart_port {
 
 	/* UMCON RTS trigger level field from "samsung,rts-trig-level" */
 	u32				umcon_rts_trig;
+
+	/* "samsung,rts-gpio-control" pin states */
+	struct pinctrl			*rts_pinctrl;
+	struct pinctrl_state		*pins_default;
+	struct pinctrl_state		*pins_rts;
+	struct pinctrl_state		*pins_tx_dat;
 };
 
 static void s3c24xx_serial_tx_chars(struct s3c24xx_uart_port *ourport);
@@ -2018,6 +2025,24 @@ static int s3c24xx_serial_probe(struct platform_device *pdev)
 			ourport->umcon_rts_trig = FIELD_PREP(S3C2412_UMCON_AFC_8,
 							     rts_trig_level);
 
+		ourport->rts_pinctrl = NULL;
+		if (of_property_read_bool(np, "samsung,rts-gpio-control")) {
+			struct pinctrl *pinctrl = devm_pinctrl_get(&pdev->dev);
+
+			if (IS_ERR(pinctrl)) {
+				dev_err(&pdev->dev, "failed to get pinctrl\n");
+			} else {
+				ourport->rts_pinctrl = pinctrl;
+				ourport->pins_rts = pinctrl_lookup_state(pinctrl, "rts");
+				if (IS_ERR(ourport->pins_rts))
+					dev_err(&pdev->dev, "no \"rts\" pin state\n");
+				ourport->pins_tx_dat = pinctrl_lookup_state(pinctrl, "tx_dat");
+				ourport->pins_default = pinctrl_lookup_state(pinctrl, "default");
+				if (IS_ERR(ourport->pins_default))
+					dev_err(&pdev->dev, "no \"default\" pin state\n");
+			}
+		}
+
 		if (of_property_read_u32(np, "reg-io-width", &prop) == 0) {
 			switch (prop) {
 			case 1:
@@ -2094,6 +2119,64 @@ static void s3c24xx_serial_remove(struct platform_device *dev)
 
 /* UART power management code */
 #ifdef CONFIG_PM_SLEEP
+/*
+ * "tx_dat" presets TXD high while the pin is still the UART's, then "rts"
+ * makes nRTS and TXD GPIO outputs driven high; "default" gives the pins
+ * back to the UART.
+ */
+static void s3c24xx_serial_rts_pins(struct s3c24xx_uart_port *ourport, bool hold)
+{
+	struct device *dev = ourport->port.dev;
+
+	if (!ourport->rts_pinctrl)
+		return;
+
+	if (!hold) {
+		if (!IS_ERR(ourport->pins_default) &&
+		    pinctrl_select_state(ourport->rts_pinctrl, ourport->pins_default))
+			dev_err(dev, "failed to select \"default\" pins\n");
+		return;
+	}
+
+	if (!IS_ERR(ourport->pins_tx_dat)) {
+		if (pinctrl_select_state(ourport->rts_pinctrl, ourport->pins_tx_dat))
+			dev_err(dev, "failed to select \"tx_dat\" pins\n");
+		else
+			udelay(10);
+	}
+	if (!IS_ERR(ourport->pins_rts) &&
+	    pinctrl_select_state(ourport->rts_pinctrl, ourport->pins_rts))
+		dev_err(dev, "failed to select \"rts\" pins\n");
+}
+
+/*
+ * Let the Rx interrupt empty the Rx FIFO, for up to 1 s, before the port
+ * shuts down. The vendor driver polled with the port lock held, which the
+ * Rx handler also takes.
+ */
+static void s3c24xx_serial_rx_fifo_wait(struct s3c24xx_uart_port *ourport)
+{
+	struct uart_port *port = &ourport->port;
+	unsigned long timeout = jiffies + HZ;
+	unsigned long flags;
+
+	if (!port->state || !tty_port_initialized(&port->state->port))
+		return;
+	if (ourport->info->type != TYPE_S3C6400)
+		return;
+	if (!s3c24xx_serial_rx_fifocnt(ourport, rd_regl(port, S3C2410_UFSTAT)))
+		return;
+
+	uart_port_lock_irqsave(port, &flags);
+	s3c24xx_clear_bit(port, S3C64XX_UINTM_RXD, S3C64XX_UINTM);
+	ourport->rx_enabled = 1;
+	uart_port_unlock_irqrestore(port, flags);
+
+	while (s3c24xx_serial_rx_fifocnt(ourport, rd_regl(port, S3C2410_UFSTAT)) &&
+	       time_before(jiffies, timeout))
+		usleep_range(50, 100);
+}
+
 static int s3c24xx_serial_suspend(struct device *dev)
 {
 	struct uart_port *port = s3c24xx_dev_to_port(dev);
@@ -2104,6 +2187,11 @@ static int s3c24xx_serial_suspend(struct device *dev)
 		return 0;
 
 	ourport = to_ourport(port);
+	if (ourport->rts_pinctrl) {
+		s3c24xx_serial_rts_pins(ourport, true);
+		udelay(300);
+		s3c24xx_serial_rx_fifo_wait(ourport);
+	}
 
 	uart_suspend_port(&s3c24xx_uart_drv, port);
 
@@ -2145,6 +2233,8 @@ static int s3c24xx_serial_resume(struct device *dev)
 		clk_disable_unprepare(ourport->clk);
 
 		uart_resume_port(&s3c24xx_uart_drv, port);
+
+		s3c24xx_serial_rts_pins(ourport, false);
 	}
 
 	return 0;
