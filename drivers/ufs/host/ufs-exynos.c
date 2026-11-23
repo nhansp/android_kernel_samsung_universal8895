@@ -2583,6 +2583,8 @@ static int exynos_ufs_probe(struct platform_device *pdev)
 	err = ufshcd_pltfrm_init(pdev, vops);
 	if (err)
 		dev_err(dev, "ufshcd_pltfrm_init() failed %d\n", err);
+	else if (drv_data && (drv_data->opts & EXYNOS_UFS_OPT_NO_CPU_LATENCY_QOS))
+		ufshcd_pm_qos_exit(platform_get_drvdata(pdev));
 
 	return err;
 }
@@ -2757,7 +2759,8 @@ static const struct exynos_ufs_drv_data exynos8895_ufs_drvs = {
 				  EXYNOS_UFS_OPT_UNIPRO_PCLK |
 				  EXYNOS_UFS_OPT_SKIP_SYNC_PATTERN_MASK |
 				  EXYNOS_UFS_OPT_UPMCRS_IN_UNIPRO |
-				  EXYNOS_UFS_OPT_CLKSTOP_HWACG,
+				  EXYNOS_UFS_OPT_CLKSTOP_HWACG |
+				  EXYNOS_UFS_OPT_NO_CPU_LATENCY_QOS,
 	.iocc_mask		= UFS_EXYNOS8895_SHARABLE,
 	.drv_init		= exynos8895_ufs_drv_init,
 	.pre_hce_enable		= exynos8895_ufs_pre_hce_enable,
