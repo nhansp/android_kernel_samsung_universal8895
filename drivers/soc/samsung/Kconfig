@@ -112,4 +112,12 @@ config EXYNOS8895_MCINFO
 	  memory controller channels read from the MR4 mode register, in
 	  sysfs (ref_rate/ref_rate), and panics on a memory controller
 	  over-temperature interrupt, as the vendor exynos-mcinfo driver.
+config SAMSUNG_SEC_CLASS
+	bool "Samsung \"sec\" device class"
+	depends on ARCH_EXYNOS
+	help
+	  The /sys/class/sec device class of the Samsung vendor kernels,
+	  whose device nodes (tsp, led, ...) the Samsung device HALs use.
+	  Provides sec_device_create_with_groups() and sec_device_destroy()
+	  for the drivers that create those nodes.
 endif
