@@ -13,6 +13,7 @@
 #include <linux/mfd/samsung/core.h>
 #include <linux/mfd/samsung/rtc.h>
 #include <linux/mfd/samsung/s2mpg10.h>
+#include <linux/mfd/samsung/s2mps17.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -241,6 +242,116 @@ static const struct regmap_config s2mpg10_regmap_config_meter = {
 	.cache_type = REGCACHE_FLAT,
 };
 
+/*
+ * The S2MPS17 regmaps are uncached: a cache would be populated by reading
+ * the whole map at init, which acknowledges INT1..INT6.
+ */
+static const struct regmap_range s2mps17_common_registers[] = {
+	regmap_reg_range(S2MPS17_TOP_PMICID, S2MPS17_TOP_INTSRC_MASK),
+};
+
+static const struct regmap_range s2mps17_common_wr_registers[] = {
+	regmap_reg_range(S2MPS17_TOP_INTSRC_MASK, S2MPS17_TOP_INTSRC_MASK),
+};
+
+static const struct regmap_range s2mps17_common_precious_registers[] = {
+	regmap_reg_range(S2MPS17_TOP_INTSRC, S2MPS17_TOP_INTSRC),
+};
+
+static const struct regmap_access_table s2mps17_common_rd_table = {
+	.yes_ranges = s2mps17_common_registers,
+	.n_yes_ranges = ARRAY_SIZE(s2mps17_common_registers),
+};
+
+static const struct regmap_access_table s2mps17_common_wr_table = {
+	.yes_ranges = s2mps17_common_wr_registers,
+	.n_yes_ranges = ARRAY_SIZE(s2mps17_common_wr_registers),
+};
+
+static const struct regmap_access_table s2mps17_common_precious_table = {
+	.yes_ranges = s2mps17_common_precious_registers,
+	.n_yes_ranges = ARRAY_SIZE(s2mps17_common_precious_registers),
+};
+
+static const struct regmap_config s2mps17_regmap_config_common = {
+	.name = "common",
+	.reg_bits = ACPM_ADDR_BITS,
+	.val_bits = 8,
+	.max_register = S2MPS17_TOP_INTSRC_MASK,
+	.rd_table = &s2mps17_common_rd_table,
+	.wr_table = &s2mps17_common_wr_table,
+	.precious_table = &s2mps17_common_precious_table,
+	.cache_type = REGCACHE_NONE,
+};
+
+static const struct regmap_range s2mps17_pmic_registers[] = {
+	regmap_reg_range(S2MPS17_PMIC_REG_INT1, S2MPS17_REG_ADC_DATA),
+};
+
+static const struct regmap_range s2mps17_pmic_ro_registers[] = {
+	regmap_reg_range(S2MPS17_PMIC_REG_INT1, S2MPS17_PMIC_REG_INT6),
+	regmap_reg_range(S2MPS17_PMIC_REG_STATUS1, S2MPS17_PMIC_REG_OFFSRC),
+};
+
+static const struct regmap_range s2mps17_pmic_precious_registers[] = {
+	regmap_reg_range(S2MPS17_PMIC_REG_INT1, S2MPS17_PMIC_REG_INT6),
+};
+
+static const struct regmap_access_table s2mps17_pmic_rd_table = {
+	.yes_ranges = s2mps17_pmic_registers,
+	.n_yes_ranges = ARRAY_SIZE(s2mps17_pmic_registers),
+};
+
+static const struct regmap_access_table s2mps17_pmic_wr_table = {
+	.yes_ranges = s2mps17_pmic_registers,
+	.n_yes_ranges = ARRAY_SIZE(s2mps17_pmic_registers),
+	.no_ranges = s2mps17_pmic_ro_registers,
+	.n_no_ranges = ARRAY_SIZE(s2mps17_pmic_ro_registers),
+};
+
+static const struct regmap_access_table s2mps17_pmic_precious_table = {
+	.yes_ranges = s2mps17_pmic_precious_registers,
+	.n_yes_ranges = ARRAY_SIZE(s2mps17_pmic_precious_registers),
+};
+
+static const struct regmap_config s2mps17_regmap_config_pmic = {
+	.name = "pmic",
+	.reg_bits = ACPM_ADDR_BITS,
+	.val_bits = 8,
+	.max_register = S2MPS17_REG_ADC_DATA,
+	.rd_table = &s2mps17_pmic_rd_table,
+	.wr_table = &s2mps17_pmic_wr_table,
+	.precious_table = &s2mps17_pmic_precious_table,
+	.cache_type = REGCACHE_NONE,
+};
+
+static const struct regmap_range s2mps17_rtc_registers[] = {
+	regmap_reg_range(S2MPS17_RTC_CTRL, S2MPS17_RTC_OSCCTRL),
+};
+
+static const struct regmap_access_table s2mps17_rtc_rw_table = {
+	.yes_ranges = s2mps17_rtc_registers,
+	.n_yes_ranges = ARRAY_SIZE(s2mps17_rtc_registers),
+};
+
+static const struct regmap_config s2mps17_regmap_config_rtc = {
+	.name = "rtc",
+	.reg_bits = ACPM_ADDR_BITS,
+	.val_bits = 8,
+	.max_register = S2MPS17_RTC_OSCCTRL,
+	.rd_table = &s2mps17_rtc_rw_table,
+	.wr_table = &s2mps17_rtc_rw_table,
+	.cache_type = REGCACHE_NONE,
+};
+
+static const struct regmap_config s2mps17_regmap_config_trim = {
+	.name = "trim",
+	.reg_bits = ACPM_ADDR_BITS,
+	.val_bits = 8,
+	.max_register = 0xff,
+	.cache_type = REGCACHE_NONE,
+};
+
 struct sec_pmic_acpm_shared_bus_context {
 	struct acpm_handle *acpm;
 	unsigned int acpm_chan_id;
@@ -372,6 +483,26 @@ static void sec_pmic_acpm_mask_common_irqs(void *data)
 		     c->pdata->common_int_src_all);
 }
 
+/* A PMICID of 0 with 0x9c in the undocumented PMIC register 0x87 is revision 1. */
+static int sec_pmic_acpm_s2mps17_rev(struct device *dev, struct regmap *pmic,
+				     unsigned int id)
+{
+	unsigned int rev = id, val;
+	int ret;
+
+	if (!id) {
+		ret = regmap_read(pmic, 0x87, &val);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to read revision\n");
+		if (val == 0x9c)
+			rev = 0x01;
+	}
+
+	dev_dbg(dev, "PMICID 0x%02x, revision 0x%02x\n", id, rev);
+
+	return 0;
+}
+
 static int sec_pmic_acpm_probe(struct platform_device *pdev)
 {
 	struct regmap *regmap_common, *regmap_pmic, *regmap;
@@ -380,6 +511,7 @@ static int sec_pmic_acpm_probe(struct platform_device *pdev)
 	struct sec_pmic_acpm_common_irqs *cirq;
 	struct acpm_handle *acpm;
 	struct device *dev = &pdev->dev;
+	unsigned int pmicid = 0;
 	int ret, irq;
 
 	pdata = device_get_match_data(dev);
@@ -409,6 +541,13 @@ static int sec_pmic_acpm_probe(struct platform_device *pdev)
 	if (IS_ERR(regmap_common))
 		return PTR_ERR(regmap_common);
 
+	/* The vendor driver reads the chip id before any other access. */
+	if (pdata->device_type == S2MPS17X) {
+		ret = regmap_read(regmap_common, S2MPS17_TOP_PMICID, &pmicid);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to read PMICID\n");
+	}
+
 	/* Mask all interrupts from 'common' block, until successful init */
 	ret = regmap_write(regmap_common, pdata->common_int_mask_reg,
 			   pdata->common_int_src_all);
@@ -419,6 +558,12 @@ static int sec_pmic_acpm_probe(struct platform_device *pdev)
 						pdata->regmap_cfg_pmic, false);
 	if (IS_ERR(regmap_pmic))
 		return PTR_ERR(regmap_pmic);
+
+	if (pdata->device_type == S2MPS17X) {
+		ret = sec_pmic_acpm_s2mps17_rev(dev, regmap_pmic, pmicid);
+		if (ret)
+			return ret;
+	}
 
 	if (pdata->regmap_cfg_rtc) {
 		regmap = sec_pmic_acpm_regmap_init(dev, shared_ctx, SEC_PMIC_ACPM_ACCESSTYPE_RTC,
@@ -487,8 +632,24 @@ static const struct sec_pmic_acpm_platform_data s2mpg10_data = {
 	.single_reg_funcs = false,
 };
 
+static const struct sec_pmic_acpm_platform_data s2mps17_data = {
+	.device_type = S2MPS17X,
+	.acpm_chan_id = 2,
+	.speedy_channel = 0,
+	.regmap_cfg_common = &s2mps17_regmap_config_common,
+	.regmap_cfg_pmic = &s2mps17_regmap_config_pmic,
+	.regmap_cfg_rtc = &s2mps17_regmap_config_rtc,
+	.regmap_cfg_trim = &s2mps17_regmap_config_trim,
+	.common_int_mask_reg = S2MPS17_TOP_INTSRC_MASK,
+	.common_int_src_all = 0xff,
+	.common_int_src_pmic = S2MPS17_IRQSRC_PMIC,
+	.attach_common = true,
+	.single_reg_funcs = true,
+};
+
 static const struct of_device_id sec_pmic_acpm_of_match[] = {
 	{ .compatible = "samsung,s2mpg10-pmic", .data = &s2mpg10_data, },
+	{ .compatible = "samsung,s2mps17-pmic", .data = &s2mps17_data, },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, sec_pmic_acpm_of_match);
