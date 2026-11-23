@@ -159,4 +159,23 @@ config EXYNOS8895_SECMEM
 	  one secmem ioctl the iris trustlet client uses,
 	  SECMEM_IOC_GET_FD_PHYS_ADDR: the physical address of the legacy
 	  ION buffer behind a dma-buf fd.
+
+config EXYNOS8895_BTS_BW
+	bool "Exynos8895 bus bandwidth to MIF/INT floors (BTS arithmetic)"
+	depends on ARM_EXYNOS8895_BUS_DEVFREQ
+	default ARM_EXYNOS8895_BUS_DEVFREQ
+	help
+	  The bandwidth part of the Exynos8895 bus traffic shaper: turns the
+	  bandwidth the display and media drivers report into MIF and INT
+	  frequency floors of the bus DVFS driver. Without it bts_calc_bw()
+	  and bts_update_bw() do nothing.
+
+config EXYNOS8895_BTS
+	bool "Bus traffic shaper support"
+	depends on ARCH_EXYNOS && EXYNOS8895_BTS_BW
+	help
+	  Programs the Exynos8895 bus traffic shaper: the QoS priority and
+	  outstanding transaction limits of the bus masters, the scenarios
+	  the media drivers switch with bts_update_scen(), and the SCI and
+	  memory controller queue limits that follow the MIF frequency.
 endif
