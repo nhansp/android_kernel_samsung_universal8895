@@ -22,7 +22,9 @@ description: |
 
 properties:
   compatible:
-    const: google,gs101-acpm-ipc
+    enum:
+      - google,gs101-acpm-ipc
+      - samsung,exynos8895-acpm-ipc
 
   "#clock-cells":
     const: 1
@@ -43,7 +45,9 @@ properties:
 
     properties:
       compatible:
-        const: samsung,s2mpg10-pmic
+        enum:
+          - samsung,s2mpg10-pmic
+          - samsung,s2mps17-pmic
 
   shmem:
     description:
