@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0
-dtstree	:= $(srctree)/$(src)
+dtstree	:= $(src)
 
 vendor  := $(dtstree)/vendor
 ifeq "$(wildcard $(vendor)/Makefile)" ""
